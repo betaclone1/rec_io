@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Backfill users.trades_0001.fees for rows where paper_trade = TRUE only.
+Backfill ``users.trades_<slot>``.fees for rows where paper_trade = TRUE only.
 Uses taker formula: open_fee = round_up(0.07 * position * buy_price * (1 - buy_price));
 for closed-before-expiration adds close_fee = round_up(0.07 * position * (1 - sell_price) * sell_price).
 Updates ONLY the fees column; does not touch any row where paper_trade is not TRUE.
@@ -17,6 +17,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
 from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 from psycopg2 import extras
 
@@ -34,6 +35,7 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="Do not UPDATE; only report what would be set")
     args = parser.parse_args()
     user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
 
     conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
@@ -41,11 +43,13 @@ def main():
         sys.exit(1)
 
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            f"""
             SELECT id, buy_price, position, sell_price, close_method
-            FROM users.trades_0001
+            FROM {trades_t}
             WHERE paper_trade = TRUE
-        """)
+        """
+        )
         rows = cur.fetchall()
 
     if not rows:
@@ -81,8 +85,8 @@ def main():
     with conn.cursor() as cur:
         extras.execute_values(
             cur,
-            """
-            UPDATE users.trades_0001 AS t
+            f"""
+            UPDATE {trades_t} AS t
             SET fees = v.fees
             FROM (VALUES %s) AS v(id, fees)
             WHERE t.id = v.id::bigint AND t.paper_trade = TRUE

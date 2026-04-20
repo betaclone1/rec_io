@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """One-off: trade 10922 - confirm closed before expiration and expected fees (taker formula)."""
+import argparse
 import math
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 
 def estimate_kalshi_taker_fee(position: int, price: float) -> float:
@@ -16,15 +19,24 @@ def estimate_kalshi_taker_fee(position: int, price: float) -> float:
 
 
 def main():
-    conn = get_postgresql_connection()
+    ap = argparse.ArgumentParser(description=__doc__)
+    add_user_no_argument(ap)
+    args = ap.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("No DB connection")
         sys.exit(1)
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            f"""
             SELECT id, buy_price, position, sell_price, fees, close_method, status, paper_trade, ticker, date
-            FROM users.trades_0001 WHERE id = %s
-        """, (10922,))
+            FROM {trades_t} WHERE id = %s
+        """,
+            (10922,),
+        )
         row = cur.fetchone()
     conn.close()
     if not row:

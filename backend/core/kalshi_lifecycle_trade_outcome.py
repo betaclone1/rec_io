@@ -1,5 +1,5 @@
 """
-Apply Kalshi ``market_lifecycle_v2`` outcomes to ``users.trades_0001``.
+Apply Kalshi ``market_lifecycle_v2`` outcomes to tenant ``users.trades_<slot>`` rows.
 
 ``market_result`` (normalized yes/no) is written from WebSocket ``determined`` / ``settled``
 messages with a ``result`` field. Expired trades are finalized in ``trade_manager`` from

@@ -3,8 +3,8 @@
 Check that database.py table definitions do not drift from MASTER_DB_SCHEMA_REFERENCE.md
 for critical tables. Intended for CI: exit 0 if aligned, exit 1 if drift detected.
 
-Critical tables: users.trades_0001, users.trades_simulated_0001, users.monitor_list_0001,
-users.strategy_list_0001.
+Critical tables (canonical names in reference / database.py templates): users.trades_NNNN,
+users.trades_simulated_NNNN, users.monitor_list_NNNN, users.strategy_list_NNNN.
 
 Usage:
   PYTHONPATH=$(pwd) python3 scripts/db/check_db_schema_drift.py

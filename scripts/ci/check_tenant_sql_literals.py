@@ -3,13 +3,13 @@
 Fail CI if backend Python contains tenant foot-guns:
 
 - SQL literals pinning user_no to '0001' / \"0001\" (wrong when REC_USER_SCHEMA is another tenant)
-- Raw probes of legacy ``users.trades_0001`` (table lives in ``users_NNNN.trades_NNNN``)
+- Raw probes of legacy ``users.trades_NNNN`` (table lives in ``users_NNNN.trades_NNNN``)
 
 Legacy ``users.table_0001`` strings passed through :class:`backend.core.tenant_context.TenantConnection`
 are rewritten; raw ``psycopg2`` must use :func:`backend.core.tenant_context.process_tenant_context`
 + ``Identifier``, or centralized config.
 
-Excluded paths are intentional DDL (init_database) or tests. Expand exclusions only with a code review.
+Excluded paths are tests / generated harness files. Expand exclusions only with a code review.
 """
 
 from __future__ import annotations
@@ -24,7 +24,6 @@ BACKEND = REPO / "backend"
 # Whole-file skips (template DDL / generated / tests live only here)
 SKIP_FILES = frozenset(
     {
-        BACKEND / "core" / "config" / "database.py",
         BACKEND / "auto_entry_supervisor_test.py",
     }
 )
@@ -41,8 +40,8 @@ PATTERNS = (
     (re.compile(r"WHERE\s+user_no\s*=\s*['\"]0001['\"]", re.IGNORECASE), "WHERE user_no = '0001' literal"),
     # Single-line raw probe bypassing TenantConnection (OK on TenantCursor — prefer grep for reviews)
     (
-        re.compile(r"execute\(\s*[\"']SELECT\s+1\s+FROM\s+users\.trades_0001\b", re.IGNORECASE),
-        "raw psycopg2 execute SELECT 1 FROM users.trades_0001",
+        re.compile(r"execute\(\s*[\"']SELECT\s+1\s+FROM\s+users\.trades_\d{4}\b", re.IGNORECASE),
+        "raw psycopg2 execute SELECT 1 FROM users.trades_NNNN",
     ),
 )
 

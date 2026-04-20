@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-20 — Release v3.3.0: tenant SQL literal cleanup and schema naming clarity
+
+**Summary**
+- **Release: v3.3.0**
+- **Tenant SQL hygiene:** Replaced hardcoded tenant table literals in runtime code and operator/backfill/diagnostic scripts with tenant-aware resolution (`TenantContext` + legacy SQL helpers), including new helper module **`backend/core/tenant_legacy_sql.py`**.
+- **Bootstrap/runtime alignment:** `backend/core/config/database.py` init-time DDL now derives and applies the active tenant slot suffix at runtime rather than assuming `_0001`.
+- **Guardrails:** `scripts/ci/check_tenant_sql_literals.py` expanded checks so raw tenant literals (for active code paths) are caught consistently; tests updated for tenant-safe references.
+- **Docs:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` and related docs now explicitly document `users_NNNN` physical schemas, legacy `users.*_NNNN` rewrite behavior, and that `0001` headings are illustrative slot examples.
+- **Plans:** `db-prod-schema-alignment.md` (follow-up schema/documentation consistency work).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `main_app`, `trade_executor_0001`, `kalshi_account_sync_0001`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.0`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.0`
+
+---
+
 ## 2026-04-19 — Release v3.2.0: Postgres connection budget, ATS strike-table probability, supervisor config batching
 
 **Summary**

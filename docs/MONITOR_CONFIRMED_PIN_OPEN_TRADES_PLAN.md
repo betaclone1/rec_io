@@ -16,7 +16,7 @@ Each watchdog process owns one `(SYMBOL, INTERVAL)` and one table: `live_data.ma
 
 1. **Compute preserve set**
    - Open-trade tickers for this symbol:  
-     `SELECT DISTINCT ticker FROM users.trades_0001 WHERE status IN ('pending', 'open') AND symbol = %s AND ticker IS NOT NULL`
+     `SELECT DISTINCT ticker FROM users.trades_<slot> WHERE status IN ('pending', 'open') AND symbol = %s AND ticker IS NOT NULL`
    - Restrict to tickers that exist in the current table (so we only keep rows that belong to this table):  
      `SELECT market_ticker FROM live_data.market_kalshi_{interval}_{symbol} WHERE market_ticker IN (... open tickers ...)`
    - If the preserve set is empty, skip steps 2–4 (current behavior: TRUNCATE + new event only).
@@ -45,7 +45,7 @@ Result: the table contains (new event’s markets) + (preserved rows for open tr
 **Locations:**
 - **New helper:** `get_open_trade_tickers_for_table(connection, table_name, symbol)`  
   Returns set of tickers: open/pending trades for `symbol` that exist in `table_name`.  
-  - Query 1: `SELECT DISTINCT ticker FROM users.trades_0001 WHERE status IN ('pending', 'open') AND symbol = %s AND ticker IS NOT NULL`.  
+  - Query 1: `SELECT DISTINCT ticker FROM users.trades_<slot> WHERE status IN ('pending', 'open') AND symbol = %s AND ticker IS NOT NULL`.  
   - Query 2: `SELECT market_ticker FROM live_data.{table_name} WHERE market_ticker IN (%s, ...)` (parameterize).  
   - Return intersection (tickers that are both open and in the table).
 
@@ -63,7 +63,7 @@ Result: the table contains (new event’s markets) + (preserved rows for open tr
   3. If we have preserved rows, open a new connection, call `reinsert_preserved_rows(connection, table_name, preserved_rows)`, commit, close.  
   4. Log: e.g. "Preserved N rows for open trades across rotation."
 
-**DB access:** The watchdog already uses `connect_database()`. Ensure it can read `users.trades_0001` (same DB). If the project uses a single DB for users and live_data, no change. If not, the plan assumes the watchdog’s connection has read access to `users.trades_0001`.
+**DB access:** The watchdog already uses `connect_database()`. Ensure it can read the tenant `trades` table (same DB). If the project uses a single DB for users and live_data, no change. If not, the plan assumes the watchdog’s connection has read access to the resolved trades relation.
 
 ---
 

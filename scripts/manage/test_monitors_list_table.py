@@ -1,170 +1,115 @@
 #!/usr/bin/env python3
 """
-Test script for monitor_list_0001 table creation and sample data insertion
+Smoke test: monitor_list_<slot> exists and accepts a sample INSERT (dev / local only).
+
+Uses REC_USER_NO / REC_DEFAULT_USER_SCHEMA (see default_pool_user_number).
 """
 
-import sys
+from __future__ import annotations
+
 import os
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'backend'))
+import sys
 
-from core.config.database import get_postgresql_connection, init_database
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
 
-def test_monitors_list_table():
-    """Test the monitor_list_0001 table creation and add sample data"""
-    
-    print("🔧 Testing monitor_list_0001 table creation...")
-    
-    # Initialize database (this will create the table)
+from backend.core.config.database import get_postgresql_connection, init_database
+from backend.core.port_config import default_pool_user_number
+from backend.core.tenant_context import TenantContext
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list
+
+
+def test_monitors_list_table() -> bool:
+    slot = default_pool_user_number()
+    ctx = TenantContext.from_schema(f"users_{slot}")
+    mon_table = legacy_users_monitor_list(slot)
+    mon_suffix = f"monitor_list_{slot}"
+    seq_name = f"monitor_list_{slot}_id_seq"
+
+    print(f"Testing {mon_table} (schema {ctx.pg_schema})...")
     success, message = init_database()
     if not success:
-        print(f"❌ Database initialization failed: {message}")
+        print(f"Database initialization failed: {message}")
         return False
-    
-    print("✅ Database initialized successfully")
-    
-    # Connect to database
-    conn = get_postgresql_connection()
+    print("Database initialized OK")
+
+    conn = get_postgresql_connection(tenant_user_no=slot)
     if not conn:
-        print("❌ Failed to connect to database")
+        print("Failed to connect to database")
         return False
-    
+
     cursor = conn.cursor()
-    
     try:
-        # Test table creation
-        cursor.execute("""
+        cursor.execute(
+            """
             SELECT EXISTS (
-                SELECT FROM information_schema.tables 
-                WHERE table_schema = 'users' 
-                AND table_name = 'monitor_list_0001'
+                SELECT FROM information_schema.tables
+                WHERE table_schema = %s AND table_name = %s
             );
-        """)
-        
-        table_exists = cursor.fetchone()[0]
-        if not table_exists:
-            print("❌ monitor_list_0001 table does not exist")
+            """,
+            (ctx.pg_schema, mon_suffix),
+        )
+        if not cursor.fetchone()[0]:
+            print(f"Table missing: {ctx.pg_schema}.{mon_suffix}")
             return False
-        
-        print("✅ monitor_list_0001 table exists")
-        
-        # Test sequence creation
-        cursor.execute("""
+        print(f"Table exists: {ctx.pg_schema}.{mon_suffix}")
+
+        cursor.execute(
+            """
             SELECT EXISTS (
-                SELECT FROM information_schema.sequences 
-                WHERE sequence_schema = 'users' 
-                AND sequence_name = 'monitor_list_0001_id_seq'
+                SELECT FROM information_schema.sequences
+                WHERE sequence_schema = %s AND sequence_name = %s
             );
-        """)
-        
-        sequence_exists = cursor.fetchone()[0]
-        if not sequence_exists:
-            print("❌ monitor_list_0001_id_seq sequence does not exist")
+            """,
+            (ctx.pg_schema, seq_name),
+        )
+        if not cursor.fetchone()[0]:
+            print(f"Sequence missing: users.{seq_name}")
             return False
-        
-        print("✅ monitor_list_0001_id_seq sequence exists")
-        
-        # Check current sequence value
-        cursor.execute("SELECT last_value FROM users.monitor_list_0001_id_seq;")
-        current_value = cursor.fetchone()[0]
-        print(f"✅ Current sequence value: {current_value}")
-        
-        # Insert sample data
-        sample_monitors = [
-            {
-                'name': 'BTC Momentum Monitor',
-                'symbol': 'BTC',
-                'strategy': 'momentum_based',
-                'auto_trade': True,
-                'auto_trade_status': 'active',
-                'trades': 15,
-                'win_loss': 73.3,
-                'ret_pct': 12.5,
-                'pnl': 1250.50,
-                'bankroll_allotment': 25.0,
-                'status': 'active'
-            },
-            {
-                'name': 'ETH Breakout Monitor',
-                'symbol': 'ETH',
-                'strategy': 'breakout_strategy',
-                'auto_trade': False,
-                'auto_trade_status': 'inactive',
-                'trades': 8,
-                'win_loss': 62.5,
-                'ret_pct': 8.2,
-                'pnl': 820.00,
-                'bankroll_allotment': 15.0,
-                'status': 'active'
-            },
-            {
-                'name': 'BTC Scalping Monitor',
-                'symbol': 'BTC',
-                'strategy': 'scalping',
-                'auto_trade': True,
-                'auto_trade_status': 'paused',
-                'trades': 32,
-                'win_loss': 68.8,
-                'ret_pct': 18.7,
-                'pnl': 1870.25,
-                'bankroll_allotment': 30.0,
-                'status': 'active'
-            }
-        ]
-        
-        for monitor in sample_monitors:
-            cursor.execute("""
-                INSERT INTO users.monitor_list_0001 (
-                    name, symbol, strategy, auto_trade, auto_trade_status,
-                    trades, win_loss, ret_pct, pnl, bankroll_allotment, status
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
-                ) RETURNING id;
-            """, (
-                monitor['name'], monitor['symbol'], monitor['strategy'],
-                monitor['auto_trade'], monitor['auto_trade_status'],
-                monitor['trades'], monitor['win_loss'], monitor['ret_pct'],
-                monitor['pnl'], monitor['bankroll_allotment'], monitor['status']
-            ))
-            
-            monitor_id = cursor.fetchone()[0]
-            print(f"✅ Inserted monitor '{monitor['name']}' with ID: {monitor_id}")
-        
-        # Verify data insertion
-        cursor.execute("SELECT COUNT(*) FROM users.monitors_list_0001;")
-        count = cursor.fetchone()[0]
-        print(f"✅ Total monitors in table: {count}")
-        
-        # Show all monitors
-        cursor.execute("""
-            SELECT id, name, symbol, strategy, auto_trade, auto_trade_status,
-                   trades, win_loss, ret_pct, pnl, bankroll_allotment, status
-            FROM users.monitors_list_0001
-            ORDER BY id;
-        """)
-        
-        monitors = cursor.fetchall()
-        print("\n📊 Current monitors in table:")
-        print("-" * 80)
-        for monitor in monitors:
-            print(f"ID: {monitor[0]}, Name: {monitor[1]}, Symbol: {monitor[2]}, "
-                  f"Strategy: {monitor[3]}, Auto Trade: {monitor[4]}, "
-                  f"Status: {monitor[5]}, Trades: {monitor[6]}, "
-                  f"Win/Loss: {monitor[7]}%, Return: {monitor[8]}%, "
-                  f"PnL: ${monitor[9]}, Bankroll: {monitor[10]}%")
-        
+        print(f"Sequence exists: {ctx.pg_schema}.{seq_name}")
+
+        cursor.execute(f'SELECT last_value FROM "{ctx.pg_schema}"."{seq_name}";')
+        print(f"Current sequence value: {cursor.fetchone()[0]}")
+
+        cursor.execute(
+            f"""
+            INSERT INTO {mon_table} (
+                name, symbol, strategy, auto_trade, auto_trade_status,
+                trades, win_loss, ret_pct, pnl, bankroll_allotment, status
+            ) VALUES (
+                %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+            ) RETURNING id;
+            """,
+            (
+                "Smoke Test Monitor",
+                "BTC",
+                "momentum_based",
+                True,
+                "inactive",
+                0,
+                0.0,
+                0.0,
+                0.0,
+                25.0,
+                "active",
+            ),
+        )
+        mid = cursor.fetchone()[0]
+        print(f"Inserted test row id={mid}")
+
+        cursor.execute(f"DELETE FROM {mon_table} WHERE id = %s", (mid,))
         conn.commit()
-        print("\n✅ monitors_list_0001 table test completed successfully!")
+        print("Removed test row.")
         return True
-        
     except Exception as e:
-        print(f"❌ Error during test: {e}")
+        print(f"Error: {e}")
         conn.rollback()
         return False
-    
     finally:
         cursor.close()
         conn.close()
 
+
 if __name__ == "__main__":
-    success = test_monitors_list_table()
-    sys.exit(0 if success else 1)
+    sys.exit(0 if test_monitors_list_table() else 1)

@@ -39,6 +39,13 @@ from backend.core.port_config import (
 )
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
+from backend.core.tenant_legacy_sql import (
+    legacy_active_trades_pool_15m,
+    legacy_active_trades_pool_hourly,
+    legacy_users_monitor_list,
+    legacy_users_trades,
+)
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host
 from backend.core.time_eastern import now_est as wall_now, EST
@@ -163,8 +170,8 @@ def create_unified_15m_active_trades_pool_table():
         conn = get_postgresql_connection()
         if not conn:
             return
-        # Template suffix _0001; TenantConnection rewrites to this worker's slot.
-        tbl = "active_trades_15m_0001"
+        slot = effective_tenant_context_for_sql_rewrite().user_no
+        tbl = legacy_active_trades_pool_15m(slot)
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS users.{tbl} (
@@ -221,7 +228,8 @@ def create_unified_hourly_active_trades_pool_table():
         conn = get_postgresql_connection()
         if not conn:
             return
-        tbl = "active_trades_hourly_0001"
+        slot = effective_tenant_context_for_sql_rewrite().user_no
+        tbl = legacy_active_trades_pool_hourly(slot)
         with conn.cursor() as cursor:
             cursor.execute(f"""
                 CREATE TABLE IF NOT EXISTS users.{tbl} (
@@ -349,17 +357,18 @@ def drop_monitor_active_trades_table():
 
 def get_monitor_active_trades_table():
     """Per-monitor legacy table or unified pool active_trades_15m_*|active_trades_hourly_* (tenant rewrite)."""
+    slot = effective_tenant_context_for_sql_rewrite().user_no
     if ATS_UNIFIED_15M:
-        return "active_trades_15m_0001"
+        return legacy_active_trades_pool_15m(slot)
     if ATS_UNIFIED_HOURLY:
-        return "active_trades_hourly_0001"
+        return legacy_active_trades_pool_hourly(slot)
     if ATS_UNIFIED_ALL:
         from backend.core.port_config import monitor_suffix_uses_unified_15m_pool
 
         suffix = f"{ctx_user()}_{ctx_mid()}"
         if monitor_suffix_uses_unified_15m_pool(suffix):
-            return "active_trades_15m_0001"
-        return "active_trades_hourly_0001"
+            return legacy_active_trades_pool_15m(slot)
+        return legacy_active_trades_pool_hourly(slot)
     return f"active_trades_{ctx_user()}_{ctx_mid()}"
 
 
@@ -374,12 +383,12 @@ def get_monitor_identifier():
     """Extract monitor identifier from script name or command line arguments"""
     script_name = os.path.basename(sys.argv[0])
     
-    # Check if script name contains monitor identifier (e.g., active_trade_supervisor_0001_10001)
+    # Check if script name contains monitor identifier (e.g., active_trade_supervisor_<slot>_10001)
     if '_' in script_name and script_name.count('_') >= 3:
         parts = script_name.split('_')
         if len(parts) >= 4:
-            user_number = parts[-2]  # 0001
-            monitor_id = parts[-1]   # 10001
+            user_number = parts[-2]  # four-digit tenant slot
+            monitor_id = parts[-1]   # monitor id
             return f"{user_number}_{monitor_id}"
     
     # Check command line arguments
@@ -604,7 +613,7 @@ def get_monitor_symbol():
 
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
+            SELECT symbol, COALESCE(market, 'hourly') FROM {legacy_users_monitor_list(uid0)}
             WHERE id = %s
         """, (mid0,))
         result = cursor.fetchone()
@@ -652,7 +661,7 @@ def get_current_monitor_symbol_and_market():
             return "BTC", "hourly"
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT symbol, COALESCE(market, 'hourly') FROM users.monitor_list_0001
+            SELECT symbol, COALESCE(market, 'hourly') FROM {legacy_users_monitor_list(ctx_user())}
             WHERE id = %s
         """, (ctx_mid(),))
         result = cursor.fetchone()
@@ -707,7 +716,11 @@ def _count_active_trades_across_unified_pool_monitors() -> int:
         cur = conn.cursor()
         if ATS_UNIFIED_ALL:
             total = 0
-            for tbl in ("active_trades_15m_0001", "active_trades_hourly_0001"):
+            wh = effective_tenant_context_for_sql_rewrite().user_no
+            for tbl in (
+                legacy_active_trades_pool_15m(wh),
+                legacy_active_trades_pool_hourly(wh),
+            ):
                 cur.execute(
                     f"""
                     SELECT COUNT(*) FROM users.{tbl}
@@ -1077,7 +1090,7 @@ def _open_enrollment_ack_payload(
             cursor = conn.cursor()
             cursor.execute(
                 f"""
-                SELECT ticker, side, symbol FROM users.trades_0001
+                SELECT ticker, side, symbol FROM {legacy_users_trades(ctx_user())}
                 WHERE id = %s AND status = 'open'
                 """,
                 (trade_id,),
@@ -1228,7 +1241,7 @@ def _handle_ats_tm_notification_redis(data: dict) -> None:
                 try:
                     with pg.cursor() as cur:
                         cur.execute(
-                            "SELECT ticket_id FROM users.trades_0001 WHERE id = %s",
+                            f"SELECT ticket_id FROM {legacy_users_trades(slot)} WHERE id = %s",
                             (trade_id,),
                         )
                         row = cur.fetchone()
@@ -1317,7 +1330,7 @@ def handle_trade_manager_notification():
                 try:
                     with pg.cursor() as cur:
                         cur.execute(
-                            "SELECT ticket_id FROM users.trades_0001 WHERE id = %s",
+                            f"SELECT ticket_id FROM {legacy_users_trades(slot)} WHERE id = %s",
                             (trade_id,),
                         )
                         row = cur.fetchone()
@@ -1334,7 +1347,7 @@ def handle_trade_manager_notification():
             if not monitor_identifier or "_" not in str(monitor_identifier):
                 return jsonify(
                     {
-                        "error": "monitor_identifier required (e.g. 0001_10019)",
+                        "error": "monitor_identifier required (format: <user_slot>_<monitor_id>)",
                         "success": False,
                     }
                 ), 200
@@ -1479,7 +1492,7 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_0001 
+            FROM {legacy_users_trades(ctx_user())}
             WHERE id = %s AND status = 'open'
         """, (trade_id,))
         
@@ -1617,7 +1630,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_0001 
+            FROM {legacy_users_trades(ctx_user())}
             WHERE id = %s AND status = 'pending'
         """, (trade_id,))
         
@@ -1634,7 +1647,7 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
                 try:
                     tr_cur = tr_conn.cursor()
                     tr_cur.execute(
-                        f"SELECT status FROM users.trades_0001 WHERE id = %s",
+                        f"SELECT status FROM {legacy_users_trades(ctx_user())} WHERE id = %s",
                         (trade_id,),
                     )
                     tr_row = tr_cur.fetchone()
@@ -1745,7 +1758,7 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
             SELECT id, ticket_id, date, time, strike, side, buy_price, position,
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
-            FROM users.trades_0001 
+            FROM {legacy_users_trades(ctx_user())}
             WHERE id = %s AND status = 'open'
         """, (trade_id,))
         
@@ -2025,7 +2038,7 @@ def _users_trade_status_for_stale_flush(trade_id: int) -> Optional[str]:
             return None
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT status FROM users.trades_0001 WHERE id = %s",
+                f"SELECT status FROM {legacy_users_trades(ctx_user())} WHERE id = %s",
                 (trade_id,),
             )
             row = cur.fetchone()
@@ -2823,7 +2836,11 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
     u = USER_NUMBER
     pool_tables: List[str]
     if ATS_UNIFIED_ALL:
-        pool_tables = ["active_trades_15m_0001", "active_trades_hourly_0001"]
+        wh = effective_tenant_context_for_sql_rewrite().user_no
+        pool_tables = [
+            legacy_active_trades_pool_15m(wh),
+            legacy_active_trades_pool_hourly(wh),
+        ]
     else:
         pool_tables = [get_monitor_active_trades_table()]
     conn = get_postgresql_connection(tenant_user_no=USER_NUMBER)
@@ -3053,7 +3070,7 @@ def update_active_trade_monitoring_data():
                 trades_tbl = f"trades_{ctx_user()}"
                 # Trade log: mirror unrealized pnl to users.trades_* so NOTIFY refetches /trades.
                 # Lock order: touch trades_* before active_trades_* to match lifecycle_ws
-                # (kalshi_lifecycle_trade_outcome: FOR UPDATE on trades_0001 first), reducing deadlocks.
+                # (kalshi_lifecycle_trade_outcome: FOR UPDATE on tenant trades first), reducing deadlocks.
                 # SAVEPOINT so deadlock / errors on the mirror do not abort the active_trades UPDATE.
                 try:
                     pnl_val = float(pnl_formatted)
@@ -3416,7 +3433,7 @@ def start_monitoring_loop():
                                 with conn.cursor() as cursor:
                                     # First get the strategy name for this monitor
                                     cursor.execute(f"""
-                                        SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                                        SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
                                     """, (ctx_mid(),))
                                     monitor_result = cursor.fetchone()
                             
@@ -3424,9 +3441,9 @@ def start_monitoring_loop():
                                         strategy_name = monitor_result[0]
                                 
                                         # Get momentum spike settings from the monitor
-                                        cursor.execute("""
+                                        cursor.execute(f"""
                                             SELECT momentum_spike_enabled, momentum_spike_threshold
-                                            FROM users.monitor_list_0001 WHERE id = %s
+                                            FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
                                         """, (ctx_mid(),))
                                         result = cursor.fetchone()
                                 
@@ -3795,7 +3812,11 @@ def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
         cursor = conn.cursor()
         if ATS_UNIFIED_ALL:
             combined: List[Dict[str, Any]] = []
-            for tbl in ("active_trades_15m_0001", "active_trades_hourly_0001"):
+            wh = effective_tenant_context_for_sql_rewrite().user_no
+            for tbl in (
+                legacy_active_trades_pool_15m(wh),
+                legacy_active_trades_pool_hourly(wh),
+            ):
                 cursor.execute(
                     f"""
                     SELECT * FROM users.{tbl}
@@ -3845,8 +3866,8 @@ def _sync_with_trades_db_for_current_monitor():
     conn = get_trades_db_connection()
     cursor = conn.cursor()
     cursor.execute(
-        """
-        SELECT id FROM users.trades_0001
+        f"""
+        SELECT id FROM {legacy_users_trades(ctx_user())}
         WHERE monitor = %s
           AND LOWER(TRIM(status)) IN ('pending', 'open', 'closing')
         """,
@@ -3914,8 +3935,8 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
     try:
         cur = conn_tr.cursor()
         cur.execute(
-            """
-            SELECT id, ticket_id, status FROM users.trades_0001
+            f"""
+            SELECT id, ticket_id, status FROM {legacy_users_trades(u)}
             WHERE monitor = %s AND LOWER(TRIM(status)) IN ('pending', 'open', 'closing')
             """,
             (mon_tag,),
@@ -3982,7 +4003,7 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
     try:
         cur2 = conn_tr2.cursor()
         cur2.execute(
-            "SELECT id, monitor, status FROM users.trades_0001 WHERE id = ANY(%s)",
+            f"SELECT id, monitor, status FROM {legacy_users_trades(u)} WHERE id = ANY(%s)",
             (stale_tids,),
         )
         meta_rows = cur2.fetchall()
@@ -4018,16 +4039,17 @@ def _purge_unified_active_trades_wrong_market() -> int:
     )
 
     user = USER_NUMBER
+    wh = _norm_slot(str(user).strip())
     specs: List[Tuple[str, Any, str]] = []
     if ATS_UNIFIED_ALL:
         specs = [
-            ("active_trades_15m_0001", monitor_suffix_uses_unified_15m_pool, "15m"),
-            ("active_trades_hourly_0001", monitor_suffix_uses_unified_hourly_pool, "hourly"),
+            (legacy_active_trades_pool_15m(wh), monitor_suffix_uses_unified_15m_pool, "15m"),
+            (legacy_active_trades_pool_hourly(wh), monitor_suffix_uses_unified_hourly_pool, "hourly"),
         ]
     elif ATS_UNIFIED_15M:
-        specs = [("active_trades_15m_0001", monitor_suffix_uses_unified_15m_pool, "15m")]
+        specs = [(legacy_active_trades_pool_15m(wh), monitor_suffix_uses_unified_15m_pool, "15m")]
     elif ATS_UNIFIED_HOURLY:
-        specs = [("active_trades_hourly_0001", monitor_suffix_uses_unified_hourly_pool, "hourly")]
+        specs = [(legacy_active_trades_pool_hourly(wh), monitor_suffix_uses_unified_hourly_pool, "hourly")]
     else:
         return 0
 
@@ -4104,8 +4126,9 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
     )
 
     if ATS_UNIFIED_ALL:
-        tbl_15 = "active_trades_15m_0001"
-        tbl_h = "active_trades_hourly_0001"
+        wh = effective_tenant_context_for_sql_rewrite().user_no
+        tbl_15 = legacy_active_trades_pool_15m(wh)
+        tbl_h = legacy_active_trades_pool_hourly(wh)
         conn = get_postgresql_connection()
         if not conn:
             log("🔄 RECONCILE: no DB connection; skipping unified open-trade scan")
@@ -4134,9 +4157,10 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
             return
         try:
             c2 = conn_tr.cursor()
+            scan_slot = effective_tenant_context_for_sql_rewrite().user_no
             c2.execute(
-                """
-                SELECT id, monitor FROM users.trades_0001
+                f"""
+                SELECT id, monitor FROM {legacy_users_trades(scan_slot)}
                 WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
                 """
             )
@@ -4174,15 +4198,16 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         _purge_unified_active_trades_wrong_market()
         return
 
+    wh2 = effective_tenant_context_for_sql_rewrite().user_no
     if ATS_UNIFIED_15M:
-        tbl = "active_trades_15m_0001"
+        tbl = legacy_active_trades_pool_15m(wh2)
 
         def _use_unified_pool(suffix: str) -> bool:
             return monitor_suffix_uses_unified_15m_pool(suffix)
 
         pool_label = "15m"
     elif ATS_UNIFIED_HOURLY:
-        tbl = "active_trades_hourly_0001"
+        tbl = legacy_active_trades_pool_hourly(wh2)
 
         def _use_unified_pool(suffix: str) -> bool:
             return monitor_suffix_uses_unified_hourly_pool(suffix)
@@ -4211,9 +4236,10 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         return
     try:
         c2 = conn_tr.cursor()
+        scan_slot2 = effective_tenant_context_for_sql_rewrite().user_no
         c2.execute(
-            """
-            SELECT id, monitor FROM users.trades_0001
+            f"""
+            SELECT id, monitor FROM {legacy_users_trades(scan_slot2)}
             WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
             """
         )
@@ -4443,7 +4469,7 @@ def is_auto_stop_enabled():
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute(f"SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT auto_trade FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 auto_trade_enabled = result[0]
@@ -4457,7 +4483,7 @@ def is_auto_stop_enabled():
 
 
 def _close_method_for_auto_trigger(trigger_reason: str) -> str:
-    """users.trades_0001.close_method for ATS-triggered closes (distinct from manual / expired)."""
+    """Tenant ``trades_*``.``close_method`` for ATS-triggered closes (distinct from manual / expired)."""
     key = (trigger_reason or "").strip().lower()
     if not key or key == "unknown":
         return "auto"
@@ -4524,7 +4550,7 @@ def trigger_auto_stop_close(
 
     trigger_detail: short human-readable context (thresholds, prob, momentum, etc.).
 
-    close_method on users.trades_0001 is set via _close_method_for_auto_trigger(trigger_reason).
+    close_method on the tenant trades row is set via _close_method_for_auto_trigger(trigger_reason).
     Returns True if close was successful, False otherwise.
     """
     import requests
@@ -4840,7 +4866,7 @@ def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
         log(f"❌ Error handling close_failed trade {trade_id}: {e}")
         return False
 
-# Auto stop settings now read directly from monitor_list_0001 table
+# Auto stop settings read from the tenant monitor_list row for ctx_user()/ctx_mid().
 
 def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
@@ -4849,7 +4875,7 @@ def get_trade_strategy():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
@@ -4870,7 +4896,7 @@ def get_momentum_scalp_trailing_stop_amount():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT momentum_scalp_trailing_stop_amount FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4888,7 +4914,7 @@ def get_momentum_scalp_profit_target():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_profit_target FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT momentum_scalp_profit_target FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4906,7 +4932,7 @@ def get_max_profit():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT max_profit FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT max_profit FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4924,7 +4950,7 @@ def get_momentum_scalp_entry_threshold():
         import psycopg2
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
-            cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM users.monitor_list_0001 WHERE id = %s", (ctx_mid(),))
+            cursor.execute(f"SELECT momentum_scalp_entry_threshold FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
             result = cursor.fetchone()
             conn.close()
             if result and result[0] is not None:
@@ -4943,7 +4969,7 @@ def get_auto_stop_threshold():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -4957,8 +4983,8 @@ def get_auto_stop_threshold():
                 return 40
             
             # Get the threshold from the monitor
-            cursor.execute("""
-                SELECT current_probability FROM users.monitor_list_0001 WHERE id = %s
+            cursor.execute(f"""
+                SELECT current_probability FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             result = cursor.fetchone()
             
@@ -5018,7 +5044,7 @@ def get_min_ttc_seconds():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -5032,8 +5058,8 @@ def get_min_ttc_seconds():
                 return 60
             
             # Get the min_ttc_seconds from the monitor
-            cursor.execute("""
-                SELECT min_ttc_seconds FROM users.monitor_list_0001 WHERE id = %s
+            cursor.execute(f"""
+                SELECT min_ttc_seconds FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             result = cursor.fetchone()
             
@@ -5057,7 +5083,7 @@ def get_verification_period_enabled():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -5071,8 +5097,8 @@ def get_verification_period_enabled():
                 return False
             
             # Get the verification_period_enabled from the monitor
-            cursor.execute("""
-                SELECT verification_period_enabled FROM users.monitor_list_0001 WHERE id = %s
+            cursor.execute(f"""
+                SELECT verification_period_enabled FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             result = cursor.fetchone()
             
@@ -5096,7 +5122,7 @@ def get_verification_period_seconds():
         with conn.cursor() as cursor:
             # First get the strategy name for this monitor
             cursor.execute(f"""
-                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             monitor_result = cursor.fetchone()
             
@@ -5110,8 +5136,8 @@ def get_verification_period_seconds():
                 return 15
             
             # Get the verification_period_seconds from the monitor
-            cursor.execute("""
-                SELECT verification_period_seconds FROM users.monitor_list_0001 WHERE id = %s
+            cursor.execute(f"""
+                SELECT verification_period_seconds FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
             """, (ctx_mid(),))
             result = cursor.fetchone()
             
@@ -5134,7 +5160,7 @@ def get_stop_loss_price():
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             cursor.execute(
-                "SELECT stop_loss_price FROM users.monitor_list_0001 WHERE id = %s",
+                f"SELECT stop_loss_price FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
                 (ctx_mid(),),
             )
             row = cursor.fetchone()

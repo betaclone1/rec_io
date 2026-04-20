@@ -23,6 +23,8 @@ if _project_root not in sys.path:
 os.chdir(_project_root)
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
+from backend.core.tenant_legacy_sql import legacy_users_trades_simulated
 
 
 def main():
@@ -32,28 +34,33 @@ def main():
         sys.exit(1)
     try:
         with conn.cursor() as cur:
+            sim = legacy_users_trades_simulated(effective_tenant_context_for_sql_rewrite().user_no)
             # Count duplicates (rows that are not the minimum id for their date+contract)
-            cur.execute("""
-                SELECT COUNT(*) FROM users.trades_simulated_0001 t1
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM {sim} t1
                 WHERE EXISTS (
-                    SELECT 1 FROM users.trades_simulated_0001 t2
+                    SELECT 1 FROM {sim} t2
                     WHERE t2.date IS NOT DISTINCT FROM t1.date
                       AND t2.contract IS NOT DISTINCT FROM t1.contract
                       AND t2.id < t1.id
                 )
-            """)
+            """
+            )
             to_delete = cur.fetchone()[0]
             if to_delete == 0:
                 print("No duplicate rows (by date, contract) found.")
                 return
             # Delete all but the earliest (min id) per (date, contract)
-            cur.execute("""
-                DELETE FROM users.trades_simulated_0001 t1
-                USING users.trades_simulated_0001 t2
+            cur.execute(
+                f"""
+                DELETE FROM {sim} t1
+                USING {sim} t2
                 WHERE t2.date IS NOT DISTINCT FROM t1.date
                   AND t2.contract IS NOT DISTINCT FROM t1.contract
                   AND t2.id < t1.id
-            """)
+            """
+            )
             deleted = cur.rowcount
         conn.commit()
         print(f"Deleted {deleted} duplicate row(s). Kept earliest trade per (date, contract).")

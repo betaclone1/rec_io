@@ -20,6 +20,8 @@ import sys
 # Use project DB config
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 
 def round_up_cents(dollars: float) -> float:
@@ -39,21 +41,24 @@ def estimate_kalshi_taker_fee(position: int, price: float) -> float:
 
 def main():
     parser = argparse.ArgumentParser(description="Sample live trades with fees for fee-formula validation")
+    add_user_no_argument(parser)
     parser.add_argument("--limit", type=int, default=30, help="Max number of trades to sample (default 30)")
     parser.add_argument("--seed", type=int, default=None, help="Random seed for reproducible sample")
     parser.add_argument("--no-random", action="store_true", help="Take first N by id instead of random sample")
     args = parser.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database. Set DB_HOST, DB_NAME, DB_USER, DB_PASSWORD (or REC_DB_*) for production.")
         sys.exit(1)
 
     # Live trades only (paper_trade = false), closed/expired, with non-null positive fees.
     # Position >= 100 only: small positions (e.g. single contracts) break down with the fee formula.
-    query = """
+    query = f"""
     SELECT id, buy_price, position, sell_price, fees, pnl, close_method, status, ticker, date, created_at
-    FROM users.trades_0001
+    FROM {trades_t}
     WHERE (paper_trade IS NULL OR paper_trade = false)
       AND status IN ('closed', 'expired')
       AND fees IS NOT NULL AND fees > 0

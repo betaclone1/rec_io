@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Backfill users.trades_0001 volatility, volatility_percentile, movement, movement_percentile
+Backfill ``users.trades_<slot>`` volatility, volatility_percentile, movement, movement_percentile
 from historical_data.{btc|eth}_price_history using the top-of-minute EST timestamp for each trade.
 
 Symbol on the trade row determines the table (BTC -> btc_price_history, ETH -> eth_price_history).
@@ -8,6 +8,7 @@ Historical price timestamps are EST (stored as timestamp without time zone).
 
 Run from repo root: python3 scripts/backfill_trades_volatility_movement.py
 """
+import argparse
 import os
 import sys
 from datetime import datetime, date, time
@@ -58,7 +59,13 @@ def _symbol_to_table(symbol):
 
 
 def main():
-    conn = get_postgresql_connection()
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_user_no_argument(parser)
+    args = parser.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Cannot connect to PostgreSQL")
         return 1
@@ -66,9 +73,10 @@ def main():
     cur = conn.cursor()
 
     # Trades that need backfill: symbol is BTC or ETH and at least one of the four columns is null
-    cur.execute("""
+    cur.execute(
+        f"""
         SELECT id, symbol, date, time
-        FROM users.trades_0001
+        FROM {trades_t}
         WHERE symbol IS NOT NULL
           AND UPPER(TRIM(symbol)) IN ('BTC', 'ETH')
           AND (
@@ -78,7 +86,8 @@ def main():
               OR movement_percentile IS NULL
           )
         ORDER BY id
-    """)
+    """
+    )
     rows = cur.fetchall()
     if not rows:
         print("No trades need backfill.")
@@ -119,8 +128,8 @@ def main():
         vol, vol_pct, mov, mov_pct = hist
         try:
             cur.execute(
-                """
-                UPDATE users.trades_0001
+                f"""
+                UPDATE {trades_t}
                 SET volatility = COALESCE(%s, volatility),
                     volatility_percentile = COALESCE(%s, volatility_percentile),
                     movement = COALESCE(%s, movement),

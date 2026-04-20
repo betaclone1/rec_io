@@ -24,7 +24,7 @@ So when the ticker is missing from the Kalshi market snapshot, ATS skips the upd
 
 ## 1. What monitor_confirmed means
 
-- **Source of truth:** `users.trades_0001.monitor_confirmed` (boolean).
+- **Source of truth:** `users.trades_<slot>.monitor_confirmed` (boolean).
 - **Set when:** On trade close (and on expiration), in `trade_manager.update_trade_status_with_ret_pct()` (and in the 5‑min expiration job).
 - **Rule:** `monitor_confirmed = (high_price != low_price)`. So:
   - **TRUE** when ATS successfully tracked the trade and updated `high_price` / `low_price` (they diverge over the trade’s life).
@@ -44,7 +44,7 @@ So an increase in `monitor_confirmed = FALSE` means either:
 ### 2.1 Trade lifecycle and ATS
 
 1. **Trade created**  
-   `trade_manager` inserts into `users.trades_0001` with `status = 'pending'` and a `monitor` (e.g. `mon_0001_10026`).
+   `trade_manager` inserts into `users.trades_<slot>` with `status = 'pending'` and a `monitor` (e.g. `mon_0001_10026`).
 
 2. **Notification "pending"**  
    `trade_manager` calls `notify_active_trade_supervisor_direct(trade_id, ticket_id, "pending")`:
@@ -125,7 +125,7 @@ So high/low are read **before** ATS is told to remove the trade — no race on r
    - Query:
      ```sql
      SELECT id, monitor, trade_strategy, ticker, high_price, low_price, monitor_confirmed, closed_at
-     FROM users.trades_0001
+     FROM users.trades_<slot>
      WHERE status = 'closed' AND monitor_confirmed = FALSE
      ORDER BY closed_at DESC
      LIMIT 50;

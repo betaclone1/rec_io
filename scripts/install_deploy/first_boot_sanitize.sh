@@ -75,6 +75,8 @@ perform_sanitization() {
     fi
     
     cd "$PROJECT_ROOT"
+
+    REC_SLOT="${REC_USER_NO:-${REC_DEFAULT_LOGIN_USER_NO:-0001}}"
     
     # Stop all services first
     print_status "Stopping all services..."
@@ -86,22 +88,22 @@ perform_sanitization() {
     # Clear all user-specific data from database
     print_status "Clearing user data from database..."
     if command -v psql &> /dev/null; then
-        PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF' 2>/dev/null || true
+        PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db <<SQL_EOF 2>/dev/null || true
             -- Clear all user-specific data
-            DELETE FROM users.trades_0001;
-            DELETE FROM users.active_trades_0001;
-            DELETE FROM users.fills_0001;
-            DELETE FROM users.settlements_0001;
-            DELETE FROM users.positions_0001;
-            DELETE FROM users.trade_preferences_0001;
-            DELETE FROM users.orders_0001;
-            DELETE FROM users.account_balance_0001;
-            DELETE FROM users.watchlist_0001;
-            DELETE FROM users.auto_trade_settings_0001;
+            DELETE FROM users.trades_${REC_SLOT};
+            DELETE FROM users.active_trades_${REC_SLOT};
+            DELETE FROM users.fills_${REC_SLOT};
+            DELETE FROM users.settlements_${REC_SLOT};
+            DELETE FROM users.positions_${REC_SLOT};
+            DELETE FROM users.trade_preferences_${REC_SLOT};
+            DELETE FROM users.orders_${REC_SLOT};
+            DELETE FROM users.account_balance_${REC_SLOT};
+            DELETE FROM users.watchlist_${REC_SLOT};
+            DELETE FROM users.auto_trade_settings_${REC_SLOT};
             
-            -- Recreate auto_trade_settings_0001 with SAFE defaults (both OFF)
+            -- Recreate auto_trade_settings with SAFE defaults (both OFF)
             -- CRITICAL: auto_entry=FALSE and auto_stop=FALSE for security
-            INSERT INTO users.auto_trade_settings_0001 (
+            INSERT INTO users.auto_trade_settings_${REC_SLOT} (
                 id, auto_entry, auto_stop, min_probability, min_differential, min_time, max_time, 
                 allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, 
                 spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, 
@@ -109,18 +111,18 @@ perform_sanitization() {
                 auto_entry_status, user_id, cooldown_timer, created_at, updated_at
             ) VALUES (
                 1, FALSE, FALSE, 95, 0.25, 120, 900, FALSE, TRUE, 36, 30, 15, 40, 60, TRUE, 36, 
-                'disabled', '0001', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
+                'disabled', '${REC_SLOT}', 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP
             );
             
             -- Reset sequences
-            ALTER SEQUENCE users.trades_0001_id_seq1 RESTART WITH 1;
-            ALTER SEQUENCE users.fills_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.settlements_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.positions_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.orders_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.account_balance_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.watchlist_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.auto_trade_settings_0001_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.trades_${REC_SLOT}_id_seq1 RESTART WITH 1;
+            ALTER SEQUENCE users.fills_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.settlements_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.positions_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.orders_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.account_balance_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.watchlist_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.auto_trade_settings_${REC_SLOT}_id_seq RESTART WITH 1;
             
             -- Clear system health data
             DELETE FROM system.health_status;

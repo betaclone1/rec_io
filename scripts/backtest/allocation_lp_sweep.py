@@ -36,6 +36,19 @@ if _PROJECT_ROOT not in sys.path:
 from scripts.backtest.helpers.db import get_connection
 from scripts.backtest.helpers.monitor_context import is_cycle_based_strategy
 
+from backend.core.port_config import default_pool_user_number
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list, legacy_users_trades
+from backend.trading_mode import _norm_slot
+
+
+def _tenant_slot_from_monitor_key(mon: str) -> str:
+    s = str(mon or "").strip()
+    if not s.startswith("mon_"):
+        return _norm_slot(default_pool_user_number())
+    rest = s[4:]
+    slot, _, _ = rest.partition("_")
+    return _norm_slot(slot) if slot else _norm_slot(default_pool_user_number())
+
 
 def _parse_spec(raw: str) -> tuple[str, int, int, int, int]:
     parts = [p.strip() for p in raw.split(":")]
@@ -75,14 +88,17 @@ def main() -> int:
     try:
         with conn.cursor() as cur:
             mon_ids = [int(m.split("_")[-1]) for m in monitors]
-            cur.execute("SELECT id, strategy FROM users.monitor_list_0001 WHERE id = ANY(%s)", (mon_ids,))
+            slot = _tenant_slot_from_monitor_key(monitors[0])
+            ml = legacy_users_monitor_list(slot)
+            tr = legacy_users_trades(slot)
+            cur.execute(f"SELECT id, strategy FROM {ml} WHERE id = ANY(%s)", (mon_ids,))
             strat_rows = cur.fetchall()
             strat_by_id = {int(r[0]): (r[1] or "") for r in strat_rows}
 
             cur.execute(
-                """
+                f"""
                 SELECT id, monitor, created_at, date, time, ticker, contract, status, buy_price, sell_price, win_loss
-                FROM users.trades_0001
+                FROM {tr}
                 WHERE monitor = ANY(%s)
                   AND created_at >= %s
                 ORDER BY created_at ASC, id ASC

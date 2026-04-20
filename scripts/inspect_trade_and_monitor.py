@@ -14,6 +14,7 @@ if _project_root not in sys.path:
 os.chdir(_project_root)
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list, legacy_users_trades
 from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 
@@ -26,6 +27,8 @@ def main():
     trade_id = args.trade_id
     monitor_id = args.monitor_id
     user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+    monitor_t = legacy_users_monitor_list(user_no)
 
     conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
@@ -34,14 +37,17 @@ def main():
 
     try:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                f"""
                 SELECT id, status, date, time, symbol, exchange, trade_strategy, contract, strike, side,
                        entry_method, monitor, paper_trade, ticket_id
-                FROM users.trades_0001 WHERE id = %s
-            """, (trade_id,))
+                FROM {trades_t} WHERE id = %s
+            """,
+                (trade_id,),
+            )
             row = cur.fetchone()
         if not row:
-            print(f"Trade {trade_id} not found in users.trades_0001")
+            print(f"Trade {trade_id} not found in {trades_t}")
             sys.exit(1)
 
         cols = ["id", "status", "date", "time", "symbol", "exchange", "trade_strategy", "contract", "strike", "side",
@@ -63,20 +69,23 @@ def main():
         look_id = monitor_id if monitor_id is not None else mon_from_trade
         if look_id is not None:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    f"""
                     SELECT id, name, symbol, strategy, market, paper_trade, auto_trade, status
-                    FROM users.monitor_list_0001 WHERE id = %s
-                """, (look_id,))
+                    FROM {monitor_t} WHERE id = %s
+                """,
+                    (look_id,),
+                )
                 mrow = cur.fetchone()
             if mrow:
                 mcols = ["id", "name", "symbol", "strategy", "market", "paper_trade", "auto_trade", "status"]
-                print("\n--- Monitor (monitor_list_0001) ---")
+                print(f"\n--- Monitor ({monitor_t}) ---")
                 for c, v in zip(mcols, mrow):
                     print(f"  {c}: {v}")
                 if row[6] != mrow[3]:  # trade_strategy != monitor strategy
                     print(f"\n  >>> MISMATCH: trade.trade_strategy = {row[6]!r}  vs  monitor.strategy = {mrow[3]!r}")
             else:
-                print(f"\nMonitor id {look_id} not found in users.monitor_list_0001")
+                print(f"\nMonitor id {look_id} not found in {monitor_t}")
     finally:
         conn.close()
 

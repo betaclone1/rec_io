@@ -1,5 +1,5 @@
 """
-Insert synthetic sweep trades into ``backtest.grid_sweep_trades`` (mirror of ``users.trades_0001``).
+Insert synthetic sweep trades into ``backtest.grid_sweep_trades`` (mirror of ``users.trades_<slot>``).
 
 Requires migration ``20260416_1015_backtest_grid_sweep_trades`` applied.
 """

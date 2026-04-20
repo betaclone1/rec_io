@@ -3495,7 +3495,7 @@
             }, 800);
         }
 
-        // /ws/db_changes: stream "trades" for users.trades_0001 (no interval polling)
+        // /ws/db_changes: stream "trades" for legacy users.trades_<slot> (rewritten per tenant; no interval polling)
         function setupTradeHistoryWebSocket() {
             if (window.TRADE_HISTORY_MOBILE_PAUSED) return;
             if (window._thmDbChangesWs) {

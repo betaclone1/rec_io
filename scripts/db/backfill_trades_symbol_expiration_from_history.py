@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-One-time backfill: users.trades_0001.symbol_expiration from historical_data.*_price_history,
+One-time backfill: ``users.trades_<slot>``.symbol_expiration from historical_data.*_price_history,
 then win_loss_confirmed using the same strike/side/spot rules as backend/trade_manager.py (inlined here).
 
 Cycle end time (US Eastern wall time, naive — matches price_history.timestamp):
@@ -36,6 +36,8 @@ PROJECT_ROOT = os.path.dirname(SCRIPTS_DIR)
 sys.path.insert(0, PROJECT_ROOT)
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 # Keep in sync with backend/trade_manager.py (avoid importing trade_manager: pulls requests, etc.)
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
@@ -225,20 +227,23 @@ def main() -> int:
         help="Overwrite existing symbol_expiration (still needs history bar).",
     )
     ap.add_argument("--limit", type=int, default=0, help="Max trades to process (0 = all).")
+    add_user_no_argument(ap)
     args = ap.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Cannot connect to PostgreSQL")
         return 1
 
     cur = conn.cursor()
     cur.execute(
-        """
+        f"""
         SELECT id, symbol, date, contract, trade_strategy, ticker,
                COALESCE(market, 'hourly') AS market_col,
                strike, side, win_loss, symbol_expiration, win_loss_confirmed
-        FROM users.trades_0001
+        FROM {trades_t}
         ORDER BY id
         """
     )
@@ -282,8 +287,8 @@ def main() -> int:
                             print(f"[dry-run] id={tid} win_loss_confirmed-only {wlc} (existing symbol_expiration)")
                         else:
                             cur.execute(
-                                """
-                                UPDATE users.trades_0001
+                                f"""
+                                UPDATE {trades_t}
                                 SET win_loss_confirmed = COALESCE(%s, win_loss_confirmed)
                                 WHERE id = %s
                                 """,
@@ -333,8 +338,8 @@ def main() -> int:
         else:
             try:
                 cur.execute(
-                    """
-                    UPDATE users.trades_0001
+                    f"""
+                    UPDATE {trades_t}
                     SET symbol_expiration = %s,
                         win_loss_confirmed = COALESCE(%s, win_loss_confirmed)
                     WHERE id = %s

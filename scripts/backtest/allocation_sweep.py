@@ -32,6 +32,7 @@ _PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(
 if _PROJECT_ROOT not in sys.path:
     sys.path.insert(0, _PROJECT_ROOT)
 
+from scripts.backtest.helpers.constants import TRADES_TABLE
 from scripts.backtest.helpers.db import get_connection
 from scripts.backtest.helpers.hypothetical_trades import recompute_closed_trade_hypothetical
 
@@ -54,10 +55,10 @@ def _load_closed_rows(monitors: list[str], start_iso: str) -> list[dict[str, Any
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT id, monitor, created_at, date, time, ticker, status,
                        buy_price, sell_price, side, fees, pnl, strike, symbol_open, symbol_close, win_loss
-                FROM users.trades_0001
+                FROM {TRADES_TABLE}
                 WHERE monitor = ANY(%s)
                   AND created_at >= %s
                 ORDER BY created_at ASC, id ASC

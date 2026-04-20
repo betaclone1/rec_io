@@ -19,22 +19,23 @@ PROJECT_ROOT = os.path.dirname(os.path.dirname(SCRIPT_DIR))
 if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
+from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
+
 LOG_FILE = os.path.join(SCRIPT_DIR, "monitor_confirmed_failures_log.txt")
 
 
 def main():
     ap = argparse.ArgumentParser(description="Report monitor_confirmed=FALSE trades")
+    add_user_no_argument(ap)
     ap.add_argument("--days", type=int, default=7, help="Lookback days (default 7)")
     ap.add_argument("--append-log", action="store_true", help="Append one-line summary to log file")
     args = ap.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
 
-    try:
-        from backend.core.config.database import get_postgresql_connection
-    except Exception as e:
-        print(f"Failed to import DB config: {e}", file=sys.stderr)
-        sys.exit(1)
-
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("No database connection.", file=sys.stderr)
         sys.exit(1)
@@ -42,9 +43,9 @@ def main():
     cutoff = (datetime.now(ZoneInfo("America/New_York")) - timedelta(days=args.days)).strftime("%Y-%m-%d")
     with conn.cursor() as cur:
         cur.execute(
-            """
+            f"""
             SELECT id, monitor, trade_strategy, high_price, low_price, ticker, closed_at, date
-            FROM users.trades_0001
+            FROM {trades_t}
             WHERE status = %s AND monitor_confirmed = %s AND date >= %s
             ORDER BY date, closed_at, id
             """,

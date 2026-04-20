@@ -18,7 +18,7 @@ This document is the single source of truth for:
 - **How they get populated:** Analytics pipeline (update price logs → generate profiles → assign percentiles). Movement is computed from (H-L)/O and rolling windows; movement_percentile is assigned from `analytics.{symbol}_movement_profile`.
 - **Timezone:** All historical price timestamps are **EST** (stored as `timestamp without time zone`).
 
-### 1.2 Trades table (users.trades_0001)
+### 1.2 Trades table (users.trades_<slot>)
 
 - **New columns added:** `volatility`, `movement`, `movement_percentile`.
 - **Existing columns:** `momentum`, `momentum_percentile`, `volatility_percentile`, plus all other trade fields.
@@ -29,7 +29,7 @@ This document is the single source of truth for:
 ### 1.3 Backfill logic
 
 - **Source:** `historical_data.btc_price_history` and `historical_data.eth_price_history`.
-- **Target:** `users.trades_0001` columns `volatility`, `volatility_percentile`, `movement`, `movement_percentile`.
+- **Target:** `users.trades_<slot>` columns `volatility`, `volatility_percentile`, `movement`, `movement_percentile`.
 - **Rule:** For each trade, use `symbol` (BTC or ETH), `date`, and `time` (EST). Build the **top-of-minute** timestamp (e.g. 14:32:45 → 14:32:00). Look up that minute in the corresponding historical table and copy the four values into the trade row. Trades with no matching historical row (e.g. outside data range) are skipped.
 
 ### 1.4 Live price log tables (1s) — movement columns
@@ -72,12 +72,12 @@ This document is the single source of truth for:
 
 ### 2.3 Trades table: the three new columns (reference)
 
-For `users.trades_0001`, the migration in `database.py` adds these if they do not exist:
+For `users.trades_<slot>`, the migration in `database.py` adds these if they do not exist:
 
 ```sql
-ALTER TABLE users.trades_0001 ADD COLUMN volatility NUMERIC(10,4);
-ALTER TABLE users.trades_0001 ADD COLUMN movement NUMERIC(10,4);
-ALTER TABLE users.trades_0001 ADD COLUMN movement_percentile NUMERIC(5,1);
+ALTER TABLE users.trades_<slot> ADD COLUMN volatility NUMERIC(10,4);
+ALTER TABLE users.trades_<slot> ADD COLUMN movement NUMERIC(10,4);
+ALTER TABLE users.trades_<slot> ADD COLUMN movement_percentile NUMERIC(5,1);
 ```
 
 The same types are in the CREATE TABLE block for new installs.
@@ -97,7 +97,7 @@ The same types are in the CREATE TABLE block for new installs.
 
 ### 3.2 What the script does
 
-1. Selects from `users.trades_0001` all rows where:
+1. Selects from `users.trades_<slot>` all rows where:
    - `symbol` is BTC or ETH (case-insensitive),
    - and at least one of `volatility`, `volatility_percentile`, `movement`, `movement_percentile` is NULL.
 2. For each such row:
@@ -139,16 +139,16 @@ print('OK:', ok, msg)
 "
 ```
 
-This runs all migrations in `database.py`, including: new columns on `users.trades_0001`; movement columns on live 1s price log tables; volatility and movement columns on strike tables (btc, eth, spx, ndx). If columns already exist, the migration block does nothing.
+This runs all migrations in `database.py`, including: new columns on `users.trades_<slot>`; movement columns on live 1s price log tables; volatility and movement columns on strike tables (btc, eth, spx, ndx). If columns already exist, the migration block does nothing.
 
 **Option 2 — Add columns manually**  
 If you cannot run Python or prefer SQL only, connect to the production DB and run:
 
 ```sql
 -- Only run each if the column does not exist (check information_schema or run one-by-one and ignore “already exists” errors).
-ALTER TABLE users.trades_0001 ADD COLUMN IF NOT EXISTS volatility NUMERIC(10,4);
-ALTER TABLE users.trades_0001 ADD COLUMN IF NOT EXISTS movement NUMERIC(10,4);
-ALTER TABLE users.trades_0001 ADD COLUMN IF NOT EXISTS movement_percentile NUMERIC(5,1);
+ALTER TABLE users.trades_<slot> ADD COLUMN IF NOT EXISTS volatility NUMERIC(10,4);
+ALTER TABLE users.trades_<slot> ADD COLUMN IF NOT EXISTS movement NUMERIC(10,4);
+ALTER TABLE users.trades_<slot> ADD COLUMN IF NOT EXISTS movement_percentile NUMERIC(5,1);
 ```
 
 (If your Postgres version does not support `ADD COLUMN IF NOT EXISTS`, check for the column in `information_schema.columns` first, then run the corresponding `ALTER TABLE ... ADD COLUMN ...` only when missing.)
@@ -175,7 +175,7 @@ python3 scripts/db/backfill_trades_volatility_movement.py
 - Spot-check a few trades that should have been updated:
   ```sql
   SELECT id, symbol, date, time, volatility, volatility_percentile, movement, movement_percentile
-  FROM users.trades_0001
+  FROM users.trades_<slot>
   WHERE symbol IN ('BTC', 'ETH')
   ORDER BY id DESC
   LIMIT 20;

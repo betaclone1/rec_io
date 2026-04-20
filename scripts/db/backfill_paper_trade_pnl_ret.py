@@ -22,25 +22,32 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 from psycopg2 import extras
 
 
 def main():
     parser = argparse.ArgumentParser(description="Backfill paper trade pnl, ret_pct, win_loss")
+    add_user_no_argument(parser)
     parser.add_argument("--dry-run", action="store_true", help="Do not UPDATE; only report")
     args = parser.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database.")
         sys.exit(1)
 
     with conn.cursor() as cur:
-        cur.execute("""
+        cur.execute(
+            f"""
             SELECT id, buy_price, position, sell_price, fees, bankroll, monitor, contract, date
-            FROM users.trades_0001
+            FROM {trades_t}
             WHERE paper_trade = TRUE AND sell_price IS NOT NULL
-        """)
+        """
+        )
         rows = cur.fetchall()
 
     if not rows:
@@ -87,8 +94,8 @@ def main():
     with conn.cursor() as cur:
         extras.execute_values(
             cur,
-            """
-            UPDATE users.trades_0001 AS t
+            f"""
+            UPDATE {trades_t} AS t
             SET pnl = v.pnl, ret_pct = v.ret_pct, win_loss = v.win_loss
             FROM (VALUES %s) AS v(id, pnl, ret_pct, win_loss)
             WHERE t.id = v.id::bigint AND t.paper_trade = TRUE
@@ -104,9 +111,9 @@ def main():
     with conn.cursor() as cur:
         for monitor, contract, date in cycles_seen:
             cur.execute(
-                """
+                f"""
                 SELECT SUM(pnl) AS total_pnl, SUM(ret_pct) AS total_ret_pct
-                FROM users.trades_0001
+                FROM {trades_t}
                 WHERE monitor = %s AND contract = %s AND date = %s
                   AND status IN ('closed', 'expired')
                   AND pnl IS NOT NULL AND ret_pct IS NOT NULL
@@ -119,8 +126,8 @@ def main():
             total_pnl, total_ret_pct = row[0], row[1]
             cycle_win_loss = "W" if total_pnl > 0 else "L"
             cur.execute(
-                """
-                UPDATE users.trades_0001
+                f"""
+                UPDATE {trades_t}
                 SET cycle_pnl = %s, cycle_ret_pct = %s, cycle_win_loss = %s
                 WHERE monitor = %s AND contract = %s AND date = %s AND status IN ('closed', 'expired')
                 """,

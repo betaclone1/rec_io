@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Restore users.monitor_list_0001 paper_trade and test_filter from the drawdown halt snapshot.
+Restore ``users.monitor_list_<slot>`` paper_trade and test_filter from the drawdown halt snapshot.
 
-Default source: users.system_settings_0001.drawdown_halt_monitor_snapshot (JSONB), written by
+Default source: ``users.system_settings_<slot>``.drawdown_halt_monitor_snapshot (JSONB), written by
 MonitorManager.apply_drawdown_emergency_monitor_halt.
 
 Usage (from project root):
@@ -50,6 +50,7 @@ def main() -> int:
         help="Apply snapshot, set trading_halt_active false, and clear JSONB column (matches API restore).",
     )
     args = parser.parse_args()
+    user_no = resolve_user_no(args)
 
     from backend.core.drawdown_emergency_restore import (
         validate_drawdown_monitor_snapshot,
@@ -61,7 +62,7 @@ def main() -> int:
             return 1
         from backend.core.system_settings_store import restore_trade_operations_from_snapshot
 
-        ok, msg, n = restore_trade_operations_from_snapshot("0001")
+        ok, msg, n = restore_trade_operations_from_snapshot(user_no)
         if not ok:
             print(msg, file=sys.stderr)
             return 1
@@ -108,13 +109,13 @@ def main() -> int:
         from backend.core.system_settings_store import _settings_table_ident
         from psycopg2 import sql
 
-        conn = get_postgresql_connection()
+        conn = get_postgresql_connection(tenant_user_no=user_no)
         if not conn:
             print("database connection failed", file=sys.stderr)
             return 1
         try:
             with conn.cursor() as cursor:
-                ident = _settings_table_ident("0001")
+                ident = _settings_table_ident(user_no)
                 cursor.execute(
                     sql.SQL(
                         "SELECT drawdown_halt_monitor_snapshot FROM {} WHERE id = 1"
@@ -149,7 +150,7 @@ def main() -> int:
 
     from backend.core.drawdown_emergency_restore import restore_monitors_from_db_snapshot_only
 
-    ok, msg, n = restore_monitors_from_db_snapshot_only(user_number="0001")
+    ok, msg, n = restore_monitors_from_db_snapshot_only(user_number=user_no)
     if not ok:
         print(msg, file=sys.stderr)
         return 1

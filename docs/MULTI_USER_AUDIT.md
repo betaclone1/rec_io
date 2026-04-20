@@ -37,13 +37,13 @@ Inventory of tenant-scoped vs global references. Generated for the siloed-schema
 
 | File | Issue |
 |------|--------|
-| [`scripts/config/generate_unified_supervisor_config.py`](scripts/config/generate_unified_supervisor_config.py) | Queries `users.monitor_list_0001` only; must loop active tenants and set `REC_USER_SCHEMA` / `REC_USER_NO` per program block |
+| [`scripts/config/generate_unified_supervisor_config.py`](scripts/config/generate_unified_supervisor_config.py) | Queries a single tenant `monitor_list` only; must loop active tenants and set `REC_USER_SCHEMA` / `REC_USER_NO` per program block |
 
 ## NOTIFY / realtime
 
 | Artifact | Notes |
 |----------|--------|
-| [`scripts/migrations/20260401_1600_trades_0001_rec_io_db_notify.up.sql`](../scripts/migrations/20260401_1600_trades_0001_rec_io_db_notify.up.sql) | Trigger on `users.trades_0001`; after schema rename becomes `users_0001.trades_0001` |
+| [`scripts/migrations/20260401_1600_trades_0001_rec_io_db_notify.up.sql`](../scripts/migrations/20260401_1600_trades_0001_rec_io_db_notify.up.sql) | Trigger on legacy `users.trades_<slot>` (migration-era name); runtime uses `users_<slot>.trades_<slot>` |
 | [`backend/redis_switchboard.py`](backend/redis_switchboard.py) | Single `LISTEN` channel; payload should include `pg_schema` or `user_no` for WS fanout filtering |
 | [`backend/core/stream_registry.py`](backend/core/stream_registry.py) | Document per-tenant stream naming where applicable |
 

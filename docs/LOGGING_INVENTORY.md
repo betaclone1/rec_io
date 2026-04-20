@@ -44,7 +44,7 @@ Inventory of what each script logs and where. Used for the logging audit (see `d
 |--------|---------|
 | **Mechanism** | `log_event(ticket_id, message, trade_id=None)` → `print(log_message, flush=True)` + `log_trade_event(..., service="trade_executor")` to PostgreSQL. |
 | **Destination** | stdout → supervisor; PostgreSQL (trade/event log). |
-| **Volume** | Low; one sequence per trade attempt (RECEIVED TICKET, CREDENTIALS, REQUEST, RESPONSE, SUCCESS/REJECTED). All lines include **trade_id=X** (hero id from users.trades_0001) when present so the full pipeline is traceable by id. |
+| **Volume** | Low; one sequence per trade attempt (RECEIVED TICKET, CREDENTIALS, REQUEST, RESPONSE, SUCCESS/REJECTED). All lines include **trade_id=X** (hero id from users.trades_<slot>) when present so the full pipeline is traceable by id. |
 | **Notable** | trade_manager now inserts the trade row before calling the executor (opens) so executor always receives and logs the hero id; closes already sent id. Rejection log (see below) for liquidity ceiling tracking. |
 | **Extra files** | `logs/insufficient_resting_volume_rejections.jsonl` — see below. |
 

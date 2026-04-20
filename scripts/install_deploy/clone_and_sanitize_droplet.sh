@@ -244,9 +244,11 @@ create_new_droplet() {
 sanitize_user_data() {
     print_status "Sanitizing user data on new droplet..."
     
+    REC_SLOT="${REC_USER_NO:-${REC_DEFAULT_LOGIN_USER_NO:-0001}}"
     # Connect to new droplet and sanitize data
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 root@"$NEW_DROPLET_IP" << 'SANITIZE_EOF'
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 root@"$NEW_DROPLET_IP" env REC_SLOT="$REC_SLOT" bash -s <<'SANITIZE_EOF'
         set -e
+        export REC_SLOT="${REC_SLOT:-0001}"
         
         echo "Starting data sanitization..."
         
@@ -259,28 +261,28 @@ sanitize_user_data() {
         
         # Clear all user-specific data from database
         echo "Clearing user data from database..."
-        PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF'
+        PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db <<SQL
             -- Clear all user-specific data
-            DELETE FROM users.trades_0001;
-            DELETE FROM users.active_trades_0001;
-            DELETE FROM users.fills_0001;
-            DELETE FROM users.settlements_0001;
-            DELETE FROM users.positions_0001;
-            DELETE FROM users.trade_preferences_0001;
-            DELETE FROM users.orders_0001;
-            DELETE FROM users.account_balance_0001;
-            DELETE FROM users.watchlist_0001;
-            DELETE FROM users.auto_trade_settings_0001;
+            DELETE FROM users.trades_${REC_SLOT};
+            DELETE FROM users.active_trades_${REC_SLOT};
+            DELETE FROM users.fills_${REC_SLOT};
+            DELETE FROM users.settlements_${REC_SLOT};
+            DELETE FROM users.positions_${REC_SLOT};
+            DELETE FROM users.trade_preferences_${REC_SLOT};
+            DELETE FROM users.orders_${REC_SLOT};
+            DELETE FROM users.account_balance_${REC_SLOT};
+            DELETE FROM users.watchlist_${REC_SLOT};
+            DELETE FROM users.auto_trade_settings_${REC_SLOT};
             
             -- Reset sequences
-            ALTER SEQUENCE users.trades_0001_id_seq1 RESTART WITH 1;
-            ALTER SEQUENCE users.fills_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.settlements_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.positions_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.orders_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.account_balance_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.watchlist_0001_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.auto_trade_settings_0001_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.trades_${REC_SLOT}_id_seq1 RESTART WITH 1;
+            ALTER SEQUENCE users.fills_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.settlements_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.positions_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.orders_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.account_balance_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.watchlist_${REC_SLOT}_id_seq RESTART WITH 1;
+            ALTER SEQUENCE users.auto_trade_settings_${REC_SLOT}_id_seq RESTART WITH 1;
             
             -- Clear system health data
             DELETE FROM system.health_status;
@@ -293,20 +295,20 @@ sanitize_user_data() {
             DELETE FROM live_data.market_data;
             DELETE FROM live_data.websocket_market_data;
             DELETE FROM live_data.btc_live_strikes;
-SQL_EOF
+SQL
         
         # Remove all user credential files
         echo "Removing user credentials..."
-        rm -rf /opt/rec_io/backend/data/users/user_0001/credentials/*
+        rm -rf "/opt/rec_io/backend/data/users/user_${REC_SLOT}/credentials/"*
         rm -rf /opt/rec_io/backend/api/kalshi-api/kalshi-credentials/*
         
         # Remove user-specific files
         echo "Removing user-specific files..."
-        rm -f /opt/rec_io/backend/data/users/user_0001/user_info.json
-        rm -f /opt/rec_io/backend/data/users/user_0001/preferences/*
-        rm -f /opt/rec_io/backend/data/users/user_0001/trade_history/*
-        rm -f /opt/rec_io/backend/data/users/user_0001/active_trades/*
-        rm -f /opt/rec_io/backend/data/users/user_0001/accounts/*
+        rm -f "/opt/rec_io/backend/data/users/user_${REC_SLOT}/user_info.json"
+        rm -f "/opt/rec_io/backend/data/users/user_${REC_SLOT}/preferences/"*
+        rm -f "/opt/rec_io/backend/data/users/user_${REC_SLOT}/trade_history/"*
+        rm -f "/opt/rec_io/backend/data/users/user_${REC_SLOT}/active_trades/"*
+        rm -f "/opt/rec_io/backend/data/users/user_${REC_SLOT}/accounts/"*
         
         # Clear logs
         echo "Clearing logs..."
@@ -323,8 +325,10 @@ setup_new_user_config() {
     print_status "Setting up new user configuration..."
     
     # Connect to new droplet and set up new user
-    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 root@"$NEW_DROPLET_IP" << 'SETUP_EOF'
+    REC_SLOT="${REC_USER_NO:-${REC_DEFAULT_LOGIN_USER_NO:-0001}}"
+    ssh -o StrictHostKeyChecking=no -o ConnectTimeout=30 root@"$NEW_DROPLET_IP" env REC_SLOT="$REC_SLOT" bash -s <<'SETUP_EOF'
         set -e
+        export REC_SLOT="${REC_SLOT:-0001}"
         
         echo "Setting up new user configuration..."
         cd /opt/rec_io
@@ -402,46 +406,46 @@ EMPTY_PEM_EOF
         
         # Update database to use new user ID
         echo "Updating database for new user ID..."
-        PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << 'DB_UPDATE_EOF'
+        PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db <<DB_UPDATE_EOF
             -- Create new user tables with new user ID
             CREATE TABLE IF NOT EXISTS users.trades_'${NEW_USER_ID#user_}' (
-                LIKE users.trades_0001 INCLUDING ALL
+                LIKE users.trades_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.active_trades_'${NEW_USER_ID#user_}' (
-                LIKE users.active_trades_0001 INCLUDING ALL
+                LIKE users.active_trades_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.fills_'${NEW_USER_ID#user_}' (
-                LIKE users.fills_0001 INCLUDING ALL
+                LIKE users.fills_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.settlements_'${NEW_USER_ID#user_}' (
-                LIKE users.settlements_0001 INCLUDING ALL
+                LIKE users.settlements_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.positions_'${NEW_USER_ID#user_}' (
-                LIKE users.positions_0001 INCLUDING ALL
+                LIKE users.positions_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.trade_preferences_'${NEW_USER_ID#user_}' (
-                LIKE users.trade_preferences_0001 INCLUDING ALL
+                LIKE users.trade_preferences_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.orders_'${NEW_USER_ID#user_}' (
-                LIKE users.orders_0001 INCLUDING ALL
+                LIKE users.orders_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.account_balance_'${NEW_USER_ID#user_}' (
-                LIKE users.account_balance_0001 INCLUDING ALL
+                LIKE users.account_balance_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.watchlist_'${NEW_USER_ID#user_}' (
-                LIKE users.watchlist_0001 INCLUDING ALL
+                LIKE users.watchlist_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.auto_trade_settings_'${NEW_USER_ID#user_}' (
-                LIKE users.auto_trade_settings_0001 INCLUDING ALL
+                LIKE users.auto_trade_settings_${REC_SLOT} INCLUDING ALL
             );
             
             -- Create monitors_list table for new user

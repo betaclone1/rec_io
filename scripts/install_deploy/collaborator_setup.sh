@@ -8,6 +8,8 @@ echo "==========================================================================
 echo "Sanitizing user data..."
 cd /opt/rec_io_server
 
+REC_SLOT="${REC_USER_NO:-${REC_DEFAULT_LOGIN_USER_NO:-0001}}"
+
 # Remove production flag if it exists (new deployments shouldn't have this)
 if [ -f ".production_system" ]; then
     echo "Removing production system flag for new deployment..."
@@ -16,27 +18,27 @@ fi
 
 # Clear database
 echo "Executing database sanitization..."
-PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << 'SQL_EOF'
+PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db <<SQL_EOF
 -- Clear ALL user-specific data
-DELETE FROM users.trades_0001;
-DELETE FROM users.active_trades_0001_10002;
-DELETE FROM users.active_trades_0001_10009;
-DELETE FROM users.active_trades_0001_10014;
-DELETE FROM users.fills_0001;
-DELETE FROM users.settlements_0001;
-DELETE FROM users.positions_0001;
-DELETE FROM users.orders_0001;
-DELETE FROM users.account_balance_0001;
-DELETE FROM users.trade_logs_0001;
-DELETE FROM users.monitor_list_0001;
-DELETE FROM users.dashboard_preferences_0001;
-DELETE FROM users.trade_history_preferences_0001;
+DELETE FROM users.trades_${REC_SLOT};
+DELETE FROM users.active_trades_${REC_SLOT}_10002;
+DELETE FROM users.active_trades_${REC_SLOT}_10009;
+DELETE FROM users.active_trades_${REC_SLOT}_10014;
+DELETE FROM users.fills_${REC_SLOT};
+DELETE FROM users.settlements_${REC_SLOT};
+DELETE FROM users.positions_${REC_SLOT};
+DELETE FROM users.orders_${REC_SLOT};
+DELETE FROM users.account_balance_${REC_SLOT};
+DELETE FROM users.trade_logs_${REC_SLOT};
+DELETE FROM users.monitor_list_${REC_SLOT};
+DELETE FROM users.dashboard_preferences_${REC_SLOT};
+DELETE FROM users.trade_history_preferences_${REC_SLOT};
 
 -- Clear user info (will be updated with new user data later)
-DELETE FROM users.user_info_0001;
+DELETE FROM users.user_info_${REC_SLOT};
 
 -- CRITICAL: Remove master users table and views (system schema; legacy users.* drops kept as no-ops)
-ALTER TABLE users.user_info_0001 DROP CONSTRAINT IF EXISTS user_info_0001_user_no_fkey;
+ALTER TABLE users.user_info_${REC_SLOT} DROP CONSTRAINT IF EXISTS user_info_${REC_SLOT}_user_no_fkey;
 
 DROP VIEW IF EXISTS system.active_master_users CASCADE;
 DROP VIEW IF EXISTS system.recent_master_registrations CASCADE;
@@ -52,9 +54,9 @@ echo "Database sanitization completed"
 
 # Clear old Kalshi credentials
 echo "Clearing old Kalshi credential files..."
-rm -f backend/data/users/user_0001/credentials/kalshi-credentials/prod/.env
-rm -f backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi-auth.txt
-rm -f backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi.pem
+rm -f "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/.env"
+rm -f "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi-auth.txt"
+rm -f "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi.pem"
 rm -f backend/api/kalshi-api/kalshi-credentials/prod/.env
 rm -f backend/api/kalshi-api/kalshi-credentials/prod/kalshi-auth.txt
 rm -f backend/api/kalshi-api/kalshi-credentials/prod/kalshi.pem
@@ -138,11 +140,11 @@ read -p "Press ENTER to continue..."
 echo "Creating new user information and settings in database..."
 PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << SQL_EOF
 -- Create new user info
-INSERT INTO users.user_info_0001 (
+INSERT INTO users.user_info_${REC_SLOT} (
     user_no, user_id, email, first_name, last_name, phone, account_type, 
     created_at, last_login, is_active, password_hash, updated_at
 ) VALUES (
-    '0001', '$NEW_USER_ID', '$NEW_USER_EMAIL', '$NEW_FIRST_NAME', '$NEW_LAST_NAME', '$NEW_USER_PHONE', 
+    '${REC_SLOT}', '$NEW_USER_ID', '$NEW_USER_EMAIL', '$NEW_FIRST_NAME', '$NEW_LAST_NAME', '$NEW_USER_PHONE', 
     'master_admin', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, TRUE, 
     'fallback_hash_$NEW_USER_PASSWORD', CURRENT_TIMESTAMP
 );
@@ -170,14 +172,14 @@ if [ -f "user_data_package_*.tar.gz" ]; then
     
     if [ ! -z "$BACKUP_FILE" ]; then
         # Extract just the trades COPY statement and data
-        grep -A 10000 "COPY users.trades_0001" "$BACKUP_FILE" > trades_import.sql 2>/dev/null
+        grep -A 10000 "COPY users.trades_${REC_SLOT}" "$BACKUP_FILE" > trades_import.sql 2>/dev/null
         
         if [ -s trades_import.sql ]; then
             # Import the trades
             PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db < trades_import.sql
             
             # Count imported trades
-            TRADE_COUNT=$(PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db -t -c "SELECT COUNT(*) FROM users.trades_0001;")
+            TRADE_COUNT=$(PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db -t -c "SELECT COUNT(*) FROM users.trades_${REC_SLOT};")
             echo "✅ Historical trades imported successfully ($TRADE_COUNT trades)"
         else
             echo "⚠️  No trades data found in backup file"
@@ -195,18 +197,18 @@ fi
 
 # Step 5: WRITE THE TWO TEXT FILES
 echo "Writing Kalshi credential files..."
-mkdir -p backend/data/users/user_0001/credentials/kalshi-credentials/prod
+mkdir -p "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod"
 
-echo "email:$KALSHI_EMAIL" > backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi-auth.txt
-echo "key:$KALSHI_API_KEY" >> backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi-auth.txt
+echo "email:$KALSHI_EMAIL" > "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi-auth.txt"
+echo "key:$KALSHI_API_KEY" >> "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi-auth.txt"
 
-echo "$KALSHI_API_SECRET" > backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi.pem
+echo "$KALSHI_API_SECRET" > "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi.pem"
 
-chmod 600 backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi-auth.txt
-chmod 600 backend/data/users/user_0001/credentials/kalshi-credentials/prod/kalshi.pem
+chmod 600 "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi-auth.txt"
+chmod 600 "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/kalshi.pem"
 
 # Create .env file for environment variables
-cat > backend/data/users/user_0001/credentials/kalshi-credentials/prod/.env << EOF
+cat > "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/.env" << EOF
 KALSHI_API_KEY_ID=$KALSHI_API_KEY
 KALSHI_PRIVATE_KEY_PATH=kalshi.pem
 KALSHI_EMAIL=$KALSHI_EMAIL
@@ -217,7 +219,7 @@ mkdir -p backend/api/kalshi-api/kalshi-credentials/prod
 mkdir -p backend/api/kalshi-api/kalshi-credentials/demo
 
 # Copy credentials to system-expected locations
-cp backend/data/users/user_0001/credentials/kalshi-credentials/prod/* backend/api/kalshi-api/kalshi-credentials/prod/
+cp "backend/data/users/user_${REC_SLOT}/credentials/kalshi-credentials/prod/"* backend/api/kalshi-api/kalshi-credentials/prod/
 cp backend/api/kalshi-api/kalshi-credentials/prod/* backend/api/kalshi-api/kalshi-credentials/demo/
 
 echo "Kalshi files written and copied to system locations"

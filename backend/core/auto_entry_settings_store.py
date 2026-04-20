@@ -1,5 +1,5 @@
 """
-Apply unified auto entry / auto stop fields to users.monitor_list_0001.
+Apply unified auto entry / auto stop fields to tenant ``users.monitor_list_<slot>``.
 Used by main_app HTTP and by monitor_manager Redis stream consumer.
 """
 

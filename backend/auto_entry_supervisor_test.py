@@ -127,12 +127,12 @@ def get_monitor_identifier():
     # Fallback to script name parsing
     script_name = os.path.basename(sys.argv[0])
     
-    # Check if script name contains monitor identifier (e.g., auto_entry_supervisor_0001_10001)
+    # Check if script name contains monitor identifier (e.g., auto_entry_supervisor_<slot>_10001)
     if '_' in script_name and script_name.count('_') >= 3:
         parts = script_name.split('_')
         if len(parts) >= 4:
-            user_number = parts[-2]  # 0001
-            monitor_id = parts[-1]   # 10001
+            user_number = parts[-2]  # tenant slot
+            monitor_id = parts[-1]   # monitor id
             return f"{user_number}_{monitor_id}"
     
     # Check command line arguments
@@ -146,6 +146,8 @@ def get_monitor_identifier():
 MONITOR_IDENTIFIER = get_monitor_identifier()
 USER_NUMBER = MONITOR_IDENTIFIER.split('_')[0]
 MONITOR_ID = MONITOR_IDENTIFIER.split('_')[1]
+
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list, legacy_users_trades
 
 print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] 🚀 Monitor-aware supervisor starting")
 print(f"[AUTO_ENTRY_SUPERVISOR_{MONITOR_IDENTIFIER}] User: {USER_NUMBER}, Monitor: {MONITOR_ID}")
@@ -318,7 +320,7 @@ def load_auto_entry_state_from_db():
             # Get monitor's strategy and cooldown state
             cursor.execute("""
                 SELECT strategy, cooldown_start_time, cooldown_timer, updated_at 
-                FROM users.monitor_list_0001 WHERE id = %s
+                FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s
             """, (MONITOR_ID,))
             monitor_result = cursor.fetchone()
             
@@ -328,8 +330,8 @@ def load_auto_entry_state_from_db():
                 # Get cooldown settings and time parameters from monitor
                 cursor.execute("""
                     SELECT spike_alert_cooldown_minutes, min_time, max_time
-                    FROM users.monitor_list_0001 WHERE id = %s
-                """, (MONITOR_IDENTIFIER.split('_')[1],))
+                    FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s
+                f""", (MONITOR_IDENTIFIER.split('_')[1],))
                 strategy_result = cursor.fetchone()
                 
                 if strategy_result:
@@ -351,7 +353,7 @@ def load_auto_entry_state_from_db():
                         
                         # Update cooldown_timer with calculated remaining seconds (monitor_list is now single source of truth)
                         cursor.execute(
-                            "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            f"UPDATE {legacy_users_monitor_list(USER_NUMBER)} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                             (int(remaining_seconds), MONITOR_ID)
                         )
                         
@@ -376,7 +378,7 @@ def load_auto_entry_state_from_db():
                     else:
                         # Cooldown has expired, clear the start time (monitor_list is now single source of truth)
                         cursor.execute(
-                            "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                            f"UPDATE {legacy_users_monitor_list(USER_NUMBER)} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                             (MONITOR_ID,)
                         )
                         
@@ -457,7 +459,7 @@ def log_heartbeat():
                 password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
             )
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                cursor.execute("SELECT cooldown_timer FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -685,7 +687,7 @@ def start_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {legacy_users_monitor_list(USER_NUMBER)} SET cooldown_start_time = NOW(), updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (MONITOR_ID,)
             )
             
@@ -708,7 +710,7 @@ def reset_cooldown_period_in_db():
         with conn.cursor() as cursor:
             # Reset the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {legacy_users_monitor_list(USER_NUMBER)} SET cooldown_start_time = NULL, cooldown_timer = 0, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (MONITOR_ID,)
             )
             
@@ -732,7 +734,7 @@ def update_cooldown_timer_in_db(seconds):
         with conn.cursor() as cursor:
             # Update the monitor in monitor_list (now single source of truth for cooldown)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {legacy_users_monitor_list(USER_NUMBER)} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (seconds, MONITOR_ID)
             )
             
@@ -778,7 +780,7 @@ def update_auto_entry_status_in_db(status):
         with conn.cursor() as cursor:
             # Update the monitor's auto_trade_status field (this is what the frontend reads)
             cursor.execute(
-                "UPDATE users.monitor_list_0001 SET auto_trade_status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+                f"UPDATE {legacy_users_monitor_list(USER_NUMBER)} SET auto_trade_status = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
                 (status, MONITOR_ID)
             )
             conn.commit()
@@ -870,7 +872,7 @@ def broadcast_auto_entry_indicator_change():
                 password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
             )
             with conn.cursor() as cursor:
-                cursor.execute("SELECT cooldown_timer FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+                cursor.execute("SELECT cooldown_timer FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s", (MONITOR_ID,))
                 result = cursor.fetchone()
                 cooldown_timer = result[0] if result and result[0] is not None else 0
             conn.close()
@@ -945,7 +947,7 @@ def is_auto_trade_enabled():
         )
         with conn.cursor() as cursor:
             # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute("SELECT auto_trade FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT auto_trade FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 auto_trade_enabled = result[0]
@@ -972,7 +974,7 @@ def get_auto_entry_settings():
         with conn.cursor() as cursor:
             # Get monitor's strategy
             cursor.execute("""
-                SELECT strategy FROM users.monitor_list_0001 WHERE id = %s
+                SELECT strategy FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s
             """, (MONITOR_ID,))
             monitor_result = cursor.fetchone()
             
@@ -985,7 +987,7 @@ def get_auto_entry_settings():
                            spike_alert_enabled, spike_alert_momentum_threshold, 
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            min_volume
-                    FROM users.monitor_list_0001 WHERE id = %s
+                    FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s
                 """, (MONITOR_IDENTIFIER.split('_')[1],))
                 strategy_result = cursor.fetchone()
                 
@@ -1395,7 +1397,7 @@ def get_position_size():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT total_position FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT total_position FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 total_position = result[0]
@@ -1422,7 +1424,7 @@ def get_trade_strategy():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT strategy FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT strategy FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
@@ -1449,7 +1451,7 @@ def get_bankroll_allotment():
             password=os.getenv('POSTGRES_PASSWORD', 'rec_io_password')
         )
         with conn.cursor() as cursor:
-            cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (MONITOR_ID,))
+            cursor.execute("SELECT bankroll_allotment_total FROM {legacy_users_monitor_list(USER_NUMBER)} WHERE id = %s", (MONITOR_ID,))
             result = cursor.fetchone()
             if result:
                 bankroll_allotment = result[0]
@@ -1636,7 +1638,7 @@ def is_strike_already_traded(strike_data):
         # Query trades_0001 table directly for open/pending trades with ticker
         cursor.execute("""
             SELECT id, ticker, side, status 
-            FROM users.trades_0001 
+            FROM {legacy_users_trades(USER_NUMBER)} 
             WHERE status IN ('open', 'pending')
         """)
         

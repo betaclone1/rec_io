@@ -1,5 +1,5 @@
 """
-Active 15m + hourly monitors for a single unified AES/ATS process (users.monitor_list_0001).
+Active 15m + hourly monitors for a single unified AES/ATS process (legacy ``users.monitor_list_<slot>`` SQL).
 """
 from __future__ import annotations
 

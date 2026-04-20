@@ -25,6 +25,22 @@ Shared schemas (`system`, `live_data`, `archive`, etc.) are **not** covered by t
 
 **Monitor id numbering (slot prefix):** Numeric ids are allocated in **`slot * 10_000 + n`** with **n = 1..9999** (four-digit slot as integer: `0002` → 20001–29999, `0065` → 650001–659999, `0001` → 10001–19999). Names stay **`mon_<slot>_<id>`** (e.g. `mon_0002_20001`). Migrations **`20260412_1015_monitor_list_seq_slot_prefix_resync`** and **`20260412_1500_monitor_list_seq_ignore_misplaced_99xxx`** reset each `monitor_list_*_id_seq`: slot **0001** uses **`GREATEST(MAX(id), 10000) + 1`** over all rows (includes legacy **99xxx**); slots **`0002+`** use **`GREATEST(MAX(id) within [slot×10000+1, slot×10000+9999], slot×10000) + 1`** so stray **99xxx** rows in a non–0001 tenant do not pin the sequence. Legacy **99xxx** for slot 0001 remain valid; **`backend/core/port_config.py`** `_monitor_id_port_offset` still maps them for per-monitor ports.
 
+### Tenant slot and table names (`NNNN`) {#tenant-slot-naming}
+
+Use this subsection whenever a heading shows **`users.something_0001`**. **`0001` is an example slot**, not a global constant.
+
+- **`NNNN` (slot):** The same four-digit value as `TenantContext.user_no`, `REC_USER_NO`, or the numeric tail of `REC_DEFAULT_USER_SCHEMA` when it is `users_NNNN` (see `backend/core/tenant_context.py`, `backend/core/port_config.py`).
+
+- **Physical catalog (what Postgres stores):** Per-tenant schema **`users_<NNNN>`** and tables whose suffix matches that slot, e.g. **`users_0042.trades_0042`**, **`users_0042.monitor_list_0042`**, **`users_0042.account_balance_0042`**. Sequences and defaults live in that schema too (e.g. **`users_0042.monitor_list_0042_id_seq`**). RLS and `rec.tenant_pg_schema` target this layout.
+
+- **Legacy `users.` qualifier in SQL strings:** Application code often uses **`users.trades_NNNN`**, **`users.monitor_list_NNNN`**, etc. On **`TenantConnection`**, those legacy forms are rewritten to the session tenant’s **`users_<NNNN>.*_<NNNN>`** (see `rewrite_users_qualified_sql`). Raw **`psycopg2`** (operator scripts, one-offs) must not assume **`0001`**: build names with **`backend/core/tenant_legacy_sql.py`** (`legacy_users_trades`, `legacy_users_monitor_list`, …), `psycopg2.sql.Identifier`, or explicit **`users_<NNNN>.…`** after resolving the slot.
+
+- **How to read this document:** A section such as **Table: users.trades_0001** documents **columns, semantics, and constraints** for the trades table for **one representative slot** (`0001`). For tenant **`0042`**, the same logical table is **`users_0042.trades_0042`**; substitute **`0042`** for **`0001`** in table names, index names, and sequence names when comparing to your database.
+
+- **`init_database()` / `database.py`:** Bootstrap DDL is authored with template suffix **`_0001`**. At runtime, `init_database()` replaces **`_0001`** with the slot implied by **`default_pg_schema_for_init()`** before executing, so a target schema **`users_0002`** gets **`trades_0002`**, **`monitor_list_0002`**, etc., not **`trades_0001`** under that schema.
+
+- **Ad-hoc SQL:** Prefer **`information_schema`** / **`pg_catalog`** filters on **`table_schema = 'users_<NNNN>'`** and **`table_name = 'trades_<NNNN>'`** (matching suffixes). Do not rely on **`table_schema = 'users'`** unless you are inspecting an old layout that still keeps tenant tables in a schema literally named `users`.
+
 ---
 
 ## How to Check and Update Your Database (No Scripts)
@@ -70,11 +86,11 @@ Run that in `psql` or any SQL client connected to your DB. Then:
 ```sql
 SELECT column_name, data_type, is_nullable, column_default
 FROM information_schema.columns
-WHERE table_schema = 'users' AND table_name = 'trades_0001'
+WHERE table_schema = 'users_0001' AND table_name = 'trades_0001'
 ORDER BY ordinal_position;
 ```
 
-Change `table_schema` and `table_name` as needed.
+Example above is for **slot `0001`** (`users_0001.trades_0001`). For slot **`NNNN`**, use **`table_schema = 'users_<NNNN>'`** and **`table_name = 'trades_<NNNN>'`** (same digits in both). See [Tenant slot and table names (`NNNN`)](#tenant-slot-naming).
 
 ### 3. Add missing tables or columns directly
 
@@ -89,7 +105,7 @@ Re-run the check (step 2) until nothing is missing.
 
 ### 4. After updating portfolio-level user tables (fills, orders, positions, settlements)
 
-If you added or changed columns on `users.fills_0001`, `users.orders_0001`, `users.positions_0001`, or `users.settlements_0001`, run the historical ingest once so those tables get (or backfill) data into the new columns from the Kalshi API:
+If you added or changed columns on the tenant **fills / orders / positions / settlements** tables (e.g. **`users_0001.fills_0001`**, **`users_0001.orders_0001`**, …; substitute **`users_<NNNN>.<table>_<NNNN>`** for your slot — see [Tenant slot and table names (`NNNN`)](#tenant-slot-naming)), run the historical ingest once so those tables get (or backfill) data into the new columns from the Kalshi API:
 
 ```bash
 PYTHONPATH=$(pwd) python3 backend/api/kalshi-api/kalshi_historical_ingest.py
@@ -9583,6 +9599,8 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 ---
 
 ## Schema: `users`
+
+**Tenant naming:** Headings in this chapter use the pattern **`users.<table>_0001`** as the **default documented example** (slot **`0001`**). In production and multi-tenant Postgres, the same objects are **`users_<NNNN>.<table>_<NNNN>`** with matching suffixes; legacy SQL may still say **`users.<table>_NNNN`** and rely on **`TenantConnection`** rewrite. Read [Tenant slot and table names (`NNNN`)](#tenant-slot-naming) before writing ad-hoc SQL or migrations that assume a single user.
 
 ### Table: `users.account_balance_0001`
 

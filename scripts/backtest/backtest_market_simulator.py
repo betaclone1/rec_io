@@ -86,6 +86,7 @@ from backend.util.auto_entry_htc_gates import (  # noqa: E402
     evaluate_hourly_htc_strike_entry,
     money_line_diffs_and_active_side,
 )
+from scripts.backtest.helpers.constants import MONITOR_LIST_TABLE  # noqa: E402
 from scripts.backtest.helpers.db import get_connection  # noqa: E402
 from scripts.backtest.helpers.hypothetical_trades import estimate_kalshi_taker_fee  # noqa: E402
 from scripts.backtest.helpers.htc_aes_replay import (  # noqa: E402
@@ -220,7 +221,7 @@ def _load_btc_close_and_momentum(conn: Any, ts_naive: datetime) -> tuple[Optiona
 
 
 def _load_monitor_settings(conn: Any, table_fq: str, row_id: int) -> dict[str, Any]:
-    """table_fq e.g. users.monitor_list_0001 (validated)."""
+    """table_fq e.g. users.monitor_list_<slot> (validated)."""
     if not _MONITOR_TABLE_RE.fullmatch(table_fq.strip()):
         raise ValueError(f"invalid monitor table (expected users.monitor_list_<digits>): {table_fq!r}")
     with conn.cursor() as cur:
@@ -428,7 +429,7 @@ def main() -> int:
     )
     p.add_argument(
         "--monitor-table",
-        default="users.monitor_list_0001",
+        default=MONITOR_LIST_TABLE,
         help="Qualified monitor_list table for --monitor-row-id",
     )
     p.add_argument(

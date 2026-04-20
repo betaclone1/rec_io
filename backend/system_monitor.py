@@ -392,7 +392,7 @@ class SystemMonitor:
         ctx = process_tenant_context()
         trades_schema, trades_table = ctx.ut("trades").split(".", 1)
 
-        # Trades: tenant schema (e.g. users_0001.trades_0001), not legacy users.trades_0001
+        # Trades: tenant schema (e.g. users_NNNN.trades_NNNN), not a hardcoded legacy users.* template
         try:
             conn = psycopg2.connect(**cfg)
             cursor = conn.cursor()

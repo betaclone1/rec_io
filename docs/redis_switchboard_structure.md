@@ -126,15 +126,15 @@ This keeps the switchboard generic (two endpoints, two channels, no DB), and kee
 **Mechanism: PostgreSQL NOTIFY from triggers**
 
 1. **Triggers on key tables**  
-   Attach a single generic trigger function to every table that the frontend cares about (e.g. `users.trades_0001`, `users.trades_simulated_0001`, `users.monitor_list_0001`, `users.account_balance_0001`, `users.account_history_0001`, Kalshi sync tables that back “fills”, “positions”, “settlements”, “orders”, “subaccounts”, “transfers”, etc.).  
+   Attach a single generic trigger function to every table that the frontend cares about (e.g. `users.trades_<slot>`, `users.trades_simulated_<slot>`, `users.monitor_list_<slot>`, `users.account_balance_<slot>`, `users.account_history_<slot>`, Kalshi sync tables that back “fills”, “positions”, “settlements”, “orders”, “subaccounts”, “transfers”, etc.).  
    On `AFTER INSERT OR UPDATE OR DELETE` the trigger runs `PERFORM pg_notify('rec_io_db_changes', payload)` where `payload` is a small JSON string, e.g.  
    `{"schema":"users","table":"trades_0001","op":"UPDATE"}`  
    (no row data in the payload; we only signal “this table changed”). Optionally include `row_id` or a hash if the frontend will use it later for granular updates.
 
 2. **Table → frontend “database” mapping**  
    The frontend today filters on `data.database` with values like `"trades"`, `"fills"`, `"positions"`, `"settlements"`, `"orders"`, `"account_balance"`, `"subaccounts"`, `"transfers"`, `"monitor_list"`. We maintain a single mapping from `(schema, table)` to that logical name, e.g.  
-   `users.trades_0001` → `"trades"`,  
-   `users.monitor_list_0001` → `"monitor_list"`,  
+   `users.trades_<slot>` → `"trades"`,
+   `users.monitor_list_<slot>` → `"monitor_list"`,
    `users.account_balance_0001` → `"account_balance"`,  
    and the Kalshi-backed tables to `"fills"`, `"positions"`, etc.
 

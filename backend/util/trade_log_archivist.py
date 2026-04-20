@@ -1,5 +1,5 @@
 """
-Move rows from users.trades_0001 into archive.trades_archive_{live|paper}_<user_number> when:
+Move rows from tenant ``users.trades_<slot>`` into archive.trades_archive_{live|paper}_<user_number> when:
 
 - POST /api/monitor/archive: all trades for that monitor key (archive_trades_for_monitor).
 - Sweep: monitor missing from monitor_list, wrong mon_<user>_* prefix, or list status not
@@ -116,7 +116,7 @@ def _compose_delete_master(user_number: str) -> sql.Composed:
 
 def _sql_where_archivable_not_active_inactive_monitor(mon_list_rel: str, user_number: str) -> str:
     """
-    SQL predicate on alias `t` (users.trades_0001): rows to move to archive.
+    SQL predicate on alias ``t`` (tenant ``trades_*``): rows to move to archive.
     Archives when: no monitor text, malformed mon_* key, user prefix != user_number,
     no row in monitor_list for that id, or list status is not active/inactive (incl. NULL).
 

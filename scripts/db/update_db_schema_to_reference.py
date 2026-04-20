@@ -266,9 +266,9 @@ def discover_monitor_tables(conn, base_table_pattern: str) -> List[str]:
     Discover all monitor-specific table instances
     
     Examples:
-    - "users.monitor_list_0001" -> finds all "users.monitor_list_XXXX"
-    - "users.active_trades_0001_10002" -> finds all "users.active_trades_XXXX_YYYY"
-    - "users.trades_0001" -> finds all "users.trades_XXXX"
+    - "users.monitor_list_NNNN" -> finds all "users.monitor_list_XXXX"
+    - "users.active_trades_NNNN_10002" -> finds all "users.active_trades_XXXX_YYYY"
+    - "users.trades_NNNN" -> finds all "users.trades_XXXX"
     """
     # Extract schema and base name
     if '.' in base_table_pattern:

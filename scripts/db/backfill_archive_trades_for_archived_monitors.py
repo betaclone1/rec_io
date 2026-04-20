@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Backfill: move trades from users.trades_0001 into archive.trades_archive_live_<n> / paper when:
+Backfill: move trades from ``users.trades_<n>`` into archive.trades_archive_live_<n> / paper when:
 
 - The trade's monitor is missing from users.monitor_list_<n>, OR
 - monitor_list status is not active or inactive (e.g. ARCHIVED), OR
@@ -57,7 +57,7 @@ def main() -> None:
         print("--user-number must be four digits (e.g. 0001).", file=sys.stderr)
         sys.exit(1)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=args.user_number)
     if not conn:
         print("Failed to connect to PostgreSQL.", file=sys.stderr)
         sys.exit(1)

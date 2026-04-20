@@ -10,6 +10,7 @@ from backend.core.tenant_context import (
     assert_sql_and_params_target_only_connection_tenant,
     rewrite_users_qualified_sql,
 )
+from backend.core.tenant_legacy_sql import legacy_users_trades
 
 
 @pytest.fixture
@@ -35,17 +36,19 @@ def test_assert_rejects_alien_schema(ctx_0001: TenantContext) -> None:
 
 
 def test_assert_rejects_legacy_users_dot(ctx_0001: TenantContext) -> None:
+    legacy_trades = legacy_users_trades(ctx_0001.user_no)
     with pytest.raises(TenantIsolationError, match="legacy"):
         assert_sql_and_params_target_only_connection_tenant(
-            "SELECT 1 FROM users.trades_0001",
+            f"SELECT 1 FROM {legacy_trades}",
             ctx_0001,
             None,
         )
 
 
 def test_rewrite_then_assert_ok(ctx_0001: TenantContext) -> None:
+    legacy_trades = legacy_users_trades(ctx_0001.user_no)
     q = rewrite_users_qualified_sql(
-        "SELECT 1 FROM users.trades_0001",
+        f"SELECT 1 FROM {legacy_trades}",
         ctx_0001,
     )
     assert "users_0001" in q

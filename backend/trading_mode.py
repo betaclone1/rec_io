@@ -154,7 +154,7 @@ def _apply_monitor_paper_flags_merged(snap: Any) -> None:
     """
     Restore from state file. Supports:
     - New: { slot: { mid: bool } }
-    - Legacy flat: { mid: bool } (only ever matched users.monitor_list_0001); apply to 0001 if active.
+    - Legacy flat: { mid: bool } (only ever matched ``monitor_list_<slot>``); apply to the default slot if active.
     """
     if not isinstance(snap, dict) or not snap:
         return

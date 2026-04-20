@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 One-off: count how many insufficient_resting_volume rejections were OPEN vs CLOSE.
-Reads trade_executor.out.log and users.trades_0001. Run from project root on prod.
+Reads trade_executor.out.log and ``users.trades_<slot>``. Run from project root on prod.
 """
+import argparse
 import os
 import re
 import sys
@@ -10,7 +11,17 @@ import sys
 # Allow running from project root; backend uses same
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
+
 def main():
+    from backend.core.tenant_legacy_sql import legacy_users_trades
+    from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
+
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_user_no_argument(parser)
+    args = parser.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+
     log_path = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "logs", "trade_executor.out.log")
     if not os.path.exists(log_path):
         log_path = "/opt/rec_io_server/logs/trade_executor.out.log"
@@ -30,7 +41,8 @@ def main():
 
     try:
         from backend.core.config.database import get_postgresql_connection
-        conn = get_postgresql_connection()
+
+        conn = get_postgresql_connection(tenant_user_no=user_no)
         if not conn:
             print("DB connection failed")
             return 1
@@ -49,9 +61,9 @@ def main():
                 if val is None:
                     continue
                 if key == "id":
-                    cur.execute("SELECT order_id_open FROM users.trades_0001 WHERE id = %s", (val,))
+                    cur.execute(f"SELECT order_id_open FROM {trades_t} WHERE id = %s", (val,))
                 else:
-                    cur.execute("SELECT order_id_open FROM users.trades_0001 WHERE ticket_id = %s", (val,))
+                    cur.execute(f"SELECT order_id_open FROM {trades_t} WHERE ticket_id = %s", (val,))
                 row = cur.fetchone()
                 if row is not None:
                     break
@@ -65,7 +77,7 @@ def main():
         conn.close()
         print(f"OPEN (new trade):   {opens}")
         print(f"CLOSE (existing):   {closes}")
-        print(f"Not in trades_0001: {not_found}")
+        print(f"Not in {trades_t}: {not_found}")
         return 0
     except Exception as e:
         print("DB error:", e)

@@ -263,10 +263,14 @@ def init_database():
             return False, "Database connection failed"
         
         cursor = conn.cursor()
-        from backend.core.tenant_context import default_pg_schema_for_init
+        from backend.core.tenant_context import TenantContext, default_pg_schema_for_init
+
         TS = default_pg_schema_for_init()
+        _init_slot = TenantContext.from_schema(TS).user_no
 
         def _us(sql: str) -> str:
+            # Template DDL uses legacy ``*_0001`` suffixes; align with init schema (e.g. users_0002 → trades_0002).
+            sql = sql.replace("_0001", f"_{_init_slot}")
             return (
                 sql.replace("SCHEMA users ", f"SCHEMA {TS} ")
                 .replace("SCHEMA users\n", f"SCHEMA {TS}\n")
@@ -840,7 +844,7 @@ def init_database():
         """))
         
         # Legacy generic table kept for backwards compatibility with older tooling.
-        # Unified ATS pool tables are users.active_trades_15m_0001 and users.active_trades_hourly_0001.
+        # Unified ATS pool tables are ``users.active_trades_15m_<slot>`` and ``users.active_trades_hourly_<slot>`` (per tenant).
         cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.active_trades_0001 (
                 id SERIAL PRIMARY KEY,

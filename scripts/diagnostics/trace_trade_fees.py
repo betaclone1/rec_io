@@ -3,7 +3,7 @@
 Trace how total fees for a single live trade were determined from opening and closing orders.
 
 We only ever pay taker fees; maker_fees_dollars should be 0. Prints the trade row and the
-corresponding rows from users.orders_0001 for open and close (taker_fees_dollars, maker_fees_dollars,
+corresponding rows from ``users.orders_<slot>`` for open and close (taker_fees_dollars, maker_fees_dollars,
 and the sum used for each leg).
 
 Usage (from project root):
@@ -14,11 +14,14 @@ Example:
 Read-only: SELECT only.
 """
 
+import argparse
 import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_orders, legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 
 def _parse_dollars(value):
@@ -32,28 +35,31 @@ def _parse_dollars(value):
 
 
 def main():
-    if len(sys.argv) < 2:
-        print("Usage: trace_trade_fees.py <trade_id>")
-        sys.exit(1)
-    try:
-        trade_id = int(sys.argv[1])
-    except ValueError:
-        print("trade_id must be an integer")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description="Trace fee breakdown for one trade (read-only).")
+    add_user_no_argument(parser)
+    parser.add_argument("trade_id", type=int, help="Trades table id")
+    args = parser.parse_args()
+    trade_id = args.trade_id
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+    orders_t = legacy_users_orders(user_no)
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database.")
         sys.exit(1)
 
     try:
         with conn.cursor() as cur:
-            cur.execute("""
+            cur.execute(
+                f"""
                 SELECT id, order_id_open, order_id_close, fees, buy_price, position, sell_price,
                        close_method, status, ticker, paper_trade
-                FROM users.trades_0001
+                FROM {trades_t}
                 WHERE id = %s
-            """, (trade_id,))
+            """,
+                (trade_id,),
+            )
             row = cur.fetchone()
         if not row:
             print(f"Trade {trade_id} not found.")
@@ -76,13 +82,16 @@ def main():
 
         if order_id_open:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    f"""
                     SELECT order_id, side, fill_count_fp, remaining_count_fp, status,
                            taker_fees_dollars, maker_fees_dollars,
                            taker_fill_cost_dollars, maker_fill_cost_dollars
-                    FROM users.orders_0001
+                    FROM {orders_t}
                     WHERE order_id = %s
-                """, (order_id_open,))
+                """,
+                    (order_id_open,),
+                )
                 orow = cur.fetchone()
             if orow:
                 (oid, side, fill_count_fp, rem_fp, order_status,
@@ -91,7 +100,7 @@ def main():
                 taker_usd = _parse_dollars(taker_fees_dollars)
                 maker_usd = _parse_dollars(maker_fees_dollars)
                 open_fees_usd = (taker_usd or 0.0) + (maker_usd or 0.0)
-                print("=== Opening order (orders_0001) ===")
+                print(f"=== Opening order ({orders_t}) ===")
                 print(f"  order_id={oid} side={side} status={order_status}")
                 print(f"  fill_count_fp={fill_count_fp} remaining_count_fp={rem_fp}")
                 print(f"  taker_fees_dollars={taker_fees_dollars} -> {taker_usd}")
@@ -99,18 +108,21 @@ def main():
                 print(f"  open leg fees = {open_fees_usd} (taker only; we never pay maker)")
                 print(f"  taker_fill_cost_dollars={taker_fill_cost_dollars} maker_fill_cost_dollars={maker_fill_cost_dollars}")
             else:
-                print("=== Opening order: not found in users.orders_0001 ===")
+                print(f"=== Opening order: not found in {orders_t} ===")
             print()
 
         if order_id_close:
             with conn.cursor() as cur:
-                cur.execute("""
+                cur.execute(
+                    f"""
                     SELECT order_id, side, fill_count_fp, remaining_count_fp, status,
                            taker_fees_dollars, maker_fees_dollars,
                            taker_fill_cost_dollars, maker_fill_cost_dollars
-                    FROM users.orders_0001
+                    FROM {orders_t}
                     WHERE order_id = %s
-                """, (order_id_close,))
+                """,
+                    (order_id_close,),
+                )
                 crow = cur.fetchone()
             if crow:
                 (oid, side, fill_count_fp, rem_fp, order_status,
@@ -119,7 +131,7 @@ def main():
                 taker_usd = _parse_dollars(taker_fees_dollars)
                 maker_usd = _parse_dollars(maker_fees_dollars)
                 close_fees_usd = (taker_usd or 0.0) + (maker_usd or 0.0)
-                print("=== Closing order (orders_0001) ===")
+                print(f"=== Closing order ({orders_t}) ===")
                 print(f"  order_id={oid} side={side} status={order_status}")
                 print(f"  fill_count_fp={fill_count_fp} remaining_count_fp={rem_fp}")
                 print(f"  taker_fees_dollars={taker_fees_dollars} -> {taker_usd}")
@@ -127,7 +139,7 @@ def main():
                 print(f"  close leg fees = {close_fees_usd} (taker only; we never pay maker)")
                 print(f"  taker_fill_cost_dollars={taker_fill_cost_dollars} maker_fill_cost_dollars={maker_fill_cost_dollars}")
             else:
-                print("=== Closing order: not found in users.orders_0001 ===")
+                print(f"=== Closing order: not found in {orders_t} ===")
             print()
 
         # Reconstructed total
@@ -137,7 +149,7 @@ def main():
             print(f"  open leg:  {open_fees_usd}")
             print(f"  close leg: {close_fees_usd}")
             print(f"  reconstructed total (open + close) = {reconstructed}")
-            print(f"  stored trades_0001.fees = {fees}")
+            print(f"  stored {trades_t}.fees = {fees}")
             if fees is not None and abs(reconstructed - float(fees)) > 0.001:
                 print(f"  (mismatch: diff = {float(fees) - reconstructed})")
     finally:

@@ -9,11 +9,13 @@ from __future__ import annotations
 
 import json
 import os
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg2 import sql
 
-_MONITOR_TABLE_BY_USER = {"0001": "users.monitor_list_0001"}
+from backend.core.port_config import default_pool_user_number
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list
+from backend.trading_mode import _norm_slot
 
 
 def drawdown_emergency_snapshot_path(project_root: str) -> str:
@@ -39,16 +41,14 @@ def apply_drawdown_monitor_snapshot_updates(
     cursor: Any,
     data: Dict[str, Any],
     *,
-    user_number: str = "0001",
+    user_number: str,
 ) -> Tuple[bool, str, int]:
     """
     UPDATE monitor rows from validated snapshot dict. Does not commit.
     Returns (ok, message, rowcount sum from UPDATEs).
     """
-    u = str(user_number).strip()
-    table = _MONITOR_TABLE_BY_USER.get(u)
-    if not table:
-        return False, f"no monitor table mapping for user {u}", 0
+    u = _norm_slot(str(user_number).strip())
+    table = legacy_users_monitor_list(u)
     ok, msg = validate_drawdown_monitor_snapshot(data)
     if not ok:
         return False, msg, 0
@@ -83,7 +83,7 @@ def apply_drawdown_monitor_snapshot_updates(
 def restore_monitors_from_drawdown_snapshot_file(
     path: str,
     *,
-    user_number: str = "0001",
+    user_number: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """Apply snapshot from a JSON file. Commits on success."""
     if not os.path.isfile(path):
@@ -93,13 +93,15 @@ def restore_monitors_from_drawdown_snapshot_file(
 
     from backend.core.config.database import get_postgresql_connection
 
+    u_apply = _norm_slot(str(user_number or default_pool_user_number()).strip())
+
     conn = get_postgresql_connection()
     if not conn:
         return False, "database connection failed", 0
     try:
         with conn.cursor() as cursor:
             ok, msg, n = apply_drawdown_monitor_snapshot_updates(
-                cursor, data, user_number=user_number
+                cursor, data, user_number=u_apply
             )
             if not ok:
                 conn.rollback()
@@ -115,15 +117,13 @@ def restore_monitors_from_drawdown_snapshot_file(
 
 def restore_monitors_from_db_snapshot_only(
     *,
-    user_number: str = "0001",
+    user_number: Optional[str] = None,
 ) -> Tuple[bool, str, int]:
     """
     Read drawdown_halt_monitor_snapshot from system_settings, apply monitor updates, commit.
     Does not change trading_halt_active or clear the JSONB column (use API / full restore for that).
     """
-    u = str(user_number).strip()
-    if u not in _MONITOR_TABLE_BY_USER:
-        return False, f"no monitor table mapping for user {u}", 0
+    u = _norm_slot(str(user_number or default_pool_user_number()).strip())
     from backend.core.config.database import get_postgresql_connection
     from backend.core.system_settings_store import _settings_table_ident
 

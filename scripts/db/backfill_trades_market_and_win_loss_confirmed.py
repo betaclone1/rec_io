@@ -17,7 +17,7 @@ Run from repo root (after deploy; uses prod credentials from your env):
 
 Optional: restrict tables (default: all users.trades_<digits>):
 
-  PYTHONPATH=$(pwd) .venv/bin/python scripts/db/backfill_trades_market_and_win_loss_confirmed.py --tables users.trades_0001
+  PYTHONPATH=$(pwd) .venv/bin/python scripts/db/backfill_trades_market_and_win_loss_confirmed.py --tables users_0001.trades_0001
 
 Keep in sync with backend/trade_manager.py (helpers inlined to avoid importing trade_manager).
 """
@@ -285,7 +285,7 @@ def main() -> int:
         "--tables",
         type=str,
         default="",
-        help="Comma-separated full names (e.g. users_0001.trades_0001 or legacy users.trades_0001). "
+        help="Comma-separated full names (e.g. users_0002.trades_0002 or legacy users.trades_0002). "
         "Default: all users_NNNN.trades_NNNN",
     )
     args = ap.parse_args()

@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sample random live **15m HTC** (``trade_strategy`` ``15m HTC`` or ``Hourly HTC``) auto entries from prod ``users.trades_0001``,
+Sample random live **15m HTC** (``trade_strategy`` ``15m HTC`` or ``Hourly HTC``) auto entries from prod ``users.trades_<default pool slot>``,
 run ``backtest_market_simulator`` per ticker/date, and print deltas vs recorded trades.
 
 Pulls trades from **prod** (SSH). Runs the sim with ``REC_IO_BACKTEST_DB`` = **local** by default
@@ -99,6 +99,7 @@ def main() -> int:
         print("zoneinfo is required", file=sys.stderr)
         return 1
 
+    from scripts.backtest.helpers.constants import TRADES_TABLE  # noqa: E402
     from scripts.backtest.helpers.db import get_connection  # noqa: E402
 
     _prev_db = os.environ.get("REC_IO_BACKTEST_DB")
@@ -118,7 +119,7 @@ def main() -> int:
                 cur.execute(
                     f"""
                     SELECT id, ticker, date, time, created_at, buy_price, strike, symbol_open, side
-                    FROM users.trades_0001
+                    FROM {TRADES_TABLE}
                     WHERE (paper_trade IS NULL OR paper_trade = false)
                       AND ticker IS NOT NULL
                       AND ticker ILIKE '%%15M%%'

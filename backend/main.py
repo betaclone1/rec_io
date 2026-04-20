@@ -55,6 +55,8 @@ from backend.core.config.database import (
     get_postgresql_connection,
     get_system_postgresql_connection,
 )
+from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list
 from backend.core.exchange_ids import normalize_exchange
 from backend.core.time_eastern import EST, now_est
 from backend.core.trading_redis_comms import is_probably_startup_connect_refused
@@ -2399,11 +2401,15 @@ async def get_monitor_bankroll(monitor_id: str):
         
         with conn.cursor(cursor_factory=RealDictCursor) as cursor:
             # Get monitor-specific bankroll allotment
-            cursor.execute("""
+            ml = legacy_users_monitor_list(effective_tenant_context_for_sql_rewrite().user_no)
+            cursor.execute(
+                f"""
                 SELECT bankroll_allotment_total, name, symbol
-                FROM users.monitor_list_0001 
+                FROM {ml}
                 WHERE id = %s
-            """, (monitor_id,))
+            """,
+                (monitor_id,),
+            )
             monitor_result = cursor.fetchone()
             
             conn.close()
@@ -3151,7 +3157,9 @@ async def get_auto_entry_settings(monitor_id: str = None):
             sel_flip = """
                        , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
             """
-            q = """
+            ml = legacy_users_monitor_list(effective_tenant_context_for_sql_rewrite().user_no)
+            q = (
+                """
                 SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
                        spike_alert_enabled, spike_alert_momentum_threshold,
                        spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
@@ -3163,9 +3171,12 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        min_cooldown_timer, max_cooldown_timer,
                        regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range,
                        test_filter
-            """ + (sel_flip if has_flip else "") + """
-                FROM users.monitor_list_0001 WHERE id = %s
             """
+                + (sel_flip if has_flip else "")
+                + f"""
+                FROM {ml} WHERE id = %s
+            """
+            )
             cursor.execute(q, (monitor_id,))
             result = cursor.fetchone()
             
@@ -3377,7 +3388,11 @@ async def trigger_open_trade(request: Request):
             import psycopg2
             conn = get_postgresql_connection()
             with conn.cursor() as cursor:
-                cursor.execute("SELECT bankroll_allotment_total FROM users.monitor_list_0001 WHERE id = %s", (monitor_id,))
+                ml = legacy_users_monitor_list(effective_tenant_context_for_sql_rewrite().user_no)
+                cursor.execute(
+                    f"SELECT bankroll_allotment_total FROM {ml} WHERE id = %s",
+                    (monitor_id,),
+                )
                 result = cursor.fetchone()
                 if result:
                     bankroll_allotment_total = result[0]
@@ -5011,13 +5026,14 @@ async def save_dashboard_preferences(request: Request):
 
 @app.get("/api/total_position")
 async def get_total_position():
-    """Get total_position from first row of monitor_list_0001"""
+    """Get total_position from the first row of the tenant ``monitor_list_*`` table."""
     try:
         from backend.core.config.database import get_postgresql_connection
         conn = get_postgresql_connection()
         
         with conn.cursor() as cursor:
-            cursor.execute("SELECT total_position FROM users.monitor_list_0001 ORDER BY id LIMIT 1")
+            ml = legacy_users_monitor_list(effective_tenant_context_for_sql_rewrite().user_no)
+            cursor.execute(f"SELECT total_position FROM {ml} ORDER BY id LIMIT 1")
             result = cursor.fetchone()
             
         conn.close()

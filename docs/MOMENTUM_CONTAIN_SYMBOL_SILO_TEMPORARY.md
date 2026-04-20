@@ -24,7 +24,7 @@ Inside `backend/auto_entry_supervisor.py` / `check_auto_entry_conditions_momentu
 1. **TTC window**: only proceed when `min_time <= current_ttc <= max_time`.
 2. **Spike alert gate**: require `spike_alert_active == True`.
 3. **Cooldown timer window (optional)**:
-   - If `min_cooldown_timer` and/or `max_cooldown_timer` are set in settings, we fetch `cooldown_timer` from `users.monitor_list_0001` for this `MONITOR_ID`.
+   - If `min_cooldown_timer` and/or `max_cooldown_timer` are set in settings, we fetch `cooldown_timer` from `users.monitor_list_<slot>` for this `MONITOR_ID`.
    - Compute `time_since_spike` from `spike_alert_cooldown_minutes` and the DB cooldown value.
    - Skip entry when `time_since_spike` is outside the min/max bounds.
 4. **Already entered guard**: do nothing if `momentum_contain_trades_entered` is already true.

@@ -152,48 +152,49 @@ setup_database_tables() {
     
     # Extract user number from user ID (e.g., user_0002 -> 0002)
     USER_NUMBER=${USER_ID#user_}
+    TEMPLATE_SLOT="${REC_TEMPLATE_USER_NO:-${REC_DEFAULT_LOGIN_USER_NO:-0001}}"
     
     # Create user tables in PostgreSQL
     PGPASSWORD=rec_io_password psql -h localhost -U rec_io_user -d rec_io_db << DB_SETUP_EOF
         -- Create user tables with new user ID
         CREATE TABLE IF NOT EXISTS users.trades_$USER_NUMBER (
-            LIKE users.trades_0001 INCLUDING ALL
+            LIKE users.trades_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.active_trades_$USER_NUMBER (
-            LIKE users.active_trades_0001 INCLUDING ALL
+            LIKE users.active_trades_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.fills_$USER_NUMBER (
-            LIKE users.fills_0001 INCLUDING ALL
+            LIKE users.fills_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.settlements_$USER_NUMBER (
-            LIKE users.settlements_0001 INCLUDING ALL
+            LIKE users.settlements_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.positions_$USER_NUMBER (
-            LIKE users.positions_0001 INCLUDING ALL
+            LIKE users.positions_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.trade_preferences_$USER_NUMBER (
-            LIKE users.trade_preferences_0001 INCLUDING ALL
+            LIKE users.trade_preferences_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.orders_$USER_NUMBER (
-            LIKE users.orders_0001 INCLUDING ALL
+            LIKE users.orders_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.account_balance_$USER_NUMBER (
-            LIKE users.account_balance_0001 INCLUDING ALL
+            LIKE users.account_balance_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.watchlist_$USER_NUMBER (
-            LIKE users.watchlist_0001 INCLUDING ALL
+            LIKE users.watchlist_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         CREATE TABLE IF NOT EXISTS users.auto_trade_settings_$USER_NUMBER (
-            LIKE users.auto_trade_settings_0001 INCLUDING ALL
+            LIKE users.auto_trade_settings_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
         -- Create monitors_list table for new user

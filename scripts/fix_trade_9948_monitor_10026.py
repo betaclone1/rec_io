@@ -5,6 +5,7 @@ Monitor 10026 is BTC, 15m HTC. Trade had time 09:45 -> 15m contract "BTC 9:45am"
 
 Run from project root: PYTHONPATH=/opt/rec_io_server python3 scripts/fix_trade_9948_monitor_10026.py
 """
+import argparse
 import os
 import sys
 
@@ -14,6 +15,8 @@ if _project_root not in sys.path:
 os.chdir(_project_root)
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 TRADE_ID = 9948
 MONITOR_ID = 10026
@@ -25,7 +28,13 @@ CORRECT_CONTRACT = "BTC 9:45am"
 
 
 def main():
-    conn = get_postgresql_connection()
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_user_no_argument(parser)
+    args = parser.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database")
         sys.exit(1)
@@ -33,7 +42,7 @@ def main():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, symbol, trade_strategy, contract FROM users.trades_0001 WHERE id = %s",
+                f"SELECT id, symbol, trade_strategy, contract FROM {trades_t} WHERE id = %s",
                 (TRADE_ID,),
             )
             row = cur.fetchone()
@@ -47,8 +56,8 @@ def main():
 
         with conn.cursor() as cur:
             cur.execute(
-                """
-                UPDATE users.trades_0001
+                f"""
+                UPDATE {trades_t}
                 SET symbol = %s, trade_strategy = %s, contract = %s
                 WHERE id = %s
                 """,

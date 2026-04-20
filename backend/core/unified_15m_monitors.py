@@ -1,7 +1,7 @@
 """
 Active 15m monitors for the unified AES/ATS supervisor pool.
 
-SQL uses ``users.monitor_list_0001`` as a template; :class:`~backend.core.tenant_context.TenantConnection`
+SQL uses a legacy ``users.monitor_list_<slot>`` template; :class:`~backend.core.tenant_context.TenantConnection`
 rewrites it to the worker's ``users_<slot>.monitor_list_<slot>``.
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ from typing import Iterator, List, Tuple
 
 from backend.core.config.database import get_postgresql_connection
 from backend.core.port_config import default_pool_user_number
+from backend.core.tenant_legacy_sql import legacy_users_monitor_list
 
 _log = logging.getLogger(__name__)
 
@@ -29,10 +30,11 @@ def list_active_15m_monitor_rows() -> List[dict]:
         if not conn:
             return out
         with conn.cursor() as cursor:
+            ml = legacy_users_monitor_list(default_pool_user_number())
             cursor.execute(
-                """
+                f"""
                 SELECT id, name, symbol, COALESCE(NULLIF(TRIM(market), ''), 'hourly') AS market
-                FROM users.monitor_list_0001
+                FROM {ml}
                 WHERE status = 'active'
                   AND LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) = '15m'
                 ORDER BY id

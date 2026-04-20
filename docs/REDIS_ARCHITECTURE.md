@@ -23,7 +23,7 @@ This doc describes the full recommended architecture: the real-time backbone (Po
 
 ## 2. End-to-end flow (example: 4 trade log rows updated)
 
-1. **DB:** Four rows in `users.trades_0001` are updated (e.g. status, PnL, closed_at).
+1. **DB:** Four rows in the tenant `trades` table are updated (e.g. status, PnL, closed_at).
 2. **Trigger:** `public.rec_io_db_notify()` runs (four times or coalesced); sends NOTIFY on channel `rec_io_db_changes` with payload `{"schema":"users","table":"trades_0001","op":"UPDATE"}`.
 3. **Switchboard:** LISTEN thread receives NOTIFY; stream registry maps `(users, trades_0001)` → `trades`; builds message `{ type: "db_change", database: "trades", data: { change_data: { schema, table, op } }, timestamp }`; publishes to Redis `rec_io:db_changes`.
 4. **Main + frontend:** Main’s Redis subscriber receives the same message and sends it to browsers on **same-origin** `/ws/db_changes`. The frontend receives the message. Handler for `database === 'trades'` runs. Dashboard knows which areas depend on trades: Performance panel (day/week/month/year PnL and ret%), bankroll/portfolio if derived from trades, monitor cards’ PnL/Ret%, allocation if relevant. It **refetches** the corresponding **read_api** endpoints in parallel (e.g. `GET /api/performance/realized`, `GET /api/portfolio/history`, monitor stats, etc.).

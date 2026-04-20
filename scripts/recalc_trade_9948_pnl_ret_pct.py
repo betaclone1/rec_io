@@ -6,6 +6,7 @@ Bankroll is stored in cents.
 
 Run: PYTHONPATH=/opt/rec_io_server python3 scripts/recalc_trade_9948_pnl_ret_pct.py
 """
+import argparse
 import os
 import sys
 
@@ -15,12 +16,20 @@ if _project_root not in sys.path:
 os.chdir(_project_root)
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.tenant_legacy_sql import legacy_users_trades
+from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 
 TRADE_ID = 9948
 
 
 def main():
-    conn = get_postgresql_connection()
+    parser = argparse.ArgumentParser(description=__doc__)
+    add_user_no_argument(parser)
+    args = parser.parse_args()
+    user_no = resolve_user_no(args)
+    trades_t = legacy_users_trades(user_no)
+
+    conn = get_postgresql_connection(tenant_user_no=user_no)
     if not conn:
         print("Failed to connect to database")
         sys.exit(1)
@@ -28,9 +37,9 @@ def main():
     try:
         with conn.cursor() as cur:
             cur.execute(
-                """
+                f"""
                 SELECT buy_price, position, sell_price, fees, bankroll, pnl, ret_pct, win_loss
-                FROM users.trades_0001 WHERE id = %s AND status = 'closed'
+                FROM {trades_t} WHERE id = %s AND status = 'closed'
                 """,
                 (TRADE_ID,),
             )
@@ -61,8 +70,8 @@ def main():
 
         with conn.cursor() as cur:
             cur.execute(
-                """
-                UPDATE users.trades_0001
+                f"""
+                UPDATE {trades_t}
                 SET pnl = %s, ret_pct = %s, win_loss = %s
                 WHERE id = %s
                 """,

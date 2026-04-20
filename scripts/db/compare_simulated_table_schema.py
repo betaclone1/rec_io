@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
-Compare users.trades_simulated_0001 (and related) between local and prod DB.
-Usage: PYTHONPATH=$(pwd) venv/bin/python scripts/compare_simulated_table_schema.py
+Compare ``users_<slot>.trades_simulated_<slot>`` between local and prod DB.
+Usage: PYTHONPATH=$(pwd) venv/bin/python scripts/db/compare_simulated_table_schema.py
 Uses DB_* env vars (or REC_DB_* from .env). Prod side requires REC_PROD_DB_HOST or REC_PROD_SSH_HOST.
+Slot from REC_USER_NO / REC_DEFAULT_USER_SCHEMA (same as default_pool_user_number).
 """
 import os
 import sys
@@ -21,6 +22,7 @@ for rec_k, db_k in _m:
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..', '..'))
 from backend.core.config.database import get_database_config
+from backend.core.port_config import default_pool_user_number
 
 from backend.core.prod_target import get_production_db_host
 
@@ -72,7 +74,9 @@ def main():
             file=sys.stderr,
         )
         sys.exit(1)
-    schema, table = 'users', 'trades_simulated_0001'
+    slot = default_pool_user_number()
+    schema = f"users_{slot}"
+    table = f"trades_simulated_{slot}"
 
     print("=== LOCAL (host=%s) ===" % local_host)
     try:

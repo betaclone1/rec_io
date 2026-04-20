@@ -9,7 +9,7 @@
 ## 1. Summary
 
 - **Root cause (fixed):** In `trade_manager.confirm_open_trade()`, after the fixed-point migration the code still referenced `taker_fill_cost_cents`, which was removed from `users.orders_0001`. When `_parse_dollars(taker_fill_cost_dollars)` returned `None`, the fallback used the undefined variable → **NameError** → confirm_open_trade crashed. The trade never got `status = 'open'` and ATS never received the `"open"` notification, so the trade stayed `pending` in ATS and was never moved to `active`. Only rows with `status = 'active'` are monitored (high/low updated); pending rows are not. Result: trades never tracked → high_price/low_price never set → at close `monitor_confirmed = FALSE`.
-- **Fix applied:** Removed the `taker_fill_cost_cents` fallback and added a safe fallback: when `total_cost_usd` is None, read existing `buy_price` from `users.trades_0001` so we do not overwrite with 0 and do not crash.
+- **Fix applied:** Removed the `taker_fill_cost_cents` fallback and added a safe fallback: when `total_cost_usd` is None, read existing `buy_price` from `users.trades_<slot>` so we do not overwrite with 0 and do not crash.
 
 ---
 
@@ -18,7 +18,7 @@
 ### 2.1 Lifecycle (live trade)
 
 1. **Insert (pending)**  
-   - trade_manager inserts into `users.trades_0001` with `status = 'pending'`, `monitor` (e.g. `mon_0001_10026`).  
+   - trade_manager inserts into `users.trades_<slot>` with `status = 'pending'`, `monitor` (e.g. `mon_0001_10026`).  
    - Calls `notify_active_trade_supervisor_direct(trade_id, ticket_id, "pending")` which:
      - Reads `monitor` from `trades_0001`, strips `mon_` → `0001_10026`.
      - Resolves port: `get_monitor_port("active_trade_supervisor", "0001_10026")`.
@@ -63,7 +63,7 @@
 
 ## 4. trade_manager – notification and confirm_open_trade
 
-- **Port resolution:** `notify_active_trade_supervisor_direct` reads `monitor` from `users.trades_0001` for the trade_id, strips `mon_` prefix, then `get_monitor_port("active_trade_supervisor", monitor_suffix)`. So the same monitor that owns the trade gets the notification.
+- **Port resolution:** `notify_active_trade_supervisor_direct` reads `monitor` from `users.trades_<slot>` for the trade_id, strips `mon_` prefix, then `get_monitor_port("active_trade_supervisor", monitor_suffix)`. So the same monitor that owns the trade gets the notification.
 - **When "open" is sent:**
   - From `update_trade_status(..., 'open')` (called by `confirm_open_trade` after it updates the trade to open).
   - From paper-trade path (background thread).
