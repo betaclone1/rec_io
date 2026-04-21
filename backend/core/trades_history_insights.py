@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from datetime import date as DateOnly
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
@@ -209,23 +209,18 @@ def _trade_closed_at_datetime_et(date_iso: str, closed_at: Any) -> Optional[date
     return None
 
 
-def _et_ceil_hour_bucket_key(dt: datetime) -> str:
+def _et_floor_hour_bucket_key(dt: datetime) -> str:
     """
-    Hourly chart ``period`` = **hour the market cycle closes at** (ET), derived from a
-    wall-clock trade timestamp:
+    Hourly chart ``period`` = **execution clock hour** in ET (matches the table ``Time`` hour):
 
-    - 12:54 → ``… 13:00`` (same as grouping 12:xx trades under the 13:00 column)
-    - 13:09 → ``… 14:00``
-    - Exactly ``…:00:00`` maps to that hour (13:00:00 → ``… 13:00``).
+    - 12:54 → ``… 12:00`` (12:xx trades in the 12:00 column)
+    - 13:09 → ``… 13:00``
     """
     if dt.tzinfo is None:
         zdt = dt.replace(tzinfo=_ET)
     else:
         zdt = dt.astimezone(_ET)
-    if zdt.minute != 0 or zdt.second != 0 or zdt.microsecond != 0:
-        base = zdt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-    else:
-        base = zdt.replace(minute=0, second=0, microsecond=0)
+    base = zdt.replace(minute=0, second=0, microsecond=0)
     return f"{base:%Y-%m-%d} {base.hour:02d}:00"
 
 
@@ -238,17 +233,16 @@ def _hourly_insights_bucket_key(
     """
     Hourly analysis period ``YYYY-MM-DD HH:00`` (ET).
 
-    The chart column is the **cycle close hour** (Kalshi-style): trades with execution
-    time in 12:xx belong under ``… 13:00``, trades in 13:xx under ``… 14:00``. We therefore
-    prefer **``date`` + ``time``** (execution), apply ceil-to-hour, then fall back to
-    ``closed_at`` if time is missing, then contract parsing.
+    The chart column matches the **execution hour** from ``date`` + ``time`` (same hour
+    digit as the table ``Time``): 13:xx → ``… 13:00``. Prefer execution, then ``closed_at``
+    if time is missing, then contract parsing.
     """
     ds = _trade_row_date_iso(date_s)
     dt = _trade_execution_datetime_et(ds, time_s)
     if dt is None:
         dt = _trade_closed_at_datetime_et(ds, closed_at)
     if dt is not None:
-        key = _et_ceil_hour_bucket_key(dt)
+        key = _et_floor_hour_bucket_key(dt)
         if _hourly_period_output_ok(key):
             return key
     return _hourly_period_key(ds, str(contract or ""))
