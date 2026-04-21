@@ -1756,7 +1756,7 @@
       });
       tradeHistorySyncAllMonitorTiles();
       tradeHistoryReactivateFiltersForCheckedMonitors();
-      applyFilters({ skipMonitorPrune: true });
+      applyFilters();
       savePreferences();
     }
 
@@ -1776,39 +1776,6 @@
       filtered = filterTradesByDay(filtered);
       filtered = filterTradesByPaperTrade(filtered);
       return filtered;
-    }
-
-    /**
-     * Uncheck monitor tiles that have no trades left under current filters (symbol, strategy, day, etc.).
-     * Uses the same pipeline as the table minus the monitor filter. No-op if `trades` is empty.
-     * @returns {boolean} true if any monitor checkbox was turned off
-     */
-    function tradeHistoryPruneMonitorsDisallowedByFilters() {
-      if (!Array.isArray(trades) || trades.length === 0) return false;
-      const host = document.getElementById('th-monitor-checkboxes-host');
-      if (!host) return false;
-      const base = tradeHistoryApplyFiltersWithoutMonitor(trades);
-      const seen = new Set();
-      for (const t of base) {
-        if (t.monitor != null && String(t.monitor).trim() !== '') {
-          seen.add(String(t.monitor).toLowerCase());
-        }
-      }
-      // No trade in the current (non-monitor) view carries a monitor id — do not mass-uncheck (empty
-      // payload, /trades omitting monitor, or filters excluding all rows would wipe selections).
-      if (seen.size === 0) return false;
-      let changed = false;
-      host.querySelectorAll('input[type="checkbox"][data-monitor-id]').forEach((cb) => {
-        if (!cb.checked) return;
-        const mid = cb.getAttribute('data-monitor-id');
-        if (!mid) return;
-        if (!seen.has(mid.toLowerCase())) {
-          cb.checked = false;
-          changed = true;
-        }
-      });
-      if (changed) tradeHistorySyncAllMonitorTiles();
-      return changed;
     }
 
     function tradeHistoryFindDataSymbolCheckbox(symbolRaw) {
@@ -2966,8 +2933,6 @@
       if (options.preserveMonitorPreview !== true) {
         tradeHistoryClearMonitorPreview();
       }
-      const skipMonitorPrune = options.skipMonitorPrune === true;
-      const prunedMonitors = skipMonitorPrune ? false : tradeHistoryPruneMonitorsDisallowedByFilters();
 
       const dateFilterPicker = document.getElementById('date-filter-picker');
       
@@ -2995,7 +2960,6 @@
       if (options.skipInsightsRefresh !== true) {
         refreshTradeHistoryInsights();
       }
-      if (prunedMonitors) savePreferences();
     }
 
     /** Bounds for GET /trades (server filters `date` text); null = full history (ALL / no range). */
@@ -3164,7 +3128,6 @@
         _thSetFetchBanner('', false);
         updateTradeHistoryLoadedMeta();
         applyFilters({
-          skipMonitorPrune: true,
           preserveMonitorPreview: true,
           skipInsightsRefresh: true,
         });
@@ -3670,13 +3633,13 @@
       const filterPaper = document.getElementById('filter-paper');
       if (filterLive) {
         filterLive.addEventListener('change', () => {
-          applyFilters({ skipMonitorPrune: true });
+          applyFilters();
           savePreferences();
         });
       }
       if (filterPaper) {
         filterPaper.addEventListener('change', () => {
-          applyFilters({ skipMonitorPrune: true });
+          applyFilters();
           savePreferences();
         });
       }
@@ -3684,7 +3647,7 @@
       const includeTestTradesCb = document.getElementById('include-test-trades');
       if (includeTestTradesCb) {
         includeTestTradesCb.addEventListener('change', () => {
-          applyFilters({ skipMonitorPrune: true });
+          applyFilters();
           savePreferences();
         });
       }
@@ -3920,7 +3883,7 @@
                   checkbox.checked = !checkbox.checked;
                   tradeHistorySyncMonitorTileForCheckbox(checkbox);
                   tradeHistoryReactivateFiltersForCheckedMonitors();
-                  applyFilters({ skipMonitorPrune: true });
+                  applyFilters();
                   savePreferences();
                 });
                 const midAttr = checkbox.getAttribute('data-monitor-id');
@@ -3954,7 +3917,7 @@
           if (e.target.matches('input[type="checkbox"][data-monitor-id]')) {
             tradeHistorySyncMonitorTileForCheckbox(e.target);
             tradeHistoryReactivateFiltersForCheckedMonitors();
-            applyFilters({ skipMonitorPrune: true });
+            applyFilters();
             savePreferences();
           }
         });
@@ -3968,7 +3931,7 @@
         if (checked) {
           tradeHistoryReactivateFiltersForCheckedMonitors();
         }
-        applyFilters({ skipMonitorPrune: true });
+        applyFilters();
         savePreferences();
       }
       function thMonitorAllNoneClick(ev, checked) {

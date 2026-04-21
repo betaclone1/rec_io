@@ -1938,6 +1938,13 @@
       await loadPerformanceData();
       await loadPerformancePanelCashBalance();
       await loadMonitors();
+      if (
+        window.monitorHistoryDisplay &&
+        window.monitorHistoryDisplay.isInitialized &&
+        typeof currentView !== 'undefined'
+      ) {
+        await window.monitorHistoryDisplay.refresh(currentView);
+      }
       applyCurrentSort();
       initializeMonitors();
     }

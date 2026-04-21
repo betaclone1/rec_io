@@ -2,7 +2,8 @@
  * MONITOR HISTORY DISPLAY
  * 
  * Calculates monitor statistics dynamically from raw trade data
- * Performs the same calculations as monitor_manager.py but in frontend
+ * Aligns with monitor_manager.py for live stats; when ``window.globalPaperMode`` is true,
+ * ``test_filter`` trades are included so dashboard tiles match global paper semantics.
  * Populates monitor tiles with calculated values instead of reading from DB
  */
 
@@ -19,6 +20,23 @@ class MonitorHistoryDisplay {
         this.updateMonitorTiles = this.updateMonitorTiles.bind(this);
         this.fetchTradesData = this.fetchTradesData.bind(this);
         this.fetchMonitorsData = this.fetchMonitorsData.bind(this);
+    }
+
+    /** True when trade row is a test/UAT trade (same truthiness patterns as dashboard). */
+    _tradeRowIsTestFilter(trade) {
+        const tf = trade && trade.test_filter;
+        return (
+            tf === true ||
+            tf === 'true' ||
+            tf === 1 ||
+            tf === '1' ||
+            tf === 'True'
+        );
+    }
+
+    /** Global paper mode: tile aggregates should count test_filter rows too. */
+    _includeTestFilterTradesForMonitorTiles() {
+        return typeof window !== 'undefined' && window.globalPaperMode === true;
     }
 
     /**
@@ -113,8 +131,7 @@ class MonitorHistoryDisplay {
         const tradesByMonitor = new Map();
         
         for (const trade of this.tradesData) {
-            // Skip test trades (same filter as monitor_manager.py)
-            if (trade.test_filter === true) {
+            if (!this._includeTestFilterTradesForMonitorTiles() && this._tradeRowIsTestFilter(trade)) {
                 continue;
             }
             
