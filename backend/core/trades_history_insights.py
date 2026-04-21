@@ -7,6 +7,7 @@ Filter semantics mirror desktop trade_history applyFilters (date bounds applied 
 from __future__ import annotations
 
 import re
+from datetime import date as DateOnly
 from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
@@ -117,6 +118,29 @@ _ET = ZoneInfo("America/New_York")
 _TIME_ONLY = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$")
 
 
+def _trade_row_date_iso(date_s: Any) -> str:
+    """
+    Normalize trade row ``date`` to ``YYYY-MM-DD`` for hourly bucketing.
+
+    PostgreSQL often returns ``date`` as ``datetime.date`` or ``datetime``; stringifying
+    the latter can yield ``YYYY-MM-DD HH:MM:SS+00:00``, which breaks ``YYYY-MM-DD``
+    matching and prevents time-only ``closed_at`` from pairing with the row date.
+    """
+    if date_s is None:
+        return ""
+    typ = type(date_s)
+    if typ is datetime:
+        if date_s.tzinfo is not None:
+            return date_s.astimezone(_ET).date().isoformat()
+        return date_s.date().isoformat()
+    if typ is DateOnly:
+        return date_s.isoformat()
+    s = str(date_s).strip()
+    if len(s) >= 10 and _ISO.match(s[:10]):
+        return s[:10]
+    return ""
+
+
 def _parse_datetime_flexible(raw: str, date_fallback: str) -> Optional[datetime]:
     """Parse DB/API datetime string; if time-only, combine with ``date_fallback`` (YYYY-MM-DD)."""
     s = raw.strip()
@@ -148,10 +172,10 @@ def _parse_datetime_flexible(raw: str, date_fallback: str) -> Optional[datetime]
 
 
 def _trade_close_datetime_et(
-    date_s: str, closed_at: Any, time_s: Any
+    date_iso: str, closed_at: Any, time_s: Any
 ) -> Optional[datetime]:
     """Best-effort America/New_York instant for a closed trade (for hourly chart buckets)."""
-    d = (date_s or "").strip()
+    d = (date_iso or "").strip()
     if not _ISO.match(d):
         d = ""
 
@@ -199,7 +223,7 @@ def _et_ceil_hour_bucket_key(dt: datetime) -> str:
 
 
 def _hourly_insights_bucket_key(
-    date_s: str,
+    date_s: Any,
     contract: str,
     closed_at: Any,
     time_s: Any,
@@ -211,12 +235,13 @@ def _hourly_insights_bucket_key(
     so trades after 13:00 still roll into the 14:00 column. If close is unavailable,
     fall back to contract/ticker parsing (``_hourly_period_key``).
     """
-    dt = _trade_close_datetime_et(date_s, closed_at, time_s)
+    ds = _trade_row_date_iso(date_s)
+    dt = _trade_close_datetime_et(ds, closed_at, time_s)
     if dt is not None:
         key = _et_ceil_hour_bucket_key(dt)
         if _hourly_period_output_ok(key):
             return key
-    return _hourly_period_key(str(date_s or "").strip(), str(contract or ""))
+    return _hourly_period_key(ds, str(contract or ""))
 
 
 def _hourly_period_key(date_str: str, contract: str) -> Optional[str]:
@@ -460,7 +485,7 @@ def run_trade_history_insights(
         groups: Dict[str, List[Tuple[Any, Any]]] = {}
         for date_s, contract, pnl, ret_pct, closed_at, time_s in cursor.fetchall():
             key = _hourly_insights_bucket_key(
-                str(date_s or ""),
+                date_s,
                 str(contract or ""),
                 closed_at,
                 time_s,
