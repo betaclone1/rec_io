@@ -7,7 +7,9 @@ Filter semantics mirror desktop trade_history applyFilters (date bounds applied 
 from __future__ import annotations
 
 import re
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Sequence, Tuple
+from zoneinfo import ZoneInfo
 
 from fastapi import HTTPException
 
@@ -108,6 +110,113 @@ _HOURLY_CONTRACT_CLOCK = re.compile(
 # Kalshi-style suffix …-T1230 (HHMM ET) or …-T19 (hour only)
 _HOURLY_KALSHI_HHMM = re.compile(r"T(?P<hhmm>[01][0-9][0-5][0-9])\b")
 _HOURLY_KALSHI_HH = re.compile(r"T(?P<hh>(?:0[1-9]|1[0-9]|2[0-3]))\b")
+
+
+_ET = ZoneInfo("America/New_York")
+# ``closed_at`` may be full timestamp or time-only (combine with ``date``).
+_TIME_ONLY = re.compile(r"^\d{1,2}:\d{2}(:\d{2})?(\.\d+)?$")
+
+
+def _parse_datetime_flexible(raw: str, date_fallback: str) -> Optional[datetime]:
+    """Parse DB/API datetime string; if time-only, combine with ``date_fallback`` (YYYY-MM-DD)."""
+    s = raw.strip()
+    if not s:
+        return None
+    if _ISO.match(date_fallback) and _TIME_ONLY.match(s.split(".")[0]):
+        tpart = s.split(".")[0]
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(f"{date_fallback} {tpart}", fmt)
+            except ValueError:
+                continue
+        return None
+    iso = s.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(iso)
+    except ValueError:
+        pass
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M:%S.%f",
+        "%Y-%m-%d %H:%M",
+    ):
+        try:
+            return datetime.strptime(s[:32], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _trade_close_datetime_et(
+    date_s: str, closed_at: Any, time_s: Any
+) -> Optional[datetime]:
+    """Best-effort America/New_York instant for a closed trade (for hourly chart buckets)."""
+    d = (date_s or "").strip()
+    if not _ISO.match(d):
+        d = ""
+
+    if isinstance(closed_at, datetime):
+        dt = closed_at
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=_ET)
+        return dt.astimezone(_ET)
+
+    if closed_at is not None and str(closed_at).strip():
+        raw = str(closed_at).strip()
+        dt = _parse_datetime_flexible(raw, d) if d else _parse_datetime_flexible(raw, "")
+        if dt is None and d:
+            dt = _parse_datetime_flexible(raw, "")
+        if dt is not None:
+            if dt.tzinfo is None:
+                return dt.replace(tzinfo=_ET)
+            return dt.astimezone(_ET)
+
+    if d and time_s is not None and str(time_s).strip():
+        tpart = str(time_s).strip().split(".")[0]
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+            try:
+                return datetime.strptime(f"{d} {tpart}", fmt).replace(tzinfo=_ET)
+            except ValueError:
+                continue
+    return None
+
+
+def _et_ceil_hour_bucket_key(dt: datetime) -> str:
+    """
+    Label hour for hourly analysis bars: map a close in (13:00, 14:00] to ``… 14:00`` so
+    intra-hour trades appear under the next top-of-hour before that hour's "cycle" is done.
+    Exact top-of-hour closes stay on that hour (13:00:00 → 13:00).
+    """
+    if dt.tzinfo is None:
+        zdt = dt.replace(tzinfo=_ET)
+    else:
+        zdt = dt.astimezone(_ET)
+    if zdt.minute != 0 or zdt.second != 0 or zdt.microsecond != 0:
+        base = zdt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    else:
+        base = zdt.replace(minute=0, second=0, microsecond=0)
+    return f"{base:%Y-%m-%d} {base.hour:02d}:00"
+
+
+def _hourly_insights_bucket_key(
+    date_s: str,
+    contract: str,
+    closed_at: Any,
+    time_s: Any,
+) -> Optional[str]:
+    """
+    Hourly analysis period ``YYYY-MM-DD HH:00`` (ET).
+
+    Prefer **close time** (``closed_at`` or ``date``+``time``) with ceil-to-hour semantics
+    so trades after 13:00 still roll into the 14:00 column. If close is unavailable,
+    fall back to contract/ticker parsing (``_hourly_period_key``).
+    """
+    dt = _trade_close_datetime_et(date_s, closed_at, time_s)
+    if dt is not None:
+        key = _et_ceil_hour_bucket_key(dt)
+        if _hourly_period_output_ok(key):
+            return key
+    return _hourly_period_key(str(date_s or "").strip(), str(contract or ""))
 
 
 def _hourly_period_key(date_str: str, contract: str) -> Optional[str]:
@@ -342,15 +451,20 @@ def run_trade_history_insights(
     if interval == "hourly":
         cursor.execute(
             f"""
-            SELECT t.date, t.contract, t.pnl, t.ret_pct
+            SELECT t.date, t.contract, t.pnl, t.ret_pct, t.closed_at, t."time"
             FROM ({union_sql}) AS t
             {where_sql}
             """,
             tuple(filt_params),
         )
         groups: Dict[str, List[Tuple[Any, Any]]] = {}
-        for date_s, contract, pnl, ret_pct in cursor.fetchall():
-            key = _hourly_period_key(str(date_s or ""), str(contract or ""))
+        for date_s, contract, pnl, ret_pct, closed_at, time_s in cursor.fetchall():
+            key = _hourly_insights_bucket_key(
+                str(date_s or ""),
+                str(contract or ""),
+                closed_at,
+                time_s,
+            )
             if not key:
                 continue
             groups.setdefault(key, []).append(
