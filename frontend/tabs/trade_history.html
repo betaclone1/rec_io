@@ -2523,6 +2523,10 @@
         tr.setAttribute('data-monitor-id', mid);
         tr.addEventListener('mouseenter', () => tradeHistorySetMonitorCrossHover(mid, true));
         tr.addEventListener('mouseleave', () => tradeHistorySetMonitorCrossHover(mid, false));
+        tr.addEventListener('click', (ev) => {
+          ev.stopPropagation();
+          tradeHistorySoloMonitorById(mid);
+        });
         const tdNum = document.createElement('td');
         tdNum.textContent = tradeHistoryMonitorNumForSummary(mid);
         tdNum.title = 'Mon ' + tdNum.textContent;
