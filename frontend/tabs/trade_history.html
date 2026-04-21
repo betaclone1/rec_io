@@ -2841,17 +2841,52 @@
     }
 
     let _thTradeLossTooltipBound = false;
+    /** Last `data-monitor-id` under the pointer while over the trade table (avoid re-hover spam on pointermove). */
+    let _thTradeRowCrossHoverLastMid = undefined;
+
+    function tradeHistoryOnTradeTablePointerMoveMonitorCrossHover(ev) {
+      const tr = ev.target.closest && ev.target.closest('#trade-log-table tbody tr');
+      const mid = tr && tr.getAttribute('data-monitor-id');
+      if (mid) {
+        if (_thTradeRowCrossHoverLastMid !== mid) {
+          _thTradeRowCrossHoverLastMid = mid;
+          tradeHistorySetMonitorCrossHover(mid, true);
+        }
+        return;
+      }
+      if (_thTradeRowCrossHoverLastMid !== undefined) {
+        _thTradeRowCrossHoverLastMid = undefined;
+        tradeHistorySetMonitorCrossHover(null, false);
+      }
+    }
+
     function tradeHistoryEnsureTradeLossTooltipListeners() {
       if (_thTradeLossTooltipBound) return;
       const tbl = document.getElementById('trade-log-table');
       if (!tbl) return;
       _thTradeLossTooltipBound = true;
-      tbl.addEventListener('pointermove', tradeHistoryOnTradeTablePointerMoveLossTip);
-      tbl.addEventListener('pointerleave', tradeHistoryHideLossDetailTooltip);
+      function onTradeTablePointerMove(ev) {
+        tradeHistoryOnTradeTablePointerMoveLossTip(ev);
+        tradeHistoryOnTradeTablePointerMoveMonitorCrossHover(ev);
+      }
+      function onTradeTablePointerLeave() {
+        tradeHistoryHideLossDetailTooltip();
+        _thTradeRowCrossHoverLastMid = undefined;
+        tradeHistorySetMonitorCrossHover(null, false);
+      }
+      tbl.addEventListener('pointermove', onTradeTablePointerMove);
+      tbl.addEventListener('pointerleave', onTradeTablePointerLeave);
     }
 
     function renderTrades(tradesToRender) {
       tradeHistoryHideLossDetailTooltip();
+      _thTradeRowCrossHoverLastMid = undefined;
+      if (_thMonitorCrossHoverLeaveTimer) {
+        clearTimeout(_thMonitorCrossHoverLeaveTimer);
+        _thMonitorCrossHoverLeaveTimer = null;
+      }
+      _thMonitorCrossHoverActiveId = null;
+      tradeHistoryApplyMonitorCrossHover(null);
       const tbody = document.querySelector('#trade-log-table tbody');
       tbody.innerHTML = '';
       if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
@@ -2914,6 +2949,10 @@
         const lossTitle = tradeHistoryLosingTradeRowTitle(trade);
         if (lossTitle) {
           tr.dataset.thLossDetail = lossTitle;
+        }
+        const monRaw = trade.monitor;
+        if (monRaw != null && String(monRaw).trim() !== '') {
+          tr.setAttribute('data-monitor-id', String(monRaw).trim());
         }
         tbody.appendChild(tr);
       }

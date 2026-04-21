@@ -1564,6 +1564,13 @@
         }
 
         function renderTrades(tradesToRender) {
+            _thmTradeRowCrossHoverLastMid = undefined;
+            if (_thmMonitorCrossHoverLeaveTimer) {
+                clearTimeout(_thmMonitorCrossHoverLeaveTimer);
+                _thmMonitorCrossHoverLeaveTimer = null;
+            }
+            _thmMonitorCrossHoverActiveId = null;
+            thmApplyMonitorCrossHover(null);
             const tbody = document.querySelector('#trade-log-table tbody');
             tbody.innerHTML = '';
             if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
@@ -1626,6 +1633,10 @@
                     <td>${trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Math.round(Number(trade.momentum_percentile)) : ''}</td>
                     <td>${plusSign(trade.win_loss)}</td>
                 `;
+                const monRaw = trade.monitor;
+                if (monRaw != null && String(monRaw).trim() !== '') {
+                    tr.setAttribute('data-monitor-id', String(monRaw).trim());
+                }
                 tbody.appendChild(tr);
             }
             
@@ -2031,6 +2042,8 @@
 
         let _thmMonitorCrossHoverLeaveTimer = null;
         let _thmMonitorCrossHoverActiveId = null;
+        let _thmTradeTableCrossHoverBound = false;
+        let _thmTradeRowCrossHoverLastMid = undefined;
 
         function thmResetAllMonitorRetBars() {
             document.querySelectorAll('#thm-monitor-summary-table tbody tr[data-monitor-id]').forEach((row) => {
@@ -2075,6 +2088,34 @@
                 _thmMonitorCrossHoverActiveId = null;
                 thmApplyMonitorCrossHover(null);
             }, 45);
+        }
+
+        function thmOnTradeTablePointerMoveMonitorCrossHover(ev) {
+            const tr = ev.target.closest && ev.target.closest('#trade-log-table tbody tr');
+            const mid = tr && tr.getAttribute('data-monitor-id');
+            if (mid) {
+                if (_thmTradeRowCrossHoverLastMid !== mid) {
+                    _thmTradeRowCrossHoverLastMid = mid;
+                    thmSetMonitorCrossHover(mid, true);
+                }
+                return;
+            }
+            if (_thmTradeRowCrossHoverLastMid !== undefined) {
+                _thmTradeRowCrossHoverLastMid = undefined;
+                thmSetMonitorCrossHover(null, false);
+            }
+        }
+
+        function thmEnsureTradeTableMonitorCrossHoverListeners() {
+            if (_thmTradeTableCrossHoverBound) return;
+            const tbl = document.getElementById('trade-log-table');
+            if (!tbl) return;
+            _thmTradeTableCrossHoverBound = true;
+            tbl.addEventListener('pointermove', thmOnTradeTablePointerMoveMonitorCrossHover);
+            tbl.addEventListener('pointerleave', () => {
+                _thmTradeRowCrossHoverLastMid = undefined;
+                thmSetMonitorCrossHover(null, false);
+            });
         }
 
         function thmSoloMonitorById(monitorId) {
@@ -3405,7 +3446,8 @@
         // Initialize when DOM is loaded
         document.addEventListener('DOMContentLoaded', async function() {
             console.log('Mobile trade history initialized');
-            
+            thmEnsureTradeTableMonitorCrossHoverListeners();
+
             await loadStrategyOptions();
             await loadSymbolOptions();
             await loadMonitorOptions();
