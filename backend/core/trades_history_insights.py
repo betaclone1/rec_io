@@ -171,10 +171,22 @@ def _parse_datetime_flexible(raw: str, date_fallback: str) -> Optional[datetime]
     return None
 
 
-def _trade_close_datetime_et(
-    date_iso: str, closed_at: Any, time_s: Any
-) -> Optional[datetime]:
-    """Best-effort America/New_York instant for a closed trade (for hourly chart buckets)."""
+def _trade_execution_datetime_et(date_iso: str, time_s: Any) -> Optional[datetime]:
+    """Trade execution instant ET from calendar ``date`` + row ``time`` (what the UI shows as Time)."""
+    d = (date_iso or "").strip()
+    if not _ISO.match(d) or time_s is None or not str(time_s).strip():
+        return None
+    tpart = str(time_s).strip().split(".")[0]
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(f"{d} {tpart}", fmt).replace(tzinfo=_ET)
+        except ValueError:
+            continue
+    return None
+
+
+def _trade_closed_at_datetime_et(date_iso: str, closed_at: Any) -> Optional[datetime]:
+    """Best-effort ET instant from ``closed_at`` only (timestamp or time-of-day + row date)."""
     d = (date_iso or "").strip()
     if not _ISO.match(d):
         d = ""
@@ -194,22 +206,17 @@ def _trade_close_datetime_et(
             if dt.tzinfo is None:
                 return dt.replace(tzinfo=_ET)
             return dt.astimezone(_ET)
-
-    if d and time_s is not None and str(time_s).strip():
-        tpart = str(time_s).strip().split(".")[0]
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
-            try:
-                return datetime.strptime(f"{d} {tpart}", fmt).replace(tzinfo=_ET)
-            except ValueError:
-                continue
     return None
 
 
 def _et_ceil_hour_bucket_key(dt: datetime) -> str:
     """
-    Label hour for hourly analysis bars: map a close in (13:00, 14:00] to ``… 14:00`` so
-    intra-hour trades appear under the next top-of-hour before that hour's "cycle" is done.
-    Exact top-of-hour closes stay on that hour (13:00:00 → 13:00).
+    Hourly chart ``period`` = **hour the market cycle closes at** (ET), derived from a
+    wall-clock trade timestamp:
+
+    - 12:54 → ``… 13:00`` (same as grouping 12:xx trades under the 13:00 column)
+    - 13:09 → ``… 14:00``
+    - Exactly ``…:00:00`` maps to that hour (13:00:00 → ``… 13:00``).
     """
     if dt.tzinfo is None:
         zdt = dt.replace(tzinfo=_ET)
@@ -231,12 +238,15 @@ def _hourly_insights_bucket_key(
     """
     Hourly analysis period ``YYYY-MM-DD HH:00`` (ET).
 
-    Prefer **close time** (``closed_at`` or ``date``+``time``) with ceil-to-hour semantics
-    so trades after 13:00 still roll into the 14:00 column. If close is unavailable,
-    fall back to contract/ticker parsing (``_hourly_period_key``).
+    The chart column is the **cycle close hour** (Kalshi-style): trades with execution
+    time in 12:xx belong under ``… 13:00``, trades in 13:xx under ``… 14:00``. We therefore
+    prefer **``date`` + ``time``** (execution), apply ceil-to-hour, then fall back to
+    ``closed_at`` if time is missing, then contract parsing.
     """
     ds = _trade_row_date_iso(date_s)
-    dt = _trade_close_datetime_et(ds, closed_at, time_s)
+    dt = _trade_execution_datetime_et(ds, time_s)
+    if dt is None:
+        dt = _trade_closed_at_datetime_et(ds, closed_at)
     if dt is not None:
         key = _et_ceil_hour_bucket_key(dt)
         if _hourly_period_output_ok(key):
