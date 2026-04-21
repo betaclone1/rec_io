@@ -46,6 +46,7 @@ from backend.core.tenant_legacy_sql import (
     legacy_users_monitor_list,
     legacy_users_trades,
 )
+from backend.core.auto_entry_settings_store import monitor_list_flip_columns_available
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host
 from backend.core.time_eastern import now_est as wall_now, EST
@@ -3078,30 +3079,100 @@ def update_active_trade_monitoring_data():
                 except (TypeError, ValueError):
                     pnl_val = tid_int = None
                 if pnl_val is not None and tid_int is not None:
+                    mark_sell_price = float(position_value)
+                    buy_val = buy_price_float * qty
+                    roi_pct_val = None
+                    if buy_val > 0:
+                        roi_pct_val = round((pnl_val / buy_val) * 100.0, 5)
+                    ret_pct_val = None
+                    ret_pct_base_val = None
+                    try:
+                        cursor.execute(
+                            f"""
+                            SELECT bankroll, mtb_base_value
+                            FROM users.{trades_tbl}
+                            WHERE id = %s AND LOWER(TRIM(status)) = 'open'
+                            """,
+                            (tid_int,),
+                        )
+                        br_row = cursor.fetchone()
+                        if br_row:
+                            bankroll = br_row[0]
+                            mtb_base = br_row[1] if len(br_row) > 1 else None
+                            if bankroll is not None:
+                                try:
+                                    brf = float(bankroll)
+                                    if brf > 0:
+                                        ret_pct_val = round((pnl_val / (brf / 100.0)) * 100, 5)
+                                except (TypeError, ValueError):
+                                    pass
+                            if mtb_base is not None:
+                                try:
+                                    mbf = float(mtb_base)
+                                    if mbf > 0:
+                                        ret_pct_base_val = round(
+                                            (pnl_val / (mbf / 100.0)) * 100, 5
+                                        )
+                                except (TypeError, ValueError):
+                                    pass
+                    except Exception as br_e:
+                        log_debug(
+                            f"Open-trade mirror: bankroll read skipped trade_id={trade_id}: {br_e}"
+                        )
+
                     cursor.execute("SAVEPOINT ats_pnl_mirror")
                     try:
-                        try:
-                            cursor.execute(
-                                f"""
-                                UPDATE users.{trades_tbl}
-                                SET pnl = %s,
-                                    ats_updated = NOW()
-                                WHERE id = %s AND LOWER(TRIM(status)) = 'open'
-                                """,
-                                (pnl_val, tid_int),
-                            )
-                        except Exception as e2:
-                            if "ats_updated" in str(e2).lower() or getattr(e2, "pgcode", None) == "42703":
+                        mirror_sets = (
+                            (
+                                "pnl = %s, sell_price = %s, ret_pct = %s, ret_pct_base = %s, "
+                                "roi_pct = %s, ats_updated = NOW()",
+                                (
+                                    pnl_val,
+                                    mark_sell_price,
+                                    ret_pct_val,
+                                    ret_pct_base_val,
+                                    roi_pct_val,
+                                    tid_int,
+                                ),
+                            ),
+                            (
+                                "pnl = %s, sell_price = %s, ret_pct = %s, ret_pct_base = %s, roi_pct = %s",
+                                (
+                                    pnl_val,
+                                    mark_sell_price,
+                                    ret_pct_val,
+                                    ret_pct_base_val,
+                                    roi_pct_val,
+                                    tid_int,
+                                ),
+                            ),
+                            (
+                                "pnl = %s, sell_price = %s, ret_pct = %s",
+                                (pnl_val, mark_sell_price, ret_pct_val, tid_int),
+                            ),
+                            ("pnl = %s", (pnl_val, tid_int)),
+                        )
+                        applied = False
+                        for set_clause, params in mirror_sets:
+                            try:
                                 cursor.execute(
                                     f"""
                                     UPDATE users.{trades_tbl}
-                                    SET pnl = %s
+                                    SET {set_clause}
                                     WHERE id = %s AND LOWER(TRIM(status)) = 'open'
                                     """,
-                                    (pnl_val, tid_int),
+                                    params,
                                 )
-                            else:
+                                applied = True
+                                break
+                            except Exception as e2:
+                                if getattr(e2, "pgcode", None) == "42703":
+                                    continue
                                 raise
+                        if not applied:
+                            raise RuntimeError(
+                                "ats_open_trade_mirror: no compatible UPDATE variant succeeded"
+                            )
                         cursor.execute("RELEASE SAVEPOINT ats_pnl_mirror")
                     except Exception as sync_e:
                         try:
@@ -4534,6 +4605,467 @@ def _defer_unified_ats_close_followup(
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _ats_monitor_flip_boolean_strictly_true(val: Any) -> bool:
+    """
+    Flip sell must only run when the monitor row has an explicit PostgreSQL TRUE.
+    NULL, FALSE, or any other value never enables flip sell.
+    """
+    return val is True
+
+
+def parse_flip_sell_multiplier(mult_raw: Optional[Any]) -> float:
+    """
+    Parse monitor flip_sell_*_mult (e.g. '1', '2', '3', '1x', '2x') to a positive float.
+    Defaults to 1.0 when unset/empty (only used after the monitor flag is already TRUE).
+    """
+    if mult_raw is None:
+        return 1.0
+    s = str(mult_raw).strip().lower()
+    if not s:
+        return 1.0
+    if s.endswith("x"):
+        s = s[:-1].strip()
+    try:
+        m = float(s)
+    except (TypeError, ValueError):
+        return 1.0
+    if m <= 0:
+        return 1.0
+    return m
+
+
+def _ats_trade_log_entry_method(trade_id: int) -> Optional[str]:
+    """Tenant trades row entry_method for flip-chain guard."""
+    conn = get_trades_db_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT entry_method FROM {legacy_users_trades(ctx_user())} WHERE id = %s",
+                (int(trade_id),),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            em = row[0]
+            return str(em).strip().lower() if em is not None else None
+    except Exception as e:
+        log_debug(f"[FLIP SELL] entry_method lookup failed trade_id={trade_id}: {e}")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _defer_unified_ats_flip_sell_followup(
+    ticket_id: str, log_message: str, notification_data: dict
+) -> None:
+    """trade_logger + preferences notify off the unified ATS flip-sell hot path (same idea as AES)."""
+    slot = ctx_user()
+
+    def _run():
+        try:
+            from backend.util.trade_logger import log_trade_event
+
+            log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
+        except Exception:
+            pass
+        try:
+            from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+            if use_trading_redis_comms():
+                publish_preferences_event(
+                    "automated_trade_triggered",
+                    notification_data,
+                    tenant_user_no=slot,
+                )
+        except Exception:
+            pass
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
+def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any]]:
+    """
+    Returns (flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult, paper_trade)
+    or None if columns are absent or the monitor row cannot be read.
+    """
+    conn = get_postgresql_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            if not monitor_list_flip_columns_available(cur):
+                return None
+            cur.execute(
+                f"""
+                SELECT flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult, paper_trade
+                FROM {legacy_users_monitor_list(ctx_user())}
+                WHERE id = %s
+                """,
+                (ctx_mid(),),
+            )
+            row = cur.fetchone()
+            return tuple(row) if row else None
+    except Exception as e:
+        log_debug(f"[FLIP SELL] monitor flip row read failed: {e}")
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def _ats_get_loss_prevention_one_contract_flag() -> bool:
+    """True when monitor loss_prevention is one_contract and toggle allows it (same semantics as AES)."""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT loss_prevention, loss_prevention_toggle
+                FROM {legacy_users_monitor_list(ctx_user())}
+                WHERE id = %s
+                """,
+                (ctx_mid(),),
+            )
+            result = cursor.fetchone()
+        conn.close()
+        if not result:
+            return False
+        loss_prevention, lp_toggle = result[0], result[1]
+        toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+        if not toggle_on:
+            return False
+        if isinstance(loss_prevention, str):
+            return loss_prevention.strip().lower() == "one_contract"
+        return False
+    except Exception as e:
+        log_debug(f"[FLIP SELL] loss_prevention read failed: {e}")
+        return False
+
+
+def _ats_get_multiplier_from_monitor() -> float:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT multiplier FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            result = cursor.fetchone()
+        conn.close()
+        if result and result[0] is not None:
+            return float(result[0])
+    except Exception as e:
+        log_debug(f"[FLIP SELL] multiplier read failed: {e}")
+    return 1.0
+
+
+def _ats_get_bankroll_allotment() -> Optional[Any]:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT bankroll_allotment_total FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            result = cursor.fetchone()
+        conn.close()
+        if result:
+            return result[0]
+    except Exception as e:
+        log_debug(f"[FLIP SELL] bankroll_allotment read failed: {e}")
+    return None
+
+
+def _ats_get_paper_trade_from_monitor() -> bool:
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT paper_trade FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            result = cursor.fetchone()
+        conn.close()
+        if result and result[0] is not None:
+            v = result[0]
+            if isinstance(v, str):
+                return v.strip().lower() in ("true", "1", "yes")
+            return bool(v)
+    except Exception as e:
+        log_debug(f"[FLIP SELL] paper_trade read failed: {e}")
+    return False
+
+
+def trigger_flip_sell_open_after_auto_stop(
+    trade: Dict[str, Any],
+    trigger_reason: str,
+    pos_closed: int,
+    inverted_side: str,
+) -> bool:
+    """
+    After a successful auto-stop close enqueue, optionally open a flip leg on the same monitor.
+
+    **Strict:** only ``stop_loss_floor`` / ``probability_auto_stop`` plus matching monitor
+    ``flip_sell_floor`` / ``flip_sell_prob`` must be the PostgreSQL boolean TRUE (not NULL).
+    """
+    tr = (trigger_reason or "").strip().lower()
+    if tr not in ("stop_loss_floor", "probability_auto_stop"):
+        return False
+
+    row = _ats_fetch_flip_sell_monitor_row()
+    if row is None:
+        log_debug("[FLIP SELL] skip: flip columns absent or monitor row unavailable")
+        return False
+
+    flip_prob, prob_mult_raw, flip_floor, floor_mult_raw, _paper_col = row
+    if tr == "stop_loss_floor":
+        if not _ats_monitor_flip_boolean_strictly_true(flip_floor):
+            log_debug(
+                f"[FLIP SELL] skip floor stop: flip_sell_floor is not TRUE for monitor {ctx_mid()}"
+            )
+            return False
+        mult_raw = floor_mult_raw
+    else:
+        if not _ats_monitor_flip_boolean_strictly_true(flip_prob):
+            log_debug(
+                f"[FLIP SELL] skip prob stop: flip_sell_prob is not TRUE for monitor {ctx_mid()}"
+            )
+            return False
+        mult_raw = prob_mult_raw
+
+    tid = trade.get("trade_id")
+    try:
+        tid_int = int(tid) if tid is not None else None
+    except (TypeError, ValueError):
+        tid_int = None
+    if tid_int is None:
+        return False
+
+    em = _ats_trade_log_entry_method(tid_int)
+    if em == "flip_sell":
+        log_debug(f"[FLIP SELL] skip: trade {tid_int} already flip_sell entry_method (no chain)")
+        return False
+
+    mult = parse_flip_sell_multiplier(mult_raw)
+    flip_count = max(1, int(round(float(pos_closed) * mult)))
+    if flip_count < 1:
+        return False
+
+    if not trade.get("ticker") or trade.get("strike") is None:
+        log_debug(f"[FLIP SELL] skip trade_id={tid}: missing ticker or strike")
+        return False
+
+    current_close_price = trade.get("current_close_price")
+    symbol_close = trade.get("current_symbol_price")
+    if current_close_price is None or symbol_close is None:
+        log_debug(f"[FLIP SELL] skip trade_id={tid}: missing price snapshot for open")
+        return False
+
+    try:
+        flip_buy_price = float(current_close_price)
+    except (TypeError, ValueError):
+        log_debug(f"[FLIP SELL] skip trade_id={tid}: invalid current_close_price")
+        return False
+
+    conn = None
+    try:
+        symbol, market = get_current_monitor_symbol_and_market()
+        mnorm = (market or "").strip().lower()
+        if mnorm in ("15m", "hourly"):
+            conn = get_db_connection()
+            try:
+                ok, reason = evaluate_pipeline_gate_conn(
+                    conn,
+                    exchange="kalshi",
+                    market=mnorm,
+                    symbol=str(symbol or "").upper(),
+                )
+            finally:
+                conn.close()
+                conn = None
+            if not ok:
+                log(
+                    f"[FLIP SELL] 🚫 BLOCKED by pipeline gate symbol={symbol} market={mnorm} "
+                    f"reason={reason} trade_id={tid}"
+                )
+                return False
+    except Exception as gate_err:
+        log(f"[FLIP SELL] 🚫 BLOCKED by pipeline gate check error: {gate_err} trade_id={tid}")
+        try:
+            if conn:
+                conn.close()
+        except Exception:
+            pass
+        return False
+
+    import random
+
+    ticket_id = f"TICKET-{random.getrandbits(32):08x}-{int(time.time() * 1000)}"
+    now = wall_now()
+    eastern_date = now.strftime("%Y-%m-%d")
+    eastern_time = now.strftime("%H:%M:%S")
+    current_symbol = get_current_monitor_symbol()
+    trade_strategy = get_trade_strategy()
+    paper_trade = _ats_get_paper_trade_from_monitor()
+    loss_prevention_flag = _ats_get_loss_prevention_one_contract_flag()
+    position_out = 1 if loss_prevention_flag else flip_count
+    bankroll_allotment = _ats_get_bankroll_allotment()
+    if bankroll_allotment is None:
+        log(f"[FLIP SELL] skip trade_id={tid}: no bankroll_allotment_total on monitor")
+        return False
+
+    monitor_key = trade.get("monitor") or f"mon_{ctx_user()}_{ctx_mid()}"
+    prob_out = trade.get("current_probability")
+    diff_out = trade.get("diff")
+
+    open_payload: Dict[str, Any] = {
+        "ticket_id": ticket_id,
+        "status": "pending",
+        "date": eastern_date,
+        "time": eastern_time,
+        "symbol": current_symbol,
+        "exchange": "kalshi",
+        "trade_strategy": trade_strategy,
+        "contract": trade.get("contract"),
+        "strike": trade.get("strike"),
+        "side": inverted_side,
+        "ticker": trade.get("ticker"),
+        "prob": prob_out,
+        "diff": diff_out,
+        "buy_price": flip_buy_price,
+        "position": position_out,
+        "count_fp": f"{float(position_out):.2f}",
+        "monitor": monitor_key,
+        "bankroll_allotment_total": bankroll_allotment,
+        "entry_method": "flip_sell",
+        "loss_prevention": loss_prevention_flag,
+        "multiplier": _ats_get_multiplier_from_monitor(),
+        "paper_trade": paper_trade,
+    }
+
+    log_message = (
+        f"FLIP_SELL OPEN | trigger={tr} | {trade.get('ticker')} | {trade.get('strike')} | "
+        f"side={inverted_side} | count={position_out} (closed={pos_closed} mult={mult}) | "
+        f"buy_price={flip_buy_price}"
+    )
+    notification_data = {
+        "strike": trade.get("strike"),
+        "side": inverted_side,
+        "ticker": trade.get("ticker"),
+        "buy_price": flip_buy_price,
+        "probability": prob_out,
+        "contract": trade.get("contract"),
+        "position": position_out,
+        "entry_method": "flip_sell",
+        "auto_stop_trigger": tr,
+    }
+
+    try:
+        from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
+
+        use_redis = use_trading_redis_comms()
+        if use_redis and publish_trade_manager_command(
+            "add_trade",
+            open_payload,
+            "active_trade_supervisor",
+            correlation_id=ticket_id,
+            tenant_user_no=ctx_user(),
+        ):
+            if ATS_UNIFIED_POOL:
+                log(
+                    f"[FLIP SELL] OPEN enqueued (Redis) trade_id={tid} ticker={trade.get('ticker')} "
+                    f"position={position_out} trigger={tr}"
+                )
+                _defer_unified_ats_flip_sell_followup(ticket_id, log_message, notification_data)
+                return True
+
+            from backend.util.trade_logger import log_trade_event
+
+            log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
+            try:
+                from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc
+
+                if _use_trc():
+                    publish_preferences_event(
+                        "automated_trade_triggered",
+                        notification_data,
+                        tenant_user_no=ctx_user(),
+                    )
+            except Exception:
+                pass
+            log(
+                f"[FLIP SELL] OPEN enqueued (Redis) trade_id={tid} ticker={trade.get('ticker')} "
+                f"position={position_out} trigger={tr}"
+            )
+            return True
+
+        if not ATS_HTTP_FALLBACK_ENABLED:
+            log(
+                f"[FLIP SELL] Redis open enqueue unavailable trade_id={tid}; "
+                "ATS_HTTP_FALLBACK_ENABLED=0 so HTTP fallback is disabled"
+            )
+            return False
+
+        tm_port = scoped_trade_manager_http_port()
+        url = get_service_url(tm_port) + "/trades"
+        resp = requests.post(url, json=open_payload, timeout=10)
+        if resp.status_code in (200, 201):
+            try:
+                body = resp.json()
+                if isinstance(body, dict) and body.get("error"):
+                    log(f"[FLIP SELL] Open rejected trade_id={tid}: {body.get('error')}")
+                    return False
+            except Exception:
+                pass
+            from backend.util.trade_logger import log_trade_event
+
+            log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
+            try:
+                from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc2
+
+                if _use_trc2():
+                    publish_preferences_event(
+                        "automated_trade_triggered",
+                        notification_data,
+                        tenant_user_no=ctx_user(),
+                    )
+            except Exception:
+                pass
+            log(
+                f"[FLIP SELL] OPEN via HTTP trade_id={tid} ticker={trade.get('ticker')} "
+                f"position={position_out} trigger={tr}"
+            )
+            return True
+        log(
+            f"[FLIP SELL] OPEN failed trade_id={tid}: {resp.status_code} {getattr(resp, 'text', '')}"
+        )
+        return False
+    except Exception as e:
+        log(f"[FLIP SELL] OPEN exception trade_id={tid}: {e}")
+        return False
+
+
+def _ats_after_successful_auto_stop_close_enqueue_flip(
+    trade: Dict[str, Any],
+    *,
+    trigger_reason: str,
+    pos_int: int,
+    inverted_side: str,
+) -> None:
+    """Never raises; flip is strictly opt-in per monitor boolean."""
+    try:
+        trigger_flip_sell_open_after_auto_stop(trade, trigger_reason, pos_int, inverted_side)
+    except Exception as e:
+        log(f"[FLIP SELL] post-close hook error trade_id={trade.get('trade_id')}: {e}")
+
+
 def trigger_auto_stop_close(
     trade,
     *,
@@ -4696,6 +5228,12 @@ def trigger_auto_stop_close(
                     f"prob={trade.get('current_probability')} sell_price={sell_price_float:.4f}"
                 )
                 _defer_unified_ats_close_followup(ticket_id, log_message, notification_data)
+                _ats_after_successful_auto_stop_close_enqueue_flip(
+                    trade,
+                    trigger_reason=trigger_reason,
+                    pos_int=pos_int,
+                    inverted_side=inverted_side,
+                )
                 return True
 
             class _Ok:
@@ -4759,6 +5297,12 @@ def trigger_auto_stop_close(
             except Exception as e:
                 log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
 
+            _ats_after_successful_auto_stop_close_enqueue_flip(
+                trade,
+                trigger_reason=trigger_reason,
+                pos_int=pos_int,
+                inverted_side=inverted_side,
+            )
             return True
         log(
             f"[AUTO STOP] Failed to trigger close trigger={trigger_reason} trade_id={tid}: "
