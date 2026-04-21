@@ -535,16 +535,27 @@
       width: 25%;
     }
 
-    /* Rebalance Icon Container */
-    .rebalance-icon-container {
-      display: flex !important;
-      justify-content: flex-end !important;
-      margin-top: 5px !important;
-      margin-bottom: 5px !important;
-      width: 100% !important;
-      text-align: right !important;
-      transform: translateX(-10px);
+    .allocation-list-edit-footer {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 10px;
+      padding-top: 8px;
+      border-top: 1px solid rgba(74, 158, 255, 0.15);
+    }
 
+    .allocation-list-edit-btn {
+      font-size: 11px;
+      padding: 4px 10px;
+      cursor: pointer;
+      border-radius: 4px;
+      border: 1px solid rgba(74, 158, 255, 0.4);
+      background: rgba(45, 55, 72, 0.6);
+      color: #e2e8f0;
+    }
+
+    .allocation-list-edit-btn:hover {
+      border-color: rgba(74, 158, 255, 0.65);
+      background: rgba(55, 65, 82, 0.85);
     }
 
     .allocation-chart-container {
@@ -3385,24 +3396,31 @@
     let isRebalanceMode = false;
     let originalAllocations = [];
 
+    function syncAllocationListEditButton() {
+      const editBtn = document.getElementById('allocationListEditBtn');
+      if (!editBtn) return;
+      if (isRebalanceMode) {
+        editBtn.textContent = 'Done';
+        editBtn.title = 'Exit edit mode';
+        editBtn.setAttribute('aria-pressed', 'true');
+      } else {
+        editBtn.textContent = 'Edit';
+        editBtn.title = 'Edit allocation percentages';
+        editBtn.setAttribute('aria-pressed', 'false');
+      }
+    }
+
     // Toggle rebalance mode
     function toggleRebalanceMode() {
       console.log('toggleRebalanceMode called, current mode:', isRebalanceMode);
       isRebalanceMode = !isRebalanceMode;
       console.log('New rebalance mode:', isRebalanceMode);
-      const rebalanceIcon = document.getElementById('rebalanceIcon');
-      
       if (isRebalanceMode) {
-        // Enter rebalance mode
-        rebalanceIcon.style.opacity = '1';
-        rebalanceIcon.title = 'Exit Rebalance Mode';
         enableRebalanceMode();
       } else {
-        // Exit rebalance mode
-        rebalanceIcon.style.opacity = '0.6';
-        rebalanceIcon.title = 'Rebalance Allocations';
         disableRebalanceMode();
       }
+      syncAllocationListEditButton();
     }
 
     // Enable rebalance mode - make allocation values editable
@@ -5862,55 +5880,9 @@
       // Get current bankroll value from API data or fallback to portfolio data
       const portfolioValue = window.totalBankroll || getCurrentPortfolioValue();
       console.log('Portfolio value:', portfolioValue);
-      
-      // Create rebalance icon container
-      let rebalanceContainer = container.querySelector('.rebalance-icon-container');
-      if (!rebalanceContainer) {
-        rebalanceContainer = document.createElement('div');
-        rebalanceContainer.className = 'rebalance-icon-container';
-        container.appendChild(rebalanceContainer);
-        console.log('Created rebalance icon container:', rebalanceContainer);
-      }
-      
-      // Always update the styling to ensure it's right-justified with !important to override any conflicting styles
-      rebalanceContainer.style.cssText = `
-        display: flex !important;
-        justify-content: flex-end !important;
-        margin-top: 5px !important;
-        margin-bottom: 5px !important;
-        width: 100% !important;
-        text-align: right !important;
-      `;
-      
-      // Debug: log the computed styles
-      console.log('Rebalance container styles:', rebalanceContainer.style.cssText);
-      console.log('Rebalance container computed styles:', window.getComputedStyle(rebalanceContainer));
-      
-      // Create or update the rebalance icon
-      let rebalanceIcon = rebalanceContainer.querySelector('#rebalanceIcon');
-      if (!rebalanceIcon) {
-        rebalanceIcon = document.createElement('img');
-        rebalanceIcon.id = 'rebalanceIcon';
-        rebalanceIcon.src = '/images/icons/rebalance_icon.png';
-        rebalanceIcon.alt = 'Rebalance';
-        rebalanceIcon.title = 'Rebalance Allocations';
-        rebalanceIcon.style.cssText = `
-          width: 18px;
-          height: 18px;
-          opacity: 0.6;
-          transition: opacity 0.2s;
-          cursor: pointer;
-        `;
-        rebalanceIcon.onclick = function() {
-          console.log('Rebalance icon clicked!');
-          toggleRebalanceMode();
-        };
-        rebalanceIcon.onmouseover = () => rebalanceIcon.style.opacity = '1';
-        rebalanceIcon.onmouseout = () => rebalanceIcon.style.opacity = '0.6';
-        
-        rebalanceContainer.appendChild(rebalanceIcon);
-        console.log('Rebalance icon created and appended:', rebalanceIcon);
-      }
+
+      const legacyRebalance = container.querySelector('.rebalance-icon-container');
+      if (legacyRebalance) legacyRebalance.remove();
 
       // Create allocation list container
       let listContainer = container.querySelector('.allocation-list');
@@ -6059,6 +6031,17 @@
         
         listContainer.appendChild(item);
       });
+
+      const editFooter = document.createElement('div');
+      editFooter.className = 'allocation-list-edit-footer';
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.id = 'allocationListEditBtn';
+      editBtn.className = 'allocation-list-edit-btn';
+      editBtn.onclick = function () { toggleRebalanceMode(); };
+      editFooter.appendChild(editBtn);
+      listContainer.appendChild(editFooter);
+      syncAllocationListEditButton();
       
       console.log('Allocation list rendered successfully');
     }
