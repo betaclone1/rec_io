@@ -308,6 +308,13 @@
       text-transform: uppercase;
       margin: 0;
     }
+    .system-settings-halt-actions .system-settings-halt-meta {
+      font-size: 12px;
+      font-weight: 500;
+      color: #e2e8f0;
+      line-height: 1.45;
+      margin: 0 0 4px 0;
+    }
     .system-settings-halt-actions .system-settings-halt-actions-buttons {
       display: flex;
       flex-wrap: wrap;
@@ -893,6 +900,37 @@
 
     .tile-view .stat-label {
       font-size: 10px;
+    }
+
+    /* Trades column: hover anywhere on value + label shows win streak tooltip */
+    .th-monitor-trades-box {
+      position: relative;
+    }
+    .th-monitor-trades-box::after {
+      visibility: hidden;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.12s ease;
+      content: 'Win streak: ' attr(data-win-streak);
+      position: absolute;
+      left: 50%;
+      bottom: 100%;
+      transform: translateX(-50%) translateY(-6px);
+      white-space: nowrap;
+      background: #1a202c;
+      color: #e2e8f0;
+      border: 1px solid #4a5568;
+      border-radius: 4px;
+      padding: 5px 8px;
+      font-size: 11px;
+      font-weight: 500;
+      z-index: 50;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+    }
+    .th-monitor-trades-box:hover::after,
+    .th-monitor-trades-box:focus-visible::after {
+      visibility: visible;
+      opacity: 1;
     }
 
     /* Monitor Uptime */
@@ -1832,7 +1870,7 @@
                 <option value="name">Name</option>
                 <option value="symbol">Symbol</option>
                 <option value="strategy">Strategy</option>
-                <option value="win_streak">Win Streak</option>
+                <option value="win_streak">Trades</option>
                 <option value="winRate">W/L</option>
                 <option value="return">Ret</option>
                 <option value="pnl">PnL</option>
@@ -2179,15 +2217,34 @@
 
     function updateTradingHaltUiFromSettingsPayload(j) {
       const active = j && j.trading_halt_active === true;
+      const reason = (j && j.trading_halt_reason) ? String(j.trading_halt_reason) : '';
+      const when = (j && j.trading_halt_initiated_at_est) ? String(j.trading_halt_initiated_at_est) : '';
       const badge = document.getElementById('trading-halt-active-badge');
       if (badge) {
         badge.classList.toggle('trading-halt-banner--visible', active);
         badge.textContent = 'TRADING HALT ACTIVE';
+        const tipParts = [];
+        if (reason) tipParts.push(reason);
+        if (when) tipParts.push(when + ' ET');
+        badge.title = active && tipParts.length ? tipParts.join(' — ') : 'Open system settings';
       }
       const haltBox = document.getElementById('systemSettingsHaltActions');
       if (haltBox) {
         haltBox.classList.toggle('system-settings-halt-actions--visible', active);
         haltBox.setAttribute('aria-hidden', active ? 'false' : 'true');
+      }
+      const haltMeta = document.getElementById('systemSettingsHaltMeta');
+      if (haltMeta) {
+        if (active) {
+          const lines = [];
+          if (reason) lines.push(reason);
+          if (when) lines.push('Started ' + when + ' ET');
+          haltMeta.textContent = lines.join(' · ') || 'Trading halt';
+          haltMeta.hidden = false;
+        } else {
+          haltMeta.textContent = '';
+          haltMeta.hidden = true;
+        }
       }
     }
 
@@ -2511,14 +2568,20 @@
           if (isTfTilePoll) tile.classList.add('test-filter-monitor');
           else tile.classList.remove('test-filter-monitor');
 
-          const winStreakValue = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak);
+          const tradesCountValue = getMonitorStatValue(newMonitor, 'trades', newMonitor.trades);
+          const winStreakTooltip = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak);
           const winLossValue = getMonitorStatValue(newMonitor, 'win_loss', newMonitor.winRate);
           const retPctValue = getMonitorStatValue(newMonitor, 'ret_pct', newMonitor.return);
           const pnlValue = getMonitorStatValue(newMonitor, 'pnl', newMonitor.pnl);
 
+          const tradesBox = tile.querySelector('.th-monitor-trades-box');
           const winStreakElement = tile.querySelector('.stat-win-streak');
-          if (winStreakElement && winStreakValue !== undefined && winStreakValue !== null && winStreakValue !== '') {
-            winStreakElement.textContent = winStreakValue;
+          if (winStreakElement && tradesCountValue !== undefined && tradesCountValue !== null && tradesCountValue !== '') {
+            winStreakElement.textContent = tradesCountValue;
+            const streakN = Number(winStreakTooltip);
+            const streakStr = Number.isFinite(streakN) ? String(streakN) : '0';
+            if (tradesBox) tradesBox.setAttribute('data-win-streak', streakStr);
+            else winStreakElement.setAttribute('data-win-streak', streakStr);
           }
 
           const winLossElement = tile.querySelector('.stat-win-loss');
@@ -2626,6 +2689,18 @@
       });
     }
 
+    /** Trades in selected portfolio window (for sort by Trades). */
+    function monitorTileTradesCountForSort(monitor) {
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        const s = window.monitorHistoryDisplay.getMonitorStats(monitor.id);
+        if (s && typeof s.trades === 'number') return s.trades;
+      }
+      const raw = monitor.trades;
+      if (typeof raw === 'number' && Number.isFinite(raw)) return raw;
+      const n = Number(String(raw == null ? '' : raw).replace(/[^\d.-]/g, ''));
+      return Number.isFinite(n) ? n : 0;
+    }
+
     // Helper function to get monitor stat value (calculated or default)
     function getMonitorStatValue(monitor, statType, defaultValue) {
       // Check if monitor history display has calculated values
@@ -2633,6 +2708,9 @@
         const stats = window.monitorHistoryDisplay.getMonitorStats(monitor.id);
         if (stats) {
           switch (statType) {
+            case 'trades':
+              if (stats.trades !== undefined && stats.trades !== null) return String(stats.trades);
+              break;
             case 'win_streak':
               if (stats.win_streak !== undefined && stats.win_streak !== null) return stats.win_streak;
               break;
@@ -2655,8 +2733,12 @@
       
       // Fallback to direct monitor data from API
       switch (statType) {
+        case 'trades': {
+          const raw = monitor.trades;
+          if (raw !== undefined && raw !== null && raw !== '') return String(raw);
+          return defaultValue !== undefined ? String(defaultValue) : '0';
+        }
         case 'win_streak':
-          console.log(`[DEBUG] Monitor ${monitor.id} win_streak:`, monitor.win_streak);
           return (monitor.win_streak !== undefined && monitor.win_streak !== null) ? monitor.win_streak : undefined;
         case 'win_loss':
           return (monitor.winRate !== undefined && monitor.winRate !== null) ? monitor.winRate : defaultValue;
@@ -2851,9 +2933,9 @@
             ${getAllocationBadgeMarkup(monitor)}
             <div class="monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
-              <div style="text-align: center; min-width: 45px;">
-                <div class="stat-value stat-win-streak">${monitor.win_streak || 0}</div>
-                <div class="stat-label">Win Streak</div>
+              <div class="th-monitor-trades-box" style="text-align: center; min-width: 45px;" data-win-streak="0" tabindex="0">
+                <div class="stat-value stat-win-streak">${getMonitorStatValue(monitor, 'trades', '0')}</div>
+                <div class="stat-label">Trades</div>
               </div>
               <div style="text-align: center; min-width: 45px;">
                 <div class="stat-value stat-win-loss">${getMonitorStatValue(monitor, 'win_loss', '0%')}</div>
@@ -2934,9 +3016,9 @@
               </div>
             </div>
             <div class="monitor-stats">
-              <div class="stat-panel">
-                <div class="stat-value stat-win-streak">${monitor.win_streak || 0}</div>
-                <div class="stat-label">Win Streak</div>
+              <div class="stat-panel th-monitor-trades-box" data-win-streak="0" tabindex="0">
+                <div class="stat-value stat-win-streak">${getMonitorStatValue(monitor, 'trades', '0')}</div>
+                <div class="stat-label">Trades</div>
               </div>
               <div class="stat-panel">
                 <div class="stat-value stat-win-loss">${getMonitorStatValue(monitor, 'win_loss', '0%')}</div>
@@ -3104,6 +3186,10 @@
         
         // Add cross-highlighting event listeners to monitor tiles
         addMonitorTileHighlighting();
+
+        if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+          window.monitorHistoryDisplay.updateMonitorTiles();
+        }
       }
     }
 
@@ -3194,7 +3280,7 @@
             case 'strategy':
               return a.strategy.localeCompare(b.strategy);
             case 'win_streak':
-              return (b.win_streak || 0) - (a.win_streak || 0); // Descending order
+              return monitorTileTradesCountForSort(b) - monitorTileTradesCountForSort(a);
             case 'winRate':
               return parseFloat(b.winRate) - parseFloat(a.winRate); // Descending order
             case 'return':
@@ -7127,7 +7213,11 @@
               return;
             }
             if (typeof data.trading_halt_active === 'boolean') {
-              updateTradingHaltUiFromSettingsPayload({ trading_halt_active: data.trading_halt_active });
+              if (data.trading_halt_active && !data.trading_halt_initiated_at_est && !data.trading_halt_reason) {
+                void refreshTradingHaltIndicator();
+              } else {
+                updateTradingHaltUiFromSettingsPayload(data);
+              }
             }
             // Debounced soft refresh to avoid full tile redraw flicker.
             scheduleMonitorsSoftRefresh(700);
@@ -7374,6 +7464,7 @@
       <h3 id="systemSettingsPopoverTitle">System settings</h3>
       <div id="systemSettingsHaltActions" class="system-settings-halt-actions" aria-hidden="true">
         <p class="system-settings-halt-actions-label">TRADING HALT ACTIVE</p>
+        <p id="systemSettingsHaltMeta" class="system-settings-halt-meta" hidden></p>
         <div class="system-settings-halt-actions-buttons">
           <button type="button" id="systemSettingsClearHaltAlert" class="uat-modal-btn-secondary">Clear Trade Halt Alert</button>
           <button type="button" id="systemSettingsRestoreTradeOps" class="uat-modal-btn-primary">Restore Trade Operations</button>

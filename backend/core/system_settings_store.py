@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from psycopg2 import sql
 
@@ -23,6 +25,80 @@ _DEFAULT_HALT = True
 _DEFAULT_THRESHOLD_PCT = Decimal("50.00")
 
 _USER_SLOT_RE = re.compile(r"^\d{4}$")
+
+_ET = ZoneInfo("America/New_York")
+
+# Machine codes written into drawdown_halt_monitor_snapshot.reason (monitor_manager).
+_HALT_REASON_LABELS: Dict[str, str] = {
+    "bankroll_drawdown_step_down_50pct": "Drawdown protection",
+}
+
+
+def utc_now_iso_and_est_wall_for_halt_snapshot() -> Tuple[str, str]:
+    """UTC ISO for snapshot audit + US/Eastern wall clock string (no offset suffix)."""
+    now_utc = datetime.now(timezone.utc)
+    est_wall = now_utc.astimezone(_ET).strftime("%Y-%m-%d %H:%M:%S")
+    return (now_utc.isoformat(), est_wall)
+
+
+def _utc_iso_to_est_wall_display(iso_s: str) -> Optional[str]:
+    """Parse snapshot created_at_utc into Eastern wall time YYYY-MM-DD HH:MM:SS."""
+    if not iso_s or not str(iso_s).strip():
+        return None
+    s = str(iso_s).strip().replace("Z", "+00:00")
+    try:
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(_ET).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def trading_halt_ui_fields_from_snapshot(
+    trading_halt_active: bool, snapshot_raw: Any
+) -> Dict[str, Optional[str]]:
+    """
+    Derive API / WS fields from drawdown_halt_monitor_snapshot JSONB (no new DDL).
+    When latch is off, callers should omit or ignore.
+    """
+    empty: Dict[str, Optional[str]] = {
+        "trading_halt_reason": None,
+        "trading_halt_reason_code": None,
+        "trading_halt_initiated_at_est": None,
+    }
+    if not trading_halt_active or snapshot_raw is None:
+        return empty
+    data: Any = snapshot_raw
+    if isinstance(snapshot_raw, str):
+        try:
+            data = json.loads(snapshot_raw)
+        except Exception:
+            return empty
+    if not isinstance(data, dict):
+        return empty
+    code_raw = data.get("reason")
+    code = str(code_raw).strip() if code_raw is not None else ""
+    label = _HALT_REASON_LABELS.get(code) if code else None
+    if not label and code:
+        label = code.replace("_", " ").title()
+    if not label:
+        label = "Trading halt"
+    est = data.get("halt_initiated_at_est")
+    if isinstance(est, str) and est.strip():
+        initiated_est = est.strip()
+    else:
+        created = data.get("created_at_utc")
+        initiated_est = (
+            _utc_iso_to_est_wall_display(str(created))
+            if created is not None
+            else None
+        )
+    return {
+        "trading_halt_reason": label,
+        "trading_halt_reason_code": code or None,
+        "trading_halt_initiated_at_est": initiated_est,
+    }
 
 
 def parse_user_number_from_account_balance_table(account_balance_table: str) -> Optional[str]:
@@ -92,7 +168,8 @@ def fetch_system_settings_row(user_number: str) -> Optional[dict]:
                 sql.SQL(
                     """
                     SELECT id, drawdown_trading_halt, drawdown_reset_threshold_pct,
-                           COALESCE(trading_halt_active, false), updated_at
+                           COALESCE(trading_halt_active, false), updated_at,
+                           drawdown_halt_monitor_snapshot
                     FROM {}
                     WHERE id = 1
                     """
@@ -101,12 +178,16 @@ def fetch_system_settings_row(user_number: str) -> Optional[dict]:
             row = cursor.fetchone()
             if not row:
                 return None
+            halt_active = bool(row[3])
+            snap = row[5] if len(row) > 5 else None
+            halt_meta = trading_halt_ui_fields_from_snapshot(halt_active, snap)
             return {
                 "id": int(row[0]),
                 "drawdown_trading_halt": bool(row[1]),
                 "drawdown_reset_threshold_pct": float(row[2]) if row[2] is not None else float(_DEFAULT_THRESHOLD_PCT),
-                "trading_halt_active": bool(row[3]),
+                "trading_halt_active": halt_active,
                 "updated_at": row[4].isoformat() if row[4] is not None else None,
+                **halt_meta,
             }
     finally:
         conn.close()
@@ -250,14 +331,20 @@ def _fanout_monitor_list_trading_halt_ws(user_number: str) -> None:
             return
         u = str(user_number).strip()
         row = fetch_system_settings_row(u)
-        publish_preferences_ws_message(
-            {
-                "type": "monitor_list_updated",
-                "message": "system_settings_trading_halt",
-                "trading_halt_active": bool(row.get("trading_halt_active")) if row else False,
-                "tenant_user_no": _norm_slot(u),
-            }
-        )
+        halt_active = bool(row.get("trading_halt_active")) if row else False
+        payload: Dict[str, Any] = {
+            "type": "monitor_list_updated",
+            "message": "system_settings_trading_halt",
+            "trading_halt_active": halt_active,
+            "tenant_user_no": _norm_slot(u),
+        }
+        if row:
+            payload["trading_halt_reason"] = row.get("trading_halt_reason")
+            payload["trading_halt_reason_code"] = row.get("trading_halt_reason_code")
+            payload["trading_halt_initiated_at_est"] = row.get(
+                "trading_halt_initiated_at_est"
+            )
+        publish_preferences_ws_message(payload)
     except Exception:
         pass
 

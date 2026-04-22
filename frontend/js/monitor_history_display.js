@@ -39,6 +39,52 @@ class MonitorHistoryDisplay {
         return typeof window !== 'undefined' && window.globalPaperMode === true;
     }
 
+    _tradeIsWin(trade) {
+        const w = trade && trade.win_loss;
+        if (w === true || w === 1) return true;
+        if (w === false || w === 0) return false;
+        const u = String(w == null ? '' : w).trim().toUpperCase();
+        return u === 'W' || u === 'WIN';
+    }
+
+    /** Sort key: newer trades first (id desc, then timestamp desc). */
+    _tradeRecencySortKey(trade) {
+        if (!trade) return [0, 0];
+        const idn = Number(trade.id);
+        const idPart = !Number.isNaN(idn) ? idn : 0;
+        let ms = 0;
+        if (trade.timestamp) {
+            const t = new Date(trade.timestamp).getTime();
+            if (!Number.isNaN(t)) ms = t;
+        } else if (trade.date && trade.time) {
+            const ds = String(trade.date).slice(0, 10);
+            const tpart = String(trade.time).split('.')[0];
+            const t = new Date(`${ds}T${tpart}`).getTime();
+            if (!Number.isNaN(t)) ms = t;
+        }
+        return [idPart, ms];
+    }
+
+    /**
+     * Consecutive wins from the most recent closed trade in the window (newest first).
+     * Stops at the first loss or unknown outcome after counting wins.
+     */
+    _currentWinStreakInWindow(tradesNewestFirst) {
+        if (!tradesNewestFirst || tradesNewestFirst.length === 0) return 0;
+        const sorted = [...tradesNewestFirst].sort((a, b) => {
+            const [ida, tsa] = this._tradeRecencySortKey(a);
+            const [idb, tsb] = this._tradeRecencySortKey(b);
+            if (ida !== idb) return idb - ida;
+            return tsb - tsa;
+        });
+        let streak = 0;
+        for (const t of sorted) {
+            if (this._tradeIsWin(t)) streak += 1;
+            else break;
+        }
+        return streak;
+    }
+
     /**
      * Initialize the monitor history display system
      * @param {string} timeFilter - REQUIRED time filter ('1d', '1w', '1m', '1y', 'all')
@@ -217,6 +263,7 @@ class MonitorHistoryDisplay {
         if (!trades || trades.length === 0) {
             return {
                 trades: 0,
+                win_streak: 0,
                 win_loss: 0.0,
                 ret_pct: 0.0,
                 pnl: 0.00
@@ -228,6 +275,7 @@ class MonitorHistoryDisplay {
         
         // Count total trades (from filtered results)
         const totalTrades = filteredTrades.length;
+        const winStreak = this._currentWinStreakInWindow(filteredTrades);
         
         // Get monitor strategy to determine if cycle-based calculation is needed
         let strategy = null;
@@ -330,6 +378,7 @@ class MonitorHistoryDisplay {
         
         return {
             trades: totalTrades,
+            win_streak: winStreak,
             win_loss: winLossRate,
             ret_pct: Math.round(totalRetPct * 10) / 10, // Round to 1 decimal place
             pnl: Math.round(totalPnl * 100) / 100 // Round to 2 decimal places
@@ -444,6 +493,16 @@ class MonitorHistoryDisplay {
             const pnlFormatted = pnlValue >= 0 ? `$${pnlValue}` : `-$${Math.abs(pnlValue)}`;
             pnlElement.textContent = pnlFormatted;
         }
+
+        const tradesStreakEl = tile.querySelector('.stat-win-streak');
+        const tradesBox = tile.querySelector('.th-monitor-trades-box');
+        if (tradesStreakEl) {
+            tradesStreakEl.textContent = String(stats.trades != null ? stats.trades : 0);
+            const ws = stats.win_streak != null ? stats.win_streak : 0;
+            const streakStr = String(ws);
+            if (tradesBox) tradesBox.setAttribute('data-win-streak', streakStr);
+            else tradesStreakEl.setAttribute('data-win-streak', streakStr);
+        }
         
         // Visual indicators removed - no need to show that values are calculated
     }
@@ -505,6 +564,7 @@ class MonitorHistoryDisplay {
     getMonitorStats(monitorName) {
         return this.monitorStats.get(monitorName) || {
             trades: 0,
+            win_streak: 0,
             win_loss: 0.0,
             ret_pct: 0.0,
             pnl: 0.00

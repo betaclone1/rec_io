@@ -561,6 +561,12 @@ environment={env_vars}
 
             row = fetch_system_settings_row(slot)
             body["trading_halt_active"] = bool(row.get("trading_halt_active")) if row else False
+            if row:
+                body["trading_halt_reason"] = row.get("trading_halt_reason")
+                body["trading_halt_reason_code"] = row.get("trading_halt_reason_code")
+                body["trading_halt_initiated_at_est"] = row.get(
+                    "trading_halt_initiated_at_est"
+                )
         except Exception:
             body["trading_halt_active"] = False
         self._deliver_preferences_ws(
@@ -616,6 +622,7 @@ environment={env_vars}
         from backend.core.system_settings_store import (
             set_drawdown_halt_monitor_snapshot_with_cursor,
             set_trading_halt_active_with_cursor,
+            utc_now_iso_and_est_wall_for_halt_snapshot,
         )
 
         conn = None
@@ -643,9 +650,11 @@ environment={env_vars}
                         }
                     )
 
+                created_utc_iso, halt_est_wall = utc_now_iso_and_est_wall_for_halt_snapshot()
                 snapshot: Dict[str, Any] = {
                     "schema_version": 1,
-                    "created_at_utc": datetime.now(timezone.utc).isoformat(),
+                    "created_at_utc": created_utc_iso,
+                    "halt_initiated_at_est": halt_est_wall,
                     "reason": "bankroll_drawdown_step_down_50pct",
                     "monitor_list_table": monitor_list_fqn(slot),
                     "user_number": slot,
