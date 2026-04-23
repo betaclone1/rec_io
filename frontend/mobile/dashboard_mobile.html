@@ -1804,6 +1804,7 @@
     let dbChangesBankrollRefreshInFlight = false;
     let dbChangesBankrollQueuedStreams = null;
     const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
+    let monitorHistoryRefreshDebounceTimer = null;
 
     let accountBalanceSnapshot = null;
 
@@ -4231,7 +4232,7 @@
       await refreshPortfolioPanelAllTabsData({ rerenderActive: true, rerenderAllCharts: false });
     }
 
-    function setChartView(view) {
+    async function setChartView(view) {
       currentView = view;
       
       // Update button styles
@@ -4254,10 +4255,13 @@
       try { renderPnlChart(allPnlHistoryData); } catch (e) { console.error('Error rendering pnl chart (mobile):', e); }
       syncPortfolioPanelTopLineAndDeltaFromState();
 
-      // Refresh monitor statistics with new time filter
-      if (window.monitorHistoryDisplay) {
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
-        window.monitorHistoryDisplay.refresh(view);
+        try {
+          await window.monitorHistoryDisplay.refresh(view);
+        } catch (e) {
+          console.error('Dashboard mobile: monitorHistoryDisplay.refresh (setChartView) failed:', e);
+        }
       }
     }
 
@@ -5720,12 +5724,38 @@
       return 1871.27; // Default value from your dummy data
     }
 
+    function scheduleMonitorHistoryDisplayAfterDbChange() {
+      if (!window.monitorHistoryDisplay || !window.monitorHistoryDisplay.isInitialized) return;
+      if (monitorHistoryRefreshDebounceTimer) clearTimeout(monitorHistoryRefreshDebounceTimer);
+      monitorHistoryRefreshDebounceTimer = setTimeout(async function() {
+        monitorHistoryRefreshDebounceTimer = null;
+        try {
+          const v = typeof currentView !== 'undefined' ? currentView : 'all';
+          await window.monitorHistoryDisplay.refresh(v);
+        } catch (e) {
+          console.error('Dashboard mobile: monitorHistoryDisplay.refresh after db_change failed:', e);
+        }
+      }, 400);
+    }
+
     async function refreshMonitorsSoft() {
       try {
         console.log('Dashboard mobile: refreshing monitor data from database...');
         const oldMonitors = [...monitors];
         await loadMonitors();
         applyCurrentSort();
+
+        if (
+          window.monitorHistoryDisplay &&
+          window.monitorHistoryDisplay.isInitialized &&
+          typeof currentView !== 'undefined'
+        ) {
+          try {
+            await window.monitorHistoryDisplay.refresh(currentView);
+          } catch (e) {
+            console.error('Dashboard mobile: monitorHistoryDisplay.refresh during soft monitor refresh failed:', e);
+          }
+        }
 
         const oldMonitorIds = oldMonitors.map(m => m.id).filter(id => id !== 'NEW_MONITOR');
         const newVisibleMonitors = monitors.filter(m => m.status !== 'archived' && m.id !== 'NEW_MONITOR');
@@ -5846,7 +5876,13 @@
       updateMonitorStatValues(oldMonitors, monitors);
       initializeMonitors();
       await loadAllocationData();
-      if (window.monitorHistoryDisplay) window.monitorHistoryDisplay.refresh(currentView);
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        try {
+          await window.monitorHistoryDisplay.refresh(currentView);
+        } catch (e) {
+          console.error('Dashboard mobile: monitorHistoryDisplay.refresh (refreshAllDashboardData) failed:', e);
+        }
+      }
     }
     // For pull-to-refresh, treat this as a hard reset: let the wrapper reload the page.
     window.__onPullToRefresh = function() { return null; };
@@ -6936,6 +6972,13 @@
           await loadPerformancePanelCashBalance();
         } catch (e) {
           console.error('Dashboard mobile: error refreshing performance cash balance after db_change:', e);
+        }
+        if (
+          streamsSet.has('trades') ||
+          streamsSet.has('fills') ||
+          streamsSet.has('settlements')
+        ) {
+          scheduleMonitorHistoryDisplayAfterDbChange();
         }
       } finally {
         dbChangesBankrollRefreshInFlight = false;

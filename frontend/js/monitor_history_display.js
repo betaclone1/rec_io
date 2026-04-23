@@ -549,10 +549,9 @@ class MonitorHistoryDisplay {
         
         console.log(`[MONITOR_HISTORY] Refreshing monitor statistics with time filter: ${timeFilter}...`);
         
-        // Recalculate stats with time filter
+        await this.fetchTradesData();
+        await this.fetchMonitorsData();
         this.calculateAllMonitorStats(timeFilter);
-        
-        // Update tiles
         this.updateMonitorTiles();
         
         console.log('[MONITOR_HISTORY] Monitor statistics refreshed');

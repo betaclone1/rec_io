@@ -1935,6 +1935,7 @@
     let dbChangesBankrollRefreshInFlight = false;
     let dbChangesBankrollQueuedStreams = null;
     const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
+    let monitorHistoryRefreshDebounceTimer = null;
 
     // Latest row from live or paper account_balance (via /api/account/balance); drives portfolio/bankroll top line.
     let accountBalanceSnapshot = null;
@@ -4401,8 +4402,12 @@
 
       syncPortfolioPanelTopLineAndDeltaFromState();
 
-      if (window.monitorHistoryDisplay) {
-        window.monitorHistoryDisplay.refresh(view);
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        try {
+          await window.monitorHistoryDisplay.refresh(view);
+        } catch (e) {
+          console.error('monitorHistoryDisplay.refresh (setChartView) failed:', e);
+        }
       }
     }
 
@@ -6162,6 +6167,20 @@
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
     
+    function scheduleMonitorHistoryDisplayAfterDbChange() {
+      if (!window.monitorHistoryDisplay || !window.monitorHistoryDisplay.isInitialized) return;
+      if (monitorHistoryRefreshDebounceTimer) clearTimeout(monitorHistoryRefreshDebounceTimer);
+      monitorHistoryRefreshDebounceTimer = setTimeout(async function() {
+        monitorHistoryRefreshDebounceTimer = null;
+        try {
+          const v = typeof currentView !== 'undefined' ? currentView : 'all';
+          await window.monitorHistoryDisplay.refresh(v);
+        } catch (e) {
+          console.error('monitorHistoryDisplay.refresh after db_change failed:', e);
+        }
+      }, 400);
+    }
+
     async function refreshMonitorsSoft() {
       try {
         console.log('Dashboard: Refreshing monitor data from database...');
@@ -6170,6 +6189,18 @@
         
         await loadMonitors();
         applyCurrentSort();
+
+        if (
+          window.monitorHistoryDisplay &&
+          window.monitorHistoryDisplay.isInitialized &&
+          typeof currentView !== 'undefined'
+        ) {
+          try {
+            await window.monitorHistoryDisplay.refresh(currentView);
+          } catch (e) {
+            console.error('monitorHistoryDisplay.refresh during soft monitor refresh failed:', e);
+          }
+        }
         
         // Filter out NEW_MONITOR and archived monitors for comparison
         const newVisibleMonitors = monitors.filter(m => m.status !== 'archived' && m.id !== 'NEW_MONITOR');
@@ -7351,6 +7382,13 @@
           await loadPerformancePanelCashBalance();
         } catch (e) {
           console.error('Error refreshing performance cash balance after db_change:', e);
+        }
+        if (
+          streamsSet.has('trades') ||
+          streamsSet.has('fills') ||
+          streamsSet.has('settlements')
+        ) {
+          scheduleMonitorHistoryDisplayAfterDbChange();
         }
       } finally {
         dbChangesBankrollRefreshInFlight = false;
