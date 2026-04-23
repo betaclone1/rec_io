@@ -660,6 +660,44 @@
       flex-direction: column;
       min-height: 0;
     }
+    .th-analysis-dropdown-row {
+      display: flex;
+      gap: 8px;
+      margin-bottom: 10px;
+      align-items: stretch;
+    }
+    .th-analysis-dropdown-row select.th-analysis-dropdown-select {
+      flex: 1 1 0;
+      min-width: 0;
+      box-sizing: border-box;
+    }
+    /*
+     * Force both analysis selects to paint identically. WebKit/Chrome sometimes apply
+     * different default field backgrounds to adjacent <select>s even with appearance:none.
+     */
+    #analysis-content .th-analysis-dropdown-row select.th-analysis-dropdown-select.dropdown-picker {
+      -webkit-appearance: none;
+      -moz-appearance: none;
+      appearance: none;
+      margin: 0;
+      color: #ffffff !important;
+      -webkit-text-fill-color: #ffffff;
+      border: none !important;
+      border-radius: 4px;
+      padding: 6px 28px 6px 8px;
+      font-family: inherit;
+      font-size: 12px;
+      line-height: 1.25;
+      cursor: pointer;
+      color-scheme: dark;
+      background: #3c495e
+        url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='8' viewBox='0 0 12 8'%3E%3Cpath fill='%23ffffff' d='M2 2l4 4 4-4'/%3E%3C/svg%3E")
+        no-repeat right 8px center / 10px 6px !important;
+    }
+    #analysis-content .th-analysis-dropdown-row select.th-analysis-dropdown-select.dropdown-picker:focus-visible {
+      outline: 2px solid #4a9eff;
+      outline-offset: 1px;
+    }
     #th-monitors-ret-chart {
       width: 100%;
       flex: 1 1 auto;
@@ -1058,15 +1096,15 @@
         <div style="display: flex; gap: 20px; align-items: flex-start;">
           <!-- Left side: Time interval dropdown and averages -->
           <div style="width: 15%;">
-            <div style="display: flex; gap: 8px; margin-bottom: 10px; align-items: stretch;">
-              <select id="analysis-time-interval" class="dropdown-picker" style="flex: 1 1 0; min-width: 0; box-sizing: border-box;">
+            <div class="th-analysis-dropdown-row">
+              <select id="analysis-time-interval" class="dropdown-picker th-analysis-dropdown-select" aria-label="Analysis time grouping">
                 <option value="annual">Annual</option>
                 <option value="monthly">Monthly</option>
                 <option value="weekly">Weekly</option>
                 <option value="daily">Daily</option>
                 <option value="hourly">Hourly</option>
               </select>
-              <select id="chart-view-selector" class="dropdown-picker" style="flex: 1 1 0; min-width: 0; box-sizing: border-box; background-color: #2d3748; color: white; border: 1px solid #4a5568; border-radius: 4px; padding: 4px 8px; font-size: 12px;" onclick="event.stopPropagation();" aria-label="Chart view: PnL or return percent">
+              <select id="chart-view-selector" class="dropdown-picker th-analysis-dropdown-select" onclick="event.stopPropagation();" aria-label="Chart view: PnL or return percent">
                 <option value="pnl">PnL</option>
                 <option value="ret">Ret %</option>
               </select>
@@ -3086,7 +3124,8 @@
       const meta = document.getElementById('trade-history-loaded-meta');
       if (meta) {
         const n = Array.isArray(trades) ? trades.length : 0;
-        meta.textContent = 'Loaded ' + n + ' trade row(s)';
+        meta.textContent =
+          'Loaded ' + n + ' trade' + (n === 1 ? '' : 's');
       }
     }
 
@@ -3120,8 +3159,8 @@
             : function (loaded, hasMore) {
                 if (meta) {
                   meta.textContent = hasMore
-                    ? 'Loading ' + loaded + ' trade row(s)…'
-                    : 'Loaded ' + loaded + ' trade row(s)';
+                    ? 'Loading ' + loaded + ' trade' + (loaded === 1 ? '' : 's') + '…'
+                    : 'Loaded ' + loaded + ' trade' + (loaded === 1 ? '' : 's');
                 }
               }
         );
