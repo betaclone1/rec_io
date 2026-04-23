@@ -13,6 +13,8 @@ class MonitorHistoryDisplay {
         this.tradesData = []; // Raw trades data
         this.monitorsData = []; // Monitor configuration data
         this.isInitialized = false;
+        /** Bumps on each refreshFromServer(); stale completions after await fetch are skipped. */
+        this._refreshSerial = 0;
         
         // Bind methods
         this.init = this.init.bind(this);
@@ -20,6 +22,7 @@ class MonitorHistoryDisplay {
         this.updateMonitorTiles = this.updateMonitorTiles.bind(this);
         this.fetchTradesData = this.fetchTradesData.bind(this);
         this.fetchMonitorsData = this.fetchMonitorsData.bind(this);
+        this.refreshFromServer = this.refreshFromServer.bind(this);
     }
 
     /** True when trade row is a test/UAT trade (same truthiness patterns as dashboard). */
@@ -533,28 +536,48 @@ class MonitorHistoryDisplay {
     }
 
     /**
-     * Refresh statistics (useful for real-time updates)
-     * @param {string} timeFilter - REQUIRED time filter ('1d', '1w', '1m', '1y', 'all')
+     * Re-slice cached trades for the portfolio chart time window (no network).
+     * Call from chart interval buttons (1d / 1w / all, etc.). Keeps tiles in sync with the chart view instantly.
      */
-    async refresh(timeFilter) {
+    refresh(timeFilter) {
         if (!timeFilter) {
             console.error('[MONITOR_HISTORY] ERROR: refresh() requires timeFilter parameter');
             return;
         }
-        
         if (!this.isInitialized) {
             console.error('[MONITOR_HISTORY] ERROR: Cannot refresh - not initialized');
             return;
         }
-        
-        console.log(`[MONITOR_HISTORY] Refreshing monitor statistics with time filter: ${timeFilter}...`);
-        
-        await this.fetchTradesData();
-        await this.fetchMonitorsData();
+        console.log(`[MONITOR_HISTORY] Recalculating tile stats for time filter: ${timeFilter} (cached trades)...`);
         this.calculateAllMonitorStats(timeFilter);
         this.updateMonitorTiles();
-        
-        console.log('[MONITOR_HISTORY] Monitor statistics refreshed');
+        console.log('[MONITOR_HISTORY] Tile stats updated for view');
+    }
+
+    /**
+     * Refetch trades + monitor config from the server, then recalculate for timeFilter.
+     * Use for db_changes, periodic soft refresh, trading mode switch — not for chart-interval-only changes.
+     */
+    async refreshFromServer(timeFilter) {
+        if (!timeFilter) {
+            console.error('[MONITOR_HISTORY] ERROR: refreshFromServer() requires timeFilter parameter');
+            return;
+        }
+        if (!this.isInitialized) {
+            console.error('[MONITOR_HISTORY] ERROR: Cannot refreshFromServer - not initialized');
+            return;
+        }
+        const gen = ++this._refreshSerial;
+        console.log(`[MONITOR_HISTORY] Server refresh with time filter: ${timeFilter}...`);
+        await this.fetchTradesData();
+        await this.fetchMonitorsData();
+        if (gen !== this._refreshSerial) {
+            console.log('[MONITOR_HISTORY] Server refresh superseded; skipping calculate/update');
+            return;
+        }
+        this.calculateAllMonitorStats(timeFilter);
+        this.updateMonitorTiles();
+        console.log('[MONITOR_HISTORY] Server refresh complete');
     }
 
     /**

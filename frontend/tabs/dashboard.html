@@ -2184,7 +2184,7 @@
         window.monitorHistoryDisplay.isInitialized &&
         typeof currentView !== 'undefined'
       ) {
-        await window.monitorHistoryDisplay.refresh(currentView);
+        await window.monitorHistoryDisplay.refreshFromServer(currentView);
       }
       applyCurrentSort();
       initializeMonitors();
@@ -4404,7 +4404,7 @@
 
       if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         try {
-          await window.monitorHistoryDisplay.refresh(view);
+          window.monitorHistoryDisplay.refresh(view);
         } catch (e) {
           console.error('monitorHistoryDisplay.refresh (setChartView) failed:', e);
         }
@@ -6174,7 +6174,7 @@
         monitorHistoryRefreshDebounceTimer = null;
         try {
           const v = typeof currentView !== 'undefined' ? currentView : 'all';
-          await window.monitorHistoryDisplay.refresh(v);
+          await window.monitorHistoryDisplay.refreshFromServer(v);
         } catch (e) {
           console.error('monitorHistoryDisplay.refresh after db_change failed:', e);
         }
@@ -6196,7 +6196,7 @@
           typeof currentView !== 'undefined'
         ) {
           try {
-            await window.monitorHistoryDisplay.refresh(currentView);
+            await window.monitorHistoryDisplay.refreshFromServer(currentView);
           } catch (e) {
             console.error('monitorHistoryDisplay.refresh during soft monitor refresh failed:', e);
           }

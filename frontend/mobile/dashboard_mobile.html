@@ -1981,7 +1981,7 @@
         window.monitorHistoryDisplay.isInitialized &&
         typeof currentView !== 'undefined'
       ) {
-        await window.monitorHistoryDisplay.refresh(currentView);
+        await window.monitorHistoryDisplay.refreshFromServer(currentView);
       }
       applyCurrentSort();
       initializeMonitors();
@@ -4258,7 +4258,7 @@
       if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
         try {
-          await window.monitorHistoryDisplay.refresh(view);
+          window.monitorHistoryDisplay.refresh(view);
         } catch (e) {
           console.error('Dashboard mobile: monitorHistoryDisplay.refresh (setChartView) failed:', e);
         }
@@ -5731,7 +5731,7 @@
         monitorHistoryRefreshDebounceTimer = null;
         try {
           const v = typeof currentView !== 'undefined' ? currentView : 'all';
-          await window.monitorHistoryDisplay.refresh(v);
+          await window.monitorHistoryDisplay.refreshFromServer(v);
         } catch (e) {
           console.error('Dashboard mobile: monitorHistoryDisplay.refresh after db_change failed:', e);
         }
@@ -5751,7 +5751,7 @@
           typeof currentView !== 'undefined'
         ) {
           try {
-            await window.monitorHistoryDisplay.refresh(currentView);
+            await window.monitorHistoryDisplay.refreshFromServer(currentView);
           } catch (e) {
             console.error('Dashboard mobile: monitorHistoryDisplay.refresh during soft monitor refresh failed:', e);
           }
@@ -5878,7 +5878,7 @@
       await loadAllocationData();
       if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         try {
-          await window.monitorHistoryDisplay.refresh(currentView);
+          await window.monitorHistoryDisplay.refreshFromServer(currentView);
         } catch (e) {
           console.error('Dashboard mobile: monitorHistoryDisplay.refresh (refreshAllDashboardData) failed:', e);
         }
