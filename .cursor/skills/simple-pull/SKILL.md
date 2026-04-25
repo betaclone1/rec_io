@@ -8,8 +8,15 @@ Run when the user wants to **only** pull the latest commit on production—no sn
 
 ## What to do
 
-1. **Pull on prod via SSH** — Run:
+1. **Pull on prod via SSH** — From the **repo root**, run (uses `REC_PROD_SSH_HOST` or defaults to the IPv4 in `docs/PRODUCTION_HOST.md`):
    ```bash
+   ./scripts/prod/simple_git_pull_on_prod.sh
+   ```
+   **Do not** use a one-liner like `REC_PROD_SSH_HOST=… ssh root@$REC_PROD_SSH_HOST '…'`: in bash the `$REC_PROD_SSH_HOST` in the destination is expanded **before** that assignment applies, so the host becomes empty and SSH fails. The script avoids that.
+
+   **Alternative (manual):** export the host, then SSH:
+   ```bash
+   export REC_PROD_SSH_HOST=165.22.13.146   # or your DNS name; see PRODUCTION_HOST.md
    ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main'
    ```
 

@@ -158,7 +158,7 @@ def fetch_system_settings_row(user_number: str) -> Optional[dict]:
         return None
     from backend.core.config.database import get_postgresql_connection
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return None
     try:
@@ -187,6 +187,7 @@ def fetch_system_settings_row(user_number: str) -> Optional[dict]:
                 "drawdown_reset_threshold_pct": float(row[2]) if row[2] is not None else float(_DEFAULT_THRESHOLD_PCT),
                 "trading_halt_active": halt_active,
                 "updated_at": row[4].isoformat() if row[4] is not None else None,
+                "drawdown_halt_snapshot_present": snap is not None,
                 **halt_meta,
             }
     finally:
@@ -213,7 +214,7 @@ def update_system_settings_drawdown(
 
     from backend.core.config.database import get_postgresql_connection
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return False, "database connection failed"
     try:
@@ -304,7 +305,7 @@ def set_trading_halt_active(user_number: str, active: bool) -> Tuple[bool, str]:
         return False, "unsupported user"
     from backend.core.config.database import get_postgresql_connection
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return False, "database connection failed"
     try:
@@ -344,6 +345,10 @@ def _fanout_monitor_list_trading_halt_ws(user_number: str) -> None:
             payload["trading_halt_initiated_at_est"] = row.get(
                 "trading_halt_initiated_at_est"
             )
+            if "drawdown_halt_snapshot_present" in row:
+                payload["drawdown_halt_snapshot_present"] = row.get(
+                    "drawdown_halt_snapshot_present"
+                )
         publish_preferences_ws_message(payload)
     except Exception:
         pass
@@ -359,8 +364,9 @@ def clear_trading_halt_alert(user_number: str) -> Tuple[bool, str]:
 
 def restore_trade_operations_from_snapshot(user_number: str) -> Tuple[bool, str, int]:
     """
-    Restore paper_trade / test_filter from drawdown_halt_monitor_snapshot (JSONB), clear trading_halt_active,
-    and NULL the snapshot column. Single transaction.
+    Restore paper_trade / test_filter from drawdown_halt_monitor_snapshot (JSONB) and clear
+    trading_halt_active. The snapshot JSONB is retained until the next emergency halt overwrites it.
+    Single transaction.
     Returns (ok, message, monitors_rows_touched aggregate rowcount from updates).
     """
     from backend.core.drawdown_emergency_restore import apply_drawdown_monitor_snapshot_updates
@@ -371,7 +377,7 @@ def restore_trade_operations_from_snapshot(user_number: str) -> Tuple[bool, str,
 
     from backend.core.config.database import get_postgresql_connection
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return False, "database connection failed", 0
     try:
@@ -403,7 +409,6 @@ def restore_trade_operations_from_snapshot(user_number: str) -> Tuple[bool, str,
                     """
                     UPDATE {}
                     SET trading_halt_active = FALSE,
-                        drawdown_halt_monitor_snapshot = NULL,
                         updated_at = NOW()
                     WHERE id = 1
                     """

@@ -38,6 +38,13 @@ from backend.core.port_config import (
     unified_active_trade_supervisor_service_name,
 )
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
+from backend.core.strike_ladder_fetch import (
+    fetch_strike_ladder_prefer_snapshot,
+    find_ladder_strike_by_ticker,
+    probability_from_ladder_by_strike,
+    probability_from_strike_row_side_aware,
+    strike_table_name_for_market,
+)
 from backend.core.config.database import get_postgresql_connection
 from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
 from backend.core.tenant_legacy_sql import (
@@ -636,15 +643,7 @@ def get_monitor_symbol():
 
 def get_strike_table_name(symbol: str, market: str) -> str:
     """Strike table name from symbol and market (hourly or 15m)."""
-    m = (market or 'hourly').strip().lower()
-    if m not in ('hourly', '15m'):
-        m = 'hourly'
-    if m == "15m":
-        src = os.getenv("STRIKE_TABLE_15M_SOURCE", "legacy").strip().lower()
-        if src == "ws":
-            return "strike_table_ws_15m"
-        return "strike_table_15m"
-    return "strike_table_hourly"
+    return strike_table_name_for_market(symbol, market)
 
 _sym_mkt = get_monitor_symbol()
 MONITOR_SYMBOL = _sym_mkt[0] if isinstance(_sym_mkt, tuple) else _sym_mkt
@@ -2650,6 +2649,12 @@ def get_current_probability_from_live_strike_table(
     table_name = get_strike_table_name(sym, mkt)
     if table_name not in ("strike_table_hourly", "strike_table_15m", "strike_table_ws_15m"):
         return None
+    ladder = fetch_strike_ladder_prefer_snapshot(sym, mkt, DEFAULT_EXCHANGE)
+    snap_row = find_ladder_strike_by_ticker(ladder, ticker)
+    if snap_row is not None:
+        v_snap = probability_from_strike_row_side_aware(snap_row, mkt, trade_side)
+        if v_snap is not None:
+            return v_snap
     conn = get_postgresql_connection()
     if not conn:
         return None
@@ -2750,6 +2755,11 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
                 return float(pos_prob) if st < cp else float(neg_prob)
         except Exception as e:
             log_debug(f"Master lookup probability failed ({sym_u}): {e}")
+
+    ladder_fb = fetch_strike_ladder_prefer_snapshot(sym_u, mkt, DEFAULT_EXCHANGE)
+    prob_ladder = probability_from_ladder_by_strike(ladder_fb, st, mkt)
+    if prob_ladder is not None:
+        return float(prob_ladder)
 
     try:
         table_name = get_strike_table_name(sym, mkt)
@@ -5549,6 +5559,9 @@ def get_unified_ttc_seconds(symbol: str = None):
     """Get unified TTC from master strike table (uses monitor symbol+market when symbol is None)."""
     try:
         sym, mkt = _get_symbol_and_market_for_strike(symbol)
+        ladder = fetch_strike_ladder_prefer_snapshot(sym, mkt, DEFAULT_EXCHANGE)
+        if ladder is not None and ladder.get("ttc") is not None:
+            return int(ladder["ttc"])
         table_name = get_strike_table_name(sym, mkt)
         conn = get_db_connection()
         cursor = conn.cursor()

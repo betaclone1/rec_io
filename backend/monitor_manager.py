@@ -23,6 +23,7 @@ import requests
 import subprocess
 import sys
 import os
+import re
 from datetime import datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
@@ -94,6 +95,45 @@ _mm_pg_pool: Optional[psycopg2.pool.ThreadedConnectionPool] = None
 _mm_pg_pool_lock = threading.Lock()
 
 
+class _MMPooledConnectionProxy:
+    """Wrap raw psycopg2 connection so close() returns pooled conns."""
+
+    __slots__ = ("_conn", "_pool", "_returned")
+
+    def __init__(self, conn: Any, pool: Optional[psycopg2.pool.ThreadedConnectionPool]):
+        self._conn = conn
+        self._pool = pool
+        self._returned = False
+
+    def close(self):
+        if self._returned:
+            return
+        self._returned = True
+        if self._pool is not None:
+            try:
+                self._pool.putconn(self._conn)
+                return
+            except Exception:
+                pass
+        try:
+            self._conn.close()
+        except Exception:
+            pass
+
+    def __enter__(self):
+        self._conn.__enter__()
+        return self
+
+    def __exit__(self, *args):
+        try:
+            return self._conn.__exit__(*args)
+        finally:
+            self.close()
+
+    def __getattr__(self, name: str):
+        return getattr(self._conn, name)
+
+
 def _est_formatter():
     class ESTFormatter(logging.Formatter):
         def formatTime(self, record, datefmt=None):
@@ -155,7 +195,12 @@ class MonitorManager:
         self.cleanup_running = False
         
     def get_database_connection(self):
-        """Tenant DB connection from a small in-process pool (reduces Postgres session spikes)."""
+        """
+        Tenant DB connection from a bounded in-process pool.
+
+        This path intentionally avoids direct-connect fallback so connection pressure stays
+        bounded and observable instead of silently creating new sessions.
+        """
         global _mm_pg_pool
         psycopg2_config = self.db_config.copy()
         if "name" in psycopg2_config:
@@ -172,18 +217,20 @@ class MonitorManager:
                         1, max_conn, **merged
                     )
                 except Exception as e:
-                    _logger.warning(
-                        "monitor_manager DB pool init failed (%s); using direct connect",
-                        e,
-                    )
-                    return psycopg2.connect(**merged)
+                    raise RuntimeError(f"monitor_manager DB pool init failed: {e}") from e
+        wait_ms = max(0, int(os.environ.get("REC_MONITOR_MANAGER_PG_POOL_WAIT_MS", "5000")))
+        deadline = time.time() + (wait_ms / 1000.0)
+        while True:
             try:
-                return _mm_pg_pool.getconn()
-            except psycopg2.pool.PoolError as e:
-                _logger.warning(
-                    "monitor_manager DB pool exhausted (%s); using direct connect", e
-                )
-                return psycopg2.connect(**merged)
+                raw = _mm_pg_pool.getconn()
+                return _MMPooledConnectionProxy(raw, _mm_pg_pool)
+            except psycopg2.pool.PoolError:
+                if time.time() >= deadline:
+                    raise RuntimeError(
+                        f"monitor_manager DB pool exhausted for {wait_ms}ms "
+                        f"(max={getattr(_mm_pg_pool, 'maxconn', 'unknown')})"
+                    )
+                time.sleep(0.05)
     
     def log_event(self, event_type: str, message: str, data: Optional[Dict] = None):
         """Centralized logging for monitor manager events. Uses standard logger (EST, flush)."""
@@ -458,7 +505,12 @@ environment={env_vars}
             return False
     
     def sync_monitor_processes(self) -> bool:
-        """Sync monitor processes with database state"""
+        """
+        Sync unified AES/ATS user-level processes with DB state.
+
+        Legacy per-monitor process mode is no longer used by the generated supervisor config.
+        We reconcile by trading user slot (0001/0002/...) so one regen covers all monitors.
+        """
         self.log_event("INFO", "Syncing monitor processes with database state")
         
         # Get active monitors from database
@@ -469,41 +521,39 @@ environment={env_vars}
         running_processes = self.get_running_monitor_processes()
         self.log_event("INFO", f"Found {len(running_processes)} running monitor processes")
         
-        # Extract monitor identifiers from running processes
-        running_monitors = set()
+        # Extract running unified user slots from process names.
+        running_users = set()
         for process_name in running_processes:
             if process_name.startswith('auto_entry_supervisor_'):
-                monitor_id = process_name.replace('auto_entry_supervisor_', '')
-                running_monitors.add(monitor_id)
+                suffix = process_name.replace('auto_entry_supervisor_', '')
+                if re.fullmatch(r"\d{4}", suffix):
+                    running_users.add(suffix)
             elif process_name.startswith('active_trade_supervisor_'):
-                monitor_id = process_name.replace('active_trade_supervisor_', '')
-                running_monitors.add(monitor_id)
+                suffix = process_name.replace('active_trade_supervisor_', '')
+                if re.fullmatch(r"\d{4}", suffix):
+                    running_users.add(suffix)
         
-        # Get active monitor identifiers
-        active_monitor_ids = set()
+        # Active user slots from monitor rows.
+        active_users = set()
         for monitor in active_monitors:
-            monitor_id = f"{monitor['user_number']}_{monitor['monitor_id']}"
-            active_monitor_ids.add(monitor_id)
+            u = _norm_slot(monitor.get("user_number"))
+            active_users.add(u)
         
-        # Spawn processes for monitors that should be active but aren't running
-        for monitor in active_monitors:
-            monitor_id = f"{monitor['user_number']}_{monitor['monitor_id']}"
-            if monitor_id not in running_monitors:
-                self.log_event("INFO", f"Spawning processes for monitor {monitor_id}")
-                self.spawn_monitor_processes(monitor)
-        
-        # Remove processes for monitors that are running but shouldn't be active
-        for monitor_id in running_monitors:
-            if monitor_id not in active_monitor_ids:
-                self.log_event("INFO", f"Removing processes for monitor {monitor_id}")
-                # Create monitor dict for removal
-                parts = monitor_id.split('_')
-                if len(parts) >= 2:
-                    monitor = {
-                        'user_number': parts[0],
-                        'monitor_id': parts[1]
-                    }
-                    self.remove_monitor_processes(monitor)
+        # Each monitor_manager worker only owns its own tenant slot.
+        # Do not remove other users' unified supervisors from this process.
+        worker_user = _mm_worker_slot()
+        worker_has_active = worker_user in active_users
+        worker_running = worker_user in running_users
+        if worker_has_active and not worker_running:
+            self.log_event("INFO", f"Spawning unified monitor processes for user {worker_user}")
+            self.spawn_monitor_processes(
+                {"user_number": worker_user, "monitor_id": worker_user}
+            )
+        elif (not worker_has_active) and worker_running:
+            self.log_event("INFO", f"Removing unified monitor processes for user {worker_user}")
+            self.remove_monitor_processes(
+                {"user_number": worker_user, "monitor_id": worker_user}
+            )
         
         self.log_event("SUCCESS", "Monitor process sync completed")
         

@@ -17,6 +17,11 @@ export REC_PROD_SSH_HOST=165.22.13.146
 export REC_PROD_DB_HOST=165.22.13.146   # when a script needs DB_HOST pointed at prod
 ```
 
+## SSH from automation / agents
+
+- **Wrapper (recommended):** `scripts/prod/rec_prod_ssh.sh 'remote command'` and `scripts/prod/simple_git_pull_on_prod.sh` resolve `REC_PROD_SSH_HOST` inside the script (defaulting to the table above if unset). Run them from the repo root.
+- **Bash pitfall:** A single line like `REC_PROD_SSH_HOST=165.22.13.146 ssh root@$REC_PROD_SSH_HOST '…'` often breaks: the destination is expanded **before** the assignment applies to the current shell, so you get `root@` with an empty host. **Export first**, then `ssh root@$REC_PROD_SSH_HOST '…'`, or use the wrapper script.
+
 ## Notes
 
 - Prefer these variables in docs and automation instead of scattering the raw IP. When copy-paste clarity matters, this file is the single place that records the **current** production IPv4.

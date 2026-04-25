@@ -6,6 +6,36 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-25 — Release v3.3.2: strike Redis publish path, archive union columns, supervision stack, dashboard win streak
+
+**Summary**
+- **Release: v3.3.2**
+- **Database:** Migration **`20260423_1800_strike_archive_snapshot_provenance`** — **`snapshot_wall_second`**, **`snapshot_generation_seq`** on **`historical_data.strike_table_master`**. Migration **`20260420_1800_archive_trades_initial_price_slippage_initial_count`** — **`initial_price`**, **`slippage`**, **`initial_count`** on every **`archive.trades_archive_live_*`** / **`archive.trades_archive_paper_*`** table (UNION parity with master **`trades_*`**).
+- **Strike / archive path:** **`strike_snapshot_publisher`**, **`strike_snapshot_redis`**, **`strike_ladder_fetch`**; **`historical_strike_table_archive`** publisher-first append and runtime DDL guard; default **`REC_STRIKE_TABLE_ARCHIVE_SOURCE=publisher`** via generated supervisor env when unset.
+- **Workers / ingest:** **`monitor_manager`** tenant pool proxy, bounded wait, unified AES/ATS sync per slot; **`active_trade_supervisor`**, **`auto_entry_supervisor`**, **`market_watchdog_ws`**, **`kalshi_event_market_readiness`**; **`generate_unified_supervisor_config`** updates.
+- **Reliability / tenancy:** **`drawdown_emergency_restore`** + **`restore_drawdown_emergency_monitors`**; **`tenant_provision`** advisory lock and retries; **`system_settings_store`** / **`main`** touchpoints as in diff.
+- **Frontend:** Dashboard and mobile **`win_streak`** tooltips use **`monitor.win_streak`**; **`monitor_history_display`** does not overwrite **`data-win-streak`** from rolling history stats.
+- **Ops / docs:** **`docs/PRODUCTION_HOST.md`**; **`scripts/prod/rec_prod_ssh.sh`**, **`scripts/prod/simple_git_pull_on_prod.sh`**; tests (**`test_active_trade_supervisor_flip_sell`**, **`test_market_watchdog_ws_readiness`**); optional **`docs/investigations/`** note.
+- **Plans:** (session work; consolidated from 2026-04-23 strike snapshot checklist plus trading/UI follow-ups.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260423_1800_strike_archive_snapshot_provenance`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1800_archive_trades_initial_price_slippage_initial_count`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; confirm **`strike_snapshot_publisher`** is **RUNNING**; tail **`trade_executor_0001`**, **`main_app`**, one **`market_watchdog_ws`** program log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.2`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.2`
+
+---
+
 ## 2026-04-20 — Release v3.3.1: trades intent columns, trade_manager tenant SQL, paper collateral recovery hook
 
 **Summary**

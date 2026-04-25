@@ -1033,16 +1033,9 @@ def get_monitor_symbol():
 
 def get_strike_table_name(symbol: str, market: str) -> str:
     """Strike table name from symbol and market (hourly or 15m)."""
-    m = (market or 'hourly').strip().lower()
-    if m not in ('hourly', '15m'):
-        m = 'hourly'
-    if m == "15m":
-        src = os.getenv("STRIKE_TABLE_15M_SOURCE", "legacy").strip().lower()
-        if src == "ws":
-            return "strike_table_ws_15m"
-        return "strike_table_15m"
-    # Unified hourly ladder (symbol + exchange columns); not per-symbol tables.
-    return "strike_table_hourly"
+    from backend.core.strike_ladder_fetch import strike_table_name_for_market
+
+    return strike_table_name_for_market(symbol, market)
 
 
 def _strike_data_exchange_key() -> str:
@@ -2325,199 +2318,17 @@ def get_master_strike_table_data():
 
 
 def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
-    """Load ladder snapshot for explicit symbol and market (hourly or 15m)."""
+    """Load ladder snapshot for explicit symbol and market (hourly or 15m).
+
+    Prefers Redis snapshot from ``strike_snapshot_publisher`` when enabled so all AES
+    processes see the same payload per wall second; falls back to PostgreSQL.
+    """
     try:
-        import psycopg2
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            table_name = get_strike_table_name(current_symbol, current_market)
-            # Hourly: ttc_hourly/probability_hourly; 15m: ttc_15m/probability_15m (same column set).
-            ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
-            prob_column = "probability_15m" if current_market == "15m" else "probability_hourly"
-            sym_u = current_symbol.upper()
-            latest_ts = None
-            if current_market == "15m":
-                table_15m = get_strike_table_name(current_symbol, "15m")
-                ex = _strike_data_exchange_key()
-                cursor.execute(f"""
-                    SELECT
-                        symbol,
-                        current_price,
-                        {ttc_column},
-                        event_ticker,
-                        market_title,
-                        strike_tier,
-                        market_status,
-                        timestamp
-                    FROM live_data.{table_15m}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """, (ex, sym_u))
-                header_data = cursor.fetchone()
-                if not header_data:
-                    log_debug("[WATCHLIST] No unified 15m strike table timestamp for symbol %s", sym_u)
-                    conn.close()
-                    return None
-                latest_ts = header_data[7]
-            else:
-                ex = _strike_data_exchange_key()
-                cursor.execute(
-                    f"""
-                    SELECT
-                        symbol,
-                        current_price,
-                        {ttc_column},
-                        event_ticker,
-                        market_title,
-                        strike_tier,
-                        market_status,
-                        timestamp
-                    FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (ex, sym_u),
-                )
-                header_data = cursor.fetchone()
-                if not header_data:
-                    log_debug(
-                        "[WATCHLIST] No hourly strike table timestamp for symbol %s (%s)",
-                        sym_u,
-                        table_name,
-                    )
-                    conn.close()
-                    return None
-                latest_ts = header_data[7]
-            if current_market == "15m" and str(header_data[0] or "").upper() != sym_u:
-                log(f"[AUTO ENTRY] strike header symbol mismatch: expected {sym_u} got {header_data[0]}")
-                conn.close()
-                return None
-            if current_market == "15m":
-                cursor.execute(f"""
-                    SELECT
-                        strike,
-                        buffer,
-                        buffer_pct,
-                        {prob_column},
-                        yes_ask_dollars,
-                        no_ask_dollars,
-                        volume_fp,
-                        open_interest_fp,
-                        ticker,
-                        yes_diff,
-                        no_diff,
-                        active_side,
-                        yes_price_spread,
-                        no_price_spread,
-                        yes_ask_range_15m,
-                        no_ask_range_15m
-                    FROM (
-                        SELECT DISTINCT ON (ticker)
-                            strike,
-                            buffer,
-                            buffer_pct,
-                            {prob_column},
-                            yes_ask_dollars,
-                            no_ask_dollars,
-                            volume_fp,
-                            open_interest_fp,
-                            ticker,
-                            yes_diff,
-                            no_diff,
-                            active_side,
-                            yes_price_spread,
-                            no_price_spread,
-                            yes_ask_range_15m,
-                            no_ask_range_15m,
-                            timestamp
-                        FROM live_data.{table_15m}
-                        WHERE exchange = %s AND symbol = %s
-                        ORDER BY ticker, timestamp DESC
-                    ) latest_per_ticker
-                    ORDER BY strike
-                """, (ex, sym_u))
-            else:
-                cursor.execute(
-                    f"""
-                    SELECT
-                        strike,
-                        buffer,
-                        buffer_pct,
-                        {prob_column},
-                        yes_ask_dollars,
-                        no_ask_dollars,
-                        volume_fp,
-                        open_interest_fp,
-                        ticker,
-                        yes_diff,
-                        no_diff,
-                        active_side,
-                        yes_price_spread,
-                        no_price_spread,
-                        yes_ask_range_15m,
-                        no_ask_range_15m
-                    FROM (
-                        SELECT DISTINCT ON (ticker)
-                            strike,
-                            buffer,
-                            buffer_pct,
-                            {prob_column},
-                            yes_ask_dollars,
-                            no_ask_dollars,
-                            volume_fp,
-                            open_interest_fp,
-                            ticker,
-                            yes_diff,
-                            no_diff,
-                            active_side,
-                            yes_price_spread,
-                            no_price_spread,
-                            yes_ask_range_15m,
-                            no_ask_range_15m,
-                            timestamp
-                        FROM live_data.{table_name}
-                        WHERE exchange = %s AND symbol = %s
-                        ORDER BY ticker, timestamp DESC
-                    ) latest_per_ticker
-                    ORDER BY strike
-                    """,
-                    (ex, sym_u),
-                )
-            strikes_data = cursor.fetchall()
-            response = {
-                "symbol": header_data[0],
-                "current_price": float(header_data[1]) if header_data[1] else None,
-                "ttc": int(header_data[2]) if header_data[2] else None,
-                "event_ticker": header_data[3],
-                "market_title": header_data[4],
-                "strike_tier": header_data[5],
-                "market_status": header_data[6],
-                "strikes": []
-            }
-            for strike_row in strikes_data:
-                strike_data = {
-                    "strike": float(strike_row[0]) if strike_row[0] else None,
-                    "buffer": float(strike_row[1]) if strike_row[1] else None,
-                    "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
-                    "probability": float(strike_row[3]) if strike_row[3] else None,
-                    "yes_ask_dollars": strike_row[4],
-                    "no_ask_dollars": strike_row[5],
-                    "volume_fp": strike_row[6] if strike_row[6] is None else str(strike_row[6]).strip(),
-                    "open_interest_fp": strike_row[7] if strike_row[7] is None else str(strike_row[7]).strip(),
-                    "ticker": strike_row[8],
-                    "yes_diff": float(strike_row[9]) if strike_row[9] else None,
-                    "no_diff": float(strike_row[10]) if strike_row[10] else None,
-                    "active_side": strike_row[11],
-                    "yes_price_spread": float(strike_row[12]) if strike_row[12] is not None else None,
-                    "no_price_spread": float(strike_row[13]) if strike_row[13] is not None else None,
-                    "yes_ask_range_15m": float(strike_row[14]) if strike_row[14] is not None else None,
-                    "no_ask_range_15m": float(strike_row[15]) if strike_row[15] is not None else None,
-                }
-                response["strikes"].append(strike_data)
-            conn.close()
-            return response
+        from backend.core.strike_ladder_fetch import fetch_strike_ladder_prefer_snapshot
+
+        return fetch_strike_ladder_prefer_snapshot(
+            current_symbol, current_market, _strike_data_exchange_key()
+        )
     except Exception as e:
         log(f"[WATCHLIST] Error reading master strike table data from PostgreSQL: {e}")
         return None

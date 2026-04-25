@@ -18,6 +18,38 @@ from backend.core.tenant_legacy_sql import legacy_users_monitor_list
 from backend.trading_mode import _norm_slot
 
 
+def _coerce_monitor_id(val: Any) -> Optional[int]:
+    if val is None or isinstance(val, bool):
+        return None
+    if isinstance(val, str):
+        val = val.strip()
+        if not val:
+            return None
+    try:
+        return int(val)
+    except (TypeError, ValueError):
+        return None
+
+
+def _coerce_bool_pref(val: Any) -> Optional[bool]:
+    if val is None:
+        return None
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, (int, float)):
+        if val == 1:
+            return True
+        if val == 0:
+            return False
+        return bool(val)
+    s = str(val).strip().lower()
+    if s in ("true", "1", "yes", "y"):
+        return True
+    if s in ("false", "0", "no", "n"):
+        return False
+    return None
+
+
 def drawdown_emergency_snapshot_path(project_root: str) -> str:
     """Legacy path; new halts persist snapshot in DB."""
     return os.path.join(project_root, "backend", "data", "drawdown_emergency_restore.json")
@@ -26,14 +58,31 @@ def drawdown_emergency_snapshot_path(project_root: str) -> str:
 def validate_drawdown_monitor_snapshot(data: Any) -> Tuple[bool, str]:
     if not isinstance(data, dict):
         return False, "snapshot must be a JSON object"
+    sv_raw = data.get("schema_version", 1)
     try:
-        if int(data.get("schema_version", 0)) != 1:
-            return False, "unsupported schema_version; expected 1"
+        if isinstance(sv_raw, bool):
+            return False, "invalid schema_version"
+        schema_version = int(sv_raw)
     except (TypeError, ValueError):
         return False, "invalid schema_version"
+    if schema_version != 1:
+        return False, "unsupported schema_version; expected 1"
     monitors: List[Any] = list(data.get("monitors") or [])
     if not monitors:
         return False, "no monitors in snapshot"
+    actionable = 0
+    for m in monitors:
+        if not isinstance(m, dict):
+            continue
+        if (
+            _coerce_monitor_id(m.get("id")) is None
+            or _coerce_bool_pref(m.get("paper_trade")) is None
+            or _coerce_bool_pref(m.get("test_filter")) is None
+        ):
+            continue
+        actionable += 1
+    if actionable == 0:
+        return False, "no monitors in snapshot with id, paper_trade, and test_filter"
     return True, "ok"
 
 
@@ -66,17 +115,27 @@ def apply_drawdown_monitor_snapshot_updates(
         WHERE id = %s
         """
     ).format(sch_id, tbl_id)
+    actionable = 0
     updated = 0
     for m in monitors:
-        mid = m.get("id")
-        if mid is None:
+        if not isinstance(m, dict):
             continue
-        pt = m.get("paper_trade")
-        tf = m.get("test_filter")
-        if pt is None or tf is None:
+        mid = _coerce_monitor_id(m.get("id"))
+        pt = _coerce_bool_pref(m.get("paper_trade"))
+        tf = _coerce_bool_pref(m.get("test_filter"))
+        if mid is None or pt is None or tf is None:
             continue
-        cursor.execute(upd, (bool(pt), bool(tf), int(mid)))
+        actionable += 1
+        cursor.execute(upd, (pt, tf, mid))
         updated += int(cursor.rowcount or 0)
+    if actionable == 0:
+        return False, "no monitors in snapshot with id, paper_trade, and test_filter", 0
+    if updated == 0:
+        return (
+            False,
+            "no monitor rows were updated (snapshot monitor ids may not match current monitor_list)",
+            0,
+        )
     return True, "ok", updated
 
 
@@ -95,7 +154,7 @@ def restore_monitors_from_drawdown_snapshot_file(
 
     u_apply = _norm_slot(str(user_number or default_pool_user_number()).strip())
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u_apply)
     if not conn:
         return False, "database connection failed", 0
     try:
@@ -127,7 +186,7 @@ def restore_monitors_from_db_snapshot_only(
     from backend.core.config.database import get_postgresql_connection
     from backend.core.system_settings_store import _settings_table_ident
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return False, "database connection failed", 0
     try:

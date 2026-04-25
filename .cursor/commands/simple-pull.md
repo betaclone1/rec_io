@@ -12,6 +12,6 @@ Pull the latest commit on the **production** server and do nothing else. No snap
 
 Use for small pushes (e.g. frontend-only or config tweaks) where you've already pushed from local and just need prod to have the new code. Existing processes keep running; static assets and HTML are served from the updated tree on next request.
 
-**Execute the workflow** in `.cursor/skills/simple-pull/SKILL.md`: SSH to prod and run `git fetch && git checkout main && git pull --ff-only origin main`, report result.
+**Execute the workflow** in `.cursor/skills/simple-pull/SKILL.md`. Prefer from repo root: `./scripts/prod/simple_git_pull_on_prod.sh` (correct host resolution; avoids bash `VAR=value ssh root@$VAR` pitfall).
 
-**Target:** `ssh root@$REC_PROD_SSH_HOST`; project path `/opt/rec_io_server`.
+**Target:** `root@$REC_PROD_SSH_HOST` (or canonical IP default in the script); project path `/opt/rec_io_server`.

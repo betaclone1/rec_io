@@ -455,6 +455,15 @@ class SupervisorConfigGenerator:
                 "autostart": True,
             }
         )
+        services.append(
+            {
+                "name": "strike_snapshot_publisher",
+                "script": "strike_snapshot_publisher.py",
+                "port": ports.get("strike_snapshot_publisher", 8062),
+                "environment": env_global,
+                "autostart": True,
+            }
+        )
 
         pr = Path(project_root)
         kalshi_by_user = fetch_kalshi_enabled_map_for_user_nos(list(trading_users))
@@ -774,6 +783,15 @@ environment={env_vars}
                 env_vars.append('PIPELINE_HEALTH_WRITER_DEAD_SEC="900"')
             if not any(x.startswith("PIPELINE_CATASTROPHIC_TRANSPORT_SEC=") for x in env_vars):
                 env_vars.append('PIPELINE_CATASTROPHIC_TRANSPORT_SEC="600"')
+
+            # Shared strike ladder snapshots (Redis): AES/ATS read same payload per wall second when publisher runs.
+            if not any(x.startswith("REC_STRIKE_SNAPSHOT_READ=") for x in env_vars):
+                env_vars.append('REC_STRIKE_SNAPSHOT_READ="1"')
+            if not any(x.startswith("REC_STRIKE_SNAPSHOT_MAX_AGE_SEC=") for x in env_vars):
+                env_vars.append('REC_STRIKE_SNAPSHOT_MAX_AGE_SEC="3"')
+            # Historical strike archive: default publisher-only (same ladder as Redis); see historical_strike_table_archive.
+            if not any(x.startswith("REC_STRIKE_TABLE_ARCHIVE_SOURCE=") for x in env_vars):
+                env_vars.append('REC_STRIKE_TABLE_ARCHIVE_SOURCE="publisher"')
 
             if rec_user_schema:
                 esc_s = str(rec_user_schema).replace("\\", "\\\\").replace('"', '\\"')

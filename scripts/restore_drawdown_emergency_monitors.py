@@ -10,7 +10,7 @@ Usage (from project root):
   PYTHONPATH=$(pwd) python3 scripts/restore_drawdown_emergency_monitors.py
   PYTHONPATH=$(pwd) python3 scripts/restore_drawdown_emergency_monitors.py --file /path/to/legacy.json
 
-  Full restore (apply monitors + clear trading_halt_active + NULL snapshot), same as dashboard:
+  Full restore (apply monitors + clear trading_halt_active; snapshot JSONB retained), same as dashboard:
   PYTHONPATH=$(pwd) python3 scripts/restore_drawdown_emergency_monitors.py --full-restore
 """
 
@@ -47,7 +47,7 @@ def main() -> int:
     parser.add_argument(
         "--full-restore",
         action="store_true",
-        help="Apply snapshot, set trading_halt_active false, and clear JSONB column (matches API restore).",
+        help="Apply snapshot and set trading_halt_active false (snapshot column retained; matches API restore).",
     )
     args = parser.parse_args()
     user_no = resolve_user_no(args)

@@ -1708,7 +1708,7 @@ async def post_system_settings_endpoint(payload: dict):
             "user_number": num,
             **(row or {}),
             "monitors_restore_updates": restored,
-            "message": "monitors restored from system_settings snapshot; trading_halt_active cleared",
+            "message": "monitors restored from saved snapshot; trading_halt_active cleared (snapshot retained)",
         }
 
     if action:

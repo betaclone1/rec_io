@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import re
+import time
 from typing import List, Optional, Sequence, Tuple
 
 from psycopg2 import sql as psql
@@ -25,6 +26,10 @@ _LOG = logging.getLogger(__name__)
 _SCHEMA_RE = re.compile(r"^users_(\d{4})$")
 _USER_NO_RAW_RE = re.compile(r"^\d{1,4}$")
 _LEGACY_USER_ID_RE = re.compile(r"(?:user_)?(\d{4})", re.IGNORECASE)
+_TENANT_PROVISION_LOCK_A = 672804213
+_TENANT_PROVISION_LOCK_B = 1103
+_TENANT_PROVISION_RETRIES = 3
+_TENANT_PROVISION_RETRY_SLEEP_SEC = 0.2
 
 
 def normalize_master_user_no_slot(user_no_raw, user_id_raw) -> Optional[str]:
@@ -546,6 +551,12 @@ def ensure_tenant_schemas_for_active_users(
         conn.autocommit = True
 
         with conn.cursor() as cur:
+            # Serialize tenant schema provisioning across concurrent supervisor generations
+            # (e.g. multiple monitor_manager syncs) to avoid catalog-write races.
+            cur.execute(
+                "SELECT pg_advisory_lock(%s, %s)",
+                (_TENANT_PROVISION_LOCK_A, _TENANT_PROVISION_LOCK_B),
+            )
             if not _schema_exists(cur, tpl):
                 log.error(
                     "Tenant provision skipped: template schema %s is missing",
@@ -559,20 +570,45 @@ def ensure_tenant_schemas_for_active_users(
                 continue
             n = str(user_no).strip()
             tgt = f"users_{n}"
-            try:
-                with conn.cursor() as cur:
-                    if provision_tenant_schema_clone(
-                        cur, n, template_schema=tpl, app_role=app_role
+            for attempt in range(1, _TENANT_PROVISION_RETRIES + 1):
+                try:
+                    with conn.cursor() as cur:
+                        if provision_tenant_schema_clone(
+                            cur, n, template_schema=tpl, app_role=app_role
+                        ):
+                            log.info("Provisioned tenant schema from %s → %s", tpl, tgt)
+                    break
+                except Exception as exc:
+                    msg = str(exc).lower()
+                    if (
+                        "tuple concurrently updated" in msg
+                        and attempt < _TENANT_PROVISION_RETRIES
                     ):
-                        log.info("Provisioned tenant schema from %s → %s", tpl, tgt)
-            except Exception as exc:
-                log.error("Failed to provision tenant schema %s: %s", tgt, exc)
-                return False
+                        log.warning(
+                            "Retrying tenant schema %s after catalog concurrency race "
+                            "(attempt %s/%s): %s",
+                            tgt,
+                            attempt,
+                            _TENANT_PROVISION_RETRIES,
+                            exc,
+                        )
+                        time.sleep(_TENANT_PROVISION_RETRY_SLEEP_SEC)
+                        continue
+                    log.error("Failed to provision tenant schema %s: %s", tgt, exc)
+                    return False
         return True
     except Exception as exc:
         log.error("Tenant schema ensure failed: %s", exc)
         return False
     finally:
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT pg_advisory_unlock(%s, %s)",
+                    (_TENANT_PROVISION_LOCK_A, _TENANT_PROVISION_LOCK_B),
+                )
+        except Exception:
+            pass
         try:
             conn.close()
         except Exception:

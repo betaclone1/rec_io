@@ -8238,7 +8238,9 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 Created by migration **`20260415_1730_historical_strike_table_master_partitioned`** (layout superseded by **`20260426_1430_strike_table_master_eastern_naive_timestamp`** for timestamp types) and also ensured by runtime init paths.
 
-**Purpose:** append-only copy of exactly what **`StrikeTableGenerator`** inserted into **`live_data.strike_table_15m`** / **`live_data.strike_table_hourly`** (unified row shape with **`exchange`**, probabilities, asks, min/max/range columns, etc.), one row per live insert (per strike row per refresh).
+**Purpose:** append-only copy of the **strike ladder supervisors actually used** for decisions. With default **`REC_STRIKE_TABLE_ARCHIVE_SOURCE=publisher`**, rows are written only from **`strike_snapshot_publisher`** immediately after each successful Redis publish (same JSON ladder as AES/ATS when snapshots are fresh). Legacy: set source to **`generator`** to archive each **`StrikeTableGenerator`** live insert instead, or **`both`** for transition (duplicates possible).
+
+**Provenance:** **`snapshot_wall_second`** (Unix UTC instant of the publisher tick) and **`snapshot_generation_seq`** (process-local counter) are set on publisher-sourced rows; **NULL** on legacy generator-sourced rows.
 
 **Layout:** one logical master table, partitioned by **US Eastern calendar month** on **`timestamp`** (`TIMESTAMP WITHOUT TIME ZONE`, US Eastern wall — same convention as `historical_data.*_price_history`), with partitions named **`historical_data.strike_table_master_YYYYMM`**. Migration **`20260426_1430_strike_table_master_eastern_naive_timestamp`** converted legacy `TIMESTAMPTZ` rows; init pre-creates current + next 2 months; writer also creates a missing month on demand.
 
@@ -8249,6 +8251,13 @@ Created by migration **`20260415_1730_historical_strike_table_master_partitioned
 **Settlement:** `market_result` is NULL until Kalshi lifecycle applies venue outcome; then **`backend/core/kalshi_lifecycle_trade_outcome.backfill_strike_archive_market_result`** updates rows where `market_ticker` matches.
 
 **Toggle:** set **`REC_STRIKE_TABLE_ARCHIVE=0`** to disable archive writes and lifecycle backfill.
+
+**Source switch:** **`REC_STRIKE_TABLE_ARCHIVE_SOURCE`** — **`publisher`** (default in supervised configs), **`generator`**, or **`both`**. Publisher-sourced rows omit ladder-only fields the snapshot JSON does not carry (e.g. some bid and momentum columns are NULL).
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `snapshot_wall_second` | `bigint` | YES | Unix epoch seconds for the publisher wall second when this row was archived; aligns with Redis snapshot timing. |
+| `snapshot_generation_seq` | `bigint` | YES | Monotonic counter in `strike_snapshot_publisher` since process start. |
 
 ---
 
@@ -10153,7 +10162,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `drawdown_trading_halt` | `boolean` | NO | true | When true, apply bankroll drawdown step-down and emergency monitor halt when threshold breached. |
 | `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Percent drawdown from sticky `bankroll_current` that triggers step-down (exclusive 0–100). Equity at or below `(1 - pct/100) * sticky` triggers. |
 | `trading_halt_active` | `boolean` | NO | false | Set true when monitor_manager applies drawdown emergency halt; dashboard latch until cleared or full restore. |
-| `drawdown_halt_monitor_snapshot` | `jsonb` | YES | null | Pre-halt monitor `paper_trade` / `test_filter` snapshot (`schema_version` 1); set on emergency halt, cleared after **Restore Trade Operations**. Not returned by `GET /api/system_settings`. |
+| `drawdown_halt_monitor_snapshot` | `jsonb` | YES | null | Pre-halt monitor `paper_trade` / `test_filter` snapshot (`schema_version` 1); set on emergency halt. Retained when the latch is cleared or monitors are restored; overwritten only on the next emergency halt. Raw JSON is not returned by `GET /api/system_settings`; the API includes `drawdown_halt_snapshot_present` only. |
 | `updated_at` | `timestamp with time zone` | NO | now() | Last update. |
 
 #### Constraints

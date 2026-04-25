@@ -1756,8 +1756,15 @@ def init_database():
                 "timestamp" TIMESTAMP WITHOUT TIME ZONE NOT NULL,
                 created_at TIMESTAMP WITHOUT TIME ZONE NOT NULL DEFAULT (timezone('America/New_York', now())),
                 market_result TEXT,
+                snapshot_wall_second BIGINT,
+                snapshot_generation_seq BIGINT,
                 PRIMARY KEY (id, "timestamp")
             ) PARTITION BY RANGE ("timestamp");
+        """))
+        cursor.execute(_us("""
+            ALTER TABLE historical_data.strike_table_master
+                ADD COLUMN IF NOT EXISTS snapshot_wall_second BIGINT,
+                ADD COLUMN IF NOT EXISTS snapshot_generation_seq BIGINT;
         """))
         cursor.execute(_us("""
             CREATE INDEX IF NOT EXISTS strike_table_master_market_ts_idx

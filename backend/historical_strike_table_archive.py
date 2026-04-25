@@ -14,14 +14,27 @@ Rows mirror unified live strike table inserts (45-value tuple: symbol .. created
 - ``market_result`` (NULL until lifecycle outcome writes YES/NO)
 
 Enable/disable: ``REC_STRIKE_TABLE_ARCHIVE`` (default ``1``; set ``0`` to disable).
+
+Archive **source** (what gets written to ``historical_data.strike_table_master``):
+
+- ``REC_STRIKE_TABLE_ARCHIVE_SOURCE=publisher`` (default): rows come only from
+  ``strike_snapshot_publisher`` after each successful Redis publish — the same ladder
+  payload AES/ATS consume when snapshots are fresh. The generator must **not** archive
+  (avoids duplicate / divergent rows vs supervisors).
+
+- ``generator``: legacy — archive only from ``StrikeTableGenerator`` live inserts.
+
+- ``both``: generator **and** publisher (debug / transition; duplicates possible).
 """
 
 from __future__ import annotations
 
 import logging
 import os
-from datetime import datetime
-from typing import Any, Sequence
+from datetime import datetime, timezone
+from typing import Any, Dict, Optional, Sequence
+
+import psycopg2
 
 from backend.core.time_eastern import eastern_wall_naive, now_est
 
@@ -31,9 +44,40 @@ MASTER_TABLE = "historical_data.strike_table_master"
 _ENSURED_PARTITIONS: set[str] = set()
 
 
+def _strike_archive_runtime_ddl_enabled() -> bool:
+    """
+    Runtime DDL guard for archive writers.
+
+    Default OFF so hot-path writers do not issue CREATE/ALTER and contend on heavy locks.
+    Set REC_STRIKE_ARCHIVE_RUNTIME_DDL=1 only for controlled local/bootstrap workflows.
+    """
+    v = (os.getenv("REC_STRIKE_ARCHIVE_RUNTIME_DDL") or "0").strip().lower()
+    return v in ("1", "true", "yes", "on")
+
+
 def strike_archive_enabled() -> bool:
     v = (os.getenv("REC_STRIKE_TABLE_ARCHIVE") or "1").strip().lower()
     return v not in ("0", "false", "no", "off")
+
+
+def strike_table_archive_source() -> str:
+    """Return ``publisher``, ``generator``, or ``both``."""
+    v = (os.getenv("REC_STRIKE_TABLE_ARCHIVE_SOURCE") or "publisher").strip().lower()
+    if v in ("publisher", "snapshot", "redis"):
+        return "publisher"
+    if v in ("generator", "live", "strike_generator"):
+        return "generator"
+    if v == "both":
+        return "both"
+    return "publisher"
+
+
+def strike_archive_from_generator() -> bool:
+    return strike_table_archive_source() in ("generator", "both")
+
+
+def strike_archive_from_publisher() -> bool:
+    return strike_table_archive_source() in ("publisher", "both")
 
 
 def _month_bounds_eastern_naive(ts: datetime) -> tuple[datetime, datetime]:
@@ -121,6 +165,13 @@ def ensure_master_table(cursor: Any) -> None:
             ON historical_data.strike_table_master (symbol, market, "timestamp" DESC)
         """
     )
+    cursor.execute(
+        """
+        ALTER TABLE historical_data.strike_table_master
+            ADD COLUMN IF NOT EXISTS snapshot_wall_second BIGINT,
+            ADD COLUMN IF NOT EXISTS snapshot_generation_seq BIGINT
+        """
+    )
 
 
 def ensure_month_partition(cursor: Any, ts: datetime) -> None:
@@ -180,6 +231,8 @@ def append_strike_archive_row_from_live_tuple(
     """
     if not strike_archive_enabled():
         return
+    if not strike_archive_from_generator():
+        return
     mt = str(market_ticker or "").strip()
     if not mt:
         return
@@ -196,8 +249,9 @@ def append_strike_archive_row_from_live_tuple(
     ts_wall = eastern_wall_naive(row_ts)
     ca_wall = eastern_wall_naive(row_ca)
 
-    ensure_master_table(cursor)
-    ensure_month_partition(cursor, ts_wall)
+    if _strike_archive_runtime_ddl_enabled():
+        ensure_master_table(cursor)
+        ensure_month_partition(cursor, ts_wall)
 
     cursor.execute(
         """
@@ -209,9 +263,9 @@ def append_strike_archive_row_from_live_tuple(
             yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
             momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
             yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
-            "timestamp", created_at, market_result
+            "timestamp", created_at, snapshot_wall_second, snapshot_generation_seq, market_result
         ) VALUES (
-            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL
+            %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NULL, NULL, NULL
         )
         """,
         (
@@ -265,6 +319,188 @@ def append_strike_archive_row_from_live_tuple(
     )
 
 
+def _opt_int(v: Any) -> Optional[int]:
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def append_strike_archive_for_published_ladder(
+    *,
+    exchange: str,
+    market: str,
+    wall_second: int,
+    generation_seq: int,
+    ladder: Dict[str, Any],
+) -> None:
+    """
+    Archive every strike row in ``ladder`` (same dict as Redis ``data`` / DB ladder fetch)
+    after a successful snapshot publish. Uses one Eastern-wall ``timestamp`` for the batch
+    (derived from ``wall_second``) so backtests can align with AES/ATS wall-second snapshots.
+
+    Columns not present in the ladder JSON (bids, momentum block, 15m min/max) are NULL.
+    """
+    if not strike_archive_enabled():
+        return
+    if not strike_archive_from_publisher():
+        return
+    if not isinstance(ladder, dict):
+        return
+    mkt = (market or "hourly").strip().lower()
+    if mkt not in ("hourly", "15m"):
+        mkt = "hourly"
+    ex = str(exchange or "").strip().lower()
+    sym_u = str(ladder.get("symbol") or "").strip().upper()
+    if not sym_u:
+        return
+
+    ts_src = datetime.fromtimestamp(int(wall_second), tz=timezone.utc)
+    ts_wall = eastern_wall_naive(ts_src)
+
+    ttc = ladder.get("ttc")
+    ttc_i = _opt_int(ttc)
+    ttc_hourly = ttc_i if mkt == "hourly" else None
+    ttc_15m = ttc_i if mkt == "15m" else None
+
+    cp = _opt_float(ladder.get("current_price"))
+    ev = ladder.get("event_ticker")
+    title = ladder.get("market_title")
+    tier = _opt_int(ladder.get("strike_tier"))
+    mstat = ladder.get("market_status")
+
+    batch: list[tuple[Any, ...]] = []
+    for sd in ladder.get("strikes") or []:
+        if not isinstance(sd, dict):
+            continue
+        mt = str(sd.get("ticker") or "").strip()
+        if not mt:
+            continue
+        batch.append(
+            (
+                sym_u,
+                ex,
+                mkt,
+                mt,
+                cp,
+                ttc_hourly,
+                ttc_15m,
+                ev,
+                title,
+                tier,
+                mstat,
+                _opt_float(sd.get("strike")),
+                _opt_float(sd.get("buffer")),
+                _opt_float(sd.get("buffer_pct")),
+                _opt_float(sd.get("probability_hourly")),
+                _opt_float(sd.get("probability_15m")),
+                _opt_float(sd.get("yes_prob_hourly")),
+                _opt_float(sd.get("no_prob_hourly")),
+                _opt_float(sd.get("yes_prob_15m")),
+                _opt_float(sd.get("no_prob_15m")),
+                sd.get("yes_ask_dollars"),
+                sd.get("no_ask_dollars"),
+                None,
+                None,
+                _opt_float(sd.get("yes_price_spread")),
+                _opt_float(sd.get("no_price_spread")),
+                _opt_float(sd.get("yes_diff")),
+                _opt_float(sd.get("no_diff")),
+                sd.get("volume_fp"),
+                sd.get("open_interest_fp"),
+                sd.get("ticker"),
+                sd.get("active_side"),
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                None,
+                _opt_float(sd.get("yes_ask_range_15m")),
+                _opt_float(sd.get("no_ask_range_15m")),
+                ts_wall,
+                ts_wall,
+                int(wall_second),
+                int(generation_seq),
+                None,
+            )
+        )
+
+    if not batch:
+        return
+
+    from backend.core.config.database import get_system_postgresql_connection
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        logger.warning("strike archive publisher batch: no system DB connection")
+        return
+    try:
+        with conn.cursor() as cur:
+            if _strike_archive_runtime_ddl_enabled():
+                ensure_master_table(cur)
+                ensure_month_partition(cur, ts_wall)
+            cur.executemany(
+                """
+                INSERT INTO historical_data.strike_table_master (
+                    symbol, exchange, market, market_ticker, current_price, ttc_hourly, ttc_15m, event_ticker, market_title,
+                    strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
+                    yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
+                    yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
+                    yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
+                    momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
+                    yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
+                    "timestamp", created_at, snapshot_wall_second, snapshot_generation_seq, market_result
+                ) VALUES (
+                    %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s
+                )
+                """,
+                batch,
+            )
+        conn.commit()
+    except psycopg2.errors.UndefinedTable:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.error(
+            "strike archive publisher insert failed: %s is missing and runtime DDL is disabled "
+            "(set REC_STRIKE_ARCHIVE_RUNTIME_DDL=1 temporarily or apply archive schema/migrations)",
+            MASTER_TABLE,
+        )
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.exception(
+            "strike archive publisher batch failed sym=%s market=%s wall=%s",
+            sym_u,
+            mkt,
+            wall_second,
+        )
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 def backfill_strike_archive_market_result(market_ticker: str, market_result: str) -> None:
     """Set ``market_result`` on all archived rows for one market ticker."""
     if not strike_archive_enabled():
@@ -281,7 +517,6 @@ def backfill_strike_archive_market_result(market_ticker: str, market_result: str
         return
     try:
         with conn.cursor() as cur:
-            ensure_master_table(cur)
             cur.execute(
                 """
                 UPDATE historical_data.strike_table_master
@@ -291,6 +526,15 @@ def backfill_strike_archive_market_result(market_ticker: str, market_result: str
                 (res, mt),
             )
         conn.commit()
+    except psycopg2.errors.UndefinedTable:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        logger.error(
+            "strike archive market_result backfill skipped: %s is missing and runtime DDL is disabled",
+            MASTER_TABLE,
+        )
     except Exception:
         try:
             conn.rollback()

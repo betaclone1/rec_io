@@ -10,7 +10,7 @@
 
 **Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the current chat. If not explicit, stop and ask first. Do not infer permission from deployment workflows or prior tasks.
 
-**Production server:** Canonical SSH/DB host and paths are in `docs/PRODUCTION_HOST.md` (agents should use `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`, not hardcoded IPs in new code).
+**Production server:** Canonical SSH/DB host and paths are in `docs/PRODUCTION_HOST.md` (agents should use `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`, not hardcoded IPs in new code). For non-interactive SSH, prefer `./scripts/prod/rec_prod_ssh.sh '…'` or `./scripts/prod/simple_git_pull_on_prod.sh` from repo root—do not use `REC_PROD_SSH_HOST=… ssh root@$REC_PROD_SSH_HOST '…'` on one line (bash expands the destination before the assignment; see `PRODUCTION_HOST.md`).
 
 **Tenant vs system PostgreSQL (non-negotiable for new code):** Per-tenant data lives in schemas `users_NNNN`. Use `get_postgresql_connection()` (or explicit `tenant_user_no=` / worker `REC_USER_SCHEMA`) for any access to those tables. Global daemons that only touch shared schemas (`live_data`, `system`, etc.) must use `get_system_postgresql_connection()` or `SystemThreadedConnectionPool` — not tenant-wrapped connections. Do not add DML against `users_*` from global market-ingest processes; fan out via Redis and per-tenant workers (see `docs/TENANT_TOUCH_REGISTRY.md`). Operator scripts that mutate tenant tables must accept `--user-no` / document env defaults via `backend/core/tenant_script_args.py`.
 

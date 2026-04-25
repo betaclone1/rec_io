@@ -8,6 +8,35 @@ def _nonempty_str(v: object) -> bool:
     return bool(s)
 
 
+def market_row_has_usable_strike_inputs(market: object) -> bool:
+    """Single-row check aligned with ``markets_all_have_usable_strike_inputs``."""
+    if not isinstance(market, dict):
+        return False
+    if market.get("floor_strike") is None:
+        return False
+    if not _nonempty_str(market.get("yes_ask_dollars")):
+        return False
+    if not _nonempty_str(market.get("yes_bid_dollars")):
+        return False
+    return True
+
+
+def event_with_only_usable_markets(event_data: dict) -> dict | None:
+    """
+    Shallow copy of ``event_data`` keeping only markets that pass REST readiness.
+
+    Use when Kalshi returns a mix of rows (some missing ``floor_strike`` or quotes) so
+    rollover can seed and subscribe to the ready subset instead of blocking forever.
+    """
+    markets = event_data.get("markets") or []
+    usable = [m for m in markets if market_row_has_usable_strike_inputs(m)]
+    if not usable:
+        return None
+    out = dict(event_data)
+    out["markets"] = usable
+    return out
+
+
 def markets_all_have_usable_strike_inputs(event_data: dict) -> bool:
     """
     Rollover readiness gate.
@@ -24,12 +53,6 @@ def markets_all_have_usable_strike_inputs(event_data: dict) -> bool:
     if not markets:
         return False
     for m in markets:
-        if not isinstance(m, dict):
-            return False
-        if m.get("floor_strike") is None:
-            return False
-        if not _nonempty_str(m.get("yes_ask_dollars")):
-            return False
-        if not _nonempty_str(m.get("yes_bid_dollars")):
+        if not market_row_has_usable_strike_inputs(m):
             return False
     return True

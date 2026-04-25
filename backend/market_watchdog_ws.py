@@ -48,6 +48,7 @@ from backend.core.strike_pipeline_health import (
     floor_strike_vs_spot_check,
 )
 from backend.core.kalshi_event_market_readiness import (
+    event_with_only_usable_markets,
     markets_all_have_usable_strike_inputs as _markets_all_have_usable_strike_inputs,
 )
 from backend.symbol_price_watchdog import get_current_price_from_db
@@ -105,6 +106,44 @@ DEFAULT_ROLLOVER_REST_MAX_WORKERS = 1
 DEFAULT_HOURLY_ATM_STRIKES_EACH_SIDE = 20
 
 _POOL_LOCK = threading.Lock()
+
+
+def _15m_partial_market_seed_enabled() -> bool:
+    """When True, seed/subscribe using only REST rows that have floor_strike + yes bid/ask."""
+    return os.getenv("MARKET_WATCHDOG_WS_15M_PARTIAL_MARKET_SEED", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def _15m_discovery_max_wait_sec() -> float:
+    """15m-only REST discovery budget per symbol (hourly unchanged). Default 240s."""
+    raw = os.getenv("MARKET_WATCHDOG_WS_15M_DISCOVERY_MAX_WAIT_SEC", "240").strip()
+    try:
+        return max(30.0, float(raw))
+    except ValueError:
+        return 240.0
+
+
+def _coerce_15m_event_ready(ed: dict | None) -> dict | None:
+    """Full-event readiness, or partial subset when ``MARKET_WATCHDOG_WS_15M_PARTIAL_MARKET_SEED`` is on."""
+    if not ed or not ed.get("markets"):
+        return None
+    if _markets_all_have_usable_strike_inputs(ed):
+        return ed
+    if not _15m_partial_market_seed_enabled():
+        return None
+    partial = event_with_only_usable_markets(ed)
+    if partial and partial.get("markets"):
+        logger.info(
+            "15m partial REST seed using %s/%s markets (rows missing floor/quotes dropped)",
+            len(partial["markets"]),
+            len(ed.get("markets") or []),
+        )
+        return partial
+    return None
 
 
 @dataclass(frozen=True)
@@ -475,20 +514,22 @@ def _refetch_event_until_markets_usable(
     last_log = 0.0
     while time.monotonic() < deadline:
         ed = fetch_event_json(event_ticker)
-        if ed and ed.get("markets") and len(ed["markets"]) > 0 and _markets_all_have_usable_strike_inputs(ed):
-            return ed
+        coerced = _coerce_15m_event_ready(ed)
+        if coerced:
+            return coerced
         attempt += 1
         now = time.monotonic()
         if now - last_log >= 30.0:
             logger.info(
-                "waiting for usable strike inputs on all markets event=%s REST attempts=%s",
+                "waiting for usable strike inputs event=%s REST attempts=%s",
                 event_ticker,
                 attempt,
             )
             last_log = now
         time.sleep(sleep_sec)
-    # Return last attempt result if present; otherwise an empty dict to signal failure.
-    return fetch_event_json(event_ticker) or {}
+    # Return last attempt if usable (full or partial); else raw last fetch for diagnostics.
+    last = fetch_event_json(event_ticker) or {}
+    return _coerce_15m_event_ready(last) or last
 
 
 def _resolve_one_symbol_until_ready(
@@ -507,17 +548,21 @@ def _resolve_one_symbol_until_ready(
         if et and ed and ed.get("markets") and len(ed["markets"]) > 0:
             if not _markets_all_have_usable_strike_inputs(ed):
                 remaining = max(0.0, deadline - time.monotonic())
-                ed = _refetch_event_until_markets_usable(
-                    et, max_wait_sec=remaining, sleep_sec=sleep_sec
-                )
-            if _markets_all_have_usable_strike_inputs(ed):
+                if remaining > 0:
+                    ed = _refetch_event_until_markets_usable(
+                        et, max_wait_sec=remaining, sleep_sec=sleep_sec
+                    )
+                else:
+                    ed = {}
+            coerced = _coerce_15m_event_ready(ed)
+            if coerced:
                 logger.info(
                     "[%s] resolved event=%s markets=%s (usable strike inputs complete)",
                     sym_u,
                     et,
-                    len(ed.get("markets") or []),
+                    len(coerced.get("markets") or []),
                 )
-                return sym_u, (et, ed)
+                return sym_u, (et, coerced)
         time.sleep(sleep_sec)
 
     logger.warning(
@@ -1355,7 +1400,7 @@ def _main_loop(
             discover_fn=lambda sy, lf: _discover_all(
                 sy,
                 lf,
-                max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+                max_wait_sec=_15m_discovery_max_wait_sec(),
                 sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
             ),
         )
@@ -1383,7 +1428,7 @@ def _main_loop(
                     discover_fn=lambda sy, lf: _discover_all(
                         sy,
                         lf,
-                        max_wait_sec=DEFAULT_DISCOVERY_MAX_WAIT_SEC,
+                        max_wait_sec=_15m_discovery_max_wait_sec(),
                         sleep_sec=DEFAULT_DISCOVERY_SLEEP_SEC,
                     ),
                 )
