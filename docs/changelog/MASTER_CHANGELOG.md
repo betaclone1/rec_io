@@ -19,19 +19,19 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** (session work; consolidated from 2026-04-23 strike snapshot checklist plus trading/UI follow-ups.)
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (idempotent):  
+- [x] Apply migration (idempotent):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260423_1800_strike_archive_snapshot_provenance`
-- [ ] Apply migration (idempotent):  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1800_archive_trades_initial_price_slippage_initial_count`
-- [ ] Schema drift check:  
+- [x] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260420_1800_archive_trades_initial_price_slippage_initial_count` (already recorded applied on prod before this pull; runner may report “already applied”.)
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; confirm **`strike_snapshot_publisher`** is **RUNNING**; tail **`trade_executor_0001`**, **`main_app`**, one **`market_watchdog_ws`** program log for current errors.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `cd /opt/rec_io_server && supervisorctl -c backend/supervisord.conf status`; confirm **`strike_snapshot_publisher`** is **RUNNING**; tail **`trade_executor_0001`**, **`main_app`**, one **`market_watchdog_ws`** program log for current errors.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.2`
-- [ ] Record release in DB on **local** (same version string as production):  
+- [x] Record release in DB on **local** (same version string as production):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.3.2`
 
 ---
