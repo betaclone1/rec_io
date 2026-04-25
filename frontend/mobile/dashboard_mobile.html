@@ -312,6 +312,10 @@
     .system-settings-halt-actions.system-settings-halt-actions--visible {
       display: flex;
     }
+    .system-settings-halt-actions.system-settings-halt-actions--snapshot-only {
+      border-color: rgba(214, 158, 46, 0.55);
+      background: rgba(214, 158, 46, 0.09);
+    }
     .system-settings-halt-actions .system-settings-halt-actions-label {
       font-size: 11px;
       font-weight: 700;
@@ -319,6 +323,9 @@
       color: #f56565;
       text-transform: uppercase;
       margin: 0;
+    }
+    .system-settings-halt-actions.system-settings-halt-actions--snapshot-only .system-settings-halt-actions-label {
+      color: #d69e2e;
     }
     .system-settings-halt-actions .system-settings-halt-meta {
       font-size: 12px;
@@ -2015,6 +2022,8 @@
 
     function updateTradingHaltUiFromSettingsPayload(j) {
       const active = j && j.trading_halt_active === true;
+      const snapshotPresent = j && j.drawdown_halt_snapshot_present === true;
+      const showHaltActions = active || snapshotPresent;
       const reason = (j && j.trading_halt_reason) ? String(j.trading_halt_reason) : '';
       const when = (j && j.trading_halt_initiated_at_est) ? String(j.trading_halt_initiated_at_est) : '';
       const badge = document.getElementById('trading-halt-active-badge');
@@ -2028,8 +2037,27 @@
       }
       const haltBox = document.getElementById('systemSettingsHaltActions');
       if (haltBox) {
-        haltBox.classList.toggle('system-settings-halt-actions--visible', active);
-        haltBox.setAttribute('aria-hidden', active ? 'false' : 'true');
+        haltBox.classList.toggle('system-settings-halt-actions--visible', showHaltActions);
+        haltBox.classList.toggle('system-settings-halt-actions--snapshot-only', snapshotPresent && !active);
+        haltBox.setAttribute('aria-hidden', showHaltActions ? 'false' : 'true');
+      }
+      const haltLabel = document.getElementById('systemSettingsHaltActionsLabel');
+      if (haltLabel) {
+        if (active) {
+          haltLabel.textContent = 'Trading halt active';
+          haltLabel.hidden = false;
+        } else if (snapshotPresent) {
+          haltLabel.textContent = 'Pre-halt snapshot on file';
+          haltLabel.hidden = false;
+        } else {
+          haltLabel.textContent = '';
+          haltLabel.hidden = true;
+        }
+      }
+      const clearHaltBtn = document.getElementById('systemSettingsClearHaltAlert');
+      if (clearHaltBtn) {
+        clearHaltBtn.hidden = !active;
+        clearHaltBtn.setAttribute('aria-hidden', active ? 'false' : 'true');
       }
       const haltMeta = document.getElementById('systemSettingsHaltMeta');
       if (haltMeta) {
@@ -2038,6 +2066,9 @@
           if (reason) lines.push(reason);
           if (when) lines.push('Started ' + when + ' ET');
           haltMeta.textContent = lines.join(' · ') || 'Trading halt';
+          haltMeta.hidden = false;
+        } else if (snapshotPresent) {
+          haltMeta.textContent = 'Restore applies each monitor’s saved paper trade and test filter from that snapshot.';
           haltMeta.hidden = false;
         } else {
           haltMeta.textContent = '';
@@ -2048,7 +2079,7 @@
 
     async function refreshTradingHaltIndicator() {
       try {
-        const r = await fetch(window.location.origin + '/api/system_settings', { cache: 'no-store' });
+        const r = await fetch(window.location.origin + '/api/system_settings', { cache: 'no-store', credentials: 'same-origin' });
         const j = await r.json();
         if (j.status === 'ok') updateTradingHaltUiFromSettingsPayload(j);
       } catch (e) {
@@ -2061,7 +2092,7 @@
       const pctEl = document.getElementById('systemSettingsDrawdownPct');
       if (!haltEl || !pctEl) return;
       try {
-        const r = await fetch(window.location.origin + '/api/system_settings', { cache: 'no-store' });
+        const r = await fetch(window.location.origin + '/api/system_settings', { cache: 'no-store', credentials: 'same-origin' });
         const j = await r.json();
         if (j.status !== 'ok') {
           console.warn('system_settings load:', j.message || j);
@@ -2161,29 +2192,62 @@
         const r = await fetch(window.location.origin + '/api/system_settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'same-origin',
           body: JSON.stringify({ user_id: window.recSessionUserId(), action: action }),
         });
-        const j = await r.json();
+        let j;
+        try {
+          j = await r.json();
+        } catch (parseErr) {
+          console.error('system_settings POST: non-JSON response', r.status, parseErr);
+          alert((action === 'restore_trade_operations' ? 'Restore failed: ' : 'Request failed: ') + 'invalid server response (HTTP ' + r.status + ')');
+          return;
+        }
         if (j.status !== 'ok') {
+          console.warn('system_settings action', action, j);
           alert((action === 'restore_trade_operations' ? 'Restore failed: ' : 'Request failed: ') + (j.message || 'unknown'));
           return;
         }
         updateTradingHaltUiFromSettingsPayload(j);
-        await loadMonitors();
-        applyCurrentSort();
-        initializeMonitors();
+        await refreshTradingHaltIndicator();
+        try {
+          await loadMonitors();
+          applyCurrentSort();
+          initializeMonitors();
+        } catch (refreshErr) {
+          console.error('postSystemSettingsAction: monitor refresh', refreshErr);
+        }
+        if (action === 'restore_trade_operations' || action === 'clear_trading_halt_alert') {
+          closeSystemSettingsPopover();
+        }
       } catch (e) {
+        console.error('postSystemSettingsAction', action, e);
         alert('Request failed: ' + (e && e.message ? e.message : 'Network error'));
       }
     }
 
     function wireSystemSettingsPopover() {
       const root = document.getElementById('systemSettingsPopoverRoot');
+      const panel = document.getElementById('systemSettingsPopoverPanel');
       const cancelBtn = document.getElementById('systemSettingsCancel');
       const saveBtn = document.getElementById('systemSettingsSave');
       if (root) {
         root.addEventListener('click', function(e) {
           if (e.target === root) closeSystemSettingsPopover();
+        });
+      }
+      if (panel && !panel.dataset.sysSetHaltDelegation) {
+        panel.dataset.sysSetHaltDelegation = '1';
+        panel.addEventListener('click', function(ev) {
+          if (ev.target.closest && ev.target.closest('#systemSettingsRestoreTradeOps')) {
+            ev.preventDefault();
+            void postSystemSettingsAction('restore_trade_operations');
+            return;
+          }
+          if (ev.target.closest && ev.target.closest('#systemSettingsClearHaltAlert')) {
+            ev.preventDefault();
+            void postSystemSettingsAction('clear_trading_halt_alert');
+          }
         });
       }
       if (cancelBtn && !cancelBtn.dataset.sysSetWired) {
@@ -2194,20 +2258,6 @@
         saveBtn.dataset.sysSetWired = '1';
         saveBtn.addEventListener('click', function() {
           void saveSystemSettingsPopover();
-        });
-      }
-      const clearHaltBtn = document.getElementById('systemSettingsClearHaltAlert');
-      const restoreOpsBtn = document.getElementById('systemSettingsRestoreTradeOps');
-      if (clearHaltBtn && !clearHaltBtn.dataset.sysSetWired) {
-        clearHaltBtn.dataset.sysSetWired = '1';
-        clearHaltBtn.addEventListener('click', function() {
-          void postSystemSettingsAction('clear_trading_halt_alert');
-        });
-      }
-      if (restoreOpsBtn && !restoreOpsBtn.dataset.sysSetWired) {
-        restoreOpsBtn.dataset.sysSetWired = '1';
-        restoreOpsBtn.addEventListener('click', function() {
-          void postSystemSettingsAction('restore_trade_operations');
         });
       }
     }
@@ -2442,7 +2492,8 @@
               if (stats.trades !== undefined && stats.trades !== null) return String(stats.trades);
               break;
             case 'win_streak':
-              if (stats.win_streak !== undefined && stats.win_streak !== null) return stats.win_streak;
+              // Tooltip streak should reflect canonical DB monitor_list.win_streak, not
+              // portfolio-window history calculations.
               break;
             case 'win_loss':
               if (stats.win_loss !== undefined && stats.win_loss !== null) return `${stats.win_loss}%`;
@@ -2652,6 +2703,8 @@
         monitor.test_filter === 1 ||
         monitor.test_filter === '1';
       const testFilterMonitorClass = isTestFilterMonitor ? ' test-filter-monitor' : '';
+      const winStreakN = Number(monitor.win_streak);
+      const winStreakAttr = Number.isFinite(winStreakN) ? String(winStreakN) : '0';
       
       if (isListView) {
         // List view layout - horizontal data arrangement
@@ -2680,7 +2733,7 @@
             ${getAllocationBadgeMarkup(monitor)}
             <div class="monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
-              <div class="th-monitor-trades-box" style="text-align: center; min-width: 45px;" data-win-streak="0" tabindex="0">
+              <div class="th-monitor-trades-box" style="text-align: center; min-width: 45px;" data-win-streak="${winStreakAttr}" tabindex="0">
                 <div class="stat-value stat-win-streak">${getMonitorStatValue(monitor, 'trades', '0')}</div>
                 <div class="stat-label">Trades</div>
               </div>
@@ -2772,7 +2825,7 @@
               </div>
             </div>
             <div class="monitor-stats">
-              <div class="stat-panel th-monitor-trades-box" data-win-streak="0" tabindex="0">
+              <div class="stat-panel th-monitor-trades-box" data-win-streak="${winStreakAttr}" tabindex="0">
                 <div class="stat-value stat-win-streak">${getMonitorStatValue(monitor, 'trades', '0')}</div>
                 <div class="stat-label">Trades</div>
               </div>
@@ -7222,7 +7275,7 @@
     <div id="systemSettingsPopoverPanel" class="system-settings-panel" role="dialog" aria-labelledby="systemSettingsPopoverTitle" onclick="event.stopPropagation();">
       <h3 id="systemSettingsPopoverTitle">System settings</h3>
       <div id="systemSettingsHaltActions" class="system-settings-halt-actions" aria-hidden="true">
-        <p class="system-settings-halt-actions-label">TRADING HALT ACTIVE</p>
+        <p id="systemSettingsHaltActionsLabel" class="system-settings-halt-actions-label" hidden></p>
         <p id="systemSettingsHaltMeta" class="system-settings-halt-meta" hidden></p>
         <div class="system-settings-halt-actions-buttons">
           <button type="button" id="systemSettingsClearHaltAlert" class="uat-modal-btn-secondary">Clear Trade Halt Alert</button>

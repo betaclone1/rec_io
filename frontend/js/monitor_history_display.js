@@ -501,10 +501,11 @@ class MonitorHistoryDisplay {
         const tradesBox = tile.querySelector('.th-monitor-trades-box');
         if (tradesStreakEl) {
             tradesStreakEl.textContent = String(stats.trades != null ? stats.trades : 0);
-            const ws = stats.win_streak != null ? stats.win_streak : 0;
-            const streakStr = String(ws);
-            if (tradesBox) tradesBox.setAttribute('data-win-streak', streakStr);
-            else tradesStreakEl.setAttribute('data-win-streak', streakStr);
+            // Do not overwrite win-streak tooltip from calculated history stats.
+            // Tooltip should continue reflecting canonical DB monitor_list.win_streak.
+            if (!tradesBox && !tradesStreakEl.hasAttribute('data-win-streak')) {
+                tradesStreakEl.setAttribute('data-win-streak', '0');
+            }
         }
         
         // Visual indicators removed - no need to show that values are calculated
