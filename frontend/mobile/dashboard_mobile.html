@@ -1992,6 +1992,9 @@
       }
       applyCurrentSort();
       initializeMonitors();
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        window.monitorHistoryDisplay.updateMonitorTiles();
+      }
     }
 
     function wireMobileTradingModeControls() {
@@ -2306,6 +2309,9 @@
       // STEP 5: NOW render everything with correct values
       applyCurrentSort();
       initializeMonitors();
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        window.monitorHistoryDisplay.updateMonitorTiles();
+      }
       initializeTooltips();
 
       // STEP 5.5: Monitor breakdown refresh removed
@@ -5821,6 +5827,9 @@
 
         if (hasAdditions || hasRemovals) {
           initializeMonitors();
+          if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+            window.monitorHistoryDisplay.updateMonitorTiles();
+          }
           initializeSortable();
         } else if (hasOrderChange) {
           reorderMonitorTiles(newMonitorIds);

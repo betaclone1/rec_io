@@ -582,16 +582,16 @@ class MonitorHistoryDisplay {
     }
 
     /**
-     * Get calculated statistics for a specific monitor
+     * Get calculated statistics for a specific monitor.
+     * Returns undefined when this monitor has no entry (e.g. no closed trades in the fetched
+     * trade list, or key mismatch). Callers must fall back to /api/monitors aggregates — do not
+     * return a synthetic zero object or dashboard tiles show 0 even when the API has real stats.
      */
     getMonitorStats(monitorName) {
-        return this.monitorStats.get(monitorName) || {
-            trades: 0,
-            win_streak: 0,
-            win_loss: 0.0,
-            ret_pct: 0.0,
-            pnl: 0.00
-        };
+        if (monitorName == null || monitorName === '') {
+            return undefined;
+        }
+        return this.monitorStats.get(monitorName);
     }
 
     /**

@@ -2195,6 +2195,9 @@
       }
       applyCurrentSort();
       initializeMonitors();
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        window.monitorHistoryDisplay.updateMonitorTiles();
+      }
     }
 
     function wireTradingModeControls() {
@@ -2516,6 +2519,9 @@
       // STEP 5: NOW render everything with correct values
       applyCurrentSort();
       initializeMonitors();
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        window.monitorHistoryDisplay.updateMonitorTiles();
+      }
       initializeSortable();
       initializeTooltips();
 
