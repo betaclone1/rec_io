@@ -255,7 +255,7 @@ last_trade_times = {}  # strike_key -> timestamp
 logged_strikes = {}  # strike_key -> timestamp of last log
 
 # Cooldown period (seconds)
-TRADE_COOLDOWN = 10
+TRADE_COOLDOWN = 1
 
 # Global state for auto entry indicator (for frontend display)
 auto_entry_indicator_state = {

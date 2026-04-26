@@ -8088,7 +8088,7 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Purpose:** Rows moved from `users.trades_0001` when a monitor is archived (`POST /api/monitor/archive` or backfill script). Contains only trades that had `paper_trade = false` (or null treated as live at archive time) for that monitor. Same column set as `users.trades_0001` at migration time, **plus** `archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`. **No** `rec_io_db_notify` trigger.
 
-**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`**; `20260403_2330_archive_trades_monitor_confirm_detail` adds **`monitor_confirm_detail`** when the master table gains that column so `union_trades_with_archives_select` stays valid; `20260416_1810_archive_trades_win_loss_confirmed_match_master` adds **`win_loss_confirmed`** on all `archive.trades_archive_{live|paper}_*` tables so GET `/trades` can select it in the union (parity with `users.trades_*` after `20260328_1500`); `20260420_1800_archive_trades_initial_price_slippage_initial_count` adds **`initial_price`**, **`slippage`**, **`initial_count`** on every `archive.trades_archive_{live|paper}_[0-9]{4}` so the master ∪ archive UNION stays valid after tenant `trades_*` gained those columns (`20260420_1230_trades_initial_price_slippage_initial_count`); `20260425_1610_archive_trades_union_parity_proj_prices` adds **`initial_proj_price`**, **`initial_proj_fees`** and widens **`buy_price`** / **`sell_price`** to `NUMERIC(12,6)` on every matching archive table so full-column unions (e.g. `POST /api/trades/history/insights`) stay valid after `20260425_1425_trades_initial_proj_price_fees` and `20260425_1438_trades_buy_sell_price_6dp` on tenant `trades_*`.
+**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`**; `20260403_2330_archive_trades_monitor_confirm_detail` adds **`monitor_confirm_detail`** when the master table gains that column so `union_trades_with_archives_select` stays valid; `20260416_1810_archive_trades_win_loss_confirmed_match_master` adds **`win_loss_confirmed`** on all `archive.trades_archive_{live|paper}_*` tables so GET `/trades` can select it in the union (parity with `users.trades_*` after `20260328_1500`); `20260420_1800_archive_trades_initial_price_slippage_initial_count` adds **`initial_price`**, **`slippage`**, **`initial_count`** on every `archive.trades_archive_{live|paper}_[0-9]{4}` so the master ∪ archive UNION stays valid after tenant `trades_*` gained those columns (`20260420_1230_trades_initial_price_slippage_initial_count`); `20260425_1610_archive_trades_union_parity_proj_prices` adds **`initial_proj_price`**, **`initial_proj_fees`** and widens **`buy_price`** / **`sell_price`** to `NUMERIC(12,6)` on every matching archive table so full-column unions (e.g. `POST /api/trades/history/insights`) stay valid after `20260425_1425_trades_initial_proj_price_fees` and `20260425_1438_trades_buy_sell_price_6dp` on tenant `trades_*`. Tenant **`time_in_force`** / **`order_type`**: migration **`20260426_1600_monitor_trades_execution_settings`**. Archive parity for those two columns: **`20260426_1600_kalshi_execution_monitor_trades_archive`** (archive tables only).
 
 **Application:** `backend.util.trade_log_archivist.archive_trades_for_monitor`; read paths union this table with the master log and `archive.trades_archive_paper_0001`.
 
@@ -10260,6 +10260,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `flip_sell_floor` | `boolean` | NO | false | Flip-sell for **floor price** stops. Migration `20260406_1400_monitor_flip_sell`. |
 | `flip_sell_prob_mult` | `character varying(32)` | YES | - | Size token (e.g. `1x`, future `max`); NULL until first enable (API sets `1x`) or user sets. |
 | `flip_sell_floor_mult` | `character varying(32)` | YES | - | Same for floor stops. |
+| `time_in_force` | `text` | NO | fill_or_kill | Kalshi **time in force** for auto-entry orders: `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled`. Migration `20260426_1600_monitor_trades_execution_settings`. |
+| `order_type` | `text` | NO | market | Execution pricing policy `limit` or `market` (Kalshi request still uses limit pricing where applicable). Same migration. |
 
 #### Constraints
 
@@ -10676,6 +10678,8 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `order_id` | `text` | YES | - | |
 | `order_id_open` | `text` | YES | - | |
 | `order_id_close` | `text` | YES | - | |
+| `time_in_force` | `text` | YES | - | Snapshot from monitor at open; Kalshi TIF enum string. Migration `20260426_1600_monitor_trades_execution_settings`. |
+| `order_type` | `text` | YES | - | Snapshot `limit` / `market` policy from monitor. Same migration. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |
@@ -10844,6 +10848,8 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `order_id` | text |
 | `order_id_open` | text |
 | `order_id_close` | text |
+| `time_in_force` | text |
+| `order_type` | text |
 | `high_price` | numeric(10,4) |
 | `low_price` | numeric(10,4) |
 | `hour_idx` | smallint |

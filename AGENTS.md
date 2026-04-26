@@ -2,7 +2,7 @@
 
 **Chat:** Use normal markdown (bold, headers, lists). Do not strip formatting.
 
-**DB changes (non-negotiable):** When the user asks to add or modify anything in the database (column, table, schema, etc.), do the full protocol: (1) create migration up/down in `scripts/migrations/`, (2) run `python3 scripts/db/run_migration.py up <migration_id>`, (3) update `docs/MASTER_DB_SCHEMA_REFERENCE.md`, (4) update `backend/core/config/database.py` and schema brain, (5) run `scripts/db/check_db_schema_drift.py`. No DB change is done until the migration has been applied.
+**DB changes (non-negotiable):** When the user asks to add or modify anything in the database (column, table, schema, etc.), do the full protocol: (1) create migration up/down in `scripts/migrations/`, (2) run `python3 scripts/db/run_migration.py up <migration_id>` on the developer database so `system.schema_migrations` matches the repo (not only `init_database()` or a GUI-only `ALTER`), (3) update `docs/MASTER_DB_SCHEMA_REFERENCE.md`, (4) update `backend/core/config/database.py` and schema brain, (5) run `scripts/db/check_db_schema_drift.py`. No DB change is done until the migration has been applied. **Local-only DDL without a committed migration is invalid:** production deploy must be able to replay the same `up` migration.
 
 **Migration hygiene (non-negotiable for agents):** One logical schema change → **one** migration id (pair of files), batched DDL when it belongs together. Search existing migrations before adding a new id. If a draft was never applied, delete superseded pairs in the same change. Do not delete pairs that are already applied on prod without explicit owner decision (breaks `down` / history). See `.cursor/rules/05-db-migration-hygiene.mdc`.
 

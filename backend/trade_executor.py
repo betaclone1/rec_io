@@ -41,6 +41,10 @@ from backend.trading_mode import get_trading_mode
 from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.core.time_eastern import now_est
+from backend.core.kalshi_execution_settings import (
+    limit_price_for_executor_payload,
+    normalize_time_in_force_loose,
+)
 
 # Create Flask app
 app = Flask(__name__)
@@ -306,7 +310,7 @@ def process_trigger_trade_request(data: dict):
             log_event(ticket_id, msg, trade_id=trade_id)
             return {"status": "rejected", "error": msg}, 503
     raw_side = data.get("side", "yes")
-    side = "yes" if raw_side in ["Y", "yes"] else "no"
+    side = "yes" if raw_side in ["Y", "yes", "y"] else "no"
     count_fp_in = data.get("count_fp")
     if count_fp_in is not None and str(count_fp_in).strip() != "":
         try:
@@ -316,20 +320,52 @@ def process_trigger_trade_request(data: dict):
     else:
         count_val = data.get("count", data.get("position", 1))
         count_fp = f"{float(count_val):.2f}"
-    order_type = "limit"
+
+    intent = str(data.get("intent", "open")).strip().lower()
+    tif = normalize_time_in_force_loose(data.get("time_in_force"))
+    if intent == "open":
+        if not tif:
+            msg = "missing_or_invalid_time_in_force"
+            log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
+            if trade_id:
+                status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
+            else:
+                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+            _notify_trade_manager_executor_status(status_payload)
+            return {"status": "rejected", "error": msg}, 400
+        try:
+            lim = limit_price_for_executor_payload(
+                order_type_policy=str(data.get("order_type") or "market"),
+                ticket_buy_price=data.get("buy_price"),
+            )
+        except ValueError as e:
+            msg = f"limit_price_error:{e}"
+            log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
+            if trade_id:
+                status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
+            else:
+                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+            _notify_trade_manager_executor_status(status_payload)
+            return {"status": "rejected", "error": msg}, 400
+    else:
+        if not tif:
+            tif = "immediate_or_cancel"
+        lim = "0.9900"
+
     order_payload = {
         "ticker": ticker,
         "side": side,
-        "type": order_type,
+        "type": "limit",
         "count_fp": count_fp,
-        "time_in_force": "fill_or_kill",
+        "time_in_force": tif,
         "action": "buy",
         "client_order_id": str(uuid.uuid4()),
+        "cancel_order_on_pause": True,
     }
     if side == "yes":
-        order_payload["yes_price_dollars"] = "0.9900"
+        order_payload["yes_price_dollars"] = lim
     else:
-        order_payload["no_price_dollars"] = "0.9900"
+        order_payload["no_price_dollars"] = lim
 
     timestamp = str(int(time.time() * 1000))
     path = "/portfolio/orders"

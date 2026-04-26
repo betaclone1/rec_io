@@ -370,6 +370,8 @@ def init_database():
                 order_id TEXT,
                 order_id_open TEXT,
                 order_id_close TEXT,
+                time_in_force TEXT,
+                order_type TEXT,
                 high_price DECIMAL(10,4),
                 low_price DECIMAL(10,4),
                 loss_prevention BOOLEAN DEFAULT FALSE,
@@ -455,6 +457,8 @@ def init_database():
                 order_id TEXT,
                 order_id_open TEXT,
                 order_id_close TEXT,
+                time_in_force TEXT,
+                order_type TEXT,
                 high_price NUMERIC(10,4),
                 low_price NUMERIC(10,4),
                 hour_idx SMALLINT,
@@ -2044,7 +2048,124 @@ def init_database():
                 END
                 $$;
             """))
-        
+
+        # Kalshi execution defaults on monitor_list (time_in_force + limit|market policy); trades snapshot via migration.
+        cursor.execute(_us("""
+            SELECT table_name 
+            FROM information_schema.tables 
+            WHERE table_schema = 'users' 
+            AND table_name LIKE 'monitor_list_%'
+            ORDER BY table_name
+        """))
+        for (ml_tn,) in cursor.fetchall():
+            cursor.execute(_us(f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{ml_tn}'
+                          AND column_name = 'time_in_force'
+                    ) THEN
+                        EXECUTE format(
+                            'ALTER TABLE users.%I ADD COLUMN time_in_force TEXT NOT NULL DEFAULT %L',
+                            '{ml_tn}', 'fill_or_kill'
+                        );
+                        EXECUTE format(
+                            'ALTER TABLE users.%I ADD CONSTRAINT %I CHECK (time_in_force IN (%L, %L, %L))',
+                            '{ml_tn}', '{ml_tn}_time_in_force_chk',
+                            'fill_or_kill', 'immediate_or_cancel', 'good_till_canceled'
+                        );
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'users'
+                          AND table_name = '{ml_tn}'
+                          AND column_name = 'order_type'
+                    ) THEN
+                        EXECUTE format(
+                            'ALTER TABLE users.%I ADD COLUMN order_type TEXT NOT NULL DEFAULT %L',
+                            '{ml_tn}', 'market'
+                        );
+                        EXECUTE format(
+                            'ALTER TABLE users.%I ADD CONSTRAINT %I CHECK (order_type IN (%L, %L))',
+                            '{ml_tn}', '{ml_tn}_order_type_policy_chk',
+                            'limit', 'market'
+                        );
+                    END IF;
+                END
+                $$;
+            """))
+        for tr_sim in ("trades_0001", "trades_simulated_0001"):
+            cursor.execute(_us(f"""
+                DO $$
+                BEGIN
+                    IF EXISTS (
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = 'users' AND table_name = '{tr_sim}'
+                    ) THEN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'users' AND table_name = '{tr_sim}'
+                              AND column_name = 'time_in_force'
+                        ) THEN
+                            ALTER TABLE users.{tr_sim} ADD COLUMN time_in_force TEXT;
+                        END IF;
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'users' AND table_name = '{tr_sim}'
+                              AND column_name = 'order_type'
+                        ) THEN
+                            ALTER TABLE users.{tr_sim} ADD COLUMN order_type TEXT;
+                        END IF;
+                    END IF;
+                END
+                $$;
+            """))
+
+        # Archive live/paper trade tables must include every column the master trades table lists for
+        # union_trades_with_archives_select(); otherwise GET /trades and dashboard PnL unions error.
+        _arch_trades_tbl = re.compile(r"^trades_archive_(?:live|paper)_\d{4}$")
+        cursor.execute(
+            """
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'archive'
+              AND (
+                table_name LIKE 'trades_archive_live_' || '%'
+                OR table_name LIKE 'trades_archive_paper_' || '%'
+              )
+            ORDER BY table_name
+            """
+        )
+        for (arch_tn,) in cursor.fetchall():
+            if not arch_tn or not _arch_trades_tbl.match(arch_tn):
+                continue
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'archive'
+                          AND table_name = '{arch_tn}'
+                          AND column_name = 'time_in_force'
+                    ) THEN
+                        ALTER TABLE archive.{arch_tn} ADD COLUMN time_in_force TEXT;
+                    END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'archive'
+                          AND table_name = '{arch_tn}'
+                          AND column_name = 'order_type'
+                    ) THEN
+                        ALTER TABLE archive.{arch_tn} ADD COLUMN order_type TEXT;
+                    END IF;
+                END
+                $$;
+                """
+            )
+
         # Create strategy_list_0001 table with all default settings columns (matching monitor_list structure)
         cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS users.strategy_list_0001 (

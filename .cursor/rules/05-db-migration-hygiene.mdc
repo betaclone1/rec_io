@@ -22,6 +22,10 @@ When adding a table keyed by an instant and intended to align with **`historical
 4. **Same PR / same task:** Complete the full DB protocol (migration + apply where appropriate + schema reference + drift check per `AGENTS.md`). Half-finished migrations left in the tree are debt.
 5. **Do not delete** migration pairs that may already be in `system.schema_migrations` on prod (or you break `down` and confuse history). Cleanup of **applied** migrations is **archive/rename policy** only, and only when the user explicitly wants it and understands the runner implications.
 
+## Local DB changes → production path (non-negotiable)
+
+6. **No local-only schema drift:** If you change the database on your machine (manual `ALTER` in a GUI, ad-hoc SQL, or relying only on `init_database()` without a migration pair), you must **immediately** fold that change into `scripts/migrations/*.up.sql` / `*.down.sql`, run `python3 scripts/db/run_migration.py up <migration_id>` locally so `system.schema_migrations` matches the repo, and treat **that migration** as what production will run on deploy. **Definition of done:** local DB state is explained by applied migrations in the tree, not by uncommitted one-off DDL.
+
 ## Summary
 
 Prefer **fewer, larger, coherent migrations** over many tiny timestamped files. Remove **unapplied** mistakes; never silently remove **applied** history.

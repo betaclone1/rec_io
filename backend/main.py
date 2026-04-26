@@ -3170,7 +3170,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
                        regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range,
-                       test_filter
+                       test_filter, time_in_force, order_type
             """
                 + (sel_flip if has_flip else "")
                 + f"""
@@ -3219,12 +3219,14 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "stop_loss_price": float(result[32]) if result[32] is not None else 0.0,
                     "min_ask_range": float(result[33]) if result[33] is not None else None,
                     "test_filter": bool(result[34]) if result[34] is not None else False,
+                    "time_in_force": str(result[35]) if result[35] is not None else "fill_or_kill",
+                    "order_type": str(result[36]) if result[36] is not None else "market",
                 }
                 if has_flip:
-                    row["flip_sell_prob"] = bool(result[35]) if result[35] is not None else False
-                    row["flip_sell_prob_mult"] = str(result[36]) if result[36] is not None else None
-                    row["flip_sell_floor"] = bool(result[37]) if result[37] is not None else False
-                    row["flip_sell_floor_mult"] = str(result[38]) if result[38] is not None else None
+                    row["flip_sell_prob"] = bool(result[37]) if result[37] is not None else False
+                    row["flip_sell_prob_mult"] = str(result[38]) if result[38] is not None else None
+                    row["flip_sell_floor"] = bool(result[39]) if result[39] is not None else False
+                    row["flip_sell_floor_mult"] = str(result[40]) if result[40] is not None else None
                 else:
                     row["flip_sell_prob"] = False
                     row["flip_sell_prob_mult"] = None

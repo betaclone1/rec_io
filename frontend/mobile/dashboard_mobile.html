@@ -7709,7 +7709,7 @@
       <div class="uat-position-size-block" style="margin-bottom:16px;">
         <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#e2e8f0;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#9ca3af;">100 contracts</span></div>
         <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
-          <input type="number" class="uat-pos-input" min="1" value="20" style="width:60px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
+          <input type="number" class="uat-pos-input" min="1" value="20" style="width:120px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
           <div style="display:flex; flex-direction:column; gap:2px;">
             <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#007bff; border:1px solid #0056b3; color:white; border-radius:4px; cursor:pointer;">%</button>
             <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #9ca3af; color:#e2e8f0; border-radius:4px; cursor:pointer;">C</button>
@@ -7721,6 +7721,23 @@
             <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5" style="height:28px; box-sizing:border-box;">1.5</button>
             <button type="button" class="uat-pos-mult-btn" data-multiplier="2" style="height:28px; box-sizing:border-box;">2</button>
           </div>
+        </div>
+      </div>
+      <div class="uat-kalshi-order-row" style="display:flex; flex-wrap:wrap; gap:12px 16px; align-items:flex-end; margin-bottom:16px;">
+        <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
+          <label for="m_uatKalshiOrderType" style="font-size:12px; color:#9ca3af; font-weight:600;">Order Type</label>
+          <select id="m_uatKalshiOrderType" aria-label="Order type" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+            <option value="limit">Limit</option>
+            <option value="market">Market</option>
+          </select>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:4px; min-width:160px;">
+          <label for="m_uatKalshiTimeInForce" style="font-size:12px; color:#9ca3af; font-weight:600;">Time in Force</label>
+          <select id="m_uatKalshiTimeInForce" aria-label="Time in force" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+            <option value="fill_or_kill">Fill or Kill</option>
+            <option value="immediate_or_cancel">Immediate or Cancel</option>
+            <option value="good_till_canceled">Good Till Canceled</option>
+          </select>
         </div>
       </div>
       <div class="uat-modal-body">
@@ -9116,6 +9133,17 @@
           regimeCb.addEventListener('change', mobileDashUatUpdateRegimeWindowPickerVisibility);
         }
 
+        {
+          const ot = data.order_type;
+          const tif = data.time_in_force;
+          const otEl = document.getElementById('m_uatKalshiOrderType');
+          const tifEl = document.getElementById('m_uatKalshiTimeInForce');
+          const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
+          const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+          if (otEl) otEl.value = validOt;
+          if (tifEl) tifEl.value = validTif;
+        }
+
         // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
         const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
         window.dashboardMobileTimeWindowMaxSeconds = timeMax;
@@ -9351,6 +9379,14 @@
             payload.regime_window = regimeWindowEl ? regimeWindowEl.value : '30d';
             const mTfEl = document.getElementById('m_uatMonitorTestFilter');
             payload.test_filter = mTfEl ? mTfEl.checked : false;
+            {
+              const otEl = document.getElementById('m_uatKalshiOrderType');
+              const tifEl = document.getElementById('m_uatKalshiTimeInForce');
+              const ot = otEl && otEl.value;
+              const tif = tifEl && tifEl.value;
+              payload.order_type = ot === 'limit' || ot === 'market' ? ot : 'market';
+              payload.time_in_force = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+            }
             
             // Determine strategy for save (reuse variables from outer scope, but need local copies for Breakout/Contain)
             const saveIsMB = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');

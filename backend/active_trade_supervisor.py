@@ -1032,6 +1032,17 @@ def process_trade_manager_notification_core(trade_id, ticket_id, status: str) ->
             else:
                 log(f"❌ Failed to add new active trade: {trade_id}")
 
+    elif status == 'partial':
+        success = confirm_pending_trade(trade_id, ticket_id)
+        if success:
+            log(f"✅ Successfully confirmed pending trade as partial: {trade_id}")
+        else:
+            success = add_new_active_trade(trade_id, ticket_id)
+            if success:
+                log(f"✅ Successfully added new active trade (partial): {trade_id}")
+            else:
+                log(f"❌ Failed to add new active trade (partial): {trade_id}")
+
     elif status == 'error':
         success = remove_failed_trade(trade_id, ticket_id)
         if success:
@@ -1095,7 +1106,7 @@ def _open_enrollment_ack_payload(
             cursor.execute(
                 f"""
                 SELECT ticker, side, symbol FROM {legacy_users_trades(ctx_user())}
-                WHERE id = %s AND status = 'open'
+                WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
                 """,
                 (trade_id,),
             )
@@ -1497,14 +1508,14 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
             FROM {legacy_users_trades(ctx_user())}
-            WHERE id = %s AND status = 'open'
+            WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
         """, (trade_id,))
         
         row = cursor.fetchone()
         conn.close()
         
         if not row:
-            log(f"No open trade found with id {trade_id}")
+            log(f"No open/partial trade found with id {trade_id}")
             return False
             
         # Unpack the row data
@@ -1662,9 +1673,9 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
                 finally:
                     tr_conn.close()
 
-            if tr_status == "open":
+            if tr_status in ("open", "partial"):
                 log_debug(
-                    f"Pending notify race for trade {trade_id}: row already open; enrolling as active"
+                    f"Pending notify race for trade {trade_id}: row already open/partial; enrolling as active"
                 )
                 return add_new_active_trade(trade_id, ticket_id)
             if tr_status in ("closing", "closed", "expired", "error", "deleted"):
@@ -1763,14 +1774,14 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
                    contract, ticker, symbol, {vcol}, trade_strategy, symbol_open,
                    momentum, prob, fees, diff
             FROM {legacy_users_trades(ctx_user())}
-            WHERE id = %s AND status = 'open'
+            WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
         """, (trade_id,))
         
         row = cursor.fetchone()
         conn.close()
         
         if not row:
-            log(f"No open trade found with id {trade_id}")
+            log(f"No open/partial trade found with id {trade_id}")
             return False
             
         # Unpack the row data
@@ -3109,7 +3120,7 @@ def update_active_trade_monitoring_data():
                             f"""
                             SELECT bankroll, mtb_base_value
                             FROM users.{trades_tbl}
-                            WHERE id = %s AND LOWER(TRIM(status)) = 'open'
+                            WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
                             """,
                             (tid_int,),
                         )
@@ -3177,7 +3188,7 @@ def update_active_trade_monitoring_data():
                                     f"""
                                     UPDATE users.{trades_tbl}
                                     SET {set_clause}
-                                    WHERE id = %s AND LOWER(TRIM(status)) = 'open'
+                                    WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
                                     """,
                                     params,
                                 )
@@ -4250,7 +4261,7 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
             c2.execute(
                 f"""
                 SELECT id, monitor FROM {legacy_users_trades(scan_slot)}
-                WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
+                WHERE LOWER(TRIM(status)) IN ('open', 'partial') AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
                 """
             )
             candidates = c2.fetchall()
@@ -4329,7 +4340,7 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         c2.execute(
             f"""
             SELECT id, monitor FROM {legacy_users_trades(scan_slot2)}
-            WHERE status = 'open' AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
+            WHERE LOWER(TRIM(status)) IN ('open', 'partial') AND monitor IS NOT NULL AND monitor LIKE 'mon_%%'
             """
         )
         candidates = c2.fetchall()
@@ -5188,7 +5199,8 @@ def trigger_auto_stop_close(
         "count_fp": f"{float(pos_int):.2f}",
         "action": "close",
         "type": "market",
-        "time_in_force": "IOC",
+        "order_type": "market",
+        "time_in_force": "immediate_or_cancel",
         "buy_price": float(sell_price_float),
         "symbol_close": float(symbol_close_float),
         "close_method": close_method_val,
@@ -5447,9 +5459,9 @@ def _close_volume_retry_worker(user_num: str, monitor_id: str, trade_id: int) ->
                 if pg_status == "closing":
                     log_debug(f"[CLOSE RETRY] trade_id={trade_id} PG status=closing; waiting")
                     continue
-                if pg_status != "open":
+                if pg_status not in ("open", "partial"):
                     log_debug(
-                        f"[CLOSE RETRY] trade_id={trade_id} PG status={pg_status} (not open); stopping loop"
+                        f"[CLOSE RETRY] trade_id={trade_id} PG status={pg_status} (not open/partial); stopping loop"
                     )
                     break
 

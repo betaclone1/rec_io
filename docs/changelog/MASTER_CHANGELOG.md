@@ -6,6 +6,36 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-26 — Release v3.4.1: Kalshi execution settings, pending-before-executor, partial expiry, AES cooldown
+
+**Summary**
+- **Release: v3.4.1**
+- **Kalshi execution:** **`kalshi_execution_settings`** (TIF / order-type normalization); migrations **`20260426_1600_monitor_trades_execution_settings`** and **`20260426_1600_kalshi_execution_monitor_trades_archive`** add **`time_in_force`** / **`order_type`** on tenant **`monitor_list_*`**, **`trades_*`**, **`trades_simulated_*`**, and archive **`trades_archive_*`** (UNION parity for **`GET /trades`**). **`trade_executor`**, **`trade_manager`**, **`auto_entry_settings_store`**, **`main`**, **`active_trade_supervisor`**, **`database.py`**, **`MASTER_DB_SCHEMA_REFERENCE`**, dashboard / mobile execution controls.
+- **Live open path:** Insert **`pending`** row before **`send_trigger_to_executor`**; **`insert_trade`** returns **`(id, inserted_new)`** so ticket dedupe and active-row reuse never trigger a second executor submission.
+- **Expiry:** **`check_expired_trades`** and **`check_expired_simulated_trades`** treat **`partial`** like **`open`** for cycle expiration.
+- **AES:** **`TRADE_COOLDOWN`** **1** second (**`auto_entry_supervisor`**, test harness, **`aes_hourly_tick_replay`**).
+- **Governance:** **`AGENTS.md`**, **`.cursor/rules/02-code-change-safety.mdc`**, **`.cursor/rules/05-db-migration-hygiene.mdc`** — schema changes ship via migration pairs and **`run_migration.py up`**.
+
+**Plans:** Session work (limit-order / execution integration, trade lifecycle and expiry hardening.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply tenant migration if not already recorded:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1600_monitor_trades_execution_settings`
+- [ ] Apply archive parity migration if not already recorded:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1600_kalshi_execution_monitor_trades_archive`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail **`trade_executor_0001`**, **`main_app`**, **`kalshi_account_sync_0001`**, one **`market_watchdog_ws`** log; spot-check **`GET /trades`** and execution UI.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.1`
+- [ ] Record release in DB on **local** (same version string):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.1`
+
+---
+
 ## 2026-04-26 — Release v3.4.0: trade close semantics, volume retry loop, pricing parity migrations
 
 **Summary**

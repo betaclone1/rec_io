@@ -13,7 +13,7 @@ from typing import Any, Mapping, Optional
 
 from scripts.backtest.helpers.hypothetical_trades import estimate_kalshi_taker_fee
 
-TRADE_COOLDOWN_SECONDS = 10
+TRADE_COOLDOWN_SECONDS = 1
 
 
 def _settlement_price(side: str, market_result: Optional[str]) -> float:

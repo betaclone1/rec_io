@@ -1115,7 +1115,7 @@ last_simulated_trade_times = {}  # simulated 15m path only
 _simulated_15m_lock = threading.Lock()  # prevent overlapping runs (duplicate inserts)
 
 # Cooldown period (seconds)
-TRADE_COOLDOWN = 10
+TRADE_COOLDOWN = 1
 
 # Global state for auto entry indicator (for frontend display)
 AES_INDICATOR_DEFAULTS = {

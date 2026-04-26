@@ -1015,6 +1015,16 @@ async function showUnifiedAutoTradeSettingsModal() {
       const el = document.getElementById(id); 
       if (el) el.checked = !!v; 
     };
+    {
+      const ot = data.order_type;
+      const tif = data.time_in_force;
+      const otEl = document.getElementById('uatKalshiOrderType');
+      const tifEl = document.getElementById('uatKalshiTimeInForce');
+      const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
+      const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+      if (otEl) otEl.value = validOt;
+      if (tifEl) tifEl.value = validTif;
+    }
     
     // Auto Entry settings — 15m HTC uses 0:00–15:00 (900s), others use 0:00–60:00 (3600s)
     const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
@@ -1443,6 +1453,14 @@ async function showUnifiedAutoTradeSettingsModal() {
         min_time: minTimeSeconds,
         max_time: maxTimeSeconds
       };
+      {
+        const otEl = document.getElementById('uatKalshiOrderType');
+        const tifEl = document.getElementById('uatKalshiTimeInForce');
+        const ot = otEl && otEl.value;
+        const tif = tifEl && tifEl.value;
+        payload.order_type = ot === 'limit' || ot === 'market' ? ot : 'market';
+        payload.time_in_force = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+      }
       
       if (isMomentumScalp) {
         // MOMENTUM SCALP specific fields
@@ -2861,6 +2879,23 @@ document.addEventListener('DOMContentLoaded', () => {
                 <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5" style="height:28px; box-sizing:border-box;">1.5</button>
                 <button type="button" class="uat-pos-mult-btn" data-multiplier="2" style="height:28px; box-sizing:border-box;">2</button>
               </div>
+            </div>
+          </div>
+          <div class="uat-kalshi-order-row" style="display:flex; flex-wrap:wrap; gap:12px 16px; align-items:flex-end; margin-bottom:16px;">
+            <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
+              <label for="uatKalshiOrderType" style="font-size:12px; color:#9ca3af; font-weight:600;">Order Type</label>
+              <select id="uatKalshiOrderType" aria-label="Order type" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+                <option value="limit">Limit</option>
+                <option value="market">Market</option>
+              </select>
+            </div>
+            <div style="display:flex; flex-direction:column; gap:4px; min-width:160px;">
+              <label for="uatKalshiTimeInForce" style="font-size:12px; color:#9ca3af; font-weight:600;">Time in Force</label>
+              <select id="uatKalshiTimeInForce" aria-label="Time in force" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+                <option value="fill_or_kill">Fill or Kill</option>
+                <option value="immediate_or_cancel">Immediate or Cancel</option>
+                <option value="good_till_canceled">Good Till Canceled</option>
+              </select>
             </div>
           </div>
           <div class="uat-modal-body">

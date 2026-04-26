@@ -9,6 +9,10 @@ import logging
 from typing import Any, Dict, Optional
 
 from backend.core.tenant_context import TenantContext
+from backend.core.kalshi_execution_settings import (
+    normalize_execution_order_type,
+    normalize_kalshi_time_in_force,
+)
 
 _log = logging.getLogger(__name__)
 
@@ -274,6 +278,19 @@ def apply_auto_entry_settings(
             update_fields.append("paper_trade = %s")
             update_values.append(True)
 
+    if "time_in_force" in data:
+        tif = normalize_kalshi_time_in_force(data["time_in_force"])
+        if not tif:
+            return {"status": "error", "message": "invalid_time_in_force"}
+        update_fields.append("time_in_force = %s")
+        update_values.append(tif)
+    if "order_type" in data:
+        ot = normalize_execution_order_type(data["order_type"])
+        if not ot:
+            return {"status": "error", "message": "invalid_order_type_policy"}
+        update_fields.append("order_type = %s")
+        update_values.append(ot)
+
     flip_cur = None
     if has_flip_cols and any(
         k in data
@@ -380,7 +397,8 @@ def apply_auto_entry_settings(
                momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
                min_volume, win_streak_threshold, performance_based_allocation,
                momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
-               regime_monitor_enabled, regime_window, stop_loss_price
+               regime_monitor_enabled, regime_window, stop_loss_price,
+               time_in_force, order_type
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -421,12 +439,14 @@ def apply_auto_entry_settings(
         "regime_monitor_enabled": bool(updated_result[21]) if updated_result[21] is not None else False,
         "regime_window": str(updated_result[22]) if updated_result[22] is not None else "30d",
         "stop_loss_price": float(updated_result[23]) if updated_result[23] is not None else 0.0,
+        "time_in_force": str(updated_result[24]) if updated_result[24] is not None else "fill_or_kill",
+        "order_type": str(updated_result[25]) if updated_result[25] is not None else "market",
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[24]) if updated_result[24] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[25]) if updated_result[25] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[26]) if updated_result[26] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[27]) if updated_result[27] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[26]) if updated_result[26] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[27]) if updated_result[27] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[28]) if updated_result[28] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[29]) if updated_result[29] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None
