@@ -1,0 +1,1 @@
+-- No-op: cannot distinguish rows that were `close_failed` from ordinary `open` rows after up.

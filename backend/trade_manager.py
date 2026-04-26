@@ -4,6 +4,7 @@ import math
 import random
 import threading
 import time
+import base64
 import os
 import sys
 from datetime import datetime, timedelta, date
@@ -16,6 +17,11 @@ import psycopg2
 from psycopg2 import sql
 from psycopg2.extras import RealDictCursor
 from typing import Optional, Tuple
+from pathlib import Path
+from dotenv import dotenv_values
+from cryptography.hazmat.backends import default_backend
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import padding
 
 # Import the universal centralized port system
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -1159,6 +1165,19 @@ def _entry_slippage_value(buy_price: object, initial_price: object):
     return bp - ip
 
 
+def _format_diff_from_prob_and_buy(prob_value: object, buy_price: object) -> Optional[str]:
+    """Return diff text (+/- integer cents) from prob(percent) and buy_price(decimal)."""
+    try:
+        if prob_value is None or buy_price is None:
+            return None
+        prob_decimal = float(prob_value) / 100.0
+        buy_decimal = float(buy_price)
+        diff_value = int(round((prob_decimal - buy_decimal) * 100))
+        return f"+{diff_value}" if diff_value >= 0 else f"{diff_value}"
+    except (TypeError, ValueError):
+        return None
+
+
 def _sql_slippage_from_buy_price_params():
     """SQL assignment when writing a new entry buy_price: two %s placeholders (same value twice)."""
     return "slippage = %s - COALESCE(initial_price, %s)"
@@ -1170,6 +1189,245 @@ def estimate_kalshi_taker_fee(position: int, price: float) -> float:
         return 0.0
     raw = 0.07 * position * price * (1.0 - price)
     return math.ceil(raw * 100) / 100
+
+
+def _load_kalshi_rest_credentials() -> tuple[Optional[str], Optional[Path]]:
+    """Return Kalshi key id + private key path for current account mode."""
+    try:
+        from backend.account_mode import get_account_mode
+        from backend.util.paths import get_kalshi_credentials_dir
+
+        mode = get_account_mode()
+        cred_dir = Path(get_kalshi_credentials_dir()) / mode
+        env_vars = dotenv_values(cred_dir / ".env")
+        key_id = env_vars.get("KALSHI_API_KEY_ID")
+        key_path = cred_dir / "kalshi.pem"
+        if not key_id or not key_path.is_file():
+            return None, None
+        return key_id, key_path
+    except Exception:
+        return None, None
+
+
+def _generate_kalshi_rest_signature(timestamp_ms: str, full_path: str, key_path: Path) -> Optional[str]:
+    try:
+        with open(key_path, "rb") as key_file:
+            private_key = serialization.load_pem_private_key(
+                key_file.read(),
+                password=None,
+                backend=default_backend(),
+            )
+        message = f"{timestamp_ms}GET{full_path}".encode("utf-8")
+        signature = private_key.sign(
+            message,
+            padding.PSS(
+                mgf=padding.MGF1(hashes.SHA256()),
+                salt_length=padding.PSS.MAX_LENGTH,
+            ),
+            hashes.SHA256(),
+        )
+        return base64.b64encode(signature).decode("utf-8")
+    except Exception:
+        return None
+
+
+def _normalize_trade_side(side_val: object) -> Optional[str]:
+    side = str(side_val or "").strip().lower()
+    if side in ("yes", "y"):
+        return "yes"
+    if side in ("no", "n"):
+        return "no"
+    return None
+
+
+def _project_orderbook_entry(ticker: str, side: str, position: int) -> dict:
+    """
+    Build taker projection from current orderbook (REST bids flipped to asks).
+    Returns keys: ok, reason, initial_proj_price, initial_proj_fees, available_contracts.
+    """
+    result = {
+        "ok": False,
+        "reason": "projection_failed",
+        "initial_proj_price": None,
+        "initial_proj_fees": None,
+        "available_contracts": None,
+    }
+    if not ticker or not side or not position or position <= 0:
+        result["reason"] = "missing_projection_inputs"
+        return result
+
+    key_id, key_path = _load_kalshi_rest_credentials()
+    if not key_id or not key_path:
+        result["reason"] = "missing_kalshi_credentials"
+        return result
+
+    full_path = f"/trade-api/v2/markets/{ticker}/orderbook"
+    ts = str(int(time.time() * 1000))
+    signature = _generate_kalshi_rest_signature(ts, full_path, key_path)
+    if not signature:
+        result["reason"] = "signature_generation_failed"
+        return result
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "TradeManagerOrderbookProjection/1.0",
+        "KALSHI-ACCESS-KEY": key_id,
+        "KALSHI-ACCESS-TIMESTAMP": ts,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    url = f"https://api.elections.kalshi.com{full_path}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if not resp.ok:
+            result["reason"] = f"orderbook_http_{resp.status_code}"
+            return result
+        payload = resp.json()
+    except Exception as e:
+        result["reason"] = f"orderbook_request_failed:{e}"
+        return result
+
+    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
+    yes_bids = ob.get("yes_dollars") or []
+    no_bids = ob.get("no_dollars") or []
+    src_bids = no_bids if side == "yes" else yes_bids
+
+    asks: list[tuple[float, float]] = []
+    for lvl in src_bids:
+        if not isinstance(lvl, (list, tuple)) or len(lvl) < 2:
+            continue
+        try:
+            bid_px = float(lvl[0])
+            qty = float(lvl[1])
+        except (TypeError, ValueError):
+            continue
+        ask_px = 1.0 - bid_px
+        if qty <= 0 or ask_px <= 0 or ask_px >= 1:
+            continue
+        asks.append((ask_px, qty))
+    asks.sort(key=lambda x: x[0])  # best ask first
+
+    available = sum(q for _, q in asks)
+    remaining = float(position)
+    filled = 0.0
+    notional = 0.0
+    for px, qty in asks:
+        if remaining <= 0:
+            break
+        take = min(remaining, qty)
+        if take <= 0:
+            continue
+        notional += px * take
+        filled += take
+        remaining -= take
+
+    result["available_contracts"] = round(available, 2)
+    if filled <= 0:
+        result["reason"] = "no_resting_volume"
+        return result
+
+    avg_price = notional / filled
+    proj_fees = estimate_kalshi_taker_fee(int(round(filled)), avg_price)
+    result["initial_proj_price"] = round(avg_price, 8)
+    result["initial_proj_fees"] = round(proj_fees, 2)
+    result["ok"] = filled >= float(position)
+    result["reason"] = "ok" if result["ok"] else "insufficient_resting_volume"
+    return result
+
+
+def _project_orderbook_close(ticker: str, side: str, position: int) -> dict:
+    """
+    Build close projection from current orderbook bids on the same side.
+    Returns keys: ok, reason, projected_sell_price, projected_close_fee, available_contracts.
+    """
+    result = {
+        "ok": False,
+        "reason": "projection_failed",
+        "projected_sell_price": None,
+        "projected_close_fee": None,
+        "available_contracts": None,
+    }
+    if not ticker or not side or not position or position <= 0:
+        result["reason"] = "missing_projection_inputs"
+        return result
+
+    key_id, key_path = _load_kalshi_rest_credentials()
+    if not key_id or not key_path:
+        result["reason"] = "missing_kalshi_credentials"
+        return result
+
+    full_path = f"/trade-api/v2/markets/{ticker}/orderbook"
+    ts = str(int(time.time() * 1000))
+    signature = _generate_kalshi_rest_signature(ts, full_path, key_path)
+    if not signature:
+        result["reason"] = "signature_generation_failed"
+        return result
+
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "TradeManagerOrderbookProjection/1.0",
+        "KALSHI-ACCESS-KEY": key_id,
+        "KALSHI-ACCESS-TIMESTAMP": ts,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    url = f"https://api.elections.kalshi.com{full_path}"
+    try:
+        resp = requests.get(url, headers=headers, timeout=10)
+        if not resp.ok:
+            result["reason"] = f"orderbook_http_{resp.status_code}"
+            return result
+        payload = resp.json()
+    except Exception as e:
+        result["reason"] = f"orderbook_request_failed:{e}"
+        return result
+
+    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
+    side_bids = (ob.get("yes_dollars") or []) if side == "yes" else (ob.get("no_dollars") or [])
+
+    bids: list[tuple[float, float]] = []
+    for lvl in side_bids:
+        if not isinstance(lvl, (list, tuple)) or len(lvl) < 2:
+            continue
+        try:
+            bid_px = float(lvl[0])
+            qty = float(lvl[1])
+        except (TypeError, ValueError):
+            continue
+        if qty <= 0 or bid_px <= 0 or bid_px >= 1:
+            continue
+        bids.append((bid_px, qty))
+    bids.sort(key=lambda x: x[0], reverse=True)  # best bid first for sells
+
+    available = sum(q for _, q in bids)
+    remaining = float(position)
+    filled = 0.0
+    proceeds = 0.0
+    for px, qty in bids:
+        if remaining <= 0:
+            break
+        take = min(remaining, qty)
+        if take <= 0:
+            continue
+        proceeds += px * take
+        filled += take
+        remaining -= take
+
+    result["available_contracts"] = round(available, 2)
+    if filled <= 0:
+        result["reason"] = "no_resting_volume"
+        return result
+
+    avg_sell_price = proceeds / filled
+    close_fee_price = 1.0 - avg_sell_price
+    close_fee = (
+        estimate_kalshi_taker_fee(int(round(filled)), close_fee_price)
+        if 0 < close_fee_price < 1
+        else 0.0
+    )
+    result["projected_sell_price"] = round(avg_sell_price, 8)
+    result["projected_close_fee"] = round(close_fee, 2)
+    result["ok"] = filled >= float(position)
+    result["reason"] = "ok" if result["ok"] else "insufficient_resting_volume"
+    return result
 
 
 def _paper_ledger_on_open(buy_price: float, position: int, open_fee_dollars: float) -> None:
@@ -1632,7 +1890,7 @@ def insert_trade(trade):
                     + _trades_tbl
                     + """ (
                         status, date, time, symbol, exchange, trade_strategy, market,
-                        contract, strike, side, prob, diff, buy_price, position, initial_price, initial_count, slippage,
+                        contract, strike, side, prob, diff, buy_price, position, initial_price, initial_count, slippage, initial_proj_price, initial_proj_fees,
                         sell_price, closed_at, fees, pnl, symbol_open, symbol_close,
                         momentum, volatility, volatility_percentile, movement, movement_percentile,
                         win_loss, ticker, ticket_id, market_id,
@@ -1643,7 +1901,7 @@ def insert_trade(trade):
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -1651,6 +1909,7 @@ def insert_trade(trade):
                     symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
                     diff_formatted, trade['buy_price'], trade['position'], initial_price_for_db, initial_count_for_db, slippage_for_db,
+                    trade.get('initial_proj_price'), trade.get('initial_proj_fees'),
                     None, None,
                     None, None, symbol_open, None, momentum_for_db,
                     volatility_for_db, volatility_percentile_for_db, movement_for_db, movement_percentile_for_db,
@@ -2040,13 +2299,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         prob_value = prob_row[0] if prob_row and prob_row[0] is not None else None
                         diff_value = None
                         
-                        if prob_value is not None:
-                            prob_decimal = float(prob_value) / 100
-                            diff_decimal = prob_decimal - buy_price
-                            diff_value = int(round(diff_decimal * 100))
-                            diff_formatted = f"+{diff_value}" if diff_value >= 0 else f"{diff_value}"
-                        else:
-                            diff_formatted = None
+                        diff_formatted = _format_diff_from_prob_and_buy(prob_value, buy_price)
                     
                         # Get current symbol price for symbol_open (never overwrite existing with NULL)
                         symbol_open = None
@@ -2869,9 +3122,14 @@ def refresh_all_monitor_cycle_performance(window_days: int = 84) -> None:
 
 from backend.util.trade_logger import log_trade_event
 
-def log_event(ticket_id, message):
-    """Log trade events to PostgreSQL instead of text files"""
+def log_event(ticket_id, message, trade_id=None):
+    """Log trade events to PostgreSQL instead of text files.
+
+    ``trade_id`` is optional metadata for searchability (same shape as ``trade_executor.log_event``).
+    """
     try:
+        if trade_id is not None:
+            message = f"{message} trade_id={trade_id}"
         log_trade_event(ticket_id, message, service="trade_manager")
     except Exception as e:
         log(f"[LOG ERROR] Failed to write log: {message} — {e}")
@@ -3096,9 +3354,9 @@ def init_trades_db():
                     side TEXT NOT NULL,
                     prob REAL,
                     diff TEXT,
-                    buy_price REAL NOT NULL,
+                    buy_price NUMERIC(12,6) NOT NULL,
                     position INTEGER NOT NULL,
-                    sell_price REAL,
+                    sell_price NUMERIC(12,6),
                     closed_at TEXT,
                     fees REAL,
                     pnl REAL,
@@ -4020,33 +4278,93 @@ async def add_trade(request: Request):
         if trade_id:
             log(f"CLOSING SPECIFIC TRADE ID: {trade_id}")
             
-            # Verify this trade exists and is open, and get paper_trade status
+            # Verify this trade exists and is open, and get close-relevant fields
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
-                    cursor.execute(f"SELECT ticker, status, paper_trade FROM {_tm_trades_table()} WHERE id = %s", (trade_id,))
+                    cursor.execute(
+                        f"SELECT ticker, status, paper_trade, side, position FROM {_tm_trades_table()} WHERE id = %s",
+                        (trade_id,),
+                    )
                     row = cursor.fetchone()
             else:
                 row = None
             
-            if row and row[1] == 'open':
+            if row and row[1] == "open":
                 verified_ticker = row[0]
                 paper_trade = row[2] if len(row) > 2 else False
+                trade_side = _normalize_trade_side(row[3]) if len(row) > 3 else None
+                trade_position = int(row[4]) if len(row) > 4 and row[4] is not None else 0
                 if isinstance(paper_trade, str):
                     paper_trade = paper_trade.lower() in ('true', '1', 'yes')
                 elif paper_trade is None:
                     paper_trade = False
                 
                 log(f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}, PAPER_TRADE={paper_trade}")
+
+                order_type = str(data.get("order_type", "fill_or_kill")).strip().lower()
+                requested_close_count = None
+                count_fp_in = data.get("count_fp")
+                if count_fp_in is not None and str(count_fp_in).strip() != "":
+                    try:
+                        requested_close_count = int(round(float(count_fp_in)))
+                    except (TypeError, ValueError):
+                        requested_close_count = None
+                if requested_close_count is None:
+                    for key in ("count", "position"):
+                        value = data.get(key)
+                        if value is None:
+                            continue
+                        try:
+                            requested_close_count = int(round(float(value)))
+                            break
+                        except (TypeError, ValueError):
+                            continue
+                if requested_close_count is None:
+                    requested_close_count = trade_position
+                if requested_close_count <= 0:
+                    requested_close_count = trade_position
+
+                close_projection = {
+                    "ok": None,
+                    "reason": None,
+                    "projected_sell_price": None,
+                    "projected_close_fee": None,
+                    "available_contracts": None,
+                }
+                if paper_trade:
+                    close_projection = _project_orderbook_close(
+                        verified_ticker,
+                        trade_side,
+                        requested_close_count,
+                    )
+                    log_event(
+                        data.get("ticket_id"),
+                        "MANAGER CLOSE PROJECTION "
+                        f"ticker={verified_ticker} side={trade_side} qty={requested_close_count} "
+                        f"ok={close_projection.get('ok')} reason={close_projection.get('reason')} "
+                        f"proj_sell={close_projection.get('projected_sell_price')} "
+                        f"proj_close_fee={close_projection.get('projected_close_fee')} "
+                        f"available={close_projection.get('available_contracts')}",
+                        trade_id=trade_id,
+                    )
+
+                    if order_type == "fill_or_kill" and close_projection.get("ok") is False:
+                        if close_projection.get("reason") == "insufficient_resting_volume":
+                            return _mark_close_trade_failed(
+                                trade_id,
+                                data.get("ticket_id"),
+                                "insufficient_resting_volume (precheck)",
+                            )
                 
                 if paper_trade:
                     # PAPER TRADE: Skip executor, mark as closing, then immediately finalize
                     log(f"📝 PAPER TRADE CLOSE: Skipping executor, processing immediately")
                     
-                    # Get current_close_price from request (sent as "buy_price" in payload)
-                    # Note: Frontend/ATS already calculates sell_price = 1 - current_close_price
-                    # So buy_price in payload is already the final sell_price we should use
-                    sell_price = data.get("buy_price")  # This is already 1 - current_close_price from frontend/ATS
+                    # Prefer projected close sell price so paper closes reflect live depth.
+                    sell_price = close_projection.get("projected_sell_price")
+                    if sell_price is None:
+                        sell_price = data.get("buy_price")
                     close_method = data.get("close_method", "manual")
                     ticket_id = data.get("ticket_id")
                     
@@ -4116,12 +4434,25 @@ async def add_trade(request: Request):
                         if trade_data and sell_price is not None:
                             buy_price, position, bankroll, mtb_base, existing_fees = trade_data
                             existing_fees = float(existing_fees) if existing_fees is not None else 0.0
-                            # Close leg: we sold at sell_price so we bought to close at (1 - sell_price). Taker fee on that leg.
-                            price_to_close = 1.0 - float(sell_price)
-                            close_fee = estimate_kalshi_taker_fee(int(position), price_to_close) if 0 < price_to_close < 1 else 0.0
+                            buy_pf = float(buy_price) if buy_price is not None else 0.0
+                            sell_pf = float(sell_price) if sell_price is not None else 0.0
+                            pos_i = int(position) if position is not None else 0
+                            bankroll_f = float(bankroll) if bankroll is not None else 0.0
+                            mtb_base_f = float(mtb_base) if mtb_base is not None else 0.0
+                            # Close leg fee comes from orderbook projection when available.
+                            projected_close_fee = close_projection.get("projected_close_fee")
+                            if projected_close_fee is not None:
+                                close_fee = float(projected_close_fee)
+                            else:
+                                price_to_close = 1.0 - sell_pf
+                                close_fee = (
+                                    estimate_kalshi_taker_fee(pos_i, price_to_close)
+                                    if 0 < price_to_close < 1
+                                    else 0.0
+                                )
                             total_fees = existing_fees + close_fee
-                            buy_value = buy_price * position
-                            sell_value = sell_price * position
+                            buy_value = buy_pf * pos_i
+                            sell_value = sell_pf * pos_i
                             pnl = round(sell_value - buy_value - total_fees, 2)
                             win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
                             
@@ -4129,20 +4460,35 @@ async def add_trade(request: Request):
                             ret_pct = None
                             ret_pct_base = None
                             roi_pct = None
-                            if bankroll is not None and bankroll > 0:
-                                ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-                            if mtb_base is not None and mtb_base > 0:
-                                ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
-                            if buy_price is not None and position is not None:
-                                buy_value = buy_price * position
-                                if buy_value > 0:
-                                    roi_pct = round((pnl / buy_value) * 100.0, 5)
+                            if bankroll_f > 0:
+                                ret_pct = round((pnl / (bankroll_f / 100.0)) * 100, 5)
+                            if mtb_base_f > 0:
+                                ret_pct_base = round((pnl / (mtb_base_f / 100.0)) * 100, 5)
+                            if buy_pf > 0 and pos_i:
+                                buy_value_roi = buy_pf * pos_i
+                                if buy_value_roi > 0:
+                                    roi_pct = round((pnl / buy_value_roi) * 100.0, 5)
                             
                             # Get high_price and low_price from active_trades
                             high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
                             
                             # Update trade to closed with all calculated values (total_fees = open + close)
-                            update_trade_status_with_ret_pct(trade_id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
+                            update_trade_status_with_ret_pct(
+                                trade_id,
+                                "closed",
+                                closed_at,
+                                sell_pf,
+                                symbol_close,
+                                win_loss,
+                                pnl,
+                                close_method,
+                                total_fees,
+                                roi_pct,
+                                ret_pct,
+                                ret_pct_base,
+                                high_price,
+                                low_price,
+                            )
                             
                             # Set order_id_close to NULL for paper trades
                             pg_conn_update = get_postgresql_connection()
@@ -4174,7 +4520,7 @@ async def add_trade(request: Request):
                         close_payload = {
                             "id": trade_id,  # Include trade_id for close orders
                             "ticker": verified_ticker,  # Use verified ticker from database
-                            "side": data.get("side"),
+                            "side": data.get("side") or trade_side,
                             "count_fp": _format_count_fp(data, for_close=True),
                             "action": "close",
                             "type": "market",
@@ -4213,7 +4559,9 @@ async def add_trade(request: Request):
                     log(f"CLOSE TICKET SENT FOR TRADE {trade_id} - WAITING FOR CONFIRMATION")
             else:
                 if row:
-                    log(f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open)")
+                    log(
+                        f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open)"
+                    )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
                         detail=f"Trade {trade_id} is not open (status: {row[1]})",
@@ -4293,6 +4641,32 @@ async def add_trade(request: Request):
     elif paper_trade is None:
         paper_trade = False
 
+    order_type = str(data.get("order_type") or "fill_or_kill").strip().lower()
+    data["order_type"] = order_type
+    proj_side = _normalize_trade_side(data.get("side"))
+    proj_position = None
+    try:
+        proj_position = int(float(data.get("position")))
+    except (TypeError, ValueError):
+        proj_position = None
+    ticker_for_projection = str(data.get("ticker") or "").strip()
+    projection = None
+    if ticker_for_projection and proj_side and proj_position and proj_position > 0:
+        projection = _project_orderbook_entry(ticker_for_projection, proj_side, proj_position)
+        if projection.get("initial_proj_price") is not None:
+            data["initial_proj_price"] = projection.get("initial_proj_price")
+        if projection.get("initial_proj_fees") is not None:
+            data["initial_proj_fees"] = projection.get("initial_proj_fees")
+        log_event(
+            data.get("ticket_id", "UNKNOWN"),
+            "MANAGER: ORDERBOOK PROJECTION "
+            f"ticker={ticker_for_projection} side={proj_side} position={proj_position} "
+            f"initial_proj_price={projection.get('initial_proj_price')} "
+            f"initial_proj_fees={projection.get('initial_proj_fees')} "
+            f"available_contracts={projection.get('available_contracts')} "
+            f"reason={projection.get('reason')}",
+        )
+
     monitor_key_open = data.get("monitor")
     if monitor_key_open:
         pg_mon = None
@@ -4313,18 +4687,59 @@ async def add_trade(request: Request):
                 except Exception:
                     pass
 
+    if (
+        paper_trade
+        and
+        order_type == "fill_or_kill"
+        and projection is not None
+        and projection.get("ok") is False
+        and projection.get("reason") == "insufficient_resting_volume"
+    ):
+        data["status"] = "pending"
+        trade_id = insert_trade(data)
+        if trade_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to insert trade to database",
+            )
+        log_event(
+            data.get("ticket_id", "UNKNOWN"),
+            "MANAGER: PRECHECK CANCEL — insufficient_resting_volume "
+            f"requested_position={proj_position} available_contracts={projection.get('available_contracts')}",
+        )
+        return _delete_pending_trade_for_rejection(
+            trade_id,
+            data.get("ticket_id"),
+            "INSUFFICIENT VOLUME",
+        )
+
     if paper_trade:
         # PAPER TRADE: Skip executor, create pending trade, then immediately mark as open.
         # Return HTTP response as soon as DB work is done so the client (e.g. auto_entry_supervisor)
         # does not timeout when main_app or active_trade_supervisor are slow; notifications run in background.
         log(f"📝 PAPER TRADE: Skipping executor, processing immediately")
 
+        projected_buy_price = None
+        projected_open_fee = None
+        try:
+            if projection is not None and projection.get("initial_proj_price") is not None:
+                projected_buy_price = float(projection.get("initial_proj_price"))
+            if projection is not None and projection.get("initial_proj_fees") is not None:
+                projected_open_fee = float(projection.get("initial_proj_fees"))
+        except (TypeError, ValueError):
+            projected_buy_price = None
+            projected_open_fee = None
+
         try:
             from backend.paper_collateral import paper_open_passes_collateral_cap
 
-            _bp_g = float(data["buy_price"])
+            _bp_g = float(projected_buy_price if projected_buy_price is not None else data["buy_price"])
             _pos_g = int(data["position"])
-            _fee_g = estimate_kalshi_taker_fee(_pos_g, _bp_g)
+            _fee_g = (
+                float(projected_open_fee)
+                if projected_open_fee is not None
+                else estimate_kalshi_taker_fee(_pos_g, _bp_g)
+            )
             _ok_cap, _cap_reason = paper_open_passes_collateral_cap(
                 ticker=data.get("ticker"),
                 side=data.get("side"),
@@ -4368,7 +4783,7 @@ async def add_trade(request: Request):
         
         # Immediately mark as open with estimated taker open fee, order_id_open = NULL
         try:
-            buy_price = data.get('buy_price')
+            buy_price = projected_buy_price if projected_buy_price is not None else data.get('buy_price')
             position = data.get('position')
             open_fee = 0.0
             buy_px_float = None
@@ -4377,7 +4792,9 @@ async def add_trade(request: Request):
                     buy_px_float = float(buy_price)
                 except (TypeError, ValueError):
                     buy_px_float = None
-            if buy_price is not None and position is not None:
+            if projected_open_fee is not None:
+                open_fee = float(projected_open_fee)
+            elif buy_price is not None and position is not None:
                 try:
                     open_fee = estimate_kalshi_taker_fee(int(position), float(buy_price))
                 except (TypeError, ValueError):
@@ -4387,16 +4804,27 @@ async def add_trade(request: Request):
                 with pg_conn.cursor() as cursor:
                     # Keep slippage in sync with entry buy_price whenever it is written (paper = instant fill at posted price).
                     if buy_px_float is not None:
+                        prob_for_diff = data.get("prob")
+                        if prob_for_diff is None:
+                            cursor.execute(
+                                f"SELECT prob FROM {_tm_trades_table()} WHERE id = %s",
+                                (trade_id,),
+                            )
+                            row_prob = cursor.fetchone()
+                            prob_for_diff = row_prob[0] if row_prob else None
+                        diff_for_buy = _format_diff_from_prob_and_buy(prob_for_diff, buy_px_float)
                         cursor.execute(
                             f"""
                             UPDATE {_tm_trades_table()}
                             SET status = 'open',
+                                buy_price = %s,
                                 fees = %s,
+                                diff = %s,
                                 order_id_open = NULL,
                                 {_sql_slippage_from_buy_price_params()}
                             WHERE id = %s
                             """,
-                            (open_fee, buy_px_float, buy_px_float, trade_id),
+                            (buy_px_float, open_fee, diff_for_buy, buy_px_float, buy_px_float, trade_id),
                         )
                     else:
                         cursor.execute(
@@ -4411,6 +4839,12 @@ async def add_trade(request: Request):
                         )
                     pg_conn.commit()
                 pg_conn.close()
+            if projected_buy_price is not None or projected_open_fee is not None:
+                log_event(
+                    data.get("ticket_id", "UNKNOWN"),
+                    "MANAGER: PAPER PROJECTION APPLIED "
+                    f"buy_price={buy_px_float} fees={open_fee}",
+                )
         except Exception as e:
             log(f"⚠️ Failed to update paper trade to open: {e}")
 
@@ -4485,6 +4919,112 @@ async def add_trade(request: Request):
     notify_active_trade_supervisor_direct(trade_id, data["ticket_id"], "pending")
 
     return {"id": trade_id}
+
+
+def _delete_pending_trade_for_rejection(trade_id: int, ticket_id: Optional[str], error_type: str) -> dict:
+    """Delete pending trade (same behavior as insufficient_resting_volume handling)."""
+    log(f"{error_type} ERROR - DELETING PENDING TRADE")
+    if ticket_id:
+        log_event(ticket_id, f"MANAGER: {error_type} - DELETING PENDING TRADE")
+
+    monitor_identifier = None
+    pg_conn = get_postgresql_connection()
+    if pg_conn:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(f"SELECT monitor FROM {_tm_trades_table()} WHERE id = %s", (trade_id,))
+            row = cursor.fetchone()
+            if row and row[0]:
+                monitor_identifier = row[0]
+        pg_conn.close()
+
+    pg_conn = get_postgresql_connection()
+    if pg_conn:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"DELETE FROM {_tm_trades_table()} WHERE id = %s AND status = 'pending'",
+                (trade_id,),
+            )
+            deleted_count = cursor.rowcount
+            pg_conn.commit()
+            pg_conn.close()
+
+            if deleted_count > 0:
+                log(f"DELETED PENDING TRADE {trade_id} DUE TO {error_type}")
+                if monitor_identifier:
+                    notify_active_trade_supervisor_direct_with_monitor(
+                        trade_id, ticket_id, "deleted", monitor_identifier
+                    )
+                else:
+                    notify_active_trade_supervisor_direct(trade_id, ticket_id, "deleted")
+                return {"message": f"Pending trade deleted due to {error_type.lower()}", "id": trade_id}
+
+            log("NO PENDING TRADE FOUND TO DELETE")
+            return {"message": "No pending trade found to delete", "id": trade_id}
+
+    log("CANNOT CONNECT TO DATABASE TO DELETE TRADE")
+    return {"message": "Database connection error", "id": trade_id}
+
+
+def _mark_close_trade_failed(trade_id: int, ticket_id: Optional[str], error_message: str) -> dict:
+    """Close did not complete: position is still open. Revert tenant row to ``open`` so retries work.
+
+    Paper FOK precheck failures mirror live executor insufficient-volume on close. Live executor
+    errors use the same path. ATS receives ``close_attempt_failed`` so the pool can sync and retry;
+    the failure is also logged as an operator alert (no persisted ``close_failed`` status).
+    """
+    log(
+        f"ALERT CLOSE_ATTEMPT_FAILED trade_id={trade_id} detail={error_message!r} — "
+        "reverting row to open (position unchanged; close may be retried)"
+    )
+    if ticket_id:
+        log_event(
+            ticket_id,
+            "MANAGER: CLOSE ORDER FAILED - reverting status to open",
+            trade_id=trade_id,
+        )
+
+    note_text = f"Auto Stop Fail - {error_message}"
+    pg_conn = get_postgresql_connection()
+    if pg_conn:
+        try:
+            with pg_conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    UPDATE {_tm_trades_table()}
+                    SET status = 'open',
+                        order_id_close = NULL,
+                        symbol_close = NULL,
+                        close_method = NULL,
+                        notes = %s
+                    WHERE id = %s
+                    """,
+                    (note_text, trade_id),
+                )
+                if cursor.rowcount > 0:
+                    log(f"UPDATED NOTES: {note_text}")
+                else:
+                    log(f"⚠️ close-failure revert: no row updated for trade_id={trade_id}")
+                pg_conn.commit()
+            pg_conn.close()
+        except Exception as e:
+            log(f"ERROR reverting trade to open after close failure: {e}")
+            if pg_conn:
+                pg_conn.close()
+
+    _fanout_active_trades_change_via_redis_or_http(
+        {
+            "count": 1,
+            "trade_id": trade_id,
+            "status": "open",
+            "timestamp": time.time(),
+        }
+    )
+    notify_frontend_trade_change()
+    notify_active_trade_supervisor_direct(trade_id, ticket_id, "close_attempt_failed")
+    return {
+        "message": "Close order failed - trade remains open for retry",
+        "id": trade_id,
+    }
 
 
 def apply_update_trade_status_payload(data: dict):
@@ -4576,74 +5116,12 @@ def apply_update_trade_status_payload(data: dict):
         
         # Check if it's a close order failure
         if intent == "close":
-            log(f"CLOSE ORDER FAILED - Marking as close_failed")
-            if ticket_id:
-                log_event(ticket_id, f"MANAGER: CLOSE ORDER FAILED - Marking as close_failed")
-            
-            # Mark as close_failed instead of error
-            update_trade_status(id, "close_failed")
-            
-            # Update notes with error message
-            note_text = f"Auto Stop Fail - {error_message}"
-            pg_conn = get_postgresql_connection()
-            if pg_conn:
-                try:
-                    with pg_conn.cursor() as cursor:
-                        cursor.execute(f"UPDATE {_tm_trades_table()} SET notes = %s WHERE id = %s", (note_text, id))
-                        pg_conn.commit()
-                        log(f"UPDATED NOTES: {note_text}")
-                    pg_conn.close()
-                except Exception as e:
-                    log(f"ERROR UPDATING NOTES: {e}")
-                    if pg_conn:
-                        pg_conn.close()
-            
-            # Notify active trade supervisor about close failure
-            notify_active_trade_supervisor_direct(id, ticket_id, "close_failed")
-            
-            return ({"message": "Close order failed - marked as close_failed", "id": id}, None)
+            return (_mark_close_trade_failed(id, ticket_id, error_message), None)
         
         # Check if it's an insufficient volume or insufficient balance error for OPEN orders
         elif "insufficient_resting_volume" in error_message.lower() or "insufficient balance" in error_message.lower():
             error_type = "INSUFFICIENT VOLUME" if "insufficient_resting_volume" in error_message.lower() else "INSUFFICIENT BALANCE"
-            log(f"{error_type} ERROR - DELETING PENDING TRADE")
-            if ticket_id:
-                log_event(ticket_id, f"MANAGER: {error_type} - DELETING PENDING TRADE")
-            
-            # Get monitor identifier BEFORE deleting the trade
-            monitor_identifier = None
-            pg_conn = get_postgresql_connection()
-            if pg_conn:
-                with pg_conn.cursor() as cursor:
-                    cursor.execute(f"SELECT monitor FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                    row = cursor.fetchone()
-                    if row and row[0]:
-                        monitor_identifier = row[0]
-                pg_conn.close()
-            
-            # Delete the pending trade instead of marking as error
-            pg_conn = get_postgresql_connection()
-            if pg_conn:
-                with pg_conn.cursor() as cursor:
-                    cursor.execute(f"DELETE FROM {_tm_trades_table()} WHERE id = %s AND status = 'pending'", (id,))
-                    deleted_count = cursor.rowcount
-                    pg_conn.commit()
-                    pg_conn.close()
-                    
-                    if deleted_count > 0:
-                        log(f"DELETED PENDING TRADE {id} DUE TO {error_type}")
-                        # Pass monitor identifier to avoid querying deleted trade
-                        if monitor_identifier:
-                            notify_active_trade_supervisor_direct_with_monitor(id, ticket_id, "deleted", monitor_identifier)
-                        else:
-                            notify_active_trade_supervisor_direct(id, ticket_id, "deleted")
-                        return ({"message": f"Pending trade deleted due to {error_type.lower()}", "id": id}, None)
-                    else:
-                        log(f"NO PENDING TRADE FOUND TO DELETE")
-                        return ({"message": "No pending trade found to delete", "id": id}, None)
-            else:
-                log(f"CANNOT CONNECT TO DATABASE TO DELETE TRADE")
-                return ({"message": "Database connection error", "id": id}, None)
+            return (_delete_pending_trade_for_rejection(id, ticket_id, error_type), None)
         else:
             # Handle other errors normally
             update_trade_status(id, "error")
@@ -4826,13 +5304,16 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
     ret_pct_base = None
     roi_pct = None
     if buy_price is not None and position is not None:
-        buy_value = buy_price * position
-        sell_value = sell_price * position
+        # psycopg2 returns NUMERIC columns as Decimal; normalize before float math.
+        bp_f = float(buy_price)
+        pos_i = int(position)
+        buy_value = bp_f * pos_i
+        sell_value = float(sell_price) * pos_i
         pnl = round(sell_value - buy_value - existing_fees_f, 2)
-        if bankroll is not None and bankroll > 0 and pnl is not None:
-            ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-        if mtb_base is not None and mtb_base > 0 and pnl is not None:
-            ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+        if bankroll is not None and float(bankroll) > 0 and pnl is not None:
+            ret_pct = round((pnl / (float(bankroll) / 100.0)) * 100, 5)
+        if mtb_base is not None and float(mtb_base) > 0 and pnl is not None:
+            ret_pct_base = round((pnl / (float(mtb_base) / 100.0)) * 100, 5)
         if buy_value > 0 and pnl is not None:
             roi_pct = round((pnl / buy_value) * 100.0, 5)
 
@@ -4989,7 +5470,7 @@ def check_expired_simulated_trades():
             cursor.execute(
                 "SELECT id, ticker, symbol, strike, side, monitor, date, weekly_cycle, contract "
                 f"FROM {_tm_trades_simulated_table()} "
-                "WHERE status IN ('open', 'closing', 'close_failed')"
+                "WHERE status IN ('open', 'closing')"
             )
             active = cursor.fetchall()
         pg_conn.close()
@@ -5033,7 +5514,7 @@ def check_expired_simulated_trades():
                             win_loss = %s,
                             close_method = 'expired',
                             fees = NULL
-                        WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
+                        WHERE id = %s AND status IN ('open', 'closing')
                         """,
                         (closed_at, symbol_close, win_loss, trade_id),
                     )
@@ -5112,14 +5593,14 @@ def check_expired_trades():
         # Simulated trades: run every 15m regardless of live trade count; close and set W/L from symbol_close
         check_expired_simulated_trades()
 
-        # Step 2: Check for open, closing, and close_failed trades (live) to mark as expired
+        # Step 2: Check for open and closing trades (live) to mark as expired
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
                 cursor.execute(
                     "SELECT id, ticker, symbol, trade_strategy, contract, date, market "
                     f"FROM {_tm_trades_table()} "
-                    "WHERE status IN ('open', 'closing', 'close_failed')"
+                    "WHERE status IN ('open', 'closing')"
                 )
                 active_trades = cursor.fetchall()
         else:
@@ -5185,8 +5666,8 @@ def check_expired_trades():
                             log(f"⚠️ EXPIRATION: Skipping trade {trade_id} - already closed (immutability rule)")
                             continue
                         
-                        # Only process trades that are still open/closing/close_failed
-                        if current_status not in ('open', 'closing', 'close_failed'):
+                        # Only process trades that are still open or closing
+                        if current_status not in ('open', 'closing'):
                             continue
                         
                         # Get high_price and low_price from active_trades before it's removed
@@ -5220,7 +5701,7 @@ def check_expired_trades():
                                 high_price = %s,
                                 low_price = %s,
                                 monitor_confirmed = %s
-                            WHERE id = %s AND status IN ('open', 'closing', 'close_failed')
+                            WHERE id = %s AND status IN ('open', 'closing')
                         """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
                     markets_applied = set()
                     for _tid, _ticker, _symbol, _strategy, _contract, _trade_date, _m in trades_to_process:
@@ -5235,7 +5716,7 @@ def check_expired_trades():
                             bf_cursor, [row[0] for row in trades_to_process]
                         )
                     pg_conn.commit()
-                    log_debug(f"💾 Expired trades update written to PostgreSQL tenant trades for {len(trades_to_process)} trades (open, closing, and close_failed)")
+                    log_debug(f"💾 Expired trades update written to PostgreSQL tenant trades for {len(trades_to_process)} trades (open and closing)")
                 pg_conn.close()
             else:
                 log(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
@@ -5473,14 +5954,17 @@ def _trade_manager_command_handler(decoded: dict, msg_id: str, raw_fields: dict)
         resp = requests.post(f"http://{host}:{port}/trades", json=payload, timeout=120)
         if resp.status_code not in (200, 201):
             log(
-                f"❌ Redis tm_commands POST /trades failed status={resp.status_code} "
+                f"❌ tm_commands consumer: local POST /trades returned {resp.status_code} "
+                f"(Redis delivery OK; fix trade_manager handler). "
                 f"body={getattr(resp, 'text', '')[:900]!r}"
             )
         else:
             try:
                 j = resp.json()
                 if isinstance(j, dict) and j.get("error") is not None:
-                    log(f"❌ Redis tm_commands POST /trades application error in JSON body: {j!r}")
+                    log(
+                        f"❌ tm_commands consumer: POST /trades 2xx but JSON error field: {j!r}"
+                    )
             except Exception:
                 pass
     except Exception as e:

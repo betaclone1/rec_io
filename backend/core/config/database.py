@@ -337,12 +337,14 @@ def init_database():
                 side VARCHAR(10),
                 prob DECIMAL(10,4),
                 diff VARCHAR(50),
-                buy_price DECIMAL(10,4),
+                buy_price NUMERIC(12,6),
                 position INTEGER,
                 initial_price NUMERIC(10,4),
                 slippage NUMERIC(10,4),
                 initial_count INTEGER,
-                sell_price DECIMAL(10,4),
+                initial_proj_price NUMERIC(10,8),
+                initial_proj_fees NUMERIC(10,4),
+                sell_price NUMERIC(12,6),
                 closed_at TIMESTAMP,
                 fees DECIMAL(10,4),
                 pnl DECIMAL(10,4),
@@ -416,9 +418,11 @@ def init_database():
                 side TEXT NOT NULL,
                 prob REAL,
                 diff TEXT,
-                buy_price REAL,
+                buy_price NUMERIC(12,6),
                 position INTEGER,
-                sell_price REAL,
+                initial_proj_price NUMERIC(10,8),
+                initial_proj_fees NUMERIC(10,4),
+                sell_price NUMERIC(12,6),
                 closed_at TEXT,
                 fees REAL,
                 pnl REAL,
@@ -627,6 +631,98 @@ def init_database():
                     WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'initial_count'
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN initial_count INTEGER;
+                END IF;
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns c
+                    WHERE c.table_schema = 'users'
+                      AND c.table_name = 'trades_0001'
+                      AND c.column_name = 'buy_price'
+                      AND (
+                           c.data_type <> 'numeric'
+                        OR COALESCE(c.numeric_precision, 0) < 12
+                        OR COALESCE(c.numeric_scale, 0) < 6
+                      )
+                ) THEN
+                    ALTER TABLE users.trades_0001
+                      ALTER COLUMN buy_price TYPE NUMERIC(12,6) USING ROUND(buy_price::numeric, 6);
+                END IF;
+                IF EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns c
+                    WHERE c.table_schema = 'users'
+                      AND c.table_name = 'trades_0001'
+                      AND c.column_name = 'sell_price'
+                      AND (
+                           c.data_type <> 'numeric'
+                        OR COALESCE(c.numeric_precision, 0) < 12
+                        OR COALESCE(c.numeric_scale, 0) < 6
+                      )
+                ) THEN
+                    ALTER TABLE users.trades_0001
+                      ALTER COLUMN sell_price TYPE NUMERIC(12,6) USING ROUND(sell_price::numeric, 6);
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'
+                ) AND EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns c
+                    WHERE c.table_schema = 'users'
+                      AND c.table_name = 'trades_simulated_0001'
+                      AND c.column_name = 'buy_price'
+                      AND (
+                           c.data_type <> 'numeric'
+                        OR COALESCE(c.numeric_precision, 0) < 12
+                        OR COALESCE(c.numeric_scale, 0) < 6
+                      )
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001
+                      ALTER COLUMN buy_price TYPE NUMERIC(12,6) USING ROUND(buy_price::numeric, 6);
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'
+                ) AND EXISTS (
+                    SELECT 1
+                    FROM information_schema.columns c
+                    WHERE c.table_schema = 'users'
+                      AND c.table_name = 'trades_simulated_0001'
+                      AND c.column_name = 'sell_price'
+                      AND (
+                           c.data_type <> 'numeric'
+                        OR COALESCE(c.numeric_precision, 0) < 12
+                        OR COALESCE(c.numeric_scale, 0) < 6
+                      )
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001
+                      ALTER COLUMN sell_price TYPE NUMERIC(12,6) USING ROUND(sell_price::numeric, 6);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'initial_proj_price'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN initial_proj_price NUMERIC(10,8);
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_0001' AND column_name = 'initial_proj_fees'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN initial_proj_fees NUMERIC(10,4);
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001' AND column_name = 'initial_proj_price'
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001 ADD COLUMN initial_proj_price NUMERIC(10,8);
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM information_schema.tables WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001'
+                ) AND NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'trades_simulated_0001' AND column_name = 'initial_proj_fees'
+                ) THEN
+                    ALTER TABLE users.trades_simulated_0001 ADD COLUMN initial_proj_fees NUMERIC(10,4);
                 END IF;
 
                 -- Strike-table final-window ask snapshot at trade insert (migration 20260330_2200_trades_strike_final_quarter_asks)

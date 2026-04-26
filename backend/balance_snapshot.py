@@ -539,7 +539,7 @@ def sum_open_paper_positions_mark_cents() -> int:
                 SELECT id, ticker, side, buy_price, "position"
                 FROM users.trades_{slot}
                 WHERE paper_trade IS TRUE
-                  AND status IN ('open', 'closing', 'close_failed')
+                  AND status IN ('open', 'closing')
                   AND buy_price IS NOT NULL
                   AND "position" IS NOT NULL
                 ORDER BY id ASC
@@ -558,7 +558,7 @@ def _sum_open_paper_positions_mark_cents_cursor(cursor, slot: str) -> int:
         SELECT id, ticker, side, buy_price, "position"
         FROM users.trades_{slot}
         WHERE paper_trade IS TRUE
-          AND status IN ('open', 'closing', 'close_failed')
+          AND status IN ('open', 'closing')
           AND buy_price IS NOT NULL
           AND "position" IS NOT NULL
         ORDER BY id ASC

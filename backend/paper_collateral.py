@@ -110,7 +110,7 @@ def fetch_open_paper_collateral_rows() -> List[PaperCollateralRow]:
                 SELECT id, ticker, side, buy_price, "position"
                 FROM users.trades_{slot}
                 WHERE paper_trade IS TRUE
-                  AND status IN ('open', 'closing', 'close_failed')
+                  AND status IN ('open', 'closing')
                   AND buy_price IS NOT NULL
                   AND "position" IS NOT NULL
                 ORDER BY id ASC

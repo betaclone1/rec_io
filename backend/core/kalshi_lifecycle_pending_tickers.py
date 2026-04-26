@@ -40,9 +40,9 @@ def _pending_fragment(schema: str, table: str) -> sql.Composable:
         SELECT ticker, symbol, id FROM {}.{}
         WHERE LOWER(TRIM(COALESCE(exchange, ''))) = %s
           AND ticker IS NOT NULL AND TRIM(ticker::text) != ''
-          AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+          AND status IN ('open', 'closing', 'expired', 'closed')
           AND (
-            (status IN ('open', 'closing', 'close_failed') AND market_result IS NULL)
+            (status IN ('open', 'closing') AND market_result IS NULL)
             OR (status = 'expired')
             OR (status = 'closed' AND market_result IS NULL)
           )
@@ -127,9 +127,9 @@ def ticker_still_needs_market_result_any_tenant(conn, market_ticker: str, exchan
                         SELECT 1 FROM {}.{}
                         WHERE ticker = %s
                           AND LOWER(TRIM(COALESCE(exchange, ''))) = %s
-                          AND status IN ('open', 'closing', 'close_failed', 'expired', 'closed')
+                          AND status IN ('open', 'closing', 'expired', 'closed')
                           AND (
-                            (status IN ('open', 'closing', 'close_failed') AND market_result IS NULL)
+                            (status IN ('open', 'closing') AND market_result IS NULL)
                             OR (status = 'expired')
                             OR (status = 'closed' AND market_result IS NULL)
                           )

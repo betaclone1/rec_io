@@ -66,6 +66,10 @@ _lookup_probability_calculator_failed: Set[str] = set()
 # trade_ids logged once when we skip auto-close past Kalshi settlement (avoid log spam)
 _auto_close_suppress_past_settlement_logged: Set[int] = set()
 
+# One volume/precheck close-retry loop per (tenant slot, monitor id, trade pk); see handle_close_attempt_failed_trade.
+_close_volume_retry_active: Set[Tuple[str, str, int]] = set()
+_close_volume_retry_lock = threading.Lock()
+
 _KALSHI_MID_15M_SETTLE = re.compile(
     r"^(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})(\d{4})$",
     re.I,
@@ -1056,12 +1060,12 @@ def process_trade_manager_notification_core(trade_id, ticket_id, status: str) ->
         else:
             log(f"❌ Failed to remove closed trade: {trade_id}")
 
-    elif status == 'close_failed':
-        success = handle_close_failed_trade(trade_id, ticket_id)
+    elif status == 'close_attempt_failed':
+        success = handle_close_attempt_failed_trade(trade_id, ticket_id)
         if success:
-            log(f"✅ Successfully handled close_failed trade: {trade_id}")
+            log(f"✅ Successfully handled close_attempt_failed trade: {trade_id}")
         else:
-            log(f"❌ Failed to handle close_failed trade: {trade_id}")
+            log(f"❌ Failed to handle close_attempt_failed trade: {trade_id}")
 
     elif status == 'deleted':
         success = remove_failed_trade(trade_id, ticket_id)
@@ -1394,7 +1398,7 @@ def handle_trade_manager_notification():
             "expired",
             "closing",
             "closed",
-            "close_failed",
+            "close_attempt_failed",
             "deleted",
         ):
             return jsonify(
@@ -1906,9 +1910,12 @@ def remove_pending_trade(trade_id: int, ticket_id: str) -> bool:
         """, (trade_id,))
         
         if cursor.rowcount == 0:
-            log(f"No pending trade found in active_trades.db for trade_id {trade_id}")
+            log_debug(
+                f"No pending row in active_trades pool for trade_id={trade_id} "
+                f"(remove idempotent)"
+            )
             conn.close()
-            return False
+            return True
         
         conn.commit()
         conn.close()
@@ -1933,14 +1940,12 @@ def remove_pending_trade(trade_id: int, ticket_id: str) -> bool:
 
 def remove_failed_trade(trade_id: int, ticket_id: str) -> bool:
     """
-    Remove a trade that failed (got error status) from active_trades.db.
-    
-    Args:
-        trade_id: The ID from trades.db
-        ticket_id: The ticket ID for the trade
-        
-    Returns:
-        bool: True if successfully removed, False otherwise
+    Remove a trade from the monitor's active_trades *pool* table (PostgreSQL
+    ``users.active_trades_15m_*`` / ``active_trades_hourly_*``), e.g. after
+    ``error`` or ``deleted`` from trade_manager. Does not touch ``trades_*``.
+
+    Idempotent: if there is no pool row (common for precheck-cancelled trades
+    that never enrolled), return True so callers do not treat it as a failure.
     """
     try:
         # Remove the failed trade from active_trades.db (any status)
@@ -1953,9 +1958,12 @@ def remove_failed_trade(trade_id: int, ticket_id: str) -> bool:
         """, (trade_id,))
         
         if cursor.rowcount == 0:
-            log(f"No trade found in active_trades.db for trade_id {trade_id}")
+            log_debug(
+                f"No active_trades pool row for trade_id={trade_id} "
+                f"(delete idempotent; ok for deleted/error sync)"
+            )
             conn.close()
-            return False
+            return True
         
         conn.commit()
         conn.close()
@@ -4578,7 +4586,8 @@ def _close_method_for_auto_trigger(trigger_reason: str) -> str:
         "reversal_max_profit": "auto_reversal_max_profit",
         "reversal_trailing_stop": "auto_reversal_trailing_stop",
         "reversal_profit_target": "auto_reversal_profit_target",
-        "close_failed_retry": "auto_close_retry",
+        "close_attempt_failed_retry": "auto_close_retry",
+        "close_failed_retry": "auto_close_retry",  # legacy trigger_reason only
     }
     return mapped.get(key, f"auto_{key}")
 
@@ -5088,7 +5097,7 @@ def trigger_auto_stop_close(
       stop_loss_floor, probability_auto_stop, momentum_spike,
       scalp_max_profit, scalp_trailing_stop, scalp_profit_target,
       reversal_max_profit, reversal_trailing_stop, reversal_profit_target,
-      close_failed_retry, unknown
+      close_attempt_failed_retry, unknown
 
     trigger_detail: short human-readable context (thresholds, prob, momentum, etc.).
 
@@ -5347,77 +5356,216 @@ def trigger_auto_stop_close(
         log(f"[AUTO STOP] Exception posting close trigger={trigger_reason} trade_id={tid}: {e}")
         return False
 
-def handle_close_failed_trade(trade_id: int, ticket_id: str) -> bool:
-    """
-    Handle a trade that failed to close (e.g., due to insufficient volume).
-    Reverts the trade to 'active' status and immediately retries the close order.
-    """
+
+def _ats_fetch_tenant_trade_status(trade_id: int) -> Optional[str]:
+    """Lowercase ``status`` from tenant ``trades_*`` for ``id``, or None if missing."""
+    conn = get_postgresql_connection()
+    if not conn:
+        return None
     try:
-        # Get the trade data from active_trades.db
-        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT status FROM {legacy_users_trades(ctx_user())} WHERE id = %s",
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+            if not row or row[0] is None:
+                return None
+            return str(row[0]).strip().lower()
+    finally:
+        conn.close()
+
+
+def _ats_fetch_pool_row_for_close_retry(trade_id: int):
+    """Pool row columns for auto-close payload, or None."""
+    conn = get_db_connection()
+    if not conn:
+        return None
+    try:
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
-        cursor.execute(f"""
-            SELECT trade_id, ticker, strike, side, position, buy_price, current_close_price, current_symbol_price, current_probability, current_pnl
-            FROM users.{active_trades_table} 
+        cursor.execute(
+            f"""
+            SELECT trade_id, ticker, strike, side, position, buy_price,
+                   current_close_price, current_symbol_price, current_probability, current_pnl
+            FROM users.{active_trades_table}
             WHERE trade_id = %s
-        """, (trade_id,))
+            """,
+            (trade_id,),
+        )
+        return cursor.fetchone()
+    finally:
+        conn.close()
+
+
+def _ats_trade_dict_from_close_retry_pool_row(trade_data) -> Dict[str, Any]:
+    (
+        trade_id_db,
+        ticker,
+        strike,
+        side,
+        position,
+        buy_price,
+        current_close_price,
+        current_symbol_price,
+        current_probability,
+        current_pnl,
+    ) = trade_data
+    return {
+        "trade_id": trade_id_db,
+        "ticker": ticker,
+        "strike": strike,
+        "side": side,
+        "position": position,
+        "buy_price": buy_price,
+        "current_close_price": current_close_price,
+        "current_symbol_price": current_symbol_price,
+        "current_probability": current_probability,
+        "current_pnl": current_pnl,
+    }
+
+
+def _close_volume_retry_worker(user_num: str, monitor_id: str, trade_id: int) -> None:
+    """Every ``ATS_CLOSE_VOLUME_RETRY_INTERVAL_SEC`` (default 10), retry auto-close while trade is still open."""
+    interval = max(1.0, float(os.getenv("ATS_CLOSE_VOLUME_RETRY_INTERVAL_SEC", "10")))
+    key = (user_num, monitor_id, trade_id)
+    try:
+        with ats_monitor_bind(user_num, monitor_id):
+            log(
+                f"[CLOSE RETRY] Started {interval:g}s loop for volume/precheck failures "
+                f"trade_id={trade_id} user={user_num} monitor={monitor_id}"
+            )
+            while True:
+                time.sleep(interval)
+                pg_status = _ats_fetch_tenant_trade_status(trade_id)
+                if pg_status is None:
+                    log_debug(f"[CLOSE RETRY] trade_id={trade_id} missing tenant trades row; stopping loop")
+                    break
+                if pg_status in ("closed", "expired"):
+                    log(f"[CLOSE RETRY] trade_id={trade_id} PG status={pg_status}; stopping loop")
+                    break
+                if pg_status == "closing":
+                    log_debug(f"[CLOSE RETRY] trade_id={trade_id} PG status=closing; waiting")
+                    continue
+                if pg_status != "open":
+                    log_debug(
+                        f"[CLOSE RETRY] trade_id={trade_id} PG status={pg_status} (not open); stopping loop"
+                    )
+                    break
+
+                trade_data = _ats_fetch_pool_row_for_close_retry(trade_id)
+                if not trade_data:
+                    log(f"[CLOSE RETRY] trade_id={trade_id} not in monitor pool; stopping loop")
+                    break
+                ticker = trade_data[1]
+                if should_suppress_auto_close_past_kalshi_settlement(ticker, trade_id):
+                    log(
+                        f"[CLOSE RETRY] trade_id={trade_id} past Kalshi close/settlement window; stopping loop"
+                    )
+                    break
+
+                trade_dict = _ats_trade_dict_from_close_retry_pool_row(trade_data)
+                log(f"[CLOSE RETRY] trade_id={trade_id} enqueue auto close (volume/precheck retry)")
+                trigger_auto_stop_close(
+                    trade_dict,
+                    trigger_reason="close_attempt_failed_retry",
+                    trigger_detail="volume_precheck_retry_loop",
+                )
+    except Exception as e:
+        log(f"[CLOSE RETRY] trade_id={trade_id} worker error: {e}")
+    finally:
+        with _close_volume_retry_lock:
+            _close_volume_retry_active.discard(key)
+        log_debug(f"[CLOSE RETRY] trade_id={trade_id} loop ended")
+
+
+def handle_close_attempt_failed_trade(trade_id: int, ticket_id: str) -> bool:
+    """
+    trade_manager reverted the tenant trade row to ``open`` after a failed close (volume/precheck).
+    Revert the monitor pool row to ``active`` and run a 10s retry loop until closed, expired, or
+    past the Kalshi auto-close window (see ``should_suppress_auto_close_past_kalshi_settlement``).
+    """
+    user_num = ctx_user()
+    monitor_id = ctx_mid()
+    key = (user_num, monitor_id, int(trade_id))
+    try:
+        conn = get_db_connection()
+        if not conn:
+            log(f"⚠️ close_attempt_failed: no DB connection for trade_id={trade_id}")
+            return False
+        cursor = conn.cursor()
+        active_trades_table = get_monitor_active_trades_table()
+        cursor.execute(
+            f"""
+            SELECT trade_id, ticker, strike, side, position, buy_price,
+                   current_close_price, current_symbol_price, current_probability, current_pnl
+            FROM users.{active_trades_table}
+            WHERE trade_id = %s
+            """,
+            (trade_id,),
+        )
         trade_data = cursor.fetchone()
         conn.close()
 
         if not trade_data:
-            log(f"⚠️ Trade with ID {trade_id} not found in active_trades.db.")
+            log(f"⚠️ Trade with ID {trade_id} not found in monitor pool for close_attempt_failed.")
             return False
 
-        trade_id_db, ticker, strike, side, position, buy_price, current_close_price, current_symbol_price, current_probability, current_pnl = trade_data
+        ticker = trade_data[1]
 
-        # Revert to active status
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute(f"""
+        cursor.execute(
+            f"""
             UPDATE users.{active_trades_table}
             SET status = 'active',
                 current_close_price = NULL,
                 current_pnl = NULL,
                 last_updated = CURRENT_TIMESTAMP
             WHERE trade_id = %s
-        """, (trade_id,))
+            """,
+            (trade_id,),
+        )
         conn.commit()
         conn.close()
 
-        log(f"🔄 CLOSE FAILED - REVERTING TO ACTIVE STATUS")
+        log("🔄 CLOSE ATTEMPT FAILED - REVERTING POOL ROW TO ACTIVE STATUS")
         log(f"   Trade ID: {trade_id}")
         log(f"   Ticker: {ticker}")
-        log(f"   ========================================")
-        
+        log("   ========================================")
+
         invalidate_active_trades_cache()
         broadcast_active_trades_change()
 
-        # Construct trade dictionary for trigger_auto_stop_close
-        trade_dict = {
-            'trade_id': trade_id,
-            'ticker': ticker,
-            'strike': strike,
-            'side': side,
-            'position': position,
-            'buy_price': buy_price,
-            'current_close_price': current_close_price,
-            'current_symbol_price': current_symbol_price,
-            'current_probability': current_probability,
-            'current_pnl': current_pnl
-        }
+        start_worker = False
+        with _close_volume_retry_lock:
+            if key not in _close_volume_retry_active:
+                _close_volume_retry_active.add(key)
+                start_worker = True
 
-        # Immediately retry the close order
-        log(f"🚀 IMMEDIATELY RETRYING CLOSE ORDER FOR TRADE {trade_id}")
-        trigger_auto_stop_close(
-            trade_dict,
-            trigger_reason="close_failed_retry",
-            trigger_detail="retry_after_close_failed",
-        )
+        if start_worker:
+            try:
+                threading.Thread(
+                    target=_close_volume_retry_worker,
+                    args=(user_num, monitor_id, int(trade_id)),
+                    daemon=True,
+                    name=f"ats-close-vol-retry-{trade_id}",
+                ).start()
+            except Exception as te:
+                with _close_volume_retry_lock:
+                    _close_volume_retry_active.discard(key)
+                log(f"❌ close_attempt_failed: could not start retry thread trade_id={trade_id}: {te}")
+                return False
+        else:
+            log_debug(
+                f"[CLOSE RETRY] trade_id={trade_id} retry loop already running; pool row refreshed to active"
+            )
         return True
 
     except Exception as e:
-        log(f"❌ Error handling close_failed trade {trade_id}: {e}")
+        log(f"❌ Error handling close_attempt_failed trade {trade_id}: {e}")
+        with _close_volume_retry_lock:
+            _close_volume_retry_active.discard(key)
         return False
 
 # Auto stop settings read from the tenant monitor_list row for ctx_user()/ctx_mid().

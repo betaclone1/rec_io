@@ -3176,7 +3176,7 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
 def is_strike_already_traded(strike_data):
     """Check if we already have an in-flight trade on this Kalshi market ticker (same monitor + side).
 
-    Statuses counted as blocking: open, pending, closing, close_failed (anything not yet terminal).
+    Statuses counted as blocking: open, pending, closing (anything not yet terminal).
     Side comparison is canonicalized so DB ``Y`` matches strike_data ``yes`` (prior bug: never matched).
     """
     try:
@@ -3193,7 +3193,7 @@ def is_strike_already_traded(strike_data):
             f"""
             SELECT id, ticker, side, status
             FROM {_aes_trades_table()}
-            WHERE status IN ('open', 'pending', 'closing', 'close_failed')
+            WHERE status IN ('open', 'pending', 'closing')
               AND monitor = %s
             """,
             (current_monitor,),

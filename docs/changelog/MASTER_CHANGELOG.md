@@ -6,6 +6,39 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-26 — Release v3.4.0: trade close semantics, volume retry loop, pricing parity migrations
+
+**Summary**
+- **Release: v3.4.0**
+- **Trade lifecycle:** Remove persisted **`close_failed`** on tenant trades; failed closes keep **`open`** and **`trade_manager`** alerts + notifies ATS with **`close_attempt_failed`**. **`active_trade_supervisor`** handles that notification, reverts pool rows to **active**, and runs a **10s** background retry loop (**`ATS_CLOSE_VOLUME_RETRY_INTERVAL_SEC`**, default 10) until the row is **closed** / **expired**, past the Kalshi auto-close window, or gone from the pool. **`close_attempt_failed_retry`** maps to **`auto_close_retry`** for **`close_method`**.
+- **Queries:** **`auto_entry_supervisor`**, **`paper_collateral`**, **`balance_snapshot`**, **`kalshi_lifecycle_*`** no longer filter on **`close_failed`**.
+- **Database:** Migration **`20260425_1425_trades_initial_proj_price_fees`** — **`initial_proj_price`**, **`initial_proj_fees`** on all per-tenant **`trades_*`** / **`trades_simulated_*`**. Migration **`20260425_1438_trades_buy_sell_price_6dp`** — **`buy_price`** / **`sell_price`** precision. Migration **`20260425_1610_archive_trades_union_parity_proj_prices`** — archive UNION parity for projection/fee columns. Migration **`20260426_1520_trades_normalize_close_failed_status`** — backfill **`close_failed` → `open`** on **`trades_*`** and **`trades_simulated_*`** across **`users`** / **`users_NNNN`**.
+- **`trade_manager`:** Close path, paper close / projection, **`_mark_close_trade_failed`** behavior, expiry sweeps, and related fixes aligned with the above.
+- **`database.py` / `MASTER_DB_SCHEMA_REFERENCE.md`:** Init and docs aligned with new columns and **`status`** semantics (no **`close_failed`**).
+- **Plans:** (session work; trade close handling, ATS retry, tenant trade pricing parity.)
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260425_1425_trades_initial_proj_price_fees`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260425_1438_trades_buy_sell_price_6dp`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260425_1610_archive_trades_union_parity_proj_prices`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1520_trades_normalize_close_failed_status`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail **`trade_executor_0001`**, **`main_app`**, **`kalshi_account_sync_0001`**, one **`market_watchdog_ws`** log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.0`
+- [ ] Record release in DB on **local** (same version string as production):  
+  From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.0`
+
+---
+
 ## 2026-04-25 — Release v3.3.2: strike Redis publish path, archive union columns, supervision stack, dashboard win streak
 
 **Summary**

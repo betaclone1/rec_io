@@ -8088,7 +8088,7 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Purpose:** Rows moved from `users.trades_0001` when a monitor is archived (`POST /api/monitor/archive` or backfill script). Contains only trades that had `paper_trade = false` (or null treated as live at archive time) for that monitor. Same column set as `users.trades_0001` at migration time, **plus** `archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`. **No** `rec_io_db_notify` trigger.
 
-**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`**; `20260403_2330_archive_trades_monitor_confirm_detail` adds **`monitor_confirm_detail`** when the master table gains that column so `union_trades_with_archives_select` stays valid; `20260416_1810_archive_trades_win_loss_confirmed_match_master` adds **`win_loss_confirmed`** on all `archive.trades_archive_{live|paper}_*` tables so GET `/trades` can select it in the union (parity with `users.trades_*` after `20260328_1500`); `20260420_1800_archive_trades_initial_price_slippage_initial_count` adds **`initial_price`**, **`slippage`**, **`initial_count`** on every `archive.trades_archive_{live|paper}_[0-9]{4}` so the master ∪ archive UNION stays valid after tenant `trades_*` gained those columns (`20260420_1230_trades_initial_price_slippage_initial_count`).
+**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`**; `20260403_2330_archive_trades_monitor_confirm_detail` adds **`monitor_confirm_detail`** when the master table gains that column so `union_trades_with_archives_select` stays valid; `20260416_1810_archive_trades_win_loss_confirmed_match_master` adds **`win_loss_confirmed`** on all `archive.trades_archive_{live|paper}_*` tables so GET `/trades` can select it in the union (parity with `users.trades_*` after `20260328_1500`); `20260420_1800_archive_trades_initial_price_slippage_initial_count` adds **`initial_price`**, **`slippage`**, **`initial_count`** on every `archive.trades_archive_{live|paper}_[0-9]{4}` so the master ∪ archive UNION stays valid after tenant `trades_*` gained those columns (`20260420_1230_trades_initial_price_slippage_initial_count`); `20260425_1610_archive_trades_union_parity_proj_prices` adds **`initial_proj_price`**, **`initial_proj_fees`** and widens **`buy_price`** / **`sell_price`** to `NUMERIC(12,6)` on every matching archive table so full-column unions (e.g. `POST /api/trades/history/insights`) stay valid after `20260425_1425_trades_initial_proj_price_fees` and `20260425_1438_trades_buy_sell_price_6dp` on tenant `trades_*`.
 
 **Application:** `backend.util.trade_log_archivist.archive_trades_for_monitor`; read paths union this table with the master log and `archive.trades_archive_paper_0001`.
 
@@ -10621,7 +10621,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.trades_0001_id_seq'::regclass) | |
-| `status` | `text` | NO | - | |
+| `status` | `text` | NO | - | Workflow values include `pending`, `open`, `closing`, `closed`, `expired`, `error`, etc. **Not used:** `close_failed` — failed close attempts leave the row **`open`** (see migration `20260426_1520_trades_normalize_close_failed_status`); operators rely on logs / ATS `close_attempt_failed` handling instead. |
 | `date` | `text` | NO | - | |
 | `time` | `text` | NO | - | |
 | `symbol` | `text` | YES | - | |
@@ -10633,12 +10633,14 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `side` | `text` | NO | - | |
 | `prob` | `real(24)` | YES | - | |
 | `diff` | `text` | YES | - | |
-| `buy_price` | `real(24)` | NO | - | |
+| `buy_price` | `numeric(12,6)` | NO | - | Stored at 6dp in DB for execution precision; UI may display rounded/truncated values. |
 | `position` | `integer(32)` | NO | - | |
 | `initial_price` | `numeric(10,4)` | YES | - | Immutable **intended entry price** from the original open-trade ticket (`trade_manager` insert payload `buy_price`). Never updated after insert. |
 | `slippage` | `numeric(10,4)` | YES | - | Execution slippage on open fill: `final buy_price - initial_price` when fill-confirmed average price is written. |
 | `initial_count` | `integer(32)` | YES | - | Immutable **intended size** from the original open-trade ticket (`position` at insert time). |
-| `sell_price` | `real(24)` | YES | - | |
+| `initial_proj_price` | `numeric(10,8)` | YES | - | Projected open **average fill price** from trade-ticket-time orderbook sweep simulation (REST orderbook bids flipped to asks by side). |
+| `initial_proj_fees` | `numeric(10,4)` | YES | - | Projected open taker fees from the same orderbook projection (`estimate_kalshi_taker_fee(position, initial_proj_price)`). |
+| `sell_price` | `numeric(12,6)` | YES | - | Stored at 6dp in DB for execution precision; UI may display rounded/truncated values. |
 | `closed_at` | `text` | YES | - | |
 | `fees` | `real(24)` | YES | - | |
 | `pnl` | `real(24)` | YES | - | |
@@ -10815,9 +10817,9 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `side` | text |
 | `prob` | real |
 | `diff` | text |
-| `buy_price` | real |
+| `buy_price` | numeric(12,6) |
 | `position` | integer |
-| `sell_price` | real |
+| `sell_price` | numeric(12,6) |
 | `closed_at` | text |
 | `fees` | real |
 | `pnl` | real |
