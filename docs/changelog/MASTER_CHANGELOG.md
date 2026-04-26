@@ -19,19 +19,19 @@ This changelog is used when pushing updates to production. Each entry is timesta
 **Plans:** Session work (limit-order / execution integration, trade lifecycle and expiry hardening.)
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply tenant migration if not already recorded:  
+- [x] Apply tenant migration if not already recorded:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1600_monitor_trades_execution_settings`
-- [ ] Apply archive parity migration if not already recorded:  
+- [x] Apply archive parity migration if not already recorded:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260426_1600_kalshi_execution_monitor_trades_archive`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail **`trade_executor_0001`**, **`main_app`**, **`kalshi_account_sync_0001`**, one **`market_watchdog_ws`** log; spot-check **`GET /trades`** and execution UI.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail **`trade_executor_0001`**, **`main_app`**, **`kalshi_account_sync_0001`**, one **`market_watchdog_ws`** log; spot-check **`GET /trades`** and execution UI.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.1`
-- [ ] Record release in DB on **local** (same version string):  
+- [x] Record release in DB on **local** (same version string):  
   From local project root: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.1`
 
 ---
