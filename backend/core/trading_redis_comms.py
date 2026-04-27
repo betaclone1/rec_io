@@ -289,6 +289,14 @@ def stream_mm_monitor_settings() -> str:
     )
 
 
+def stream_kalshi_lifecycle_trades() -> str:
+    """Durable stream for Kalshi lifecycle outcomes."""
+    return os.getenv(
+        "TRADING_REDIS_STREAM_KALSHI_LIFECYCLE_TRADES",
+        "trading:kalshi:lifecycle:trades",
+    )
+
+
 def mm_monitor_settings_ack_key(correlation_id: str) -> str:
     return f"trading:mm:monitor_settings:ack:{correlation_id}"
 
@@ -342,26 +350,38 @@ def publish_kalshi_lifecycle_trades_event(
     Each :mod:`backend.kalshi_lifecycle_trade_consumer` applies :func:`backend.core.kalshi_lifecycle_trade_outcome.apply_lifecycle_market_result_for_ticker`
     only within its ``REC_USER_SCHEMA``.
     """
+    body = {
+        "type": "kalshi_lifecycle_trades",
+        "market_ticker": str(market_ticker).strip(),
+        "result": result_raw,
+        "event_type": str(event_type),
+        "source": source,
+    }
     r = redis_client_optional()
     if r is None:
         return False
-    payload = json.dumps(
-        {
-            "type": "kalshi_lifecycle_trades",
-            "market_ticker": str(market_ticker).strip(),
-            "result": result_raw,
-            "event_type": str(event_type),
-            "source": source,
-        },
-        default=str,
-    )
+    stream_ok = False
+    pubsub_ok = False
     try:
-        r.publish(channel_kalshi_lifecycle_trades(), payload)
-        return True
+        # Durable path (primary): stream + consumer groups.
+        stream_ok = (
+            xadd_trading_json(
+                r,
+                stream_kalshi_lifecycle_trades(),
+                msg_type="kalshi_lifecycle_trades",
+                payload=body,
+                source=source,
+            )
+            is not None
+        )
+        # Best-effort compatibility fanout while consumers migrate.
+        payload = json.dumps(body, default=str)
+        pubsub_ok = bool(r.publish(channel_kalshi_lifecycle_trades(), payload))
+        return stream_ok
     except Exception as e:
         logger.warning("publish kalshi_lifecycle_trades failed: %s", e)
         _invalidate_trading_redis_cache()
-        return False
+        return stream_ok or pubsub_ok
 
 
 def _redis_client():

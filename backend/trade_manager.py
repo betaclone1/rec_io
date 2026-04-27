@@ -6861,10 +6861,78 @@ def sweep_finalize_expired_trades_with_market_result() -> None:
         log(f"[5-MIN CHECK] Finalize sweep error: {e}")
 
 
+def backfill_expired_market_results_from_kalshi(limit: int = 250) -> None:
+    """
+    Repair missed lifecycle outcomes by polling Kalshi /events for expired rows still missing
+    ``market_result``. This is a safety net when WS/Redis fanout drops a ``determined`` event.
+    """
+    if _trade_manager_scheduler_shutdown.is_set():
+        return
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT DISTINCT ticker
+                FROM {_tm_trades_table()}
+                WHERE status = 'expired'
+                  AND market_result IS NULL
+                  AND ticker IS NOT NULL
+                  AND TRIM(ticker::text) <> ''
+                ORDER BY ticker
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            tickers = [str(r[0]).strip() for r in (cursor.fetchall() or []) if r and r[0]]
+        pg_conn.close()
+        if not tickers:
+            return
+
+        from backend.core.kalshi_event_market_fetch import (
+            event_ticker_from_market_ticker,
+            fetch_event_payload,
+            normalized_result_for_market_in_payload,
+        )
+        from backend.core.kalshi_lifecycle_trade_outcome import (
+            apply_lifecycle_market_result_for_ticker,
+        )
+
+        payload_by_event: Dict[str, Optional[Dict[str, Any]]] = {}
+        checked = 0
+        applied = 0
+        for mt in tickers:
+            et = event_ticker_from_market_ticker(mt)
+            if not et:
+                continue
+            if et not in payload_by_event:
+                payload_by_event[et] = fetch_event_payload(et)
+            payload = payload_by_event.get(et)
+            checked += 1
+            result = normalized_result_for_market_in_payload(payload, mt)
+            if result in ("yes", "no"):
+                try:
+                    n = apply_lifecycle_market_result_for_ticker(mt, result)
+                    if n:
+                        applied += int(n)
+                except Exception as e:
+                    log(f"[5-MIN CHECK] backfill apply failed ticker={mt}: {e}")
+        if applied > 0:
+            log(
+                f"[5-MIN CHECK] Kalshi outcome backfill applied rows={applied} "
+                f"tickers_checked={checked} candidates={len(tickers)}"
+            )
+    except Exception as e:
+        log(f"[5-MIN CHECK] Kalshi outcome backfill error: {e}")
+
+
 def check_expired_trades_for_settlements():
     """Periodic sweep: finalize ``expired`` trades once ``market_result`` is present."""
     if _trade_manager_scheduler_shutdown.is_set():
         return
+    backfill_expired_market_results_from_kalshi()
     sweep_finalize_expired_trades_with_market_result()
 
 
