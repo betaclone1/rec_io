@@ -6807,8 +6807,23 @@ def check_expired_trades():
                 _settle_one_expired_paper_trade(now_est, trade_id, ticker, symbol)
 
         paper_ids_set = {pid for pid, _, _ in paper_trade_ids}
+        attempted_ticker_backfill = set()
         for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
             if trade_id not in paper_ids_set:
+                finalized = finalize_expired_trade_from_market_result(trade_id)
+                if finalized:
+                    continue
+                mt = str(ticker or "").strip()
+                if not mt:
+                    continue
+                if mt not in attempted_ticker_backfill:
+                    attempted_ticker_backfill.add(mt)
+                    applied_now = _backfill_market_result_for_ticker_now(mt)
+                    if applied_now > 0:
+                        log(
+                            f"[EXPIRY] immediate market_result apply rows={applied_now} "
+                            f"ticker={mt}"
+                        )
                 finalize_expired_trade_from_market_result(trade_id)
 
         log(
@@ -6881,6 +6896,37 @@ def sweep_finalize_expired_trades_with_market_result() -> None:
             finalize_expired_trade_from_market_result(int(tid))
     except Exception as e:
         log(f"[5-MIN CHECK] Finalize sweep error: {e}")
+
+
+def _backfill_market_result_for_ticker_now(ticker: str) -> int:
+    """
+    Immediate one-ticker outcome backfill used during expiry processing.
+    Returns number of trade rows updated by lifecycle apply.
+    """
+    mt = str(ticker or "").strip()
+    if not mt:
+        return 0
+    try:
+        from backend.core.kalshi_event_market_fetch import (
+            event_ticker_from_market_ticker,
+            fetch_event_payload,
+            normalized_result_for_market_in_payload,
+        )
+        from backend.core.kalshi_lifecycle_trade_outcome import (
+            apply_lifecycle_market_result_for_ticker,
+        )
+
+        et = event_ticker_from_market_ticker(mt)
+        if not et:
+            return 0
+        payload = fetch_event_payload(et)
+        result = normalized_result_for_market_in_payload(payload, mt)
+        if result not in ("yes", "no"):
+            return 0
+        return int(apply_lifecycle_market_result_for_ticker(mt, result) or 0)
+    except Exception as e:
+        log(f"[EXPIRY] immediate market_result backfill failed ticker={mt}: {e}")
+        return 0
 
 
 def backfill_expired_market_results_from_kalshi(limit: int = 250) -> None:
