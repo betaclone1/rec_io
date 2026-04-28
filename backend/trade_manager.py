@@ -46,6 +46,7 @@ from backend.core.kalshi_execution_settings import (
     EXECUTION_ORDER_TYPE_VALUES,
     validate_execution_fields,
     normalize_time_in_force_loose,
+    limit_price_for_executor_payload,
 )
 
 
@@ -5690,7 +5691,12 @@ async def add_trade(request: Request):
                     "IOC_PAPER_BAD_INPUT",
                 )
             try:
-                lim_ioc = float(data.get("buy_price"))
+                lim_ioc = float(
+                    limit_price_for_executor_payload(
+                        order_type_policy=str(data.get("order_type") or "market"),
+                        ticket_buy_price=data.get("buy_price"),
+                    )
+                )
             except (TypeError, ValueError):
                 return _delete_pending_trade_for_rejection(
                     trade_id,
