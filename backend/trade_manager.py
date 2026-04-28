@@ -48,7 +48,11 @@ from backend.core.kalshi_execution_settings import (
     normalize_time_in_force_loose,
     limit_price_for_executor_payload,
 )
-from backend.core.kalshi_live_orderbook_sidecar import quoted_table
+
+_ORDERBOOK_SCHEMA = "live_data"
+_ORDERBOOK_TABLE_PREFIX = "orderbook_kalshi_"
+_ORDERBOOK_MAX_IDENT = 63
+_ORDERBOOK_MAX_SUFFIX = _ORDERBOOK_MAX_IDENT - len(_ORDERBOOK_TABLE_PREFIX)
 
 
 def _tm_trades_table() -> str:
@@ -1720,6 +1724,19 @@ def _generate_kalshi_rest_signature(timestamp_ms: str, full_path: str, key_path:
         return None
 
 
+def _quoted_sidecar_table(market_ticker: str) -> Optional[str]:
+    """Build live_data sidecar table identifier without importing sidecar module."""
+    t = re.sub(r"[^A-Za-z0-9_]+", "_", str(market_ticker or "").strip())
+    t = re.sub(r"_+", "_", t).strip("_").lower()
+    if not t:
+        return None
+    if len(t) > _ORDERBOOK_MAX_SUFFIX:
+        t = t[:_ORDERBOOK_MAX_SUFFIX]
+    if not re.fullmatch(r"[a-z0-9_]+", t):
+        return None
+    return f'{_ORDERBOOK_SCHEMA}."{_ORDERBOOK_TABLE_PREFIX}{t}"'
+
+
 def _load_orderbook_from_sidecar(ticker: str) -> Optional[dict]:
     """Read latest per-ticker orderbook levels from live_data sidecar table."""
     if not ticker:
@@ -1728,11 +1745,14 @@ def _load_orderbook_from_sidecar(ticker: str) -> Optional[dict]:
     if not conn:
         return None
     try:
+        qtbl = _quoted_sidecar_table(ticker)
+        if not qtbl:
+            return None
         with conn.cursor() as cur:
             cur.execute(
                 f"""
                 SELECT side, price_dollars, size_fp
-                FROM {quoted_table(ticker)}
+                FROM {qtbl}
                 WHERE size_fp > 0
                 """
             )
