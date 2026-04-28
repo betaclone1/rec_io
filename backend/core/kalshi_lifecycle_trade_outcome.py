@@ -162,7 +162,7 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
                         SELECT id, ticket_id, side, win_loss, win_loss_confirmed, status
                         FROM {}
                         WHERE ticker = %s
-                          AND status IN ('open', 'closing', 'expired', 'closed')
+                          AND status IN ('pending', 'open', 'closing', 'close_failed', 'expired', 'closed')
                         ORDER BY id
                         FOR UPDATE
                         """
@@ -177,7 +177,7 @@ def apply_lifecycle_market_result_for_ticker(market_ticker: str, result_raw: Any
                             UPDATE {}
                             SET market_result = %s
                             WHERE id = %s
-                              AND status IN ('open', 'closing', 'expired', 'closed')
+                              AND status IN ('pending', 'open', 'closing', 'close_failed', 'expired', 'closed')
                             """
                         ).format(trades_tbl),
                         (bin_out, trade_id),
