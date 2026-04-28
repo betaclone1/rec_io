@@ -48,6 +48,7 @@ from backend.core.kalshi_execution_settings import (
     normalize_time_in_force_loose,
     limit_price_for_executor_payload,
 )
+from backend.core.kalshi_live_orderbook_sidecar import quoted_table
 
 
 def _tm_trades_table() -> str:
@@ -1719,6 +1720,82 @@ def _generate_kalshi_rest_signature(timestamp_ms: str, full_path: str, key_path:
         return None
 
 
+def _load_orderbook_from_sidecar(ticker: str) -> Optional[dict]:
+    """Read latest per-ticker orderbook levels from live_data sidecar table."""
+    if not ticker:
+        return None
+    conn = get_postgresql_connection()
+    if not conn:
+        return None
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT side, price_dollars, size_fp
+                FROM {quoted_table(ticker)}
+                WHERE size_fp > 0
+                """
+            )
+            rows = cur.fetchall() or ()
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+    yes_bids: list[list[float]] = []
+    no_bids: list[list[float]] = []
+    for side, price, size_fp in rows:
+        s = str(side or "").strip().lower()
+        try:
+            p = float(price)
+            sz = float(size_fp)
+        except (TypeError, ValueError):
+            continue
+        if sz <= 0 or p <= 0 or p >= 1:
+            continue
+        if s == "yes":
+            yes_bids.append([p, sz])
+        elif s == "no":
+            no_bids.append([p, sz])
+
+    if not yes_bids and not no_bids:
+        return None
+    return {"yes_dollars": yes_bids, "no_dollars": no_bids}
+
+
+def _fetch_orderbook_for_projection(ticker: str) -> tuple[Optional[dict], str]:
+    """Return orderbook bids map for projection, preferring local sidecar over Kalshi REST."""
+    ob = _load_orderbook_from_sidecar(ticker)
+    if ob is not None:
+        return ob, "sidecar"
+
+    url = f"https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook"
+    try:
+        resp = requests.get(
+            url,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "TradeManagerOrderbookProjection/1.0",
+            },
+            timeout=10,
+        )
+        if not resp.ok:
+            return None, f"orderbook_http_{resp.status_code}"
+        payload = resp.json()
+    except Exception as e:
+        return None, f"orderbook_request_failed:{e}"
+
+    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
+    return ob, "ok"
+
+
 def _normalize_trade_side(side_val: object) -> Optional[str]:
     side = str(side_val or "").strip().lower()
     if side in ("yes", "y"):
@@ -1744,37 +1821,10 @@ def _project_orderbook_entry(ticker: str, side: str, position: int) -> dict:
         result["reason"] = "missing_projection_inputs"
         return result
 
-    key_id, key_path = _load_kalshi_rest_credentials()
-    if not key_id or not key_path:
-        result["reason"] = "missing_kalshi_credentials"
+    ob, ob_reason = _fetch_orderbook_for_projection(ticker)
+    if ob is None:
+        result["reason"] = ob_reason
         return result
-
-    full_path = f"/trade-api/v2/markets/{ticker}/orderbook"
-    ts = str(int(time.time() * 1000))
-    signature = _generate_kalshi_rest_signature(ts, full_path, key_path)
-    if not signature:
-        result["reason"] = "signature_generation_failed"
-        return result
-
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "TradeManagerOrderbookProjection/1.0",
-        "KALSHI-ACCESS-KEY": key_id,
-        "KALSHI-ACCESS-TIMESTAMP": ts,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
-    url = f"https://api.elections.kalshi.com{full_path}"
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        if not resp.ok:
-            result["reason"] = f"orderbook_http_{resp.status_code}"
-            return result
-        payload = resp.json()
-    except Exception as e:
-        result["reason"] = f"orderbook_request_failed:{e}"
-        return result
-
-    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
     yes_bids = ob.get("yes_dollars") or []
     no_bids = ob.get("no_dollars") or []
     src_bids = no_bids if side == "yes" else yes_bids
@@ -1846,37 +1896,10 @@ def _project_paper_ioc_at_limit(
         result["reason"] = "bad_limit_price"
         return result
 
-    key_id, key_path = _load_kalshi_rest_credentials()
-    if not key_id or not key_path:
-        result["reason"] = "missing_kalshi_credentials"
+    ob, ob_reason = _fetch_orderbook_for_projection(ticker)
+    if ob is None:
+        result["reason"] = ob_reason
         return result
-
-    full_path = f"/trade-api/v2/markets/{ticker}/orderbook"
-    ts = str(int(time.time() * 1000))
-    signature = _generate_kalshi_rest_signature(ts, full_path, key_path)
-    if not signature:
-        result["reason"] = "signature_generation_failed"
-        return result
-
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "TradeManagerPaperIOC/1.0",
-        "KALSHI-ACCESS-KEY": key_id,
-        "KALSHI-ACCESS-TIMESTAMP": ts,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
-    url = f"https://api.elections.kalshi.com{full_path}"
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        if not resp.ok:
-            result["reason"] = f"orderbook_http_{resp.status_code}"
-            return result
-        payload = resp.json()
-    except Exception as e:
-        result["reason"] = f"orderbook_request_failed:{e}"
-        return result
-
-    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
     yes_bids = ob.get("yes_dollars") or []
     no_bids = ob.get("no_dollars") or []
     src_bids = no_bids if side == "yes" else yes_bids
@@ -1943,37 +1966,10 @@ def _project_orderbook_close(ticker: str, side: str, position: int) -> dict:
         result["reason"] = "missing_projection_inputs"
         return result
 
-    key_id, key_path = _load_kalshi_rest_credentials()
-    if not key_id or not key_path:
-        result["reason"] = "missing_kalshi_credentials"
+    ob, ob_reason = _fetch_orderbook_for_projection(ticker)
+    if ob is None:
+        result["reason"] = ob_reason
         return result
-
-    full_path = f"/trade-api/v2/markets/{ticker}/orderbook"
-    ts = str(int(time.time() * 1000))
-    signature = _generate_kalshi_rest_signature(ts, full_path, key_path)
-    if not signature:
-        result["reason"] = "signature_generation_failed"
-        return result
-
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "TradeManagerOrderbookProjection/1.0",
-        "KALSHI-ACCESS-KEY": key_id,
-        "KALSHI-ACCESS-TIMESTAMP": ts,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
-    url = f"https://api.elections.kalshi.com{full_path}"
-    try:
-        resp = requests.get(url, headers=headers, timeout=10)
-        if not resp.ok:
-            result["reason"] = f"orderbook_http_{resp.status_code}"
-            return result
-        payload = resp.json()
-    except Exception as e:
-        result["reason"] = f"orderbook_request_failed:{e}"
-        return result
-
-    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
     side_bids = (ob.get("yes_dollars") or []) if side == "yes" else (ob.get("no_dollars") or [])
 
     bids: list[tuple[float, float]] = []
