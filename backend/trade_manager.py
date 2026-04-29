@@ -1372,7 +1372,25 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
                     pg_conn_paper.commit()
 
         if market_result is None:
-            return
+            # Paper trades need the same immediate per-ticker backfill path as live
+            # so they do not wait for the periodic 5-minute sweep when WS apply is missed.
+            mt = str(ticker or "").strip()
+            if mt:
+                applied_now = _backfill_market_result_for_ticker_now(mt)
+                if applied_now > 0:
+                    log(
+                        f"[EXPIRY] immediate market_result apply rows={applied_now} "
+                        f"ticker={mt} (paper trade path)"
+                    )
+                    with pg_conn_paper.cursor() as cursor:
+                        cursor.execute(
+                            f"SELECT market_result FROM {_tm_trades_table()} WHERE id = %s",
+                            (trade_id,),
+                        )
+                        mr_row = cursor.fetchone()
+                    market_result = mr_row[0] if mr_row else None
+            if market_result is None:
+                return
 
         finalize_expired_trade_from_market_result(trade_id)
 
