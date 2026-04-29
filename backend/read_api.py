@@ -10,9 +10,18 @@ main_app (PostgreSQL + Redis ``trade_history_preferences_updated``). Browsers sh
 this copy exists for direct :3050 access. No WebSocket on this process.
 Aside from auth/session, that activity touch, and trade-history prefs, avoids writes.
 Also performs a single Redis **GET** of the cached release string
-(`redis_key_system_release_version`) for the System UI. See docs/REDIS_ARCHITECTURE.md.
+(`redis_key_system_release_version`) for the System UI. **GET /api/orderbook** reads the Kalshi
+orderbook UI snapshot from Redis (``testing:orderbook_ui:current``). **GET /api/trade-monitor/orderbook**
+returns the trade-monitor orderbook JSON from ``live_data`` (``market_kalshi_*`` + per-ticker
+``orderbook_kalshi_*``), same shape as ``orderbook-redis-ui.js``. Trade monitor NEW sets
+``__ORDERBOOK_API__`` to read_api (default port 3050) for that route. See docs/REDIS_ARCHITECTURE.md.
+**GET /api/live_symbol_spot_bootstrap** returns the same JSON as WebSocket ``live_symbol_spot``
+(``redis_switchboard.build_live_symbol_spot_payload``) so the NEW monitor can hydrate the price
+panel without adding routes to main_app.
 """
 
+import asyncio
+import json
 import os
 import time
 from datetime import datetime
@@ -25,7 +34,7 @@ from backend.core.trades_history_insights import run_trade_history_insights
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from backend.core.config.database import get_postgresql_connection
+from backend.core.config.database import get_postgresql_connection, get_system_postgresql_connection
 from backend.core.tenant_context import resolved_tenant_user_no_for_app
 from backend.core.trade_history_preferences_handlers import (
     trade_history_preferences_get,
@@ -199,6 +208,104 @@ async def get_release_version() -> Dict[str, Any]:
     except Exception:
         ver = None
     return {"version": ver}
+
+
+_ORDERBOOK_UI_REDIS_KEY = "testing:orderbook_ui:current"
+
+
+@app.get("/api/orderbook")
+async def get_orderbook_ui_snapshot() -> JSONResponse:
+    """
+    Kalshi orderbook UI JSON from Redis (same key and shape as ``orderbook_ui_redis_server``).
+    Browsers on main_app (:3000) call this on read_api (:3050) so the trade monitor stays Redis-backed
+    without adding routes to main_app.
+    """
+    from backend.core.trading_redis_comms import redis_client_optional
+
+    r = redis_client_optional()
+    if r is None:
+        return JSONResponse({"error": "redis_unavailable"})
+    try:
+        raw = r.get(_ORDERBOOK_UI_REDIS_KEY)
+    except Exception:
+        return JSONResponse({"error": "redis_read_failed"})
+    if not raw:
+        return JSONResponse({"error": "no_data"})
+    try:
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        payload = json.loads(raw)
+        if isinstance(payload, dict):
+            return JSONResponse(payload)
+    except Exception:
+        pass
+    return JSONResponse({"error": "invalid_payload"})
+
+
+@app.get("/api/trade-monitor/orderbook")
+async def get_trade_monitor_orderbook(
+    symbol: str = Query("BTC", description="Kalshi symbol, e.g. BTC"),
+    market: str = Query("15m", description="15m or hourly"),
+    market_ticker: Optional[str] = Query(
+        None,
+        description="Optional Kalshi market_ticker; default is latest row for symbol+market",
+    ),
+) -> JSONResponse:
+    """DB-backed orderbook for trade monitor NEW (``live_data`` sidecar tables)."""
+    from backend.core.trade_monitor_live_orderbook_payload import build_trade_monitor_orderbook_payload
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return JSONResponse({"error": "database_unavailable"}, status_code=503)
+    try:
+        with conn.cursor() as cursor:
+            payload = build_trade_monitor_orderbook_payload(
+                cursor,
+                market_ticker=market_ticker,
+                symbol=symbol,
+                market=market,
+            )
+        return JSONResponse(payload)
+    except Exception:
+        return JSONResponse({"error": "orderbook_payload_failed"}, status_code=503)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@app.get("/api/live_symbol_spot_bootstrap")
+async def live_symbol_spot_bootstrap() -> JSONResponse:
+    """
+    Same payload shape as WebSocket ``live_symbol_spot`` (``redis_switchboard``).
+    Trade Monitor NEW calls read_api (with ``__ORDERBOOK_API__``); live updates stay on ``/ws/db_changes`` on main.
+    """
+    try:
+        from backend.redis_switchboard import build_live_symbol_spot_payload
+
+        payload = await asyncio.to_thread(build_live_symbol_spot_payload)
+        if not payload:
+            return JSONResponse(
+                {
+                    "type": "live_symbol_spot",
+                    "timestamp": None,
+                    "spot_by_symbol": {},
+                    "changes_by_symbol": {},
+                    "rows": [],
+                }
+            )
+        return JSONResponse(payload)
+    except Exception:
+        return JSONResponse(
+            {
+                "type": "live_symbol_spot",
+                "timestamp": None,
+                "spot_by_symbol": {},
+                "changes_by_symbol": {},
+                "rows": [],
+            }
+        )
 
 
 @app.get("/api/portfolio/history")

@@ -168,6 +168,9 @@
           authCheckDone = true;
           if (d.userNo) { localStorage.setItem('rec_user_no', String(d.userNo)); }
           if (typeof recSyncAuthCookie === 'function') recSyncAuthCookie();
+          try {
+            localStorage.setItem('rec_io_main_app_origin', window.location.origin);
+          } catch (e) {}
           window.location.href = getRedirectUrl(token, deviceId);
         } else {
           localStorage.removeItem('rec_auth_token');
@@ -224,6 +227,9 @@
           localStorage.setItem('rec_auth_token', d.token);
           localStorage.setItem('rec_device_id', d.deviceId);
           if (d.userNo) { localStorage.setItem('rec_user_no', String(d.userNo)); }
+          try {
+            localStorage.setItem('rec_io_main_app_origin', window.location.origin);
+          } catch (e) {}
           if (typeof recSyncAuthCookie === 'function') recSyncAuthCookie(rememberDevice);
           okMsg.textContent = 'Authentication successful! Redirecting...';
           okMsg.style.display = 'block';

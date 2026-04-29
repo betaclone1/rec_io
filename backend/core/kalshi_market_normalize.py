@@ -27,6 +27,20 @@ def format_15m_strike_from_api_floor_strike(floor_strike) -> str:
     return f"${s}"
 
 
+def format_floor_strike_usd_comma_cents(floor_strike) -> str:
+    """
+    Target / floor strike for UI: ``$76,706.76`` (comma thousands, always two decimals after dot).
+    """
+    if floor_strike is None:
+        return ""
+    try:
+        d = Decimal(str(floor_strike)).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+    except (InvalidOperation, ValueError):
+        return ""
+    body = format(d, ",.2f")
+    return f"${body}"
+
+
 def strike_from_kalshi_15m_market_ticker(market_ticker: str) -> str | None:
     """
     Parse strike from contract ``market_ticker`` when REST omits ``floor_strike`` (common right

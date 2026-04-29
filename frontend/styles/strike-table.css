@@ -21,6 +21,12 @@
   padding: 4px 6px;
 }
 
+.strike-table tbody tr td {
+  vertical-align: middle;
+  min-height: 3.5rem;
+  box-sizing: border-box;
+}
+
 .strike-table td.center {
   text-align: center;
 }
@@ -80,6 +86,32 @@
 .col-yes { width: 60px; }
 .col-no { width: 60px; }
 .col-buy { width: 60px; }
+
+.strike-table-strike-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  min-height: 2.5rem;
+}
+
+.strike-table-strike-value {
+  font-weight: 700;
+}
+
+.strike-table-strike-cp {
+  font-size: 11px;
+  font-weight: 600;
+  color: #aeb8c6;
+  line-height: 1.2;
+  white-space: nowrap;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-height: 1.35em;
+  visibility: hidden;
+}
 
 /* Spanner row styling */
 .spanner-row {

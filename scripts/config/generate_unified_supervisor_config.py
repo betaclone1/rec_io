@@ -419,12 +419,17 @@ class SupervisorConfigGenerator:
                     "autostart": True,
                 }
             )
+        env_watchdog_orderbook = (
+            env_global
+            if "MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=" in env_global
+            else env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_TABLES="1"'
+        )
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi_hourly",
                 "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
                 "port": ports.get("market_watchdog_ws_kalshi_hourly", 8005),
-                "environment": env_global,
+                "environment": env_watchdog_orderbook,
                 "autostart": True,
             }
         )
@@ -433,7 +438,7 @@ class SupervisorConfigGenerator:
                 "name": "market_watchdog_ws_kalshi_15m",
                 "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
                 "port": ports.get("market_watchdog_ws_kalshi_15m", 8035),
-                "environment": env_global,
+                "environment": env_watchdog_orderbook,
                 "autostart": True,
             }
         )

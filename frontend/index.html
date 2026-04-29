@@ -245,6 +245,39 @@
     .nav-item.active .nav-icon {
       opacity: 1;
     }
+
+    /* Trade Monitor: primary row + same-origin “new tab” (shares localStorage with this shell). */
+    .nav-item-with-action {
+      display: flex;
+      align-items: stretch;
+      flex-shrink: 0;
+      min-width: 0;
+    }
+    .nav-item-with-action > .nav-item {
+      flex: 1;
+      min-width: 0;
+    }
+    .nav-external-tab {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      min-width: 28px;
+      padding: 0 4px 0 0;
+      text-decoration: none;
+      color: #94a3b8;
+      font-size: 15px;
+      line-height: 1;
+      opacity: 0.75;
+      transition: color 0.15s, opacity 0.15s;
+    }
+    .nav-external-tab:hover {
+      color: #e2e8f0;
+      opacity: 1;
+    }
+    .sidebar.collapsed .nav-external-tab {
+      display: none;
+    }
     
     .nav-label {
       white-space: nowrap;
@@ -531,12 +564,23 @@
           </span>
           <span class="nav-label">Dashboard</span>
         </a>
-        <a class="nav-item" data-page="trade-monitor" data-tooltip="Trade Monitor">
-          <span class="nav-icon">
-            <img src="/images/icons/trade_monitor_icon.png" alt="Trade Monitor" style="width: 20px; height: 20px; object-fit: contain;">
-          </span>
-          <span class="nav-label">Trade Monitor</span>
-        </a>
+        <div class="nav-item-with-action">
+          <a class="nav-item" data-page="trade-monitor" data-tooltip="Trade Monitor">
+            <span class="nav-icon">
+              <img src="/images/icons/trade_monitor_icon.png" alt="Trade Monitor" style="width: 20px; height: 20px; object-fit: contain;">
+            </span>
+            <span class="nav-label">Trade Monitor</span>
+          </a>
+          <a
+            class="nav-external-tab"
+            href="/tabs/trade_monitor.html"
+            target="_blank"
+            rel="noopener noreferrer"
+            title="Open Trade Monitor in a new browser tab (same origin as this app — keeps your login)"
+            aria-label="Open Trade Monitor in new tab"
+            onclick="event.stopPropagation();"
+          >⧉</a>
+        </div>
         <a class="nav-item" data-page="history" data-tooltip="History">
           <span class="nav-icon">
             <img src="/images/icons/trade_history.png" alt="History" style="width: 20px; height: 20px; object-fit: contain;">
@@ -749,13 +793,17 @@
 
           // Lazy-load: set src on first visit so tab content loads only when opened
           const tabSrc = targetFrame.getAttribute('data-tab-src');
-          if (tabSrc && targetFrame.dataset.srcSet !== 'true') {
+          const tabAlreadyLoaded = targetFrame.dataset.srcSet === 'true';
+          if (tabSrc && !tabAlreadyLoaded) {
             targetFrame.dataset.srcSet = 'true';
             targetFrame.src = tabSrc;
             targetFrame.addEventListener('load', function onTabLoad() {
               targetFrame.removeEventListener('load', onTabLoad);
+              notifyTabSessionContext(targetFrame);
               broadcastTabVisibility();
             }, { once: true });
+          } else if (tabAlreadyLoaded) {
+            notifyTabSessionContext(targetFrame);
           }
 
           // Hide all frames, then show target
@@ -773,6 +821,24 @@
     
 
 
+    /**
+     * Push shell session hints into a tab iframe (same origin as this index).
+     * Tab scripts listen for `rec-tab-session-context` to refresh cookies from localStorage
+     * and align with the logged-in tenant (e.g. Trade Monitor NEW).
+     */
+    function notifyTabSessionContext(frame) {
+      if (!frame || !frame.contentWindow) return;
+      const origin = window.location.origin;
+      try {
+        frame.contentWindow.postMessage(
+          { type: 'rec-tab-session-context', origin: origin },
+          origin
+        );
+      } catch (e) {
+        /* not loaded or cross-origin */
+      }
+    }
+
     // Notify all tab iframes of their visibility (so Trade Monitor etc. can pause when hidden)
     function broadcastTabVisibility() {
       const origin = window.location.origin;
@@ -789,6 +855,11 @@
     }
     
     window.addEventListener('DOMContentLoaded', async () => {
+      try {
+        localStorage.setItem('rec_io_main_app_origin', window.location.origin);
+      } catch (e) {
+        /* ignore private mode */
+      }
       // Only dashboard loads initially; other tabs load on first view. Tell visible tab it's active.
       setTimeout(broadcastTabVisibility, 400);
       

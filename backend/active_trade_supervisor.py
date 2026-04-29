@@ -57,6 +57,7 @@ from backend.core.auto_entry_settings_store import monitor_list_flip_columns_ava
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.util.paths import get_host
 from backend.core.time_eastern import now_est as wall_now, EST
+from backend.core.kalshi_contract_settlement import kalshi_contract_settlement_end_est
 from backend.trading_mode import _norm_slot
 
 # Cached per symbol; same master lookup tables as strike_table_generator (not fingerprint calc).
@@ -69,80 +70,6 @@ _auto_close_suppress_past_settlement_logged: Set[int] = set()
 # One volume/precheck close-retry loop per (tenant slot, monitor id, trade pk); see handle_close_attempt_failed_trade.
 _close_volume_retry_active: Set[Tuple[str, str, int]] = set()
 _close_volume_retry_lock = threading.Lock()
-
-_KALSHI_MID_15M_SETTLE = re.compile(
-    r"^(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})(\d{4})$",
-    re.I,
-)
-_KALSHI_MID_HOURLY_D_START = re.compile(
-    r"^(\d{2})(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)(\d{2})(\d{2})$",
-    re.I,
-)
-_KALSHI_MONTH = {
-    "JAN": 1,
-    "FEB": 2,
-    "MAR": 3,
-    "APR": 4,
-    "MAY": 5,
-    "JUN": 6,
-    "JUL": 7,
-    "AUG": 8,
-    "SEP": 9,
-    "OCT": 10,
-    "NOV": 11,
-    "DEC": 12,
-}
-
-
-def kalshi_contract_settlement_end_est(market_ticker: Optional[str]) -> Optional[datetime]:
-    """
-    Best-effort settlement wall time (America/New_York) encoded in Kalshi crypto tickers.
-
-    - 15m (e.g. KXBTC15M-26MAR251015-45): middle token is YY MMM DD HHMM = period end.
-    - Daily hourly (e.g. KXBTCD-26MAR2510-T69999.99): middle token is YY MMM DD HH = hour start;
-      settlement is end of that hour (hour start + 1 hour), matching watchdog ticker construction.
-
-    Returns None if the ticker does not match a known pattern (caller should not suppress).
-    """
-    if not market_ticker or "-" not in market_ticker:
-        return None
-    parts = market_ticker.split("-")
-    if len(parts) < 2:
-        return None
-    series = parts[0].upper()
-    mid = parts[1].upper()
-    est = ZoneInfo("America/New_York")
-    if "15M" in series:
-        m = _KALSHI_MID_15M_SETTLE.match(mid)
-        if not m:
-            return None
-        yy = int(m.group(1))
-        mon = m.group(2).upper()
-        dd = int(m.group(3))
-        hhmm = m.group(4)
-        month = _KALSHI_MONTH.get(mon)
-        if not month:
-            return None
-        year = 2000 + yy
-        hour = int(hhmm[:2])
-        minute = int(hhmm[2:])
-        return datetime(year, month, dd, hour, minute, tzinfo=est)
-    if re.match(r"^KX[A-Z0-9]+D$", series) and len(mid) == 9:
-        m = _KALSHI_MID_HOURLY_D_START.match(mid)
-        if not m:
-            return None
-        yy = int(m.group(1))
-        mon = m.group(2).upper()
-        dd = int(m.group(3))
-        hh = int(m.group(4))
-        month = _KALSHI_MONTH.get(mon)
-        if not month:
-            return None
-        year = 2000 + yy
-        start = datetime(year, month, dd, hh, 0, tzinfo=est)
-        return start + timedelta(hours=1)
-    return None
-
 
 def should_suppress_auto_close_past_kalshi_settlement(
     ticker: Optional[str], trade_id: Optional[int]

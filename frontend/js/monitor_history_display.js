@@ -15,6 +15,12 @@ class MonitorHistoryDisplay {
         this.isInitialized = false;
         /** Bumps on each refreshFromServer(); stale completions after await fetch are skipped. */
         this._refreshSerial = 0;
+        /** Guardrails for expensive full /trades refetches. */
+        this._serverRefreshInFlight = false;
+        this._serverRefreshPendingTimeFilter = null;
+        this._serverRefreshTimer = null;
+        this._serverRefreshLastCompletedMs = 0;
+        this._serverRefreshMinIntervalMs = 5000;
         
         // Bind methods
         this.init = this.init.bind(this);
@@ -568,17 +574,48 @@ class MonitorHistoryDisplay {
             console.error('[MONITOR_HISTORY] ERROR: Cannot refreshFromServer - not initialized');
             return;
         }
-        const gen = ++this._refreshSerial;
-        console.log(`[MONITOR_HISTORY] Server refresh with time filter: ${timeFilter}...`);
-        await this.fetchTradesData();
-        await this.fetchMonitorsData();
-        if (gen !== this._refreshSerial) {
-            console.log('[MONITOR_HISTORY] Server refresh superseded; skipping calculate/update');
+        if (this._serverRefreshInFlight) {
+            // Coalesce bursty triggers (db_changes + periodic poll + manual flows) into one follow-up refresh.
+            this._serverRefreshPendingTimeFilter = timeFilter;
             return;
         }
-        this.calculateAllMonitorStats(timeFilter);
-        this.updateMonitorTiles();
-        console.log('[MONITOR_HISTORY] Server refresh complete');
+        const nowMs = Date.now();
+        const remainingMs =
+            this._serverRefreshMinIntervalMs - (nowMs - this._serverRefreshLastCompletedMs);
+        if (remainingMs > 0) {
+            this._serverRefreshPendingTimeFilter = timeFilter;
+            if (!this._serverRefreshTimer) {
+                this._serverRefreshTimer = setTimeout(() => {
+                    this._serverRefreshTimer = null;
+                    const nextTf = this._serverRefreshPendingTimeFilter || timeFilter;
+                    this._serverRefreshPendingTimeFilter = null;
+                    void this.refreshFromServer(nextTf);
+                }, remainingMs);
+            }
+            return;
+        }
+        this._serverRefreshInFlight = true;
+        const gen = ++this._refreshSerial;
+        console.log(`[MONITOR_HISTORY] Server refresh with time filter: ${timeFilter}...`);
+        try {
+            await this.fetchTradesData();
+            await this.fetchMonitorsData();
+            if (gen !== this._refreshSerial) {
+                console.log('[MONITOR_HISTORY] Server refresh superseded; skipping calculate/update');
+                return;
+            }
+            this.calculateAllMonitorStats(timeFilter);
+            this.updateMonitorTiles();
+            console.log('[MONITOR_HISTORY] Server refresh complete');
+        } finally {
+            this._serverRefreshInFlight = false;
+            this._serverRefreshLastCompletedMs = Date.now();
+            if (this._serverRefreshPendingTimeFilter) {
+                const nextTf = this._serverRefreshPendingTimeFilter;
+                this._serverRefreshPendingTimeFilter = null;
+                void this.refreshFromServer(nextTf);
+            }
+        }
     }
 
     /**

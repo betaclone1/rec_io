@@ -1,0 +1,249 @@
+/*
+ * Kalshi Redis orderbook UI — layout, typography, colors.
+ * Loaded by orderbook_ui_redis_server and (later) any embedded trade monitor shell.
+ * body.orderbook-redis-ui overrides global.css dark defaults when both are linked.
+ */
+body.orderbook-redis-ui {
+  font-family: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', Roboto, Arial, sans-serif;
+  margin: 16px;
+  background: #f7f7f8;
+  color: #111;
+}
+
+.orderbook-redis-ui .u-hidden {
+  display: none !important;
+}
+
+.orderbook-redis-ui .meta {
+  margin-bottom: 10px;
+  color: #333;
+  font-size: 14px;
+}
+
+.orderbook-redis-ui .load-err {
+  color: #b33;
+  margin: 0 0 8px 0;
+  font-size: 14px;
+}
+
+.orderbook-redis-ui .mkt-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin: 10px 0 14px 0;
+}
+
+.orderbook-redis-ui .mkt-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  background: #f7931a;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.orderbook-redis-ui .mkt-text {
+  min-width: 0;
+}
+
+.orderbook-redis-ui .mkt-title {
+  font-size: 18px;
+  font-weight: 700;
+  color: #111;
+  margin: 0 0 4px 0;
+  line-height: 1.25;
+}
+
+.orderbook-redis-ui .mkt-window {
+  font-size: 14px;
+  color: #777;
+  margin: 0;
+}
+
+.orderbook-redis-ui .tabs {
+  display: flex;
+  gap: 12px;
+  margin: 0;
+  justify-content: flex-end;
+}
+
+.orderbook-redis-ui .tab {
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #e7e7eb;
+  color: #222;
+  box-sizing: border-box;
+  width: 6.75rem;
+  min-width: 6.75rem;
+  max-width: 6.75rem;
+  flex: 0 0 6.75rem;
+  text-align: center;
+}
+
+.orderbook-redis-ui .quote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.orderbook-redis-ui .quote-row:hover {
+  background: #ebedf2;
+}
+
+.orderbook-redis-ui .quote-strike {
+  font-size: 16.8px;
+  font-weight: 700;
+  color: #333;
+}
+
+.orderbook-redis-ui .tab.active.tab-yes {
+  background: #0a7;
+  color: #fff;
+}
+
+.orderbook-redis-ui .tab.active.tab-no {
+  background: #b33;
+  color: #fff;
+}
+
+.orderbook-redis-ui .panel {
+  background: #fff;
+  border: 1px solid #ddd;
+  border-radius: 10px;
+  padding: 10px 10px 0 10px;
+}
+
+.orderbook-redis-ui .panel-head {
+  background: #fff;
+  border-bottom: 1px solid #eee;
+}
+
+.orderbook-redis-ui .panel-head thead th {
+  font-size: 70%;
+  font-weight: 700;
+  color: #555;
+}
+
+.orderbook-redis-ui .panel-scroll {
+  height: 72vh;
+  overflow-y: auto;
+}
+
+.orderbook-redis-ui table.book-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+
+.orderbook-redis-ui col.side {
+  width: 14%;
+}
+
+.orderbook-redis-ui col.price {
+  width: 22%;
+}
+
+.orderbook-redis-ui col.contracts {
+  width: 32%;
+}
+
+.orderbook-redis-ui col.total {
+  width: 32%;
+}
+
+.orderbook-redis-ui .book-table th,
+.orderbook-redis-ui .book-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #eee;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.orderbook-redis-ui .book-table th:first-child,
+.orderbook-redis-ui .book-table td:first-child {
+  text-align: left;
+}
+
+.orderbook-redis-ui .book-table td.mid-row {
+  text-align: center;
+}
+
+.orderbook-redis-ui .side-col {
+  font-weight: 700;
+}
+
+.orderbook-redis-ui .book-table tbody.asks tr td {
+  color: #b33;
+}
+
+.orderbook-redis-ui .book-table tbody.bids tr td {
+  color: #176f57;
+}
+
+.orderbook-redis-ui .mid-row {
+  text-align: center;
+  font-weight: normal;
+  padding: 10px 8px;
+  border-top: 1px dashed #ddd;
+  border-bottom: 1px solid #eee;
+  background: #fafafa;
+}
+
+.orderbook-redis-ui .mid-inner {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.orderbook-redis-ui .mid-side {
+  font-weight: 600;
+  font-size: 1em;
+}
+
+.orderbook-redis-ui .mid-yes .mid-side {
+  color: #0a7;
+}
+
+.orderbook-redis-ui .mid-no .mid-side {
+  color: #b33;
+}
+
+.orderbook-redis-ui .mid-gap {
+  display: inline-block;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.orderbook-redis-ui .mid-last-wrap {
+  font-weight: 400;
+  font-size: 80%;
+}
+
+.orderbook-redis-ui .mid-yes .mid-last-wrap {
+  color: #0a7;
+}
+
+.orderbook-redis-ui .mid-no .mid-last-wrap {
+  color: #b33;
+}
+
+.orderbook-redis-ui .mid-price {
+  margin-left: 4px;
+  font-weight: 400;
+}

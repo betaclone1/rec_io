@@ -6,6 +6,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-04-29 — Release v3.4.2: trade_manager startup lock-timeout guard and Trade Monitor tab rollback
+
+**Summary**
+- **Release: v3.4.2**
+- **Trade manager startup resilience:** `backend/trade_manager.py` now applies a short local PostgreSQL `lock_timeout` around startup `ALTER TABLE` / backfill steps for `order_id_open` and `order_id_close` and skips those steps when the table is busy, preventing lock-chain startup stalls.
+- **Trade Monitor routing rollback:** `frontend/index.html` routes the Trade Monitor tab and iframe back to `trade_monitor.html` while `trade_monitor_NEW` follow-up work continues.
+- **Plans:** Session hotfix work (no completed `.cursor/plans/*.md` plan file tied to this deploy batch).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.2`
+
+---
+
 ## 2026-04-26 — Release v3.4.1: Kalshi execution settings, pending-before-executor, partial expiry, AES cooldown
 
 **Summary**

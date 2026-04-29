@@ -4309,40 +4309,54 @@ def init_trades_db():
             
 
             
-            # Add order_id columns if they don't exist (for existing databases)
+            # Add order_id columns if they don't exist (for existing databases).
             # Use savepoints so a failing ALTER/UPDATE doesn't leave the transaction aborted.
+            # IMPORTANT: keep a short lock timeout so startup never hangs behind an open txn.
             try:
                 cursor.execute("SAVEPOINT sp_order_id_open")
+                cursor.execute("SET LOCAL lock_timeout = '1500ms'")
                 cursor.execute(f"ALTER TABLE {_tm_trades_table()} ADD COLUMN order_id_open TEXT")
                 log_debug("✅ Added order_id_open column to existing trades table")
             except Exception as e:
                 cursor.execute("ROLLBACK TO SAVEPOINT sp_order_id_open")
-                if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+                emsg = str(e).lower()
+                if "already exists" in emsg or "duplicate column" in emsg:
                     log_debug("✅ order_id_open column already exists in trades table")
+                elif "lock timeout" in emsg or "canceling statement due to lock timeout" in emsg:
+                    log("⚠️ Skipping order_id_open DDL at startup (table busy; will retry on next boot)")
                 else:
                     log(f"⚠️ Note: Could not add order_id_open column: {e}")
             
             try:
                 cursor.execute("SAVEPOINT sp_order_id_close")
+                cursor.execute("SET LOCAL lock_timeout = '1500ms'")
                 cursor.execute(f"ALTER TABLE {_tm_trades_table()} ADD COLUMN order_id_close TEXT")
                 log_debug("✅ Added order_id_close column to existing trades table")
             except Exception as e:
                 cursor.execute("ROLLBACK TO SAVEPOINT sp_order_id_close")
-                if "already exists" in str(e).lower() or "duplicate column" in str(e).lower():
+                emsg = str(e).lower()
+                if "already exists" in emsg or "duplicate column" in emsg:
                     log_debug("✅ order_id_close column already exists in trades table")
+                elif "lock timeout" in emsg or "canceling statement due to lock timeout" in emsg:
+                    log("⚠️ Skipping order_id_close DDL at startup (table busy; will retry on next boot)")
                 else:
                     log(f"⚠️ Note: Could not add order_id_close column: {e}")
             
             # Migrate existing order_id data to order_id_open
             try:
                 cursor.execute("SAVEPOINT sp_migrate_order_id")
+                cursor.execute("SET LOCAL lock_timeout = '1500ms'")
                 cursor.execute(f"UPDATE {_tm_trades_table()} SET order_id_open = order_id WHERE order_id IS NOT NULL AND order_id_open IS NULL")
                 migrated_count = cursor.rowcount
                 if migrated_count > 0:
                     log_debug(f"✅ Migrated {migrated_count} existing order_id values to order_id_open")
             except Exception as e:
                 cursor.execute("ROLLBACK TO SAVEPOINT sp_migrate_order_id")
-                log(f"⚠️ Could not migrate existing order_id data: {e}")
+                emsg = str(e).lower()
+                if "lock timeout" in emsg or "canceling statement due to lock timeout" in emsg:
+                    log("⚠️ Skipping order_id migration at startup (table busy; will retry on next boot)")
+                else:
+                    log(f"⚠️ Could not migrate existing order_id data: {e}")
             
             # Create indexes for better performance
             cursor.execute(f"CREATE INDEX IF NOT EXISTS idx_trades_0001_status ON {_tm_trades_table()}(status)")

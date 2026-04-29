@@ -830,6 +830,14 @@ _explicit_origins = [
     "http://rec-io.com",
     "http://www.rec-io.com",
 ]
+# Static orderbook UI (e.g. orderbook_ui_redis_server) calls main /api/* with Bearer from another port.
+if os.getenv("REC_ENVIRONMENT") != "production":
+    _explicit_origins.extend(
+        [
+            "http://127.0.0.1:8091",
+            "http://localhost:8091",
+        ]
+    )
 origins = _explicit_origins if os.getenv("REC_ENVIRONMENT") == "production" else _explicit_origins + ["*"]
 
 from backend.web.tenant_asgi import WebTenantMiddleware
@@ -3718,6 +3726,18 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
     """Get strike table data. Query param: market (required: hourly or 15m)."""
     try:
         import psycopg2
+
+        from backend.core.kalshi_contract_settlement import kalshi_contract_settlement_end_est
+
+        def _strike_pack_settlement_end_ms(event_ticker, strike_rows, ticker_col_index):
+            ref = (str(event_ticker).strip() if event_ticker else "") or ""
+            if not ref and strike_rows:
+                ref = str(strike_rows[0][ticker_col_index] or "").strip()
+            if not ref:
+                return None
+            end = kalshi_contract_settlement_end_est(ref)
+            return int(end.timestamp() * 1000) if end else None
+
         market = (request.query_params.get("market") or "").strip().lower()
         raw = (request.query_params.get("raw") or "").strip().lower() in ("1", "true", "yes")
         if market not in ("hourly", "15m"):
@@ -3791,6 +3811,9 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     "event_ticker": header_data[6],
                     "strikes": [],
                 }
+                response["settlement_end_ms"] = _strike_pack_settlement_end_ms(
+                    header_data[6], strikes_data, 8
+                )
             else:
                 h_tbl = _unified_strike_table_for_market("hourly")
                 ttc_column = "ttc_hourly"
@@ -3858,6 +3881,9 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
                     "strike_tier": int(header_data[7]) if header_data[7] is not None else None,
                     "strikes": [],
                 }
+                response["settlement_end_ms"] = _strike_pack_settlement_end_ms(
+                    header_data[6], strikes_data, 8
+                )
 
             for strike_row in strikes_data:
                 vfp = strike_row[6]
@@ -5598,7 +5624,7 @@ async def get_monitor_names(user_id: Optional[str] = None):
         
         cursor = conn.cursor()
         cursor.execute(f"""
-            SELECT id, name, symbol, market
+            SELECT id, name, symbol, market, strategy, auto_trade_status, cooldown_timer
             FROM users.monitor_list_{user_number}
             WHERE status = 'active'
             ORDER BY name
@@ -5607,7 +5633,7 @@ async def get_monitor_names(user_id: Optional[str] = None):
         conn.close()
         monitors = []
         for row in results:
-            monitor_id, name, symbol, market = row
+            monitor_id, name, symbol, market, strategy, auto_trade_status, cooldown_timer = row
             mkt = (market or "").strip().lower() if market else None
             if mkt not in ("hourly", "15m"):
                 mkt = None
@@ -5615,7 +5641,10 @@ async def get_monitor_names(user_id: Optional[str] = None):
                 "id": monitor_id,
                 "name": name,
                 "symbol": symbol,
-                "market": mkt
+                "market": mkt,
+                "strategy": strategy,
+                "auto_trade_status": (str(auto_trade_status).strip().lower() if auto_trade_status is not None else "inactive"),
+                "cooldown_timer": int(cooldown_timer or 0),
             })
         
         return {

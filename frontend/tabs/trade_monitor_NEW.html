@@ -1,0 +1,785 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!--
+    Session: load rec_session.js after optional dev handoff (#rec_dev=…) so standalone tabs on
+    another port (e.g. :8091) can use the same tenant as the main app. See
+    /tabs/trade_monitor_NEW_standalone_handoff.html (open while logged in on this origin).
+  -->
+  <script>
+(function () {
+  try {
+    var hn = window.location.hostname || '';
+    var dev =
+      hn === 'localhost' ||
+      hn === '127.0.0.1' ||
+      hn.endsWith('.local') ||
+      hn.startsWith('192.168.') ||
+      hn.startsWith('10.');
+    if (!dev) return;
+    var raw = window.location.hash || '';
+    var prefix = '#rec_dev=';
+    if (raw.indexOf(prefix) !== 0) return;
+    var encoded = raw.slice(prefix.length);
+    if (!encoded) return;
+    var decoded = decodeURIComponent(encoded);
+    if (!decoded || decoded.length > 12000) return;
+    var o = JSON.parse(decoded);
+    if (!o || typeof o !== 'object') return;
+    var tok = typeof o.token === 'string' ? o.token.trim() : '';
+    var un = typeof o.user_no === 'string' ? o.user_no.trim() : '';
+    if (!tok || !/^\d{4}$/.test(un)) return;
+    var apiIn = typeof o.api_origin === 'string' ? o.api_origin.trim() : '';
+    var apiOrigin = null;
+    if (apiIn) {
+      try {
+        var u = new URL(apiIn);
+        if (u.protocol === 'http:' || u.protocol === 'https:') apiOrigin = u.origin;
+      } catch (e1) {}
+    }
+    if (apiOrigin) window.__TM_NEW_API_ORIGIN__ = apiOrigin;
+    try {
+      localStorage.setItem('rec_auth_token', tok);
+      localStorage.setItem('rec_user_no', un);
+    } catch (e2) {}
+    try {
+      history.replaceState(null, '', window.location.pathname + (window.location.search || ''));
+    } catch (e3) {}
+  } catch (e) {
+    /* ignore malformed handoff */
+  }
+})();
+  </script>
+  <script src="/js/rec_session.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Trade Monitor</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles/global.css" />
+  <style>
+.trade-monitor-new-page {
+  padding: 10px;
+}
+
+body.trade-monitor-new-page #container {
+  background-color: transparent;
+  width: 100%;
+  max-width: 100%;
+  min-height: calc(100vh - 20px);
+  box-sizing: border-box;
+}
+
+/* Two-column layout: left = two stacked panels (legacy col1); right = market header + orderbook (unchanged blocks). */
+.trade-monitor-new-page .tm-new-main-grid {
+  display: grid;
+  /* Match legacy trade_monitor col1 proportion (~1/3 viewport). */
+  grid-template-columns: minmax(320px, 33.3333vw) minmax(520px, 1fr);
+  grid-template-rows: auto 1fr;
+  column-gap: 12px;
+  row-gap: 10px;
+  width: 100%;
+  box-sizing: border-box;
+  align-items: stretch;
+}
+
+.trade-monitor-new-page .tm-new-main-grid > .panel-container {
+  margin-bottom: 0;
+}
+
+.trade-monitor-new-page .tm-new-monitor-picker-panel {
+  grid-column: 1;
+  grid-row: 1;
+  display: flex;
+  align-items: stretch;
+  justify-content: stretch;
+  min-width: 0;
+  /* Match sibling panel vertical padding (.panel-container uses 10px). */
+  padding-top: 10px;
+  padding-bottom: 10px;
+}
+
+.trade-monitor-new-page .tm-new-monitor-select {
+  flex: 1 1 auto;
+  width: 100%;
+  max-width: 100%;
+  /* 20% larger than previous 12px baseline. */
+  font-size: calc(12px * 1.2);
+  line-height: 1.35;
+  padding: 8px 32px 8px 10px;
+  box-sizing: border-box;
+  height: 100%;
+  min-height: 0;
+  align-self: stretch;
+  background-size: 12px 7px;
+  background-position: right 10px center;
+}
+
+.trade-monitor-new-page .tm-new-mkt-head-wrap {
+  grid-column: 2;
+  grid-row: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.trade-monitor-new-page .tm-new-mkt-head-wrap .mkt-head {
+  margin: 0;
+}
+
+.trade-monitor-new-page .tm-new-price-panel {
+  grid-column: 1;
+  grid-row: 2;
+  min-width: 0;
+  align-self: start;
+  min-height: 200px;
+}
+
+.trade-monitor-new-page .tm-new-orderbook-stack {
+  grid-column: 2;
+  grid-row: 2;
+  min-width: 0;
+  width: 100%;
+}
+
+.trade-monitor-new-page .tm-new-orderbook-stack .panel-container {
+  margin-bottom: 0;
+}
+
+.trade-monitor-new {
+  color: #e5e7eb;
+}
+
+.trade-monitor-new .u-hidden {
+  display: none !important;
+}
+
+.trade-monitor-new .load-err {
+  color: #fca5a5;
+  margin: 0 0 10px 0;
+  font-size: 13px;
+}
+
+.trade-monitor-new .mkt-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.trade-monitor-new .mkt-text {
+  min-width: 0;
+}
+
+.trade-monitor-new .ttc-chip {
+  margin-left: auto;
+  align-self: center;
+  box-sizing: border-box;
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-end;
+  /* Glyph line box is often taller than 1.15em, so min-height was invisible; pad instead. */
+  padding-block: max(5px, calc(0.075 * 1em));
+  font-size: 27px;
+  font-weight: bold;
+  text-align: right;
+  line-height: 1;
+  color: #f3f4f6;
+  background: transparent;
+  border: 2px solid #facc15;
+  border-radius: 6px;
+  padding-inline: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.trade-monitor-new .mkt-icon {
+  width: 44px;
+  height: 44px;
+  border-radius: 10px;
+  color: #fff;
+  font-size: 22px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.trade-monitor-new .mkt-icon--btc {
+  background: #f7931a;
+}
+
+.trade-monitor-new .mkt-icon--eth {
+  background: #627eea;
+}
+
+.trade-monitor-new .mkt-icon--sol {
+  background: linear-gradient(135deg, #9945ff 0%, #14f195 100%);
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.trade-monitor-new .mkt-icon--xrp {
+  background: #23292f;
+  font-size: 20px;
+  font-weight: 800;
+}
+
+.trade-monitor-new .mkt-icon--other {
+  background: #4b5563;
+  font-size: 18px;
+}
+
+.trade-monitor-new .mkt-title {
+  margin: 0 0 4px 0;
+  font-size: 18px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.25;
+}
+
+.trade-monitor-new .mkt-window {
+  margin: 0;
+  font-size: 13px;
+  color: #c4c4c4;
+}
+
+.trade-monitor-new .quote-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin: 10px 0;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.trade-monitor-new .quote-row:hover {
+  background: #3c495e;
+}
+
+.trade-monitor-new .quote-strike {
+  font-size: 16.8px;
+  font-weight: 700;
+  color: #fff;
+}
+
+/* Strike label only; spot lives in the left ticker panel (same idea as hourly strike column). */
+.trade-monitor-new .quote-strike--stack {
+  position: relative;
+  display: inline-block;
+  align-self: center;
+}
+
+.trade-monitor-new .quote-strike-value {
+  display: block;
+  line-height: 1.15;
+}
+
+.trade-monitor-new .tabs {
+  display: flex;
+  gap: 10px;
+  margin: 0;
+  justify-content: flex-end;
+}
+
+.trade-monitor-new .tab {
+  cursor: pointer;
+  padding: 6px 10px;
+  border-radius: 8px;
+  background: #41516a;
+  color: #d9e1eb;
+  font-size: 13px;
+  font-weight: 600;
+  box-sizing: border-box;
+  width: 6.75rem;
+  min-width: 6.75rem;
+  max-width: 6.75rem;
+  flex: 0 0 6.75rem;
+  text-align: center;
+}
+
+.trade-monitor-new .tab.active.tab-yes {
+  background: #0a7;
+  color: #fff;
+}
+
+.trade-monitor-new .tab.active.tab-no {
+  background: #b33;
+  color: #fff;
+}
+
+/* Hourly strike table: columns match legacy strike-table (STRIKE | BUFFER | % | Prob | YES | NO). */
+.trade-monitor-new .hourly-ask-pill {
+  display: inline-block;
+  padding: calc(5px * 1.2) calc(6px * 1.2);
+  border-radius: calc(8px * 1.2);
+  background: #41516a;
+  color: #d9e1eb;
+  font-size: calc(13px * 1.2);
+  font-weight: 600;
+  box-sizing: border-box;
+  width: calc(3.375rem * 1.2);
+  min-width: calc(3.375rem * 1.2);
+  max-width: calc(3.375rem * 1.2);
+  text-align: center;
+  cursor: default;
+  user-select: none;
+}
+
+.trade-monitor-new .hourly-ask-pill--lead-yes {
+  background: #0a7;
+  color: #fff;
+}
+
+.trade-monitor-new .hourly-ask-pill--lead-no {
+  background: #b33;
+  color: #fff;
+}
+
+.trade-monitor-new .hourly-ask-pill--dim {
+  opacity: 0.72;
+}
+
+/* Hourly embedded orderbook: Yes/No book toggle in table header row. */
+.trade-monitor-new .hourly-book-mode-th {
+  text-align: left;
+  vertical-align: middle;
+  padding: 6px 4px 6px 0;
+  font-weight: 600;
+}
+
+.trade-monitor-new .hourly-book-mode-toggle {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+
+.trade-monitor-new .hourly-book-mode-btn {
+  cursor: pointer;
+  padding: 4px 10px;
+  border-radius: 6px;
+  border: none;
+  font-size: 12px;
+  font-weight: 700;
+  font-family: inherit;
+  background: #41516a;
+  color: #d9e1eb;
+}
+
+.trade-monitor-new .hourly-book-mode-btn.hourly-book-mode-yes.is-active {
+  background: #0a7;
+  color: #fff;
+}
+
+.trade-monitor-new .hourly-book-mode-btn.hourly-book-mode-no.is-active {
+  background: #b33;
+  color: #fff;
+}
+
+.trade-monitor-new .book-panel {
+  background: #293345;
+  border: 1px solid #3f4e63;
+  border-radius: 8px;
+  padding: 8px 8px 0 8px;
+}
+
+.trade-monitor-new .hourly-strike-list {
+  border-top: 1px solid #3f4e63;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.trade-monitor-new .hourly-strike-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  margin-bottom: 0;
+  font-variant-numeric: tabular-nums;
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-strike-w {
+  width: 92px;
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-buffer-w {
+  width: calc(50px * 1.2);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-bufpct-w {
+  width: calc(50px * 1.2);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-prob-w {
+  width: calc(50px * 1.2);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-yes-w {
+  width: calc(3.5rem * 1.2);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-no-w {
+  width: calc(3.5rem * 1.2);
+}
+
+.trade-monitor-new .hourly-strike-table th {
+  font-size: 11px;
+  font-weight: 700;
+  text-align: center;
+  background: #222c3c;
+  color: #c8d0dc;
+  padding: 4px 6px;
+  border: 1px solid #3f4e63;
+}
+
+.trade-monitor-new .hourly-strike-table td {
+  font-size: 13px;
+  text-align: center;
+  border: 1px solid #3f4e63;
+  padding: 6px 6px;
+  vertical-align: middle;
+  color: #e8edf4;
+}
+
+/* Fixed row height on every cell so the row size never depends on strike in-flow content. */
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td {
+  padding-top: calc(6px * 1.15);
+  padding-bottom: calc(6px * 1.15);
+  vertical-align: middle;
+  height: 4.5rem;
+  box-sizing: border-box;
+  /* tr { cursor: pointer } does not hit cells in many UAs; set on td so the hand shows. */
+  cursor: pointer;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-buffer,
+.trade-monitor-new .hourly-strike-table td.hourly-col-bufpct,
+.trade-monitor-new .hourly-strike-table td.hourly-col-prob {
+  font-size: calc(13px * 1.2);
+}
+
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td.hourly-col-yes,
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td.hourly-col-no {
+  cursor: default;
+}
+
+.trade-monitor-new .hourly-strike-data-row {
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.trade-monitor-new .hourly-strike-data-row:hover {
+  background: #3c495e;
+}
+
+/*
+ * Strike: one in-flow span (centered with row like BUFFER). Current price sits in the extra
+ * vertical space: position absolute at bottom of cell so the strike does not shift.
+ */
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td.hourly-col-strike {
+  position: relative;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-strike .quote-strike-value {
+  font-size: 16.8px;
+  font-weight: 700;
+  color: #fff;
+  line-height: 1.15;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-strike .quote-strike-cp {
+  position: absolute;
+  left: 6px;
+  right: 6px;
+  bottom: calc(6px * 1.15);
+  margin: 0;
+  padding: 0;
+  font-size: 11px;
+  font-weight: 600;
+  color: #aeb8c6;
+  line-height: 1.2;
+  text-align: center;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  pointer-events: none;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-strike .quote-strike-cp:empty {
+  display: none;
+}
+
+.trade-monitor-new .hourly-strike-book-row td {
+  padding: 0 8px 8px 8px;
+  border-top: none;
+  background: transparent;
+}
+
+.trade-monitor-new .hourly-strike-expanded {
+  padding: 0 4px 8px 4px;
+  background: transparent;
+}
+
+.trade-monitor-new .book-table {
+  width: 100%;
+  border-collapse: collapse;
+  table-layout: fixed;
+  font-variant-numeric: tabular-nums;
+}
+
+.trade-monitor-new .book-table col.side {
+  width: 14%;
+}
+
+.trade-monitor-new .book-table col.price {
+  width: 22%;
+}
+
+.trade-monitor-new .book-table col.contracts {
+  width: 32%;
+}
+
+.trade-monitor-new .book-table col.total {
+  width: 32%;
+}
+
+.trade-monitor-new .panel-head {
+  border-bottom: 1px solid #3f4e63;
+}
+
+.trade-monitor-new .panel-head thead th {
+  font-size: 70%;
+  font-weight: 700;
+  color: #b8c0cf;
+}
+
+.trade-monitor-new .panel-scroll {
+  height: 36vh;
+  overflow-y: auto;
+}
+
+.trade-monitor-new .book-table th,
+.trade-monitor-new .book-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid #3a475b;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.trade-monitor-new .book-table th:first-child,
+.trade-monitor-new .book-table td:first-child {
+  text-align: left;
+}
+
+.trade-monitor-new .book-table td.mid-row {
+  text-align: center;
+}
+
+.trade-monitor-new .side-col {
+  font-weight: 700;
+}
+
+.trade-monitor-new .book-table tbody.asks tr td {
+  color: #fda4af;
+}
+
+.trade-monitor-new .book-table tbody.bids tr td {
+  color: #6ee7b7;
+}
+
+.trade-monitor-new .mid-row {
+  text-align: center;
+  font-weight: 400;
+  padding: 10px 8px;
+  border-top: 1px dashed #52627a;
+  border-bottom: 1px solid #3a475b;
+  background: #2e3a4d;
+}
+
+.trade-monitor-new .mid-inner {
+  display: inline-flex;
+  align-items: baseline;
+  justify-content: center;
+  flex-wrap: wrap;
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.trade-monitor-new .mid-side {
+  font-size: 1em;
+  font-weight: 600;
+}
+
+.trade-monitor-new .mid-yes .mid-side {
+  color: #34d399;
+}
+
+.trade-monitor-new .mid-no .mid-side {
+  color: #f87171;
+}
+
+.trade-monitor-new .mid-gap {
+  display: inline-block;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.trade-monitor-new .mid-last-wrap {
+  font-weight: 400;
+  font-size: 80%;
+}
+
+.trade-monitor-new .mid-yes .mid-last-wrap {
+  color: #34d399;
+}
+
+.trade-monitor-new .mid-no .mid-last-wrap {
+  color: #f87171;
+}
+
+.trade-monitor-new .mid-price {
+  margin-left: 4px;
+  font-weight: 400;
+}
+
+/* Legacy ticker panel (scoped) */
+.trade-monitor-new-page .panel-table {
+  width: 100%;
+  height: 100%;
+  box-sizing: border-box;
+}
+
+.trade-monitor-new-page #tickerPanel {
+  flex-shrink: 0;
+  overflow: auto;
+  border-collapse: collapse;
+  color: white;
+}
+
+.trade-monitor-new-page #tickerPanel td {
+  padding-bottom: 8px;
+  text-align: left;
+  vertical-align: bottom;
+}
+
+.trade-monitor-new-page #tickerPanel tr.price-row td {
+  font-size: 270%;
+  vertical-align: baseline;
+}
+
+.trade-monitor-new-page #tickerPanel tr.change-row td {
+  font-size: 70%;
+}
+
+.trade-monitor-new-page #tickerPanel tr.chart-row td {
+  height: 100%;
+  vertical-align: top;
+}
+
+/* #ticker-picker: hidden; symbol set from active monitor (orderbook-redis-ui reads it). */
+.trade-monitor-new-page #ticker-picker {
+  display: none !important;
+}
+  </style>
+</head>
+<body class="trade-monitor-new-page">
+  <div id="container">
+    <div class="tm-new-main-grid">
+      <!-- Panel 1 (left, top): monitor picker only — same row as market header -->
+      <div class="panel-container trade-monitor-new tm-new-monitor-picker-panel" id="tmNewMonitorPickerPanel">
+        <label class="u-hidden" for="monitor-picker">Active monitor</label>
+        <select id="monitor-picker" class="dropdown-picker tm-new-monitor-select" name="monitor" aria-label="Active monitor"></select>
+      </div>
+      <!-- Panel 2 (right, top): existing market header -->
+      <div class="panel-container trade-monitor-new tm-new-mkt-head-wrap">
+        <div class="mkt-head" id="mktHead">
+          <div class="mkt-icon mkt-icon--btc" id="mktIcon" aria-hidden="true">₿</div>
+          <div class="mkt-text">
+            <p class="mkt-title" id="mktTitle">—</p>
+            <p class="mkt-window" id="mktWindow"></p>
+          </div>
+          <div class="ttc-chip" id="tmNewTtcClock" aria-live="polite">--:--</div>
+        </div>
+      </div>
+      <!-- Panel 3 (left, bottom): symbol price + changes + TradingView -->
+      <div class="panel-container trade-monitor-new tm-new-price-panel" id="tickerPanelContainer">
+        <table id="tickerPanel" class="panel-table">
+          <tbody>
+            <tr class="price-row">
+              <td style="position: relative;">
+                <span id="symbol-price-value" style="display: inline-block;">$—</span>
+              </td>
+            </tr>
+            <tr class="change-row">
+              <td id="symbol-changes-cell">1h &nbsp;<span id="change-1h">—</span> &nbsp;&nbsp; 3h &nbsp;<span id="change-3h">—</span> &nbsp;&nbsp; 1d &nbsp;<span id="change-1d">—</span></td>
+            </tr>
+            <tr class="chart-row">
+              <td><div id="tradingview_12345"></div></td>
+            </tr>
+          </tbody>
+        </table>
+      </div>
+      <!-- Right column bottom: quote + orderbook only (unchanged inner) -->
+      <div class="tm-new-orderbook-stack">
+        <div class="panel-container trade-monitor-new" id="tmNewRoot">
+          <div id="loadErr" class="load-err u-hidden"></div>
+
+          <div class="quote-row u-hidden" id="quoteRow" onclick="toggleOrderbook()" aria-hidden="true">
+            <div class="quote-strike quote-strike--stack" id="quoteStrike">
+              <span class="quote-strike-value">—</span>
+            </div>
+            <div class="tabs">
+              <div class="tab active tab-yes" id="tabYes" onclick="setMode(event, 'yes')">Yes —</div>
+              <div class="tab tab-no" id="tabNo" onclick="setMode(event, 'no')">No —</div>
+            </div>
+          </div>
+
+          <div class="book-panel u-hidden" id="bookPanel" aria-hidden="true">
+            <table class="book-table panel-head">
+              <colgroup><col class="side"/><col class="price"/><col class="contracts"/><col class="total"/></colgroup>
+              <thead><tr><th></th><th>Price</th><th>Contracts</th><th>Total</th></tr></thead>
+            </table>
+            <div class="panel-scroll" id="bookScroll">
+              <table class="book-table">
+                <colgroup><col class="side"/><col class="price"/><col class="contracts"/><col class="total"/></colgroup>
+                <tbody id="asks" class="asks"></tbody>
+                <tbody>
+                  <tr><td colspan="4" id="midPrice" class="mid-row mid-yes"></td></tr>
+                </tbody>
+                <tbody id="bids" class="bids"></tbody>
+              </table>
+            </div>
+          </div>
+          <div class="hourly-strike-list" id="hourlyStrikeList"></div>
+        </div>
+      </div>
+    </div>
+    <!-- Hidden: active monitor symbol (rebuilt in trade-monitor-new-init). -->
+    <select id="ticker-picker" class="u-hidden" aria-hidden="true" tabindex="-1"><option value="BTC">BTC</option></select>
+  </div>
+
+  <script>
+    (function () {
+      var params = new URLSearchParams(window.location.search || '');
+      var sym = (params.get('symbol') || 'BTC').toString().trim().toUpperCase() || 'BTC';
+      var mkt = (params.get('market') || '15m').toString().trim().toLowerCase();
+      if (mkt !== 'hourly') mkt = '15m';
+      var p = window.__READ_API_PORT__ != null && window.__READ_API_PORT__ !== '' ? String(window.__READ_API_PORT__) : '3050';
+      var proto = window.location.protocol || 'http:';
+      var host = window.location.hostname || 'localhost';
+      window.__ORDERBOOK_API__ =
+        proto + '//' + host + ':' + p +
+        '/api/trade-monitor/orderbook?symbol=' + encodeURIComponent(sym) +
+        '&market=' + encodeURIComponent(mkt);
+      try {
+        document.body.dataset.currentSymbol = sym;
+        document.body.dataset.currentMarket = mkt;
+      } catch (e) {}
+    })();
+  </script>
+  <script type="text/javascript" src="https://s3.tradingview.com/tv.js"></script>
+  <script src="/js/trade-monitor-new-init.js"></script>
+  <script src="/js/orderbook-redis-ui.js"></script>
+</body>
+</html>

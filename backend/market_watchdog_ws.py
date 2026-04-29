@@ -8,6 +8,16 @@ Hourly: after REST event discovery, markets are capped to an ATM-centered window
 seed + WS subscribe so DB/CPU track ~41 strikes per symbol instead of the full Kalshi ladder.
 
 Rollover sets ``rolling`` so the WS thread skips DB writes until seed + new subscribe are done.
+Each successful ``SubState.replace()`` bumps ``subscription_epoch`` so the WS loop can refresh
+``ticker`` / ``orderbook_delta`` subscriptions on the **next** loop head without waiting for an
+inbound frame (otherwise ``recv`` could block up to ``MARKET_WATCHDOG_WS_RECV_POLL_SEC`` seconds).
+
+When ``MARKET_WATCHDOG_WS_ORDERBOOK_TABLES`` is set, also subscribes to ``orderbook_delta`` on the
+same WebSocket as ``ticker``. The orderbook ``market_tickers`` list is **only** the current-event
+``cycle_tickers`` (the same Kalshi markets as the ``live_data.market_kalshi_*`` seed rows). ``ticker``
+still uses the broader ``ws_tickers`` union for lifecycle; we do **not** subscribe orderbook for
+lifecycle-only pending tickers (even for the same symbols), because that recreated hundreds of empty
+``live_data.orderbook_kalshi_*`` tables. Rollover prune and lifecycle drops keep the small set aligned.
 
 HTTP 429 on Kalshi is **REST quota**, not WebSocket. If we see it while only running this pipeline,
 treat it as our bug: parallel REST during rollover, tight refetch loops, or another client sharing
@@ -61,6 +71,12 @@ from backend.core.kalshi_lifecycle_pending_tickers import (
     ticker_still_needs_market_result_any_tenant,
 )
 from backend.core.trading_redis_comms import publish_kalshi_lifecycle_trades_event
+from backend.core.kalshi_live_orderbook_sidecar import (
+    drop_on_lifecycle_final_sync,
+    handle_ws_orderbook_message_sync,
+    orderbook_sidecar_enabled,
+    prune_orderbook_sidecar_keep_only_sync,
+)
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 from backend.market_watchdog import (
     DB_CONFIG,
@@ -151,10 +167,26 @@ class SubSnapshot:
     """Immutable view of subscription state for the WS thread."""
 
     generation: int
+    subscription_epoch: int
     ticker_meta: dict[str, tuple[str, str]]
     ws_tickers: list[str]
     lifecycle_meta: dict[str, tuple[str, str]]
     cycle_tickers: list[str]
+
+
+def _orderbook_subscription_tickers(snap: SubSnapshot) -> list[str]:
+    """Market tickers for ``orderbook_delta``: current-event cycle only (matches ``market_kalshi_*`` rows).
+
+    Pending lifecycle tickers stay on the ``ticker`` channel only; they must not each get a depth table.
+    """
+    out: list[str] = []
+    seen: set[str] = set()
+    for mt in snap.cycle_tickers:
+        t = str(mt).strip()
+        if t and t not in seen:
+            seen.add(t)
+            out.append(t)
+    return out
 
 
 def _market_watchdog_lifecycle_enabled() -> bool:
@@ -945,6 +977,7 @@ class SubState:
 
     _lock: threading.Lock = field(default_factory=threading.Lock)
     generation: int = 0
+    subscription_epoch: int = 0
     ticker_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
     pending_outcome_meta: dict[str, tuple[str, str]] = field(default_factory=dict)
     _current_cycle_tickers: list[str] = field(default_factory=list)
@@ -979,6 +1012,7 @@ class SubState:
             self.pending_outcome_meta = dict(pending_outcome)
             self._rebuild_ws_and_lifecycle_unlocked()
             self._ticker_rx.clear()
+            self.subscription_epoch += 1
 
     def replace_clear(self) -> None:
         with self._lock:
@@ -989,6 +1023,7 @@ class SubState:
             self.lifecycle_meta.clear()
             self._ticker_rx.clear()
             self.generation += 1
+            self.subscription_epoch += 1
 
     def prune_pending_ticker(self, market_ticker: str) -> None:
         mt = str(market_ticker).strip()
@@ -1011,6 +1046,7 @@ class SubState:
         with self._lock:
             return SubSnapshot(
                 self.generation,
+                int(self.subscription_epoch),
                 dict(self.ticker_meta),
                 list(self.all_tickers),
                 dict(self.lifecycle_meta),
@@ -1061,6 +1097,15 @@ def _lifecycle_ws_dispatch(lc_msg: dict, sub: "SubState", exchange_key: str, tab
     snap = sub.snapshot()
     _lifecycle_update_strike_on_created(lc_msg, snap.ticker_meta, exchange_key, table_ref)
     _lifecycle_apply_result_if_tracked(lc_msg)
+    if orderbook_sidecar_enabled():
+        try:
+            drop_on_lifecycle_final_sync(
+                lc_msg,
+                borrow_conn=_borrow_conn_retry,
+                return_conn=_return_conn,
+            )
+        except Exception:
+            logger.exception("orderbook sidecar lifecycle drop failed")
     mt = lc_msg.get("market_ticker")
     if not mt:
         return
@@ -1298,6 +1343,25 @@ def _run_rollover(
             len(tickers),
             len(snap.ws_tickers),
         )
+        if ok and orderbook_sidecar_enabled():
+            keep_ob = _orderbook_subscription_tickers(snap)
+            if not keep_ob:
+                keep_ob = [str(x).strip() for x in tickers if str(x).strip()]
+            if keep_ob:
+                mi = str(market_label or "").strip().lower()
+                try:
+                    prune_orderbook_sidecar_keep_only_sync(
+                        keep_ob,
+                        mi,
+                        borrow_conn=_borrow_conn_retry,
+                        return_conn=_return_conn,
+                    )
+                except Exception:
+                    logger.exception(
+                        "orderbook sidecar prune after rollover failed interval=%s n_keep=%s",
+                        mi,
+                        len(keep_ob),
+                    )
         return ok
     except Exception:
         logger.exception("rollover crashed")
@@ -1556,7 +1620,7 @@ async def _handle_ws_data_message(
     table_ref: str,
     market_iv: str,
 ) -> None:
-    """Apply lifecycle outcomes and ticker DB upserts. Ignores subscribe acks and unknown types."""
+    """Apply lifecycle outcomes, orderbook sidecar, and ticker DB upserts. Ignores subscribe acks and unknown types."""
     dtype = data.get("type")
     if dtype == "market_lifecycle_v2" and _market_watchdog_lifecycle_enabled():
         lc_msg = data.get("msg") or {}
@@ -1566,6 +1630,17 @@ async def _handle_ws_data_message(
             sub,
             exchange_key,
             table_ref,
+        )
+        await asyncio.to_thread(_touch_ws_transport_liveness)
+        return
+    if dtype in ("orderbook_snapshot", "orderbook_delta") and orderbook_sidecar_enabled():
+        await asyncio.to_thread(
+            handle_ws_orderbook_message_sync,
+            data,
+            market_interval=market_iv,
+            rolling=sub.rolling,
+            borrow_conn=_borrow_conn_retry,
+            return_conn=_return_conn,
         )
         await asyncio.to_thread(_touch_ws_transport_liveness)
         return
@@ -1637,7 +1712,6 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
     beat_sec = max(5, int(os.getenv("KALSHI_WS_TRANSPORT_BEAT_SEC", str(DEFAULT_WS_TRANSPORT_BEAT_SEC))))
     market_iv = str(_WS_TRANSPORT_CTX.get("market") or "15m").strip().lower()
     table_ref = WS_TABLE_HOURLY if market_iv == "hourly" else WS_TABLE
-
     while not stop.is_set():
         snap = sub.snapshot()
         ws_tickers = snap.ws_tickers
@@ -1646,6 +1720,15 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
             continue
 
         my_gen = snap.generation
+        inner_recv_timeout = 75.0
+        if orderbook_sidecar_enabled():
+            try:
+                inner_recv_timeout = float(
+                    os.getenv("MARKET_WATCHDOG_WS_RECV_POLL_SEC", "12"),
+                )
+            except ValueError:
+                inner_recv_timeout = 12.0
+            inner_recv_timeout = max(2.0, min(75.0, inner_recv_timeout))
         headers = await asyncio.to_thread(kalshi_ws_connect_headers)
         cmd_id = 1
         try:
@@ -1658,6 +1741,34 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                 max_size=2**22,
             ) as ws:
                 last_tickers_sent: tuple[str, ...] | None = None
+                last_ob_ws: tuple[str, ...] | None = None
+
+                async def _send_ob_sub(ob_list: list[str]) -> bool:
+                    nonlocal cmd_id
+                    if not ob_list:
+                        return True
+                    cmd_id += 1
+                    await ws.send(
+                        json.dumps(
+                            {
+                                "id": cmd_id,
+                                "cmd": "subscribe",
+                                "params": {
+                                    "channels": ["orderbook_delta"],
+                                    "market_tickers": ob_list,
+                                },
+                            }
+                        )
+                    )
+                    return await _drain_until_channel_subscribed(
+                        ws,
+                        "orderbook_delta",
+                        deadline_mono=time.monotonic() + 30.0,
+                        sub=sub,
+                        exchange_key=exchange_key,
+                        table_ref=table_ref,
+                        market_iv=market_iv,
+                    )
 
                 async def _send_ticker_subscription(tickers: list[str]) -> bool:
                     nonlocal cmd_id
@@ -1701,6 +1812,18 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                     continue
                 last_tickers_sent = tuple(ws_tickers)
 
+                if orderbook_sidecar_enabled():
+                    ob0 = _orderbook_subscription_tickers(snap)
+                    if ob0:
+                        if await _send_ob_sub(ob0):
+                            logger.info("ws orderbook_delta subscribed n=%s", len(ob0))
+                            last_ob_ws = tuple(ob0)
+                        else:
+                            logger.warning(
+                                "orderbook_delta subscribe ack missing (orderbook tables may lag): exchange=%s",
+                                exchange_key,
+                            )
+
                 if _market_watchdog_lifecycle_enabled():
                     cmd_id += 1
                     await ws.send(
@@ -1730,6 +1853,8 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                         )
                 await asyncio.to_thread(_touch_ws_transport_liveness)
 
+                last_sub_epoch = sub.snapshot().subscription_epoch
+
                 async def _transport_beat_loop() -> None:
                     while not stop.is_set():
                         await asyncio.sleep(float(beat_sec))
@@ -1748,17 +1873,37 @@ async def _ws_loop(exchange_key: str, sub: SubState, stop: threading.Event) -> N
                                 snap_i.generation,
                             )
                             break
+                        epoch_changed = snap_i.subscription_epoch != last_sub_epoch
+                        if epoch_changed:
+                            last_sub_epoch = snap_i.subscription_epoch
                         want = tuple(snap_i.ws_tickers)
                         if not want:
                             await asyncio.sleep(0.25)
                             continue
-                        if want != last_tickers_sent:
-                            if not await _send_ticker_subscription(list(want)):
-                                break
-                            last_tickers_sent = want
+                        if want != last_tickers_sent or epoch_changed:
+                            if want != last_tickers_sent:
+                                if not await _send_ticker_subscription(list(want)):
+                                    break
+                                last_tickers_sent = want
+                            if orderbook_sidecar_enabled():
+                                ob_new = _orderbook_subscription_tickers(snap_i)
+                                ob_key = tuple(ob_new)
+                                if ob_new and (ob_key != last_ob_ws or epoch_changed):
+                                    if await _send_ob_sub(ob_new):
+                                        logger.info(
+                                            "ws orderbook_delta re-subscribed n=%s (epoch=%s)",
+                                            len(ob_new),
+                                            snap_i.subscription_epoch,
+                                        )
+                                    else:
+                                        logger.warning(
+                                            "orderbook_delta re-subscribe ack missing exchange=%s",
+                                            exchange_key,
+                                        )
+                                    last_ob_ws = ob_key
 
                         try:
-                            raw = await asyncio.wait_for(ws.recv(), timeout=75.0)
+                            raw = await asyncio.wait_for(ws.recv(), timeout=inner_recv_timeout)
                         except asyncio.TimeoutError:
                             if sub.snapshot().generation != my_gen:
                                 break

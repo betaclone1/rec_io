@@ -187,6 +187,12 @@ def _http_path_allowed_without_tenant(path: str, method: str) -> bool:
     # session cookies from main_app (:3000) are not sent — must stay anonymous-safe.
     if path == "/api/system/release_version" and m == "GET":
         return True
+    # Kalshi orderbook UI snapshot (Redis); no tenant row. Trade monitor on :3000 fetches :3050
+    # without session cookies — same pattern as release_version.
+    if path == "/api/orderbook" and m == "GET":
+        return True
+    if path == "/api/trade-monitor/orderbook" and m == "GET":
+        return True
     return False
 
 

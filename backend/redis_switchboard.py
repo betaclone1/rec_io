@@ -4,8 +4,12 @@ Redis switchboard: LISTEN to PostgreSQL NOTIFY, publish to Redis, fan out to Web
 SCOPE (anti-bloat): This process does exactly: (1) LISTEN rec_io_db_changes,
 (2) map (schema, table) -> stream name via stream_registry, (3) publish one JSON
 to Redis rec_io:db_changes, (4) fan out to /ws/db_changes clients. Plus /health.
-Do NOT add application HTTP APIs, auth, or per-stream logic here. New capabilities
-= new streams (registry + trigger) or new services. See docs/REALTIME_BACKBONE.md
+
+Also publishes ``{"type":"live_symbol_spot",...}`` (same Redis channel) after
+``live_data.live_symbol_status`` NOTIFY and after ``live_data.price_change_*`` NOTIFY,
+with spot rows plus latest 1h/3h/1d percent fields from ``price_change_<symbol>`` tables.
+
+Do NOT add application HTTP APIs or auth here. See docs/REALTIME_BACKBONE.md
 Section 0. The only allowed HTTP surface is /health and /ws/db_changes; pilot
 endpoints (/api/redis_basic_test, /redis-basic-test, /api/strike_table_15m_latest,
 /strike-table-15m-test) are temporary for testing.
@@ -26,6 +30,7 @@ import asyncio
 from datetime import date, datetime, timezone
 from decimal import Decimal
 
+from psycopg2 import sql as psql
 from psycopg2.extras import RealDictCursor
 
 # Project root (only for DB and Redis; no main.py or frontend dependency)
@@ -59,6 +64,13 @@ logging.basicConfig(
 )
 logger = logging.getLogger("redis_switchboard")
 
+STREAM_LIVE_SYMBOL_STATUS = "live_symbol_status"
+
+# NOTIFY from these tables only fans out ``live_symbol_spot`` (no separate db_change).
+_PRICE_CHANGE_NOTIFY_TABLES = frozenset(
+    {"price_change_btc", "price_change_eth", "price_change_sol", "price_change_xrp"}
+)
+
 # In-memory client set and message queue
 clients_db_changes = set()
 message_queue = queue.Queue()
@@ -73,6 +85,95 @@ def get_redis_client():
         password=REDIS_PASSWORD,
         decode_responses=True,
     )
+
+
+def _numeric_spot_from_row(row: dict):
+    """Match strike generators: prefer one_minute_avg, else price."""
+    o = row.get("one_minute_avg")
+    p = row.get("price")
+    for v in (o, p):
+        if v is not None:
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                continue
+    return None
+
+
+def build_live_symbol_spot_payload():
+    """
+    Snapshot ``live_data.live_symbol_status`` plus latest ``price_change_*`` %% rows.
+    Returns a dict suitable for json.dumps, or None if DB unavailable / empty status.
+    """
+    from backend.core.config.database import get_system_postgresql_connection
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return None
+    try:
+        cur = conn.cursor(cursor_factory=RealDictCursor)
+        cur.execute(
+            """
+            SELECT *
+            FROM live_data.live_symbol_status
+            ORDER BY symbol NULLS LAST
+            """
+        )
+        rows = cur.fetchall()
+        if not rows:
+            return None
+        row_dicts = [_jsonable_row(dict(r)) for r in rows]
+        spot_by_symbol = {}
+        for r in row_dicts:
+            sym = r.get("symbol")
+            if sym is None:
+                continue
+            key = str(sym).strip().upper()
+            if not key:
+                continue
+            sp = _numeric_spot_from_row(r)
+            if sp is not None:
+                spot_by_symbol[key] = sp
+        changes_by_symbol: dict = {}
+        for sym_key, tbl in (
+            ("BTC", "price_change_btc"),
+            ("ETH", "price_change_eth"),
+            ("SOL", "price_change_sol"),
+            ("XRP", "price_change_xrp"),
+        ):
+            try:
+                cur.execute(
+                    psql.SQL(
+                        "SELECT change1h, change3h, change1d FROM live_data.{} "
+                        "ORDER BY id DESC LIMIT 1"
+                    ).format(psql.Identifier(tbl))
+                )
+                prow = cur.fetchone()
+                if prow:
+                    pd = dict(prow)
+                    changes_by_symbol[sym_key] = {
+                        "change1h": _jsonable_value(pd.get("change1h")),
+                        "change3h": _jsonable_value(pd.get("change3h")),
+                        "change1d": _jsonable_value(pd.get("change1d")),
+                    }
+            except Exception:
+                continue
+        now = datetime.now(timezone.utc).isoformat()
+        return {
+            "type": "live_symbol_spot",
+            "timestamp": now,
+            "spot_by_symbol": spot_by_symbol,
+            "changes_by_symbol": changes_by_symbol,
+            "rows": row_dicts,
+        }
+    except Exception as e:
+        logger.warning("build_live_symbol_spot_payload: %s", e)
+        return None
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def pg_listen_loop():
@@ -103,6 +204,26 @@ def pg_listen_loop():
                     payload = json.loads(n.payload)
                     schema = payload.get("schema")
                     table = payload.get("table")
+                    sch_l = str(schema or "").lower()
+                    tbl_l = str(table or "").lower()
+                    if sch_l == "live_data" and tbl_l in _PRICE_CHANGE_NOTIFY_TABLES:
+                        try:
+                            spot_msg = build_live_symbol_spot_payload()
+                            if spot_msg:
+                                r.publish(
+                                    REDIS_CHANNEL_DB_CHANGES,
+                                    json.dumps(spot_msg),
+                                )
+                                logger.info(
+                                    "Published live_symbol_spot (from %s) -> Redis",
+                                    tbl_l,
+                                )
+                        except Exception as se:
+                            logger.warning(
+                                "live_symbol_spot from price_change notify failed: %s",
+                                se,
+                            )
+                        continue
                     op = payload.get("op", "UNKNOWN")
                     db_name, tenant_user_no = resolve_stream_for_notify(
                         str(schema) if schema else "",
@@ -128,6 +249,17 @@ def pg_listen_loop():
                         logger.info("Published db_change %s -> Redis", db_name)
                     except Exception as re:
                         logger.warning("Redis publish failed: %s", re)
+                    if db_name == STREAM_LIVE_SYMBOL_STATUS:
+                        try:
+                            spot_msg = build_live_symbol_spot_payload()
+                            if spot_msg:
+                                r.publish(
+                                    REDIS_CHANNEL_DB_CHANGES,
+                                    json.dumps(spot_msg),
+                                )
+                                logger.info("Published live_symbol_spot -> Redis")
+                        except Exception as se:
+                            logger.warning("live_symbol_spot after NOTIFY failed: %s", se)
                 except Exception as e:
                     logger.warning("Error handling NOTIFY: %s", e)
     except Exception as e:
@@ -432,6 +564,13 @@ async def redis_basic_test_page():
 @app.websocket("/ws/db_changes")
 async def websocket_db_changes(websocket: WebSocket):
     await websocket.accept()
+    loop = asyncio.get_running_loop()
+    try:
+        spot_payload = await loop.run_in_executor(None, build_live_symbol_spot_payload)
+        if spot_payload:
+            await websocket.send_text(json.dumps(spot_payload))
+    except Exception as e:
+        logger.debug("WS initial live_symbol_spot snapshot failed: %s", e)
     clients_db_changes.add(websocket)
     logger.info("WS client connected (db_changes); total=%d", len(clients_db_changes))
     try:
