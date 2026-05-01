@@ -9300,7 +9300,7 @@ Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and
 
 ### Table: `system.strategy_list_default`
 
-Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). Refreshing this copy after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
 
 ---
 
@@ -10472,10 +10472,23 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_cooldown_timer` | `integer(32)` | YES | 300 | Minimum cooldown timer value (in seconds) required for auto entry activation. Strategy will not activate if cooldown_timer is below this value. |
 | `max_cooldown_timer` | `integer(32)` | YES | 3300 | Maximum cooldown timer value (in seconds) allowed for auto entry activation. Strategy will not activate if cooldown_timer is above this value. |
 | `min_ask_range` | `numeric(18,4)` | YES | - | Rising Devil: min active-side ask range (strike `yes_ask_range_15m` / `no_ask_range_15m`) to fire; NULL disables. Migration `20260401_1500_rising_devil_min_ask_range`. |
+| `regime_monitor_enabled` | `boolean` | YES | false | Default for new monitors: regime-based paper/live switching. |
+| `regime_window` | `text` | YES | '30d' | Regime evaluation window token (e.g. `30d`). |
+| `time_in_force` | `text` | NO | 'fill_or_kill' | Kalshi TIF default for strategy-sourced monitor settings. CHECK per table: `{table}_time_in_force_chk`. Migration `20260501_1200_strategy_list_unified_auto_trade_columns`. |
+| `order_type` | `text` | NO | 'market' | `limit` or `market`. CHECK per table: `{table}_order_type_policy_chk`. Same migration. |
+| `symbol_wide_loss_prevention` | `boolean` | YES | false | Strategy default for symbol-wide loss prevention. |
+| `symbol_wide_cooldown_duration` | `integer(32)` | YES | 4 | Strategy default cooldown duration (aligned with `monitor_list_*`). |
+| `symbol_wide_cooldown_start_time` | `timestamp with time zone` | YES | - | Optional anchor; typically NULL on strategy rows. |
+| `flip_sell_prob` | `boolean` | NO | false | Flip-sell sizing for probability stops. |
+| `flip_sell_floor` | `boolean` | NO | false | Flip-sell sizing for floor stops. |
+| `flip_sell_prob_mult` | `character varying(32)` | YES | - | Flip-sell token for prob stops (e.g. `1x`). |
+| `flip_sell_floor_mult` | `character varying(32)` | YES | - | Flip-sell token for floor stops. |
 
 #### Constraints
 
 - **Primary Key:** `strategy_list_0001_pkey` on `id`
+- **Check (TIF):** `strategy_list_0001_time_in_force_chk` — `time_in_force` ∈ `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled` (tenant table name may differ; `system.strategy_list_default` uses `strategy_list_default_time_in_force_chk`).
+- **Check (order type):** `strategy_list_0001_order_type_policy_chk` — `order_type` ∈ `limit`, `market` (or legacy `strategy_list_0001_order_type_chk` on some installs; migration adds `*_order_type_policy_chk` when missing).
 
 #### Indexes
 

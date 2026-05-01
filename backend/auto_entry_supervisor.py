@@ -102,6 +102,10 @@ from backend.core.port_config import (
     unified_auto_entry_supervisor_service_name,
 )
 from backend.core.config.database import get_postgresql_connection as get_db_connection
+from backend.core.symbol_wide_loss_prevention import (
+    recompute_monitor_loss_prevention,
+    startup_reconcile_symbol_wide_for_tenant,
+)
 from backend.core.strike_pipeline_health import (
     evaluate_pipeline_gate_conn,
     floor_strike_vs_spot_check,
@@ -2692,6 +2696,11 @@ def get_loss_prevention_state():
             if result:
                 loss_prevention, lp_toggle = result[0], result[1]
                 toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+                if loss_prevention == "symbol_one_contract":
+                    log_debug(
+                        f"[AUTO ENTRY] Symbol-wide loss prevention active for monitor {ctx_mid()}"
+                    )
+                    return "symbol_one_contract"
                 if not toggle_on:
                     log_debug(
                         f"[AUTO ENTRY] Loss prevention toggle off for monitor {ctx_mid()}; "
@@ -2876,7 +2885,7 @@ def trigger_auto_entry_trade(strike_data):
         
         # Check loss prevention state and override position size if needed
         loss_prevention = get_loss_prevention_state()
-        if loss_prevention == "one_contract":
+        if loss_prevention in ("one_contract", "symbol_one_contract"):
             log(f"[AUTO ENTRY] 🛡️ Loss prevention active - overriding position size from {position_size} to 1 contract")
             position_size = 1
         else:
@@ -2961,7 +2970,7 @@ def trigger_auto_entry_trade(strike_data):
             "monitor": f"mon_{ctx_user()}_{ctx_mid()}",
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",
-            "loss_prevention": loss_prevention == "one_contract",
+            "loss_prevention": loss_prevention in ("one_contract", "symbol_one_contract"),
             "multiplier": get_current_multiplier(),
             "paper_trade": paper_trade
         }
@@ -5688,6 +5697,89 @@ def cleanup_old_cooldowns():
     if keys_to_remove:
         log_debug(f"[AUTO ENTRY] Cleaned up {len(keys_to_remove)} expired cooldown(s)")
 
+
+_symbol_wide_startup_done = False
+_symbol_wide_startup_lock = threading.Lock()
+
+
+def _aes_iter_unique_tenant_first_monitor():
+    """First monitor binding per tenant (unified pool) for DB scoped to users.trades_<slot>."""
+    if not AES_UNIFIED_POOL:
+        yield USER_NUMBER, MONITOR_ID
+        return
+    if AES_UNIFIED_15M:
+        from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
+
+        iter_bindings = iter_active_15m_monitor_bindings()
+    elif AES_UNIFIED_HOURLY:
+        from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
+
+        iter_bindings = iter_active_hourly_monitor_bindings()
+    else:
+        from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
+
+        iter_bindings = iter_active_unified_monitor_bindings()
+    seen = set()
+    for u, m in iter_bindings:
+        if u in seen:
+            continue
+        seen.add(u)
+        yield u, m
+
+
+def _aes_run_symbol_wide_startup_once() -> None:
+    """Reconcile symbol_wide_cooldown_start_time + loss_prevention from trades (once per process)."""
+    global _symbol_wide_startup_done
+    with _symbol_wide_startup_lock:
+        if _symbol_wide_startup_done:
+            return
+        _symbol_wide_startup_done = True
+    try:
+        for u, m in _aes_iter_unique_tenant_first_monitor():
+            with aes_monitor_bind(u, m):
+                conn = get_db_connection()
+                try:
+                    with conn.cursor() as cur:
+                        startup_reconcile_symbol_wide_for_tenant(
+                            cur,
+                            _aes_trades_table(),
+                            _aes_monitor_list_table(),
+                        )
+                    conn.commit()
+                finally:
+                    conn.close()
+        log("✅ [SYMBOL-WIDE LP] Startup reconcile completed")
+    except Exception as e:
+        log(f"⚠️ [SYMBOL-WIDE LP] Startup reconcile failed: {e}")
+
+
+def _aes_tick_symbol_wide_recompute() -> None:
+    """Expire symbol-wide cooldown windows (recompute loss_prevention) for tenants with active anchors."""
+    try:
+        for u, m in _aes_iter_unique_tenant_first_monitor():
+            with aes_monitor_bind(u, m):
+                conn = get_db_connection()
+                try:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            f"""
+                            SELECT id FROM {_aes_monitor_list_table()}
+                            WHERE symbol_wide_loss_prevention IS TRUE
+                              AND symbol_wide_cooldown_start_time IS NOT NULL
+                            """
+                        )
+                        ids = [str(r[0]) for r in (cur.fetchall() or [])]
+                        for mid in ids:
+                            recompute_monitor_loss_prevention(
+                                cur, _aes_monitor_list_table(), mid
+                            )
+                    conn.commit()
+                finally:
+                    conn.close()
+    except Exception as e:
+        log_debug(f"[SYMBOL-WIDE LP] tick recompute: {e}")
+
+
 def start_monitoring_loop():
     """Start the monitoring loop for auto entry conditions"""
     global monitoring_thread
@@ -5698,6 +5790,7 @@ def start_monitoring_loop():
         
         # Broadcast initial state immediately on startup
         log("📊 MONITORING: Broadcasting initial auto entry state")
+        _aes_run_symbol_wide_startup_once()
         check_auto_entry_conditions()
         
         check_count = 0
@@ -5718,6 +5811,8 @@ def start_monitoring_loop():
                 
                 # Clean up old cooldowns first
                 cleanup_old_cooldowns()
+
+                _aes_tick_symbol_wide_recompute()
                 
                 # Check auto entry conditions
                 check_auto_entry_conditions()

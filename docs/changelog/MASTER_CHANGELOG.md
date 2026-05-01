@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-01 — Release v3.4.4: Strategy list schema migration, monitor defaults parity, symbol-wide LP stack
+
+**Summary**
+- **Release: v3.4.4**
+- **Database:** Reversible migration **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds `min_cooldown_timer`, `max_cooldown_timer`, `regime_monitor_enabled`, `regime_window`, `time_in_force`, `order_type` (with CHECKs), `symbol_wide_*`, and `flip_sell_*` to every **`strategy_list_%`** under **`users`** / **`users_NNNN`** and to **`system.strategy_list_default`** when missing (idempotent). Greenfield-only DDL in **`database.py`** alone did not update existing DBs until this migration.
+- **`monitor_manager`:** `get_strategy_default_settings` SELECT / dict / code fallback include the new fields; **`create_monitor`** INSERT copies them from strategy defaults; **`paper_trade`** follows strategy with **false** fallback (no longer forced true); **`symbol_wide_cooldown_start_time`** stays NULL on create.
+- **Backend:** Symbol-wide loss prevention module, monitor list API surface, DB schema contract checks, **`stream_registry`** / **`trade_manager`** / supervisor alignment as in staged tree; **`docs/MASTER_DB_SCHEMA_REFERENCE.md`** updated for strategy list columns.
+- **Frontend:** Unified auto-trade settings, trade monitor (desktop + mobile), dashboard hooks as staged.
+- **Plans:** Session work (strategy/monitor parity, UAT); no single completed `.cursor/plans/*.md` slug.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260501_1200_strategy_list_unified_auto_trade_columns`
+- [ ] Schema drift check (non-blocking if clean):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.4`
+
+---
+
 ## 2026-05-01 — Release v3.4.3: Kalshi v2 executor path, orderbook notify routing, Trade Monitor and dashboard UI
 
 **Summary**
@@ -15,6 +39,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Trade manager:** Tenant **`orders_*`** table helper (**`legacy_users_orders`**) wired into SQL that resolves Kalshi **`order_id`** for open/close bookkeeping.
 - **Frontend:** Trade Monitor NEW layout (orderbook and active-trade panels), **orderbook-redis-ui** strike diff display and reduced **`#mktWindow`** churn; **trade-monitor-new-init** / **trade-execution-controller** / **active-trade-supervisor** panel alignment; **unified_auto_trade** modal partial and settings script; **dashboard** tab slimmed; **strike-table** CSS; mobile trade monitor and legacy tab hooks; symbol icon assets.
 - **Tooling:** **`.cursor/rules/07-main-app-slim.mdc`** — keep **`main.py`** thin; prefer feature modules for new HTTP surface.
+- **Symbol-wide loss prevention (follow-up):** `monitor_list_*` columns (`symbol_wide_loss_prevention`, `symbol_wide_cooldown_duration`, `symbol_wide_cooldown_start_time`); qualifying closed losses on **`trades.test_filter = false`** fan out cooldown start and **`loss_prevention = symbol_one_contract`** via shared helpers; AES startup reconcile + 1s expiry tick; unified modal + legacy/desktop + mobile trade monitor settings; dashboard + mobile dashboard LP-style badge showing cooldown end (ET, 15-minute rounding) with **`monitor_list`** on **`/ws/db_changes`** soft refresh. **Rollback:** paired snippets in **`backend/core/config/database.py`** (e.g. `DROP INDEX IF EXISTS users.idx_trades_<slot>_sw_lp_startup`; drop the three columns per `monitor_list_%` tenant loop).
 - **Plans:** Session work (Kalshi v2 order path, orderbook UI, Trade Monitor NEW); no single completed `.cursor/plans/*.md` file for this batch.
 
 **Production checklist**

@@ -458,6 +458,15 @@
           <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
+        <div class="uat-symbol-wide-block" style="margin-bottom:16px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+            <input type="checkbox" id="symbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Symbol-wide loss prevention" />
+            <span style="font-size:13px;color:#c4c4c4;">Symbol-wide loss prevention (same symbol)</span>
+          </div>
+          <label for="symbolWideCooldownDurationInput" style="font-size:12px;color:#9ca3af;display:block;margin-bottom:4px;">Cooldown duration (hours, minimum 1 when enabled)</label>
+          <input type="number" id="symbolWideCooldownDurationInput" min="1" max="720" step="1" value="4" inputmode="numeric" style="width:100%;max-width:140px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;" />
+        </div>
+
         <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />
 
         <!-- Spike Alert Settings (Entry) -->
@@ -663,6 +672,15 @@
         <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
           <input type="range" id="msAutoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="msAutoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <div class="uat-symbol-wide-block" style="margin-bottom:16px;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
+            <input type="checkbox" id="msSymbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Symbol-wide loss prevention" />
+            <span style="font-size:13px;color:#c4c4c4;">Symbol-wide loss prevention (same symbol)</span>
+          </div>
+          <label for="msSymbolWideCooldownDurationInput" style="font-size:12px;color:#9ca3af;display:block;margin-bottom:4px;">Cooldown duration (hours, minimum 1 when enabled)</label>
+          <input type="number" id="msSymbolWideCooldownDurationInput" min="1" max="720" step="1" value="4" inputmode="numeric" style="width:100%;max-width:140px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;" />
         </div>
         
         <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />

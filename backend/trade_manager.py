@@ -49,6 +49,10 @@ from backend.core.kalshi_execution_settings import (
     normalize_time_in_force_loose,
     limit_price_for_executor_payload,
 )
+from backend.core.symbol_wide_loss_prevention import (
+    on_trade_closed_symbol_wide_loss,
+    recompute_monitor_loss_prevention,
+)
 
 _ORDERBOOK_SCHEMA = "live_data"
 _ORDERBOOK_TABLE_PREFIX = "orderbook_kalshi_"
@@ -2407,7 +2411,10 @@ def insert_trade(trade):
                             # Convert to boolean: True if "one_contract", False otherwise
                             monitor_loss_prevention = monitor_state.get('loss_prevention')
                             if isinstance(monitor_loss_prevention, str):
-                                loss_prevention_flag = monitor_loss_prevention == "one_contract"
+                                loss_prevention_flag = monitor_loss_prevention in (
+                                    "one_contract",
+                                    "symbol_one_contract",
+                                )
                             else:
                                 loss_prevention_flag = _normalize_boolean_flag(monitor_loss_prevention)
                     else:
@@ -4583,6 +4590,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
         notify_monitor_manager_trade_closed(trade_id, status)
         # Update win_streak for the monitor
         update_monitor_win_streak(trade_id)
+        _symbol_wide_loss_after_close(trade_id)
         # Check and update cycle metrics if all trades in cycle are closed
         check_and_update_cycle_metrics(trade_id)
 
@@ -4720,8 +4728,31 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
         notify_monitor_manager_trade_closed(trade_id, status)
         # Update win_streak for the monitor
         update_monitor_win_streak(trade_id)
+        _symbol_wide_loss_after_close(trade_id)
         # Check and update cycle metrics if all trades in cycle are closed
         check_and_update_cycle_metrics(trade_id)
+
+def _symbol_wide_loss_after_close(trade_id: int) -> None:
+    """Event-driven symbol-wide cooldown: qualifying closed L trade fans out start_time."""
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        try:
+            with pg_conn.cursor() as cursor:
+                ran = on_trade_closed_symbol_wide_loss(
+                    cursor,
+                    _tm_trades_table(),
+                    _tm_monitor_list_table(),
+                    trade_id,
+                )
+            if ran:
+                pg_conn.commit()
+        finally:
+            pg_conn.close()
+    except Exception as e:
+        log(f"⚠️ symbol_wide_loss_after_close trade {trade_id}: {e}")
+
 
 def update_monitor_win_streak(trade_id: int) -> None:
     """Update the win_streak for a monitor based on the trade result.
@@ -4860,49 +4891,28 @@ def update_monitor_win_streak(trade_id: int) -> None:
         # For other strategies: count by individual trade wins
         streak_increment = 1 if is_cycle_based_streak else win_count
         
-        # Update win_streak based on cycle result
+        # Update win_streak based on cycle result (loss_prevention via recompute_monitor_loss_prevention)
         with pg_conn.cursor() as cursor:
             if has_loss:
-                # Any loss in the cycle means win_streak = 0 for this cycle
-                if loss_prevention_toggle:
-                    # If toggle is TRUE, update loss_prevention based on win streak
-                    cursor.execute(f"""
-                        UPDATE {_tm_monitor_list_table()}
-                        SET win_streak = 0,
-                            loss_prevention = 'one_contract',
-                            last_processed_cycle = %s
-                        WHERE id = %s
-                    """, (cycle_id, monitor_id))
-                else:
-                    # If toggle is FALSE, always set loss_prevention to 'off'
-                    cursor.execute(f"""
-                        UPDATE {_tm_monitor_list_table()}
-                        SET win_streak = 0,
-                            loss_prevention = 'off',
-                            last_processed_cycle = %s
-                        WHERE id = %s
-                    """, (cycle_id, monitor_id))
+                cursor.execute(f"""
+                    UPDATE {_tm_monitor_list_table()}
+                    SET win_streak = 0,
+                        last_processed_cycle = %s
+                    WHERE id = %s
+                """, (cycle_id, monitor_id))
                 log(f"🔄 Cycle {cycle_id} for {monitor} had a loss - win_streak reset to 0 (trades: {len(cycle_trades)})")
             else:
-                # All wins in the cycle - increment win_streak
                 if loss_prevention_toggle:
-                    # If toggle is TRUE, update loss_prevention based on win streak threshold
                     cursor.execute(f"""
                         UPDATE {_tm_monitor_list_table()}
                         SET win_streak = win_streak + %s,
-                            loss_prevention = CASE 
-                                WHEN win_streak + %s >= %s THEN 'off'
-                                ELSE 'one_contract'
-                            END,
                             last_processed_cycle = %s
                         WHERE id = %s
-                    """, (streak_increment, streak_increment, win_streak_threshold, cycle_id, monitor_id))
+                    """, (streak_increment, cycle_id, monitor_id))
                 else:
-                    # If toggle is FALSE, always set loss_prevention to 'off'
                     cursor.execute(f"""
                         UPDATE {_tm_monitor_list_table()}
                         SET win_streak = win_streak + %s,
-                            loss_prevention = 'off',
                             last_processed_cycle = %s
                         WHERE id = %s
                     """, (streak_increment, cycle_id, monitor_id))
@@ -4910,7 +4920,8 @@ def update_monitor_win_streak(trade_id: int) -> None:
                     log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +1 (cycle win, {win_count} trades in cycle, threshold: {win_streak_threshold})")
                 else:
                     log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +{win_count} (trades: {len(cycle_trades)}, threshold: {win_streak_threshold})")
-            
+
+            recompute_monitor_loss_prevention(cursor, _tm_monitor_list_table(), str(monitor_id))
             pg_conn.commit()
         
         pg_conn.close()

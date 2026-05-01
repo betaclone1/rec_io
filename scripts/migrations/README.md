@@ -1,5 +1,7 @@
 # Reversible migrations
 
+**Source of truth for schema evolution:** new tables, columns, indexes, and type changes are applied **only** through migration pairs here plus `scripts/db/run_migration.py`. Do not add parallel `ALTER` / `ADD COLUMN` paths in `init_database()` for production-shaped objects; see `docs/TENANT_INIT_AND_MIGRATIONS.md` and `AGENTS.md` (DB section).
+
 Pairs: `YYYYMMDD_HHMM_short_slug.up.sql` and `YYYYMMDD_HHMM_short_slug.down.sql` in this directory.
 
 ## Commands

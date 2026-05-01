@@ -4789,6 +4789,10 @@ def _ats_get_loss_prevention_one_contract_flag() -> bool:
             return False
         loss_prevention, lp_toggle = result[0], result[1]
         toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+        if isinstance(loss_prevention, str):
+            lp = loss_prevention.strip().lower()
+            if lp == "symbol_one_contract":
+                return True
         if not toggle_on:
             return False
         if isinstance(loss_prevention, str):

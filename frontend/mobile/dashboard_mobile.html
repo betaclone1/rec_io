@@ -782,6 +782,18 @@
       margin-right: 8px;
     }
 
+    .allocation-status-badge.lp.lp-symbol-wide {
+      min-width: 4.5em;
+      max-width: 7em;
+      white-space: nowrap;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+    }
+
+    .list-view .allocation-status-badge.lp.lp-symbol-wide {
+      min-width: 72px;
+    }
+
     /* Monitor Stats */
     .monitor-stats {
       display: grid;
@@ -2448,10 +2460,14 @@
                 const badge = document.createElement('div');
                 badge.className = badgeState.className;
                 badge.textContent = badgeState.text;
+                if (badgeState.title) badge.title = badgeState.title;
+                else badge.removeAttribute('title');
                 statusParent.insertBefore(badge, statusElement);
               } else {
                 existingBadge.className = badgeState.className;
                 existingBadge.textContent = badgeState.text;
+                if (badgeState.title) existingBadge.title = badgeState.title;
+                else existingBadge.removeAttribute('title');
               }
             } else if (existingBadge) {
               existingBadge.remove();
@@ -2548,12 +2564,131 @@
       return false;
     }
 
+    function normalizeLossPreventionKey(value) {
+      return String(value == null ? '' : value)
+        .trim()
+        .toLowerCase()
+        .replace(/-/g, '_');
+    }
+
+    function parseApiIsoTimestampMs(raw) {
+      if (raw == null || raw === '') return NaN;
+      let s = String(raw).trim();
+      if (/^\d{4}-\d{2}-\d{2} [0-9]/.test(s)) s = s.replace(' ', 'T');
+      const ms = Date.parse(s);
+      return Number.isFinite(ms) ? ms : NaN;
+    }
+
+    function getSymbolWideCooldownEndMs(monitor) {
+      const start =
+        monitor.symbol_wide_cooldown_start_time ?? monitor.symbolWideCooldownStartTime;
+      const durHrs =
+        monitor.symbol_wide_cooldown_duration ?? monitor.symbolWideCooldownDuration;
+      if (!start || durHrs == null || durHrs === '') return null;
+      const startMs = parseApiIsoTimestampMs(start);
+      if (!Number.isFinite(startMs)) return null;
+      const hrs = Number(durHrs);
+      if (!Number.isFinite(hrs) || hrs <= 0) return null;
+      return startMs + hrs * 3600000;
+    }
+
+    function isSymbolWideCooldownLive(monitor) {
+      const apiLive = monitor.symbol_wide_cooldown_live ?? monitor.symbolWideCooldownLive;
+      if (apiLive === true || apiLive === 'true' || apiLive === 1) {
+        return true;
+      }
+      if (!isTruthyFlag(monitor.symbol_wide_loss_prevention ?? monitor.symbolWideLossPrevention)) {
+        return false;
+      }
+      const endMs = getSymbolWideCooldownEndMs(monitor);
+      if (endMs == null) return false;
+      return Date.now() < endMs;
+    }
+
+    function formatSymbolWideCooldownEndEtRounded(monitor) {
+      const start =
+        monitor.symbol_wide_cooldown_start_time ?? monitor.symbolWideCooldownStartTime;
+      const durHrs =
+        monitor.symbol_wide_cooldown_duration ?? monitor.symbolWideCooldownDuration;
+      if (!start || durHrs == null || durHrs === '') return '';
+      const startMs = parseApiIsoTimestampMs(start);
+      if (!Number.isFinite(startMs)) return '';
+      const hrs = Number(durHrs);
+      if (!Number.isFinite(hrs) || hrs <= 0) return '';
+      const endMs = startMs + hrs * 3600000;
+      const end = new Date(endMs);
+      const dtf = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        hour12: false,
+        year: 'numeric',
+        month: 'numeric',
+        day: 'numeric',
+        hour: 'numeric',
+        minute: 'numeric',
+        second: 'numeric',
+      });
+      const parts = dtf.formatToParts(end);
+      const get = (t) => {
+        const p = parts.find((x) => x.type === t);
+        return p ? parseInt(p.value, 10) : 0;
+      };
+      const h = get('hour');
+      const mi = get('minute');
+      const s = get('second');
+      const total = h * 60 + mi + s / 60;
+      const r = Math.round(total / 15) * 15;
+      const hh = Math.floor(r / 60) % 24;
+      const mm = r % 60;
+      const ap = hh >= 12 ? 'pm' : 'am';
+      let h12 = hh % 12;
+      if (h12 === 0) h12 = 12;
+      const timePart = `${h12}:${String(mm).padStart(2, '0')} ${ap}`;
+      const dtfDay = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric',
+        month: 'short',
+        day: 'numeric',
+      });
+      const endDay = dtfDay.format(end);
+      const todayDay = dtfDay.format(new Date());
+      if (endDay === todayDay) return timePart;
+      return `${endDay}, ${timePart}`;
+    }
+
+    function symbolWideCooldownTooltipEt(monitor) {
+      const endMs = getSymbolWideCooldownEndMs(monitor);
+      if (endMs == null) return '';
+      const end = new Date(endMs);
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        dateStyle: 'medium',
+        timeStyle: 'short',
+      }).format(end);
+    }
+
     function resolveAllocationBadgeState(monitor) {
       const lossPreventionValue =
         monitor.loss_prevention ??
         monitor.lossPrevention ??
         monitor.loss_prevention_mode ??
         monitor.lossPreventionMode;
+      const lpKey = normalizeLossPreventionKey(lossPreventionValue);
+      const swLive = isSymbolWideCooldownLive(monitor);
+      const swBackend = lpKey === 'symbol_one_contract';
+      if (swLive || swBackend) {
+        const timeText = formatSymbolWideCooldownEndEtRounded(monitor);
+        const text = timeText || 'SW';
+        const tip =
+          'Symbol-wide loss prevention: sizing capped until ' +
+          (symbolWideCooldownTooltipEt(monitor) || timeText || 'end') +
+          ' ET (from monitor settings duration).';
+        return {
+          visible: true,
+          text,
+          className: 'allocation-status-badge lp lp-symbol-wide',
+          title: tip,
+        };
+      }
       const lossPreventionActive = lossPreventionValue && lossPreventionValue !== 'none' && lossPreventionValue !== 'off';
       if (lossPreventionActive) {
         return { visible: true, text: 'LP', className: 'allocation-status-badge lp' };
@@ -2614,7 +2749,8 @@
       if (!badge.visible) {
         return '';
       }
-      return `<div class="${badge.className}">${badge.text}</div>`;
+      const t = badge.title ? ` title="${escapeHtmlAttr(badge.title)}"` : '';
+      return `<div class="${badge.className}"${t}>${badge.text}</div>`;
     }
 
     function escapeHtmlAttr(s) {
@@ -7116,11 +7252,14 @@
             'account_balance_paper', 'subaccounts',
           ];
           const monitorHealthNames = ['market_kalshi_15m', 'live_symbol_status'];
+          const monitorListNames = ['monitor_list'];
           const careBankroll = typeof recDbChangeRawMentionsAny === 'function'
             ? recDbChangeRawMentionsAny(raw, bankrollNames) : true;
           const careHealth = typeof recDbChangeRawMentionsAny === 'function'
             ? recDbChangeRawMentionsAny(raw, monitorHealthNames) : true;
-          if (typeof recDbChangeRawMentionsAny === 'function' && !careBankroll && !careHealth) {
+          const careMonitorList = typeof recDbChangeRawMentionsAny === 'function'
+            ? recDbChangeRawMentionsAny(raw, monitorListNames) : false;
+          if (typeof recDbChangeRawMentionsAny === 'function' && !careBankroll && !careHealth && !careMonitorList) {
             return;
           }
 
@@ -7135,6 +7274,11 @@
 
           if (monitorHealthStreams.has(stream)) {
             scheduleMonitorHealthRefresh();
+          }
+
+          if (stream === 'monitor_list') {
+            scheduleMonitorsSoftRefresh(600);
+            return;
           }
 
           if (!bankrollRelatedStreams.has(stream)) {

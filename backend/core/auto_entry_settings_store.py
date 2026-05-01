@@ -18,7 +18,6 @@ _log = logging.getLogger(__name__)
 
 # Aligns with trade_manager.update_win_streak_for_cycle: when toggle is on,
 # loss_prevention is 'off' iff win_streak >= threshold, else 'one_contract'.
-_DEFAULT_WIN_STREAK_THRESHOLD = 22
 
 
 def loss_prevention_value_for_streak(
@@ -222,6 +221,40 @@ def apply_auto_entry_settings(
     if "max_ask" in data:
         update_fields.append("max_ask = %s")
         update_values.append(float(data["max_ask"]))
+    if "symbol_wide_loss_prevention" in data:
+        sw_raw = data["symbol_wide_loss_prevention"]
+        if isinstance(sw_raw, str):
+            sw_raw = sw_raw.lower() in ("true", "1", "yes")
+        sw_b = bool(sw_raw)
+        update_fields.append("symbol_wide_loss_prevention = %s")
+        update_values.append(sw_b)
+        if sw_b:
+            eff_dur = None
+            if "symbol_wide_cooldown_duration" in data:
+                eff_dur = int(data["symbol_wide_cooldown_duration"])
+            else:
+                cursor.execute(
+                    f"SELECT COALESCE(symbol_wide_cooldown_duration, 0) FROM {ml} WHERE id = %s",
+                    (monitor_id,),
+                )
+                dr = cursor.fetchone()
+                eff_dur = int(dr[0]) if dr and dr[0] is not None else 0
+            if eff_dur < 1:
+                return {
+                    "status": "error",
+                    "message": "symbol_wide_cooldown_duration must be at least 1 hour when symbol-wide loss prevention is enabled",
+                }
+
+    if "symbol_wide_cooldown_duration" in data:
+        hrs = int(data["symbol_wide_cooldown_duration"])
+        if hrs < 1:
+            return {
+                "status": "error",
+                "message": "symbol_wide_cooldown_duration must be at least 1",
+            }
+        update_fields.append("symbol_wide_cooldown_duration = %s")
+        update_values.append(hrs)
+
     if "loss_prevention_toggle" in data:
         lp_tog = bool(data["loss_prevention_toggle"])
         update_fields.append("loss_prevention_toggle = %s")
@@ -353,34 +386,8 @@ def apply_auto_entry_settings(
                 str(m).strip() if m is not None and str(m).strip() != "" else None
             )
 
-    if "loss_prevention_toggle" in data or "win_streak_threshold" in data:
-        cursor.execute(
-            f"""
-            SELECT win_streak, loss_prevention_toggle, win_streak_threshold
-            FROM {ml} WHERE id = %s
-            """,
-            (monitor_id,),
-        )
-        lp_row = cursor.fetchone()
-        if lp_row:
-            db_ws, db_lp_tog, db_ws_thresh = lp_row[0], lp_row[1], lp_row[2]
-        else:
-            db_ws, db_lp_tog, db_ws_thresh = 0, True, _DEFAULT_WIN_STREAK_THRESHOLD
-        eff_tog = (
-            bool(data["loss_prevention_toggle"])
-            if "loss_prevention_toggle" in data
-            else (bool(db_lp_tog) if db_lp_tog is not None else True)
-        )
-        if "win_streak_threshold" in data:
-            eff_thresh = int(data["win_streak_threshold"])
-        elif db_ws_thresh is not None:
-            eff_thresh = int(db_ws_thresh)
-        else:
-            eff_thresh = _DEFAULT_WIN_STREAK_THRESHOLD
-        ws = int(db_ws or 0)
-        lp_val = loss_prevention_value_for_streak(ws, eff_tog, eff_thresh)
-        update_fields.append("loss_prevention = %s")
-        update_values.append(lp_val)
+    # loss_prevention is derived in sync_symbol_wide_after_monitor_settings_save via
+    # recompute_monitor_loss_prevention (symbol-wide window overrides win-streak LP).
 
     if not update_fields:
         return {"status": "error", "message": "No valid fields to update"}
@@ -388,6 +395,15 @@ def apply_auto_entry_settings(
     query = f"UPDATE {ml} SET {', '.join(update_fields)} WHERE id = %s"
     update_values.append(monitor_id)
     cursor.execute(query, update_values)
+
+    trades_tbl = ctx.qualify_raw_table(f"trades_{ctx.user_no}")
+    # Local import avoids circular import: symbol_wide_loss_prevention imports
+    # loss_prevention_value_for_streak from this module.
+    from backend.core.symbol_wide_loss_prevention import (
+        sync_symbol_wide_after_monitor_settings_save,
+    )
+
+    sync_symbol_wide_after_monitor_settings_save(cursor, ml, trades_tbl, monitor_id)
 
     sel_base = """
         SELECT min_probability, min_differential, min_time, max_time, allow_re_entry,

@@ -2312,7 +2312,7 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "loss_prevention_toggle": result[2],
         "performance_based_allocation": result[3],
         "max_price_spread": float(result[4]) if result[4] is not None else 0.0300,
-        "paper_trade": result[5],
+        "paper_trade": bool(result[5]) if result[5] is not None else False,
         "prob_adj": float(result[6]) if result[6] is not None else 5.00,
         "position_size": result[7],
         "position_type": result[8],
@@ -2343,6 +2343,19 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "max_profit": float(result[33]) if result[33] is not None else 0.9900,
         "min_ask_range": float(result[34]) if result[34] is not None else None,
         "stop_loss_price": float(result[35]) if result[35] is not None else 0.0,
+        "min_cooldown_timer": int(result[36]) if result[36] is not None else 300,
+        "max_cooldown_timer": int(result[37]) if result[37] is not None else 3300,
+        "regime_monitor_enabled": bool(result[38]) if result[38] is not None else False,
+        "regime_window": (result[39] if result[39] is not None else "30d"),
+        "time_in_force": (result[40] if result[40] is not None else "fill_or_kill"),
+        "order_type": (result[41] if result[41] is not None else "market"),
+        "symbol_wide_loss_prevention": bool(result[42]) if result[42] is not None else False,
+        "symbol_wide_cooldown_duration": int(result[43]) if result[43] is not None else 4,
+        "symbol_wide_cooldown_start_time": result[44],
+        "flip_sell_prob": bool(result[45]) if result[45] is not None else False,
+        "flip_sell_floor": bool(result[46]) if result[46] is not None else False,
+        "flip_sell_prob_mult": result[47],
+        "flip_sell_floor_mult": result[48],
     }
 
 
@@ -2385,6 +2398,19 @@ def _code_fallback_strategy_defaults() -> Dict[str, Any]:
         "max_profit": 0.9900,
         "min_ask_range": None,
         "stop_loss_price": 0.0,
+        "min_cooldown_timer": 300,
+        "max_cooldown_timer": 3300,
+        "regime_monitor_enabled": False,
+        "regime_window": "30d",
+        "time_in_force": "fill_or_kill",
+        "order_type": "market",
+        "symbol_wide_loss_prevention": False,
+        "symbol_wide_cooldown_duration": 4,
+        "symbol_wide_cooldown_start_time": None,
+        "flip_sell_prob": False,
+        "flip_sell_floor": False,
+        "flip_sell_prob_mult": None,
+        "flip_sell_floor_mult": None,
     }
 
 
@@ -2409,7 +2435,12 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
             momentum_scalp_profit_target, min_ask, max_ask, max_profit,
             min_ask_range,
-            stop_loss_price
+            stop_loss_price,
+            min_cooldown_timer, max_cooldown_timer,
+            regime_monitor_enabled, regime_window,
+            time_in_force, order_type,
+            symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time,
+            flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
         FROM {}
         WHERE name = %s
         """
@@ -2434,7 +2465,12 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount,
             momentum_scalp_profit_target, min_ask, max_ask, max_profit,
             min_ask_range,
-            stop_loss_price
+            stop_loss_price,
+            min_cooldown_timer, max_cooldown_timer,
+            regime_monitor_enabled, regime_window,
+            time_in_force, order_type,
+            symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time,
+            flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
         FROM {}
         WHERE LOWER(name) = LOWER(%s)
         """
@@ -2721,12 +2757,16 @@ def create_monitor():
                  win_streak_threshold, loss_prevention, loss_prevention_toggle, performance_based_allocation, max_price_spread, paper_trade, prob_adj,
                  min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry, spike_alert_enabled, spike_alert_momentum_threshold, spike_alert_cooldown_threshold, spike_alert_cooldown_minutes, current_probability, min_ttc_seconds, momentum_spike_enabled, momentum_spike_threshold, verification_period_enabled, verification_period_seconds, min_volume,
                  momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target, min_ask, max_ask, max_profit, min_ask_range, stop_loss_price,
+                 min_cooldown_timer, max_cooldown_timer,
+                 regime_monitor_enabled, regime_window,
+                 time_in_force, order_type,
+                 symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time,
                  flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -2756,7 +2796,7 @@ def create_monitor():
                 strategy_defaults.get('loss_prevention_toggle', True),
                 strategy_defaults.get('performance_based_allocation', False),
                 strategy_defaults.get('max_price_spread', 0.0300),
-                True,  # New monitors always start in paper mode
+                bool(strategy_defaults.get('paper_trade', False)),
                 strategy_defaults.get('prob_adj', 5.00),
                 # Strategy default auto trade settings (from strategy_list)
                 # Use values directly from strategy_defaults - they should all be present if strategy was found
@@ -2788,10 +2828,19 @@ def create_monitor():
                 strategy_defaults.get('max_profit', 0.9900),
                 float(strategy_defaults.get('min_ask_range')) if strategy_defaults.get('min_ask_range') is not None else None,
                 float(strategy_defaults.get('stop_loss_price', 0.0) or 0.0),
-                False,  # flip_sell_prob (NOT NULL; tenant clones may lack column default)
-                False,  # flip_sell_floor
-                None,  # flip_sell_prob_mult
-                None,  # flip_sell_floor_mult
+                int(strategy_defaults.get('min_cooldown_timer', 300)),
+                int(strategy_defaults.get('max_cooldown_timer', 3300)),
+                strategy_defaults.get('regime_monitor_enabled', False),
+                strategy_defaults.get('regime_window') or '30d',
+                strategy_defaults.get('time_in_force') or 'fill_or_kill',
+                strategy_defaults.get('order_type') or 'market',
+                strategy_defaults.get('symbol_wide_loss_prevention', False),
+                int(strategy_defaults.get('symbol_wide_cooldown_duration', 4)),
+                None,  # symbol_wide_cooldown_start_time: always NULL on new monitor
+                strategy_defaults.get('flip_sell_prob', False),
+                strategy_defaults.get('flip_sell_floor', False),
+                strategy_defaults.get('flip_sell_prob_mult'),
+                strategy_defaults.get('flip_sell_floor_mult'),
                 ),
             )
 

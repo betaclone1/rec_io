@@ -8,6 +8,11 @@ so .env or deploy can use either convention. Scripts should use
 get_postgresql_connection() / get_system_postgresql_connection() or get_database_config(); do not use POSTGRES_*
 or hardcoded credentials.
 
+**Schema evolution:** Add or change tables/columns only via intentional pairs under
+``scripts/migrations/`` and ``scripts/db/run_migration.py``. Do not extend
+``init_database()`` with new ``ALTER`` / ``ADD COLUMN`` for production-shaped
+objects; that path is legacy greenfield bootstrap only (see ``docs/TENANT_INIT_AND_MIGRATIONS.md``).
+
 **Capacity:** Many supervisor programs each hold DB sessions. If Postgres returns
 ``too many clients``, raise ``max_connections`` (e.g. 200+ for local multi-tenant dev) and tune
 ``REC_MONITOR_MANAGER_PG_POOL_MAX`` / ``REC_MARKET_WATCHDOG_DB_POOL_MAX`` rather than relying only on connect retries.
@@ -22,6 +27,7 @@ from typing import Optional
 import psycopg2
 import psycopg2.pool
 
+from backend.core.db_schema_contract import enforce_on_raw_connection
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 _logger = logging.getLogger(__name__)
@@ -90,6 +96,7 @@ class SystemThreadedConnectionPool(psycopg2.pool.ThreadedConnectionPool):
     def _connect(self, key=None):
         conn = psycopg2.connect(*self._args, **self._kwargs)
         _apply_system_search_path(conn)
+        enforce_on_raw_connection(conn)
         if key is not None:
             self._used[key] = conn
             self._rused[id(conn)] = key
@@ -116,6 +123,7 @@ def get_database_config():
     }
     return merge_psycopg2_connect_kwargs(base)
 
+
 def get_system_postgresql_connection():
     """
     Raw PostgreSQL connection for **global** services (market ingest, live_data writers, LISTEN/NOTIFY helpers).
@@ -134,6 +142,7 @@ def get_system_postgresql_connection():
         try:
             conn = psycopg2.connect(**cfg)
             _apply_system_search_path(conn)
+            enforce_on_raw_connection(conn)
             return conn
         except psycopg2.OperationalError as e:
             if _is_transient_operational_connect_error(e) and attempt + 1 < _PG_CONNECT_MAX_ATTEMPTS:
@@ -185,6 +194,7 @@ def get_postgresql_connection(tenant_user_no: Optional[str] = None):
     for attempt in range(_PG_CONNECT_MAX_ATTEMPTS):
         try:
             conn = psycopg2.connect(**config)
+            enforce_on_raw_connection(conn)
             if tenant_user_no:
                 ctx = get_api_tenant_context(tenant_user_no)
             else:
@@ -255,7 +265,15 @@ def test_database_connection():
         return False, f"Database connection error: {e}"
 
 def init_database():
-    """Initialize database schema and tables."""
+    """Greenfield bootstrap for the default tenant schema and shared schemas.
+
+    Historical ``CREATE TABLE IF NOT EXISTS`` / ``ADD COLUMN IF NOT EXISTS`` blocks
+    remain for backward-compatible one-shot installs. **New schema work** must ship as
+    reversible migrations in ``scripts/migrations/`` and be applied with
+    ``scripts/db/run_migration.py`` — not as new DDL added here. Ongoing environments
+    should rely on migrations + ``system.schema_migrations``, not on re-running this
+    function to evolve the catalog.
+    """
     try:
         conn = get_postgresql_connection()
         if not conn:
@@ -1190,6 +1208,9 @@ def init_database():
                 paper_trade BOOLEAN DEFAULT FALSE,
                 test_filter BOOLEAN DEFAULT FALSE,
                 prob_adj NUMERIC(5,2) DEFAULT 5.00,
+                symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
+                symbol_wide_cooldown_duration INTEGER DEFAULT 4,
+                symbol_wide_cooldown_start_time TIMESTAMPTZ,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """))
@@ -2213,7 +2234,20 @@ def init_database():
                 stop_loss_price NUMERIC(6,4) DEFAULT 0.0000,
                 min_ask_range NUMERIC(18,4),
                 min_cooldown_timer INTEGER DEFAULT 300,
-                max_cooldown_timer INTEGER DEFAULT 3300
+                max_cooldown_timer INTEGER DEFAULT 3300,
+                regime_monitor_enabled BOOLEAN DEFAULT FALSE,
+                regime_window TEXT DEFAULT '30d',
+                time_in_force TEXT NOT NULL DEFAULT 'fill_or_kill',
+                order_type TEXT NOT NULL DEFAULT 'market',
+                symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
+                symbol_wide_cooldown_duration INTEGER DEFAULT 4,
+                symbol_wide_cooldown_start_time TIMESTAMPTZ,
+                flip_sell_prob BOOLEAN NOT NULL DEFAULT FALSE,
+                flip_sell_floor BOOLEAN NOT NULL DEFAULT FALSE,
+                flip_sell_prob_mult VARCHAR(32),
+                flip_sell_floor_mult VARCHAR(32),
+                CONSTRAINT strategy_list_0001_time_in_force_chk CHECK (time_in_force IN ('fill_or_kill', 'immediate_or_cancel', 'good_till_canceled')),
+                CONSTRAINT strategy_list_0001_order_type_chk CHECK (order_type IN ('limit', 'market'))
             );
         """))
         
@@ -2665,119 +2699,358 @@ def init_database():
             $$;
         """))
         
-        # Add paper_trade column to all monitor_list tables (not just 0001)
-        # Find all monitor_list tables and add the column if it doesn't exist
-        cursor.execute(_us("""
-            SELECT table_name 
-            FROM information_schema.tables 
-            WHERE table_schema = 'users' 
-            AND table_name LIKE 'monitor_list_%'
-            ORDER BY table_name
-        """))
-        monitor_list_tables = [row[0] for row in cursor.fetchall()]
-        
-        for table_name in monitor_list_tables:
-            cursor.execute(_us(f"""
+        # Add columns to every monitor_list_* table in the init tenant schema and, when it differs,
+        # the legacy ``users`` schema. ``_us()`` rewrites DDL to ``TS`` only; tables that still live
+        # under ``users`` were previously skipped, so symbol_wide (and other) columns never appeared.
+        _ml_migrate_schemas = sorted({TS, "users"})
+        for _ml_schema in _ml_migrate_schemas:
+            cursor.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s
+                  AND table_name LIKE 'monitor_list_%%'
+                ORDER BY table_name
+                """,
+                (_ml_schema,),
+            )
+            _monitor_list_tables = [row[0] for row in cursor.fetchall()]
+            for _ml_table in _monitor_list_tables:
+                cursor.execute(
+                    f"""
                 DO $$
                 BEGIN
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'paper_trade'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE', '{table_name}');
-                        EXECUTE format('UPDATE users.%I SET paper_trade = FALSE WHERE paper_trade IS NULL', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN paper_trade BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET paper_trade = FALSE WHERE paper_trade IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'test_filter'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN test_filter BOOLEAN DEFAULT FALSE', '{table_name}');
-                        EXECUTE format('UPDATE users.%I SET test_filter = FALSE WHERE test_filter IS NULL', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN test_filter BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET test_filter = FALSE WHERE test_filter IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'regime_monitor_enabled'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN regime_monitor_enabled BOOLEAN DEFAULT FALSE', '{table_name}');
-                        EXECUTE format('UPDATE users.%I SET regime_monitor_enabled = FALSE WHERE regime_monitor_enabled IS NULL', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN regime_monitor_enabled BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET regime_monitor_enabled = FALSE WHERE regime_monitor_enabled IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'regime_window'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN regime_window TEXT DEFAULT %L', '{table_name}', '30d');
-                        EXECUTE format('UPDATE users.%I SET regime_window = %L WHERE regime_window IS NULL', '{table_name}', '30d');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN regime_window TEXT DEFAULT %L', '{_ml_schema}', '{_ml_table}', '30d');
+                        EXECUTE format('UPDATE %I.%I SET regime_window = %L WHERE regime_window IS NULL', '{_ml_schema}', '{_ml_table}', '30d');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'prob_adj'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00', '{table_name}');
-                        EXECUTE format('UPDATE users.%I SET prob_adj = 5.00 WHERE prob_adj IS NULL', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN prob_adj NUMERIC(5,2) DEFAULT 5.00', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET prob_adj = 5.00 WHERE prob_adj IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'stop_loss_price'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN stop_loss_price NUMERIC(6,4) DEFAULT 0.0000', '{table_name}');
-                        EXECUTE format('UPDATE users.%I SET stop_loss_price = 0.0000 WHERE stop_loss_price IS NULL', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN stop_loss_price NUMERIC(6,4) DEFAULT 0.0000', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET stop_loss_price = 0.0000 WHERE stop_loss_price IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'flip_sell_prob'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_prob BOOLEAN NOT NULL DEFAULT FALSE', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_prob BOOLEAN NOT NULL DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'flip_sell_floor'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_floor BOOLEAN NOT NULL DEFAULT FALSE', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_floor BOOLEAN NOT NULL DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'flip_sell_prob_mult'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_prob_mult VARCHAR(32)', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_prob_mult VARCHAR(32)', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
-                        WHERE table_schema = 'users'
-                          AND table_name = '{table_name}'
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
                           AND column_name = 'flip_sell_floor_mult'
                     ) THEN
-                        EXECUTE format('ALTER TABLE users.%I ADD COLUMN flip_sell_floor_mult VARCHAR(32)', '{table_name}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_floor_mult VARCHAR(32)', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'symbol_wide_loss_prevention'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET symbol_wide_loss_prevention = FALSE WHERE symbol_wide_loss_prevention IS NULL', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'symbol_wide_cooldown_duration'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_duration INTEGER DEFAULT 4', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET symbol_wide_cooldown_duration = 4 WHERE symbol_wide_cooldown_duration IS NULL', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'symbol_wide_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_start_time TIMESTAMPTZ', '{_ml_schema}', '{_ml_table}');
                     END IF;
                 END
                 $$;
-            """))
+                """
+                )
+
+        # strategy_list_* + system.strategy_list_default: keep auto-trade / UAT columns aligned with monitor_list_*.
+        _sl_targets: list[tuple[str, str]] = []
+        for _sl_schema in _ml_migrate_schemas:
+            cursor.execute(
+                """
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema = %s
+                  AND table_name LIKE 'strategy_list_%%'
+                ORDER BY table_name
+                """,
+                (_sl_schema,),
+            )
+            _sl_targets.extend((_sl_schema, row[0]) for row in cursor.fetchall())
+        cursor.execute(
+            """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = 'system' AND table_name = 'strategy_list_default'
+            LIMIT 1
+            """
+        )
+        if cursor.fetchone():
+            _sl_targets.append(("system", "strategy_list_default"))
+
+        for _sl_schema, _sl_table in _sl_targets:
+            cursor.execute(
+                f"""
+                DO $$
+                BEGIN
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'regime_monitor_enabled'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN regime_monitor_enabled BOOLEAN DEFAULT FALSE', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('UPDATE %I.%I SET regime_monitor_enabled = FALSE WHERE regime_monitor_enabled IS NULL', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'regime_window'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN regime_window TEXT DEFAULT %L', '{_sl_schema}', '{_sl_table}', '30d');
+                        EXECUTE format('UPDATE %I.%I SET regime_window = %L WHERE regime_window IS NULL', '{_sl_schema}', '{_sl_table}', '30d');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'time_in_force'
+                    ) THEN
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD COLUMN time_in_force TEXT NOT NULL DEFAULT %L',
+                            '{_sl_schema}', '{_sl_table}', 'fill_or_kill'
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'order_type'
+                    ) THEN
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD COLUMN order_type TEXT NOT NULL DEFAULT %L',
+                            '{_sl_schema}', '{_sl_table}', 'market'
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint c
+                        JOIN pg_class t ON c.conrelid = t.oid
+                        JOIN pg_namespace n ON t.relnamespace = n.oid
+                        WHERE n.nspname = '{_sl_schema}'
+                          AND t.relname = '{_sl_table}'
+                          AND c.conname = '{_sl_table}_time_in_force_chk'
+                    ) THEN
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (time_in_force IN (%L, %L, %L))',
+                            '{_sl_schema}', '{_sl_table}', '{_sl_table}_time_in_force_chk',
+                            'fill_or_kill', 'immediate_or_cancel', 'good_till_canceled'
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM pg_constraint c
+                        JOIN pg_class t ON c.conrelid = t.oid
+                        JOIN pg_namespace n ON t.relnamespace = n.oid
+                        WHERE n.nspname = '{_sl_schema}'
+                          AND t.relname = '{_sl_table}'
+                          AND c.conname = '{_sl_table}_order_type_policy_chk'
+                    ) THEN
+                        EXECUTE format(
+                            'ALTER TABLE %I.%I ADD CONSTRAINT %I CHECK (order_type IN (%L, %L))',
+                            '{_sl_schema}', '{_sl_table}', '{_sl_table}_order_type_policy_chk',
+                            'limit', 'market'
+                        );
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'symbol_wide_loss_prevention'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('UPDATE %I.%I SET symbol_wide_loss_prevention = FALSE WHERE symbol_wide_loss_prevention IS NULL', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'symbol_wide_cooldown_duration'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_duration INTEGER DEFAULT 4', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('UPDATE %I.%I SET symbol_wide_cooldown_duration = 4 WHERE symbol_wide_cooldown_duration IS NULL', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'symbol_wide_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_start_time TIMESTAMPTZ', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'flip_sell_prob'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_prob BOOLEAN NOT NULL DEFAULT FALSE', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'flip_sell_floor'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_floor BOOLEAN NOT NULL DEFAULT FALSE', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'flip_sell_prob_mult'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_prob_mult VARCHAR(32)', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'flip_sell_floor_mult'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_floor_mult VARCHAR(32)', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+                END
+                $$;
+                """
+            )
+
+        # -------------------------------------------------------------------------
+        # Symbol-wide loss prevention: partial index on trades_* for startup scan
+        # (MAX closed_at GROUP BY symbol for qualifying losses).
+        #
+        # ROLLBACK (reverse migration): for each users.trades_<slot> run:
+        #   DROP INDEX IF EXISTS users.idx_trades_<slot>_sw_lp_startup;
+        # -------------------------------------------------------------------------
+        cursor.execute(_us("""
+            SELECT table_name
+            FROM information_schema.tables
+            WHERE table_schema = 'users'
+              AND table_name ~ '^trades_[0-9]{{4}}$'
+            ORDER BY table_name
+        """))
+        trades_tenant_tables = [row[0] for row in cursor.fetchall()]
+        for _tn in trades_tenant_tables:
+            _suffix = _tn.replace("trades_", "", 1)
+            _idx = f"idx_trades_{_suffix}_sw_lp_startup"
+            cursor.execute(
+                _us(
+                    f"""
+                    CREATE INDEX IF NOT EXISTS {_idx}
+                    ON users.{_tn} (symbol, closed_at DESC)
+                    WHERE status = 'closed'
+                      AND win_loss = 'L'
+                      AND (paper_trade IS NOT TRUE)
+                      AND (test_filter IS NOT TRUE)
+                    """
+                )
+            )
         
         # Grant privileges
         cursor.execute(_us("GRANT ALL PRIVILEGES ON SCHEMA users TO rec_io_user;"))
@@ -2822,6 +3095,10 @@ def init_database():
         conn.close()
         
         print("✅ Database initialized successfully")
+        print(
+            "Note: ongoing schema changes belong in scripts/migrations/*.up.sql "
+            "and scripts/db/run_migration.py up <id>, not init_database()."
+        )
         return True, "Database initialized successfully"
         
     except Exception as e:

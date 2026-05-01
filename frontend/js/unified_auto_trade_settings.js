@@ -48,6 +48,73 @@
       });
     }
 
+    function uatSymbolWideSyncDisabledState() {
+      [
+        ['symbolWideLossPreventionToggle', 'symbolWideCooldownDurationInput'],
+        ['msSymbolWideLossPreventionToggle', 'msSymbolWideCooldownDurationInput'],
+      ].forEach(function (pair) {
+        var sw = document.getElementById(pair[0]);
+        var dur = document.getElementById(pair[1]);
+        if (!sw || !dur) return;
+        dur.disabled = !sw.checked;
+        dur.style.opacity = sw.checked ? '1' : '0.5';
+      });
+    }
+
+    function uatApplySymbolWideFromApi(data) {
+      if (!data || typeof data !== 'object') return;
+      var on =
+        data.symbol_wide_loss_prevention === true ||
+        data.symbol_wide_loss_prevention === 'true' ||
+        data.symbol_wide_loss_prevention === 1;
+      var rawDur = data.symbol_wide_cooldown_duration;
+      var hrs =
+        rawDur != null && rawDur !== ''
+          ? String(Math.max(1, parseInt(rawDur, 10) || 4))
+          : '4';
+      var sw = document.getElementById('symbolWideLossPreventionToggle');
+      var dur = document.getElementById('symbolWideCooldownDurationInput');
+      var msw = document.getElementById('msSymbolWideLossPreventionToggle');
+      var mdur = document.getElementById('msSymbolWideCooldownDurationInput');
+      if (sw) sw.checked = on;
+      if (dur) dur.value = hrs;
+      if (msw) msw.checked = on;
+      if (mdur) mdur.value = hrs;
+      uatSymbolWideSyncDisabledState();
+    }
+
+    function uatReadSymbolWideForPayload(isMomentumScalp) {
+      var swEl = isMomentumScalp
+        ? document.getElementById('msSymbolWideLossPreventionToggle')
+        : document.getElementById('symbolWideLossPreventionToggle');
+      var durEl = isMomentumScalp
+        ? document.getElementById('msSymbolWideCooldownDurationInput')
+        : document.getElementById('symbolWideCooldownDurationInput');
+      var out = {};
+      if (swEl) out.symbol_wide_loss_prevention = swEl.checked;
+      if (durEl) {
+        var n = parseInt(String(durEl.value).trim(), 10);
+        out.symbol_wide_cooldown_duration = Number.isFinite(n) && n > 0 ? n : 4;
+      }
+      return out;
+    }
+
+    function uatWireSymbolWideOnModal(modal) {
+      if (!modal || modal.dataset.uatSymWideWired === '1') return;
+      modal.dataset.uatSymWideWired = '1';
+      modal.addEventListener('change', function (e) {
+        var t = e.target;
+        if (!t || !t.id) return;
+        if (
+          t.id !== 'symbolWideLossPreventionToggle' &&
+          t.id !== 'msSymbolWideLossPreventionToggle'
+        ) {
+          return;
+        }
+        uatSymbolWideSyncDisabledState();
+      });
+    }
+
     function uatWireProbabilityWindowHandles() {
       const minProbHandle = document.getElementById('minProbabilityHandle');
       const maxProbHandle = document.getElementById('maxProbabilityHandle');
@@ -82,6 +149,7 @@
         });
       }
       uatWireFlipSellOnModal(um);
+      uatWireSymbolWideOnModal(um);
       uatWireProbabilityWindowHandles();
       uatWireCooldownWindowHandles();
     }
@@ -1511,6 +1579,7 @@
         setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
         setChk('performanceBasedAllocation', data.performance_based_allocation ?? false);
         }
+        uatApplySymbolWideFromApi(data);
         setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
         setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
         setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
@@ -1851,6 +1920,7 @@
           }
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
         }
+        Object.assign(payload, uatReadSymbolWideForPayload(isMomentumScalp));
         const stopLossPriceSliderEl = document.getElementById(isMomentumScalp ? 'stopLossPriceSliderMs' : 'stopLossPriceSlider')
           || document.getElementById('stopLossPriceSlider');
         if (stopLossPriceSliderEl) {
@@ -2079,3 +2149,6 @@
 
     window.openUnifiedAutoTradeSettings = openUnifiedAutoTradeSettings;
     window.closeUnifiedAutoTradeSettings = closeUnifiedAutoTradeSettings;
+    window.uatApplySymbolWideFromApi = uatApplySymbolWideFromApi;
+    window.uatReadSymbolWideForPayload = uatReadSymbolWideForPayload;
+    window.uatSymbolWideSyncDisabledState = uatSymbolWideSyncDisabledState;
