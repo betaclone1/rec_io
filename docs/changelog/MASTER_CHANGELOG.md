@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-01 — Release v3.4.3: Kalshi v2 executor path, orderbook notify routing, Trade Monitor and dashboard UI
+
+**Summary**
+- **Release: v3.4.3**
+- **Kalshi execution (trade_executor):** Create orders via Trade API v2 **`/portfolio/events/orders`** with YES-book **`price`**, mapped from legacy side and limit; opens keep monitor TIF normalization; **closes** use aggressive limit + **FoK**, **self_trade_prevention_type** **maker**, and treat **zero/missing fill** on close as an error so trade_manager can retry instead of silently leaving positions open.
+- **Realtime:** **`stream_registry`** maps **`live_data.orderbook_kalshi_*`** table NOTIFY sources to the **`orderbook_kalshi`** stream for listeners.
+- **Trade manager:** Tenant **`orders_*`** table helper (**`legacy_users_orders`**) wired into SQL that resolves Kalshi **`order_id`** for open/close bookkeeping.
+- **Frontend:** Trade Monitor NEW layout (orderbook and active-trade panels), **orderbook-redis-ui** strike diff display and reduced **`#mktWindow`** churn; **trade-monitor-new-init** / **trade-execution-controller** / **active-trade-supervisor** panel alignment; **unified_auto_trade** modal partial and settings script; **dashboard** tab slimmed; **strike-table** CSS; mobile trade monitor and legacy tab hooks; symbol icon assets.
+- **Tooling:** **`.cursor/rules/07-main-app-slim.mdc`** — keep **`main.py`** thin; prefer feature modules for new HTTP surface.
+- **Plans:** Session work (Kalshi v2 order path, orderbook UI, Trade Monitor NEW); no single completed `.cursor/plans/*.md` file for this batch.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.3`
+
+---
+
 ## 2026-04-29 — Release v3.4.2: trade_manager startup lock-timeout guard and Trade Monitor tab rollback
 
 **Summary**
@@ -15,11 +36,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** Session hotfix work (no completed `.cursor/plans/*.md` plan file tied to this deploy batch).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260427_1200_live_data_kalshi_orderbook_sidecar_registry`
+- [x] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260428_1500_live_data_price_change_db_notify`
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.2`
 
 ---

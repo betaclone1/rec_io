@@ -137,4 +137,36 @@ tr.spanner-row td {
   font-style: italic !important;
   height: 25px !important;
   padding: 2px 4px !important;
-} 
+}
+
+/* Main monitor strike table (#strike-table): body rows ~10% smaller than header; watchlist keeps base .strike-table sizes. */
+#strike-table tbody td {
+  font-size: 12.6px;
+  padding: 3.6px 5.4px;
+}
+
+#strike-table tbody tr td {
+  min-height: 3.15rem;
+}
+
+#strike-table .price-box {
+  padding: 4.5px 8.64px;
+  border-radius: 7.2px;
+  min-width: 43.2px;
+}
+
+#strike-table .strike-table-strike-stack {
+  gap: 3.6px;
+  min-height: 2.25rem;
+}
+
+#strike-table .strike-table-strike-cp {
+  font-size: 9.9px;
+  min-height: 1.215em;
+}
+
+#strike-table tr.spanner-row td {
+  padding: 1.8px 3.6px !important;
+  font-size: 10.8px !important;
+  height: 22.5px !important;
+}

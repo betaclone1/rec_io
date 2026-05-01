@@ -19,6 +19,7 @@ from datetime import datetime, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional
 from pathlib import Path
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from dotenv import dotenv_values
 import base64
 import hashlib
@@ -279,6 +280,47 @@ def _notify_trade_manager_executor_status(status_payload: dict) -> None:
     threading.Thread(target=_run, daemon=True).start()
 
 
+def _v2_price_from_internal_side_and_limit(side: str, limit_dollars: str) -> str:
+    """
+    Convert internal yes/no side + buy limit into V2 YES-book price.
+    yes => bid @ price
+    no  => ask @ (1 - price)
+    """
+    try:
+        px = Decimal(str(limit_dollars))
+    except (InvalidOperation, TypeError, ValueError):
+        raise ValueError("invalid_limit_price")
+    if px <= 0 or px >= 1:
+        raise ValueError("limit_price_out_of_range")
+    out = px if side == "yes" else (Decimal("1") - px)
+    out = out.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if out <= 0 or out >= 1:
+        raise ValueError("derived_v2_price_out_of_range")
+    return f"{out:.4f}"
+
+
+def _v2_fill_count_float(response_json: dict) -> float:
+    raw = response_json.get("fill_count") if isinstance(response_json, dict) else None
+    if raw is None:
+        return 0.0
+    try:
+        return float(str(raw).strip())
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _v2_buy_leg_from_legacy_intent_side(intent: str, legacy_side: str) -> str:
+    """
+    Legacy system treats all orders as buys; for closes, buy the opposite leg.
+    Returns canonical buy leg: 'yes' or 'no'.
+    """
+    s = "yes" if str(legacy_side).strip().lower() in ("y", "yes") else "no"
+    i = str(intent or "open").strip().lower()
+    if i == "close":
+        return "no" if s == "yes" else "yes"
+    return s
+
+
 def process_trigger_trade_request(data: dict):
     """
     Run Kalshi order path (same as /trigger_trade). Returns (response_dict, http_code).
@@ -322,8 +364,8 @@ def process_trigger_trade_request(data: dict):
         count_fp = f"{float(count_val):.2f}"
 
     intent = str(data.get("intent", "open")).strip().lower()
-    tif = normalize_time_in_force_loose(data.get("time_in_force"))
     if intent == "open":
+        tif = normalize_time_in_force_loose(data.get("time_in_force"))
         if not tif:
             msg = "missing_or_invalid_time_in_force"
             log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
@@ -348,27 +390,41 @@ def process_trigger_trade_request(data: dict):
             _notify_trade_manager_executor_status(status_payload)
             return {"status": "rejected", "error": msg}, 400
     else:
-        if not tif:
-            tif = "immediate_or_cancel"
-        lim = "0.9900"
+        # Closes: always market-style aggressive limit + FoK; ignore monitor order_type / TIF / buy_price.
+        tif = "fill_or_kill"
+        lim = limit_price_for_executor_payload(order_type_policy="market", ticket_buy_price=None)
 
+    buy_leg = _v2_buy_leg_from_legacy_intent_side(intent, side)
+    try:
+        v2_price = _v2_price_from_internal_side_and_limit(buy_leg, lim)
+    except ValueError as e:
+        msg = f"v2_price_mapping_error:{e}"
+        log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
+        if trade_id:
+            status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
+        else:
+            status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+        _notify_trade_manager_executor_status(status_payload)
+        return {"status": "rejected", "error": msg}, 400
+
+    v2_side = "bid" if buy_leg == "yes" else "ask"
+    # STP "maker" cancels resting maker on self-cross and keeps matching — better for closes than
+    # "taker_at_cross", which cancels the incoming taker and can leave positions open.
     order_payload = {
         "ticker": ticker,
-        "side": side,
-        "type": "limit",
-        "count_fp": count_fp,
+        "side": v2_side,
+        "count": count_fp,
+        "price": v2_price,
         "time_in_force": tif,
-        "action": "buy",
+        "self_trade_prevention_type": "maker",
         "client_order_id": str(uuid.uuid4()),
         "cancel_order_on_pause": True,
     }
-    if side == "yes":
-        order_payload["yes_price_dollars"] = lim
-    else:
-        order_payload["no_price_dollars"] = lim
+    if intent != "open":
+        order_payload["post_only"] = False
 
     timestamp = str(int(time.time() * 1000))
-    path = "/portfolio/orders"
+    path = "/portfolio/events/orders"
     full_path = f"/trade-api/v2{path}"
 
     KEY_ID, KEY_PATH = get_current_credentials()
@@ -429,16 +485,38 @@ def process_trigger_trade_request(data: dict):
         log_event(ticket_id, f"✅ TRADE SUCCESS - Status: {response.status_code}, Response: {response.text}", trade_id=trade_id)
 
         order_id = None
+        response_json: dict = {}
         try:
-            response_json = response.json()
-            if "order" in response_json and "order_id" in response_json["order"]:
-                order_id = response_json["order"]["order_id"]
-                log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}", trade_id=trade_id)
+            parsed = response.json()
+            response_json = parsed if isinstance(parsed, dict) else {}
         except Exception as e:
-            log_event(ticket_id, f"⚠️ Failed to extract order_id: {e}", trade_id=trade_id)
+            log_event(ticket_id, f"⚠️ Failed to parse response JSON: {e}", trade_id=trade_id)
 
-        trade_id = data.get("id")
-        intent = data.get("intent", "open")
+        if "order_id" in response_json:
+            order_id = response_json["order_id"]
+            log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}", trade_id=trade_id)
+        elif "order" in response_json and isinstance(response_json["order"], dict) and "order_id" in response_json["order"]:
+            order_id = response_json["order"]["order_id"]
+            log_event(ticket_id, f"📋 EXTRACTED ORDER_ID: {order_id}", trade_id=trade_id)
+
+        # intent / trade_id already normalized above (do not re-read raw intent here).
+
+        # V2 create returns 201 even when IOC fully unfills: fill_count can be 0 — position unchanged on Kalshi.
+        if intent != "open":
+            fill_fp = _v2_fill_count_float(response_json)
+            if fill_fp < 1e-6:
+                msg = (
+                    f"close_order_zero_or_missing_fill: fill_count={response_json.get('fill_count')!r} "
+                    f"remaining_count={response_json.get('remaining_count')!r} body_snip={response.text[:800]!r}"
+                )
+                log_event(ticket_id, f"❌ {msg}", trade_id=trade_id)
+                if trade_id:
+                    status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
+                else:
+                    status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+                _notify_trade_manager_executor_status(status_payload)
+                return {"status": "rejected", "error": msg}, 502
+
         if trade_id:
             status_payload = {
                 "id": trade_id,

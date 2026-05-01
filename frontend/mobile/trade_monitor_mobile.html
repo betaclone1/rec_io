@@ -3862,9 +3862,20 @@ async function fetchAndRenderTrades() {
       const closeBtn = document.createElement('button');
       closeBtn.textContent = 'Close';
       closeBtn.className = 'button';
-      closeBtn.onclick = function() { 
-        const currentPrice = getCurrentBTCTickerPrice();
-        closeTrade(trade.id, currentPrice, event); 
+      closeBtn.onclick = async function () {
+        closeBtn.disabled = true;
+        try {
+          const currentPrice = getCurrentBTCTickerPrice();
+          const r = await closeTrade(trade.id, currentPrice);
+          if (!r || !r.success) {
+            console.error('[closeTrade]', r);
+            alert(r && r.error ? r.error : 'Close failed');
+            return;
+          }
+          await fetchAndRenderTrades();
+        } finally {
+          closeBtn.disabled = false;
+        }
       };
       closeTd.appendChild(closeBtn);
       row.appendChild(closeTd);

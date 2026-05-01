@@ -38,6 +38,7 @@ from backend.core.config.database import get_postgresql_connection
 from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
 from backend.core.tenant_legacy_sql import (
     legacy_users_monitor_list,
+    legacy_users_orders,
     legacy_users_trades,
     legacy_users_trades_simulated,
 )
@@ -65,6 +66,9 @@ def _tm_monitor_list_table() -> str:
 
 def _tm_trades_simulated_table() -> str:
     return legacy_users_trades_simulated(effective_tenant_context_for_sql_rewrite().user_no)
+
+def _tm_orders_table() -> str:
+    return legacy_users_orders(effective_tenant_context_for_sql_rewrite().user_no)
 
 EST_ZONE = ZoneInfo("America/New_York")
 # Hourly: "BTC 2pm" -> hour 2, pm
@@ -2934,11 +2938,11 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
             
             # Check ORDERS table for our specific order_id (prefer _fp columns for counts and *_dollars for prices/fees)
             with pg_conn.cursor() as cursor:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, side,
                            taker_fees_dollars, maker_fees_dollars,
                            taker_fill_cost_dollars, maker_fill_cost_dollars
-                    FROM users.orders_0001 
+                    FROM {_tm_orders_table()} 
                     WHERE order_id = %s
                 """, (stored_order_id_open,))
                 order_row = cursor.fetchone()
@@ -3323,10 +3327,10 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         # Check close order once - orders change notification should handle timing
         try:
             with pg_conn.cursor() as cursor:
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT remaining_count_fp, fill_count_fp, status,
                            taker_fees_dollars, maker_fees_dollars
-                    FROM users.orders_0001 
+                    FROM {_tm_orders_table()} 
                     WHERE order_id = %s
                 """, (stored_order_id_close,))
                 order_row = cursor.fetchone()
@@ -3369,9 +3373,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     pg_conn_close_order = get_postgresql_connection()
                     if pg_conn_close_order:
                         with pg_conn_close_order.cursor() as cursor:
-                            cursor.execute("""
+                            cursor.execute(f"""
                                 SELECT side, taker_fill_cost_dollars, fill_count_fp
-                                FROM users.orders_0001 
+                                FROM {_tm_orders_table()} 
                                 WHERE order_id = %s
                             """, (stored_order_id_close,))
                             close_order_data = cursor.fetchone()
@@ -3426,9 +3430,17 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         buy_price, position, close_method, existing_fees = trade_data
                         close_method = close_method or "manual"
                         existing_fees = existing_fees or 0.0
+                        try:
+                            buy_price = float(buy_price or 0.0)
+                        except (TypeError, ValueError):
+                            buy_price = 0.0
+                        try:
+                            position = float(position or 0.0)
+                        except (TypeError, ValueError):
+                            position = 0.0
                         
                         # Use the total fees we calculated (existing + close order fees)
-                        total_fees = total_fees_paid if total_fees_paid is not None else 0.0
+                        total_fees = float(total_fees_paid) if total_fees_paid is not None else 0.0
                         
                         log_event(ticket_id, f"MANAGER: Final total fees for PnL: ${total_fees}")
                         

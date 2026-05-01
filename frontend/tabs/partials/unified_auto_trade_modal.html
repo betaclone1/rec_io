@@ -1,0 +1,727 @@
+  <!-- Unified Auto Trade Settings Modal (focus on correct ID normalization and data load) -->
+  <div id="unifiedAutoTradeModal" class="uat-modal-overlay" style="display:none;">
+    <style>
+      /* Auto Trade modal — align with account_manager transfer modals (dark panel, muted chrome) */
+      #unifiedAutoTradeModal.uat-modal-overlay {
+        position: fixed;
+        top: 0;
+        left: 0;
+        width: 100vw;
+        height: 100vh;
+        z-index: 10000;
+        overflow-y: auto;
+        box-sizing: border-box;
+        padding: 24px 20px;
+        align-items: flex-start;
+        justify-content: center;
+        background: rgba(0, 0, 0, 0.5);
+      }
+      #unifiedAutoTradeModal .value-bubble-container {
+        padding-left: 40px;
+        padding-right: 40px;
+        box-sizing: border-box;
+        width: 100%;
+        min-width: 0;
+      }
+      #unifiedAutoTradeModal .value-bubble-container input[type="range"] { width: 100%; box-sizing: border-box; display:block; margin: 0; }
+      #unifiedAutoTradeModal .unified-auto-trade-modal-box {
+        background: #1f2633;
+        border: 1px solid #4a5568;
+        border-radius: 8px;
+        padding: 20px;
+        min-width: min(567px, calc(100vw - 40px));
+        max-width: min(720px, 100vw - 40px);
+        max-height: calc(100vh - 48px);
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+        box-sizing: border-box;
+        box-shadow: 0 8px 32px rgba(0, 0, 0, 0.35);
+      }
+      #unifiedAutoTradeModal .uat-modal-title-row {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        margin-bottom: 16px;
+      }
+      #unifiedAutoTradeModal .uat-modal-title {
+        font-size: 14px;
+        font-weight: bold;
+        margin: 0;
+        flex: 1;
+        color: #c4c4c4;
+      }
+      #unifiedAutoTradeModal .uat-test-filter-label {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        font-weight: 500;
+        color: #9ca3af;
+        white-space: nowrap;
+        flex-shrink: 0;
+      }
+      #unifiedAutoTradeModal .uat-modal-body {
+        flex: 1 1 auto;
+        display: flex;
+        flex-direction: column;
+        justify-content: flex-start;
+        align-items: stretch;
+        overflow-x: hidden;
+        overflow-y: auto;
+        min-height: 0;
+        box-sizing: border-box;
+        scrollbar-width: none;
+        -ms-overflow-style: none;
+      }
+      #unifiedAutoTradeModal .uat-modal-body::-webkit-scrollbar {
+        display: none;
+      }
+      #unifiedAutoTradeModal label { color: #c4c4c4 !important; }
+      #unifiedAutoTradeModal .uat-section-title {
+        font-size: 12px;
+        font-weight: bold;
+        margin: 4px 0 8px 0;
+        color: #c4c4c4;
+      }
+      #unifiedAutoTradeModal .uat-modal-hr {
+        border: none;
+        border-top: 1px solid #4a5568;
+        width: auto;
+        box-sizing: border-box;
+      }
+      #unifiedAutoTradeModal .uat-modal-hr--24 { margin: 24px 0; }
+      #unifiedAutoTradeModal .uat-modal-hr--24-16 { margin: 24px 0 16px 0; }
+      #unifiedAutoTradeModal .uat-modal-hr--16-24 { margin: 16px 0 24px 0; }
+      #unifiedAutoTradeModal .uat-modal-hr--16 { margin: 16px 0; }
+      #unifiedAutoTradeModal .uat-modal-hr--8-16 { margin: 8px 0 16px 0; }
+      #unifiedAutoTradeModal .uat-modal-actions {
+        margin-top: 16px;
+        display: flex;
+        gap: 10px;
+        justify-content: flex-end;
+        flex-shrink: 0;
+      }
+      #unifiedAutoTradeModal .uat-modal-btn-primary {
+        background: var(--accent-color, #3b82f6);
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 500;
+        transition: background-color 0.2s;
+      }
+      #unifiedAutoTradeModal .uat-modal-btn-primary:hover { background: var(--accent-hover, #2563eb); }
+      #unifiedAutoTradeModal .uat-modal-btn-secondary {
+        background: #4a5568;
+        color: white;
+        border: none;
+        padding: 6px 12px;
+        border-radius: 4px;
+        cursor: pointer;
+        font-size: 12px;
+        font-weight: 500;
+      }
+      #unifiedAutoTradeModal .uat-modal-btn-secondary:hover { background: #5a6578; }
+      #unifiedAutoTradeModal #regimeWindowPickerRow {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        flex-wrap: wrap;
+        margin-bottom: 24px;
+      }
+      #unifiedAutoTradeModal #regimeWindowPickerRow label {
+        margin-bottom: 0 !important;
+        flex: 0 0 auto;
+      }
+      #unifiedAutoTradeModal #regimeWindowSelect {
+        width: auto;
+        min-width: 7.5rem;
+        max-width: 100%;
+        padding: 6px 10px;
+        border-radius: 4px;
+        border: 1px solid #4a5568;
+        background: #2a3441;
+        color: #fff;
+        font-size: 12px;
+        box-sizing: border-box;
+      }
+      #unifiedAutoTradeModal [id$="SliderContainer"] { background: #3c495e !important; }
+      #unifiedAutoTradeModal [id$="Range"] { background: #3b82f6 !important; }
+      #unifiedAutoTradeModal [id$="Handle"] { background: #3b82f6 !important; }
+      #unifiedAutoTradeModal [id$="MinDisplay"],
+      #unifiedAutoTradeModal [id$="MaxDisplay"],
+      #unifiedAutoTradeModal [id$="ValueDisplay"],
+      #unifiedAutoTradeModal #sliderValueDisplay {
+        background: #2a3441 !important;
+        color: #e2e8f0 !important;
+        border: 1px solid #4a5568 !important;
+        box-shadow: none !important;
+      }
+      #unifiedAutoTradeModal input[type="checkbox"] { accent-color: #3b82f6; }
+      #unifiedAutoTradeModal input[type="checkbox"] + span { color: #9ca3af !important; }
+      #unifiedAutoTradeModal .uat-performance-label { color: #e2e8f0 !important; font-size: 14px; font-weight: 500; }
+      #unifiedAutoTradeModal input[type="range"] { accent-color: #3b82f6; background: #3c495e !important; }
+      #unifiedAutoTradeModal .uat-stepper {
+        display: flex;
+        align-items: center;
+        border: 1px solid #4a5568;
+        border-radius: 4px;
+        background: #2a3441;
+      }
+      #unifiedAutoTradeModal .uat-stepper-btn {
+        padding: 8px 12px;
+        border: none;
+        background: #3c495e;
+        color: #e2e8f0;
+        cursor: pointer;
+        font-size: 12px;
+      }
+      #unifiedAutoTradeModal .uat-stepper-btn:hover { background: #4a5568; }
+      #unifiedAutoTradeModal .uat-stepper-btn-down { border-right: 1px solid #4a5568; border-radius: 4px 0 0 4px; }
+      #unifiedAutoTradeModal .uat-stepper-btn-up { border-left: 1px solid #4a5568; border-radius: 0 4px 4px 0; }
+      #unifiedAutoTradeModal .uat-stepper-display {
+        padding: 8px 16px;
+        font-size: 13px;
+        color: #e2e8f0;
+        min-width: 60px;
+        text-align: center;
+        font-weight: 500;
+      }
+      #unifiedAutoTradeModal .uat-auto-stop-accuracy-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 24px;
+        width: 100%;
+        margin: 6px 0 14px 0;
+      }
+      #unifiedAutoTradeModal .uat-auto-stop-accuracy-row .uat-auto-stop-accuracy {
+        flex: 0 1 auto;
+        min-width: 0;
+        margin: 0;
+      }
+      #unifiedAutoTradeModal .uat-flip-sell-side {
+        flex: 0 0 auto;
+        margin-left: auto;
+        display: flex;
+        flex-direction: row;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: 10px;
+        padding-top: 2px;
+      }
+      #unifiedAutoTradeModal .uat-flip-sell-check {
+        display: flex;
+        align-items: center;
+        gap: 6px;
+        font-size: 12px;
+        color: #9ca3af;
+        cursor: pointer;
+        user-select: none;
+        margin: 0;
+      }
+      #unifiedAutoTradeModal .uat-flip-sell-check input {
+        width: 14px;
+        height: 14px;
+        accent-color: var(--accent-color, #3b82f6);
+        margin: 0;
+      }
+      #unifiedAutoTradeModal .uat-flip-multipliers {
+        display: flex;
+        align-items: center;
+        gap: 4px;
+      }
+      #unifiedAutoTradeModal .uat-flip-multipliers--disabled {
+        opacity: 0.42;
+        pointer-events: none;
+        filter: grayscale(0.25);
+      }
+      #unifiedAutoTradeModal .uat-flip-multiplier-btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background-color: transparent;
+        border: 1px solid #4a5568;
+        color: #e2e8f0;
+        padding: 2px 7px;
+        border-radius: 3px;
+        cursor: pointer;
+        transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+        min-width: 31px;
+        height: 20px;
+        box-sizing: border-box;
+        font-size: calc(12px * 0.7);
+        line-height: 1;
+        text-align: center;
+      }
+      #unifiedAutoTradeModal .uat-flip-multiplier-btn.active {
+        background-color: #3b82f6;
+        border-color: #2563eb;
+        color: #fff;
+        font-weight: 600;
+        box-shadow: 0 0 6px rgba(59, 130, 246, 0.5);
+      }
+      #unifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn.active {
+        background-color: transparent;
+        border-color: #4a5568;
+        color: #e2e8f0;
+        font-weight: normal;
+        box-shadow: none;
+      }
+      #unifiedAutoTradeModal .uat-flip-multiplier-btn:hover:not(.active) {
+        background-color: rgba(255, 255, 255, 0.08);
+      }
+      #unifiedAutoTradeModal .uat-flip-multipliers--disabled .uat-flip-multiplier-btn:hover {
+        background-color: transparent;
+      }
+      #unifiedAutoTradeModal .uat-auto-stop-accuracy {
+        font-size: 12px;
+        color: #9ca3af;
+        margin: 0;
+        line-height: 1.55;
+      }
+      #unifiedAutoTradeModal .uat-auto-stop-accuracy [data-uat-acc] {
+        display: flex;
+        align-items: baseline;
+        gap: 0.5em;
+        margin: 0;
+      }
+      #unifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-label {
+        flex: 0 0 6.75rem;
+        text-align: right;
+        color: inherit;
+      }
+      #unifiedAutoTradeModal .uat-auto-stop-accuracy .uat-acc-value {
+        flex: 1 1 auto;
+        min-width: 0;
+        text-align: left;
+        font-variant-numeric: tabular-nums;
+      }
+      #unifiedAutoTradeModal .uat-pos-mult-group {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        align-items: center;
+      }
+      #unifiedAutoTradeModal .uat-pos-mult-btn {
+        background-color: transparent;
+        border: 1px solid #9ca3af;
+        color: #e2e8f0;
+        padding: 4px 10px;
+        border-radius: 4px;
+        cursor: pointer;
+        transition: background-color 0.3s ease, color 0.3s ease;
+        min-width: 48px;
+        text-align: center;
+        font-size: 12px;
+      }
+      #unifiedAutoTradeModal .uat-pos-mult-btn.active {
+        background-color: #3b82f6;
+        border-color: #2563eb;
+        color: white;
+        font-weight: bold;
+        box-shadow: 0 0 6px rgba(59, 130, 246, 0.7);
+      }
+      #unifiedAutoTradeModal .uat-pos-mult-btn:hover:not(.active) {
+        background-color: rgba(255, 255, 255, 0.08);
+      }
+    </style>
+    <div class="unified-auto-trade-modal-box" onclick="event.stopPropagation();">
+      <div class="uat-modal-title-row">
+        <div id="unifiedAutoTradeModalTitle" class="uat-modal-title">Monitor</div>
+        <label class="uat-test-filter-label" for="uatMonitorTestFilter">
+          <input type="checkbox" id="uatMonitorTestFilter" />
+          Test filter
+        </label>
+      </div>
+      <div class="uat-position-size-block" style="margin-bottom:16px;">
+        <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#e2e8f0;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#9ca3af;">100 contracts</span></div>
+        <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
+          <input type="number" class="uat-pos-input" min="1" value="20" style="width:120px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
+          <div style="display:flex; flex-direction:column; gap:2px;">
+            <button type="button" class="uat-pos-toggle-percent" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:#007bff; border:1px solid #0056b3; color:white; border-radius:4px; cursor:pointer;">%</button>
+            <button type="button" class="uat-pos-toggle-contracts" style="height:15px; padding:2px 6px; box-sizing:border-box; font-size:9px; background-color:transparent; border:1px solid #9ca3af; color:#e2e8f0; border-radius:4px; cursor:pointer;">C</button>
+          </div>
+          <div class="uat-pos-mult-group">
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="0" style="height:28px; box-sizing:border-box;">1c</button>
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="0.5" style="height:28px; box-sizing:border-box;">½</button>
+            <button type="button" class="uat-pos-mult-btn active" data-multiplier="1" style="height:28px; box-sizing:border-box;">1</button>
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="1.5" style="height:28px; box-sizing:border-box;">1.5</button>
+            <button type="button" class="uat-pos-mult-btn" data-multiplier="2" style="height:28px; box-sizing:border-box;">2</button>
+          </div>
+        </div>
+      </div>
+      <div class="uat-kalshi-order-row" style="display:flex; flex-wrap:wrap; gap:12px 16px; align-items:flex-end; margin-bottom:16px;">
+        <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
+          <label for="uatKalshiOrderType" style="font-size:12px; color:#9ca3af; font-weight:600;">Order Type</label>
+          <select id="uatKalshiOrderType" aria-label="Order type" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+            <option value="limit">Limit</option>
+            <option value="market">Market</option>
+          </select>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:4px; min-width:160px;">
+          <label for="uatKalshiTimeInForce" style="font-size:12px; color:#9ca3af; font-weight:600;">Time in Force</label>
+          <select id="uatKalshiTimeInForce" aria-label="Time in force" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+            <option value="fill_or_kill">Fill or Kill</option>
+            <option value="immediate_or_cancel">Immediate or Cancel</option>
+            <option value="good_till_canceled">Good Till Canceled</option>
+          </select>
+        </div>
+      </div>
+      <div class="uat-modal-body">
+        <!-- Regime Monitor Settings (LIVE<->PAPER auto-switch) -->
+        <div class="uat-section-title">Regime Monitor</div>
+        <div style="position:relative; margin-bottom:16px; width:100%; display:flex; align-items:center; gap:10px;">
+          <input type="checkbox" id="regimeMonitorEnabled" style="width:16px; height:16px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Auto-switch LIVE/PAPER based on rolling performance</span>
+        </div>
+        <div id="regimeWindowPickerRow" style="display:none;">
+          <label for="regimeWindowSelect" style="font-size:14px; color:#333; font-weight:500;">Regime Window:</label>
+          <select id="regimeWindowSelect" aria-label="Regime window">
+            <option value="30d">30 Days</option>
+            <option value="7d">7 Days</option>
+            <option value="1d">1 Day</option>
+            <option value="12h">12 Hours</option>
+          </select>
+        </div>
+
+        <!-- HOURLY HTC Strategy Section -->
+        <div id="htcStrategySection" style="display: contents;">
+        <div class="uat-section-title">Auto Entry</div>
+        <!-- Auto Entry (exact UI from trade_monitor) -->
+        <label for="timeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <!-- Time Window Slider Container -->
+          <div id="timeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing: border-box;">
+            <!-- Min Time Handle -->
+            <div id="minTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Time Handle -->
+            <div id="maxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="timeWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Time Display -->
+            <div id="timeWindowMinDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Time Display -->
+            <div id="timeWindowMaxDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
+        <label for="autoEntryMinVolumeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="autoEntryMinVolumeSlider" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="probabilityWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Probability Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Probability Window Slider Container -->
+          <div id="probabilityWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Probability Handle -->
+            <div id="minProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Probability Handle -->
+            <div id="maxProbabilityHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="probabilityWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Probability Display (BELOW slider) -->
+            <div id="probabilityWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Probability Display (ABOVE slider) -->
+            <div id="probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
+        <div id="risingDevilMinAskRangeSection" style="display:none; margin-top:8px;">
+        <label for="risingDevilMinAskRangeSlider" style="display:block; font-size:14px; color:#333; margin:12px 0 8px 0; font-weight:500;">Minimum Ask Range</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:8px;">
+          <input type="range" id="risingDevilMinAskRangeSlider" min="0" max="100" step="1" value="70" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="risingDevilMinAskRangeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.7000</div>
+        </div>
+        </div>
+
+        <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="autoEntryDifferentialSlider" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryMaxDifferentialSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Maximum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="autoEntryMaxDifferentialSlider" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryMaxDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="autoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />
+
+        <!-- Spike Alert Settings (Entry) -->
+        <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+          <input type="checkbox" id="spikeAlertEnabled" style="width:16px; height:16px; margin-right:8px; flex-shrink:0; accent-color:#007bff;" />
+          <span class="uat-performance-label">Monitor for momentum spikes</span>
+        </div>
+
+        <div id="spikeAlertSliderGroup" style="display:none;">
+        <label for="spikeAlertMomentumSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="spikeAlertMomentumSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="spikeAlertMomentumValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="spikeAlertCooldownSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="spikeAlertCooldownSlider" min="50" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="spikeAlertCooldownValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="spikeAlertTimeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="spikeAlertTimeSlider" min="0" max="180" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="spikeAlertTimeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        </div>
+
+        <label for="cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Cooldown Window Slider Container -->
+          <div id="cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Cooldown Window Handle -->
+            <div id="minCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Cooldown Window Handle -->
+            <div id="maxCooldownWindowHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="cooldownWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Cooldown Window Display (BELOW slider) -->
+            <div id="cooldownWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Cooldown Window Display (ABOVE slider) -->
+            <div id="cooldownWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+
+        <div id="probAdjSpikeGroup" style="display:none;" data-strategy-shows-prob-adj="0" aria-hidden="true">
+        <label id="probAdjLabel" for="probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
+        <div id="probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        </div>
+
+        <hr class="uat-modal-hr uat-modal-hr--24-16" aria-hidden="true" />
+
+        <div style="position:relative; margin:0; width:100%; display:flex; align-items:center;">
+          <input type="checkbox" id="performanceBasedAllocation" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span class="uat-performance-label">Enable performance-based allocation</span>
+        </div>
+
+        <hr class="uat-modal-hr uat-modal-hr--16-24" aria-hidden="true" />
+        <div class="uat-section-title">Auto Stop</div>
+
+        <!-- Auto Stop (subset: value bubble for probability, momentum, verification) -->
+        <label for="autoStopProbabilitySlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Current Win Probability:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="autoStopProbabilitySlider" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="sliderValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        <div class="uat-auto-stop-accuracy-row">
+          <div class="uat-auto-stop-accuracy uat-acc-probability-stop" aria-live="polite">
+            <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+            <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+          </div>
+          <div class="uat-flip-sell-side">
+            <label class="uat-flip-sell-check">
+              <input type="checkbox" class="uat-flip-sell-input" id="uatFlipSellProbabilityStop" />
+              <span>Flip Sell</span>
+            </label>
+            <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+              <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+            </div>
+          </div>
+        </div>
+
+        <label for="stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Stop Loss Price:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="stopLossPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+        <div class="uat-auto-stop-accuracy-row">
+          <div class="uat-auto-stop-accuracy uat-acc-stop-loss-floor" aria-live="polite">
+            <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+            <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+          </div>
+          <div class="uat-flip-sell-side">
+            <label class="uat-flip-sell-check">
+              <input type="checkbox" class="uat-flip-sell-input" id="uatFlipSellStopLossFloor" />
+              <span>Flip Sell</span>
+            </label>
+            <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+              <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+            </div>
+          </div>
+        </div>
+
+        <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
+        <label for="autoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
+          <div class="uat-stepper">
+            <button type="button" id="autoStopMinTTCDown" class="uat-stepper-btn uat-stepper-btn-down">▼</button>
+            <span id="autoStopMinTTCDisplay" class="uat-stepper-display">Loading...</span>
+            <button type="button" id="autoStopMinTTCUp" class="uat-stepper-btn uat-stepper-btn-up">▲</button>
+          </div>
+          <input type="hidden" id="autoStopMinTTCInput" value="60" />
+        </div>
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="momentumSpikeEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Auto-close trades during momentum spikes</span>
+        </div>
+
+        <label for="momentumSpikeThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Threshold (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="momentumSpikeThresholdSlider" min="10" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="momentumSpikeThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="verificationPeriodEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
+          <span style="font-size:13px; color:#666;">Enable verification period before auto-stop</span>
+        </div>
+
+        <label for="verificationPeriodSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Verification Duration (seconds):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="verificationPeriodSlider" min="5" max="60" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="verificationPeriodValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        </div>
+        <!-- End HOURLY HTC Strategy Section -->
+        
+        <!-- MOMENTUM SCALP Strategy Section -->
+        <div id="msStrategySection" style="display: none;">
+        <div class="uat-section-title">Auto Entry</div>
+        <!-- Auto Entry -->
+        <label for="msTimeWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;"><span id="dashboardMSStrategyLabel">Momentum Scalp</span> Time Window:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <!-- Time Window Slider Container -->
+          <div id="msTimeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing: border-box;">
+            <!-- Min Time Handle -->
+            <div id="msMinTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Time Handle -->
+            <div id="msMaxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="msTimeWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Time Display -->
+            <div id="msTimeWindowMinDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Time Display -->
+            <div id="msTimeWindowMaxDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+        
+        <label for="msMomentumScalpEntryThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Threshold (±):</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="msMomentumScalpEntryThresholdSlider" min="0" max="100" step="1" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msMomentumScalpEntryThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        
+        <label for="msAutoEntryMinVolumeSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="msAutoEntryMinVolumeSlider" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msAutoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        
+        <label for="msAskWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Current Ask:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+          <!-- Momentum Scalp Ask Window Slider Container -->
+          <div id="msAskWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <!-- Min Ask Handle -->
+            <div id="msMinAskHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Max Ask Handle -->
+            <div id="msMaxAskHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <!-- Selected Range -->
+            <div id="msAskWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <!-- Min Ask Display (BELOW slider) -->
+            <div id="msAskWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+            <!-- Max Ask Display (ABOVE slider) -->
+            <div id="msAskWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+          </div>
+        </div>
+        
+        <label for="msMaxPriceSpreadSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Max Price Spread:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="msMaxPriceSpreadSlider" min="0" max="20" step="0.1" value="3" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msMaxPriceSpreadValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        
+        <label for="msAutoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="msAutoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
+          <input type="range" id="msAutoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msAutoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        
+        <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />
+        <div class="uat-section-title">Auto Stop</div>
+        
+        <!-- Auto Stop -->
+        <hr class="uat-modal-hr uat-modal-hr--8-16" aria-hidden="true" />
+        <label for="stopLossPriceSliderMs" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Stop Loss Price:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="stopLossPriceSliderMs" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="stopLossPriceValueDisplayMs" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+        <div class="uat-auto-stop-accuracy-row">
+          <div class="uat-auto-stop-accuracy uat-acc-stop-loss-floor" aria-live="polite">
+            <div data-uat-acc="7d"><span class="uat-acc-label">7d Accuracy:</span><span class="uat-acc-value">…</span></div>
+            <div data-uat-acc="30d"><span class="uat-acc-label">30d Accuracy:</span><span class="uat-acc-value">…</span></div>
+          </div>
+          <div class="uat-flip-sell-side">
+            <label class="uat-flip-sell-check">
+              <input type="checkbox" class="uat-flip-sell-input" id="uatFlipSellStopLossFloorMs" />
+              <span>Flip Sell</span>
+            </label>
+            <div class="uat-flip-multipliers uat-flip-multipliers--disabled" role="group" aria-label="Flip sell size">
+              <button type="button" class="uat-flip-multiplier-btn active" data-uat-mult="1">1x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="2">2x</button>
+              <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
+            </div>
+          </div>
+        </div>
+
+        <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
+        <label for="msAutoStopMinTTCInput" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
+        <div style="display: flex; align-items: center; gap: 10px; margin-bottom: 24px;">
+          <div class="uat-stepper">
+            <button type="button" id="msAutoStopMinTTCDown" class="uat-stepper-btn uat-stepper-btn-down">▼</button>
+            <span id="msAutoStopMinTTCDisplay" class="uat-stepper-display">Loading...</span>
+            <button type="button" id="msAutoStopMinTTCUp" class="uat-stepper-btn uat-stepper-btn-up">▲</button>
+          </div>
+          <input type="hidden" id="msAutoStopMinTTCInput" value="60" />
+        </div>
+        
+        <label for="msMomentumScalpTrailingStopSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Trailing Stop Amount:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="msMomentumScalpTrailingStopSlider" min="0" max="100" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msMomentumScalpTrailingStopValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        
+        <label for="msMomentumScalpProfitTargetSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Profit Target:</label>
+        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="range" id="msMomentumScalpProfitTargetSlider" min="1" max="50" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msMomentumScalpProfitTargetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+        </div>
+        <!-- End MOMENTUM SCALP Strategy Section -->
+
+      </div>
+      <div class="uat-modal-actions">
+        <button type="button" id="unifiedAutoTradeCancel" class="uat-modal-btn-secondary">Cancel</button>
+        <button type="button" id="unifiedAutoTradeSave" class="uat-modal-btn-primary">Save</button>
+      </div>
+    </div>
+  </div>

@@ -61,6 +61,8 @@ def resolve_stream_for_notify(
     key = (s, t)
     if key in TABLE_TO_STREAM:
         return TABLE_TO_STREAM[key], None
+    if s == "live_data" and t.startswith("orderbook_kalshi_"):
+        return "orderbook_kalshi", None
     m = _TENANT_SCHEMA_RE.match(s)
     if not m:
         return None, None

@@ -3,7 +3,6 @@
   let shouldAutoCenter = true;
   let isBookVisible = false;
   let lastMarketMode = '';
-  let lastStrikeTableFetchMs = 0;
   let hourlyStrikeRows = [];
   /** Last full strike list from strike-table API (before liquidity filter). */
   let hourlyRawStrikeRows = [];
@@ -13,9 +12,10 @@
   let lastHourlyRowsSignature = '';
   let lastHourlyStructureSignature = '';
   let lastExpandedOrderbookSignature = '';
-  let hourlyLiquidityByTicker = new Map();
-  const HOURLY_LIQUIDITY_TTL_MS = 8000;
   let hourlyExpandedStateByTicker = new Map();
+  let hourlyLiquidityByTicker = new Map();
+  const HOURLY_LIQUIDITY_TTL_MS = 45000;
+  let centerAtmStrikeOnNextRender = true;
 
   /**
    * Countdown uses only Kalshi ticker → expiration (America/New_York), not DB ttc_* columns.
@@ -23,13 +23,15 @@
    */
   let marketExpireAtMs = null;
   let marketExpireSourceKey = '';
+  let ttcTimer = null;
   let hourlyHeaderLastFetchSymbol = '';
   let hourlyStrikeTableDbWs = null;
   /** Last `live_symbol_spot` frame (Redis → main `/ws/db_changes`); used when symbol/monitor changes. */
   let lastLiveSymbolSpotMsg = null;
 
-  let tickBusy = false;
-  let tickPending = false;
+  let refreshBusy = false;
+  let refreshPending = false;
+  let refreshTimer = null;
 
   function setMode(event, next) {
     if (event && typeof event.stopPropagation === 'function') {
@@ -43,7 +45,7 @@
     n.classList.toggle('active', mode === 'no');
     n.classList.toggle('tab-no', true);
     shouldAutoCenter = true;
-    tick();
+    requestDataRefresh();
   }
   window.setMode = setMode;
 
@@ -432,6 +434,10 @@
   function clearMarketExpiration() {
     marketExpireAtMs = null;
     marketExpireSourceKey = '';
+    if (ttcTimer) {
+      clearTimeout(ttcTimer);
+      ttcTimer = null;
+    }
   }
 
   /** First two hyphen segments (series + date/hour token); same contract across strike legs. */
@@ -520,20 +526,52 @@
     } else {
       el.textContent = formatTtcClock(ttcSeconds);
     }
-    const c = monitorTtcColor();
     el.style.backgroundColor = 'transparent';
-    el.style.borderColor = c;
     el.style.color = '#f3f4f6';
+    const autoOn =
+      document.body &&
+      document.body.dataset &&
+      document.body.dataset.tmNewAutoTradeOn === '1';
+    if (!autoOn) {
+      el.style.borderColor = 'transparent';
+      el.style.boxShadow = 'none';
+      return;
+    }
+    const c = monitorTtcColor();
+    const glow =
+      c === '#22c55e'
+        ? '0 0 8px rgba(34, 197, 94, 0.45)'
+        : c === '#ef4444'
+          ? '0 0 8px rgba(239, 68, 68, 0.45)'
+          : '0 0 8px rgba(250, 204, 21, 0.45)';
+    el.style.borderColor = c;
+    el.style.boxShadow = glow;
   }
 
   function applyHeaderTtcToClock() {
     if (marketExpireAtMs == null || !Number.isFinite(marketExpireAtMs)) {
       updateMarketHeaderTtc(null);
+      if (ttcTimer) {
+        clearTimeout(ttcTimer);
+        ttcTimer = null;
+      }
       return;
     }
     const sec = Math.max(0, Math.floor((marketExpireAtMs - Date.now()) / 1000));
     updateMarketHeaderTtc(sec);
+    if (ttcTimer) clearTimeout(ttcTimer);
+    if (sec > 0) {
+      ttcTimer = setTimeout(() => {
+        ttcTimer = null;
+        applyHeaderTtcToClock();
+      }, 1000);
+    } else {
+      ttcTimer = null;
+    }
   }
+
+  /** Called from trade-monitor-new-init when auto-trade toggle syncs so border updates immediately. */
+  window.tmNewSyncTtcClockChrome = applyHeaderTtcToClock;
 
   function applyStrikePackHeader(pack, market) {
     if (!pack || pack.fetchFailed) return;
@@ -541,15 +579,27 @@
     const mt = pack.marketTitle && String(pack.marketTitle).trim();
     const tEl = document.getElementById('mktTitle');
     const wEl = document.getElementById('mktWindow');
-    const mktPhrase = market === 'hourly' ? 'hourly' : '15 min';
-    if (tEl) tEl.textContent = mt ? sym + ' ' + mktPhrase + ' • ' + mt : sym + ' ' + mktPhrase;
+    const strat =
+      (document.body && document.body.dataset && document.body.dataset.currentMonitorStrategy) || '—';
+    const monitorNumber =
+      (document.body && document.body.dataset && document.body.dataset.currentMonitorNumber) || '—';
+    const mktKey = currentMarket();
+    const mkLabel = mktKey === 'hourly' ? 'Hourly' : '15m';
+    if (tEl) {
+      const nextTitle = sym + ' ' + mkLabel + ' \u2022 ' + strat;
+      if (tEl.textContent !== nextTitle) tEl.textContent = nextTitle;
+    }
     const ref =
       (pack.rows && pack.rows[0] && pack.rows[0].ticker && String(pack.rows[0].ticker).trim()) ||
       (pack.eventTicker && String(pack.eventTicker).trim()) ||
       '';
-    if (wEl) wEl.textContent = ref ? hourlyMarketWindowLabelFromTicker(ref) : '';
+    if (wEl) {
+      const nextWindow = monitorNumber + ' \u2022 ' + (mt || '');
+      if (wEl.textContent !== nextWindow) wEl.textContent = nextWindow;
+    }
     if (ref) {
       armExpirationFromTicker(ref);
+      applyHeaderTtcToClock();
     } else {
       clearMarketExpiration();
       updateMarketHeaderTtc(null);
@@ -635,6 +685,8 @@
         bufferPct: s.buffer_pct,
         activeSide: s.active_side,
         probActive: s.probability,
+        yesDiff: s.yes_diff != null && s.yes_diff !== '' ? Number(s.yes_diff) : null,
+        noDiff: s.no_diff != null && s.no_diff !== '' ? Number(s.no_diff) : null,
       }))
       .sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
     return {
@@ -647,6 +699,13 @@
       headerSymbol,
       fetchFailed: false,
     };
+  }
+
+  function rowHasLiquidityFromStrikeRow(r) {
+    if (!r) return false;
+    const ya = Number(r.yesAsk);
+    const na = Number(r.noAsk);
+    return Number.isFinite(ya) && Number.isFinite(na) && ya > 0 && na > 0;
   }
 
   function hasAsksAndBids(book) {
@@ -691,13 +750,17 @@
     const spot =
       spotPrice != null && Number.isFinite(Number(spotPrice)) ? Number(spotPrice) : null;
     const mustTicker = spot != null ? closestStrikeTicker(rows, spot) : '';
+    const checks = await Promise.all(
+      rows.map(async (row) => {
+        if (!rowHasLiquidityFromStrikeRow(row)) return false;
+        return await fetchTickerLiquidityOk(row.ticker);
+      })
+    );
 
-    const checks = rows.map((r) => fetchTickerLiquidityOk(r.ticker));
-    const oks = await Promise.all(checks);
     const out = [];
     const outTickers = new Set();
     for (let i = 0; i < rows.length; i += 1) {
-      if (oks[i]) {
+      if (checks[i]) {
         out.push(rows[i]);
         outTickers.add(String(rows[i].ticker));
       }
@@ -776,37 +839,51 @@
     return null;
   }
 
-  function formatStrikeTableCurrentPriceLine(price) {
-    if (price == null || !Number.isFinite(price)) return '';
-    return (
-      'Current price: $' +
-      price.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
-    );
-  }
-
-  /** Caption in bottom padding of strike cell only (absolute); in-flow strike stays centered. */
-  function syncStrikeTableCurrentPriceLine() {
+  function syncStrikeTableAtmMarker() {
     const root = document.getElementById('hourlyStrikeList');
     if (!root || !hourlyStrikeRows.length) return;
+    const scrollRoot = root.querySelector('[data-hourly-strike-scroll]') || root;
     const spot = hourlySpotPrice();
-    const caption = formatStrikeTableCurrentPriceLine(spot);
     const closest =
       spot != null && Number.isFinite(spot) ? closestStrikeTicker(hourlyStrikeRows, spot) : '';
+    let closestRow = null;
     for (const r of hourlyStrikeRows) {
       const row = root.querySelector(
         'tr.hourly-strike-data-row[data-hourly-ticker="' + r.ticker + '"]'
       );
       if (!row) continue;
-      const cpEl = row.querySelector('td.hourly-col-strike .quote-strike-cp');
-      if (!cpEl) continue;
-      const show = Boolean(caption && closest && String(r.ticker) === String(closest));
-      if (show) {
-        cpEl.textContent = caption;
-        cpEl.setAttribute('aria-hidden', 'false');
+      const strikeTd = row.querySelector('td.hourly-col-strike');
+      if (!strikeTd) continue;
+      if (closest && String(r.ticker) === String(closest)) {
+        strikeTd.classList.add('hourly-strike-atm');
+        closestRow = row;
       } else {
-        cpEl.textContent = '';
-        cpEl.setAttribute('aria-hidden', 'true');
+        strikeTd.classList.remove('hourly-strike-atm');
       }
+    }
+    if (centerAtmStrikeOnNextRender && closest) {
+      const targetTicker = String(closest);
+      const tryCenter = (attempt) => {
+        const h = Number(scrollRoot.clientHeight || 0);
+        const row = root.querySelector(
+          'tr.hourly-strike-data-row[data-hourly-ticker="' + targetTicker + '"]'
+        );
+        if (h > 20 && row) {
+          const rootRect = scrollRoot.getBoundingClientRect();
+          const rowRect = row.getBoundingClientRect();
+          const rowTopInScroll = rowRect.top - rootRect.top + scrollRoot.scrollTop;
+          const target = rowTopInScroll - h / 2 + rowRect.height / 2;
+          scrollRoot.scrollTop = Math.max(0, target);
+          // If content still doesn't overflow (transient bootstrap render), keep centering armed.
+          if (scrollRoot.scrollHeight > scrollRoot.clientHeight + 4 && hourlyStrikeRows.length > 1) {
+            centerAtmStrikeOnNextRender = false;
+          }
+          return;
+        }
+        if (attempt >= 14) return;
+        requestAnimationFrame(() => tryCenter(attempt + 1));
+      };
+      requestAnimationFrame(() => tryCenter(0));
     }
   }
 
@@ -822,6 +899,8 @@
           r.bufferPct,
           r.activeSide,
           r.probActive,
+          r.yesDiff,
+          r.noDiff,
         ].join('|')
       )
       .join('||');
@@ -854,6 +933,28 @@
     const n = Number(v);
     if (!Number.isFinite(n)) return '—';
     return fmtWholeCentsFromDollars(n);
+  }
+
+  /** yes_diff / no_diff from strike table API, whole number; positive with leading +. */
+  function fmtHourlyStrikeDiff(v) {
+    if (v == null || v === '') return '—';
+    const n = Number(v);
+    if (!Number.isFinite(n)) return '—';
+    const r = Math.round(n);
+    if (r > 0) return '+' + String(r);
+    return String(r);
+  }
+
+  /** Full class list for diff span (sign coloring via CSS modifiers). */
+  function hourlyStrikeDiffClassName(v) {
+    const base = 'hourly-strike-yesno-diff';
+    if (v == null || v === '') return base + ' hourly-strike-yesno-diff--na';
+    const n = Number(v);
+    if (!Number.isFinite(n)) return base + ' hourly-strike-yesno-diff--na';
+    const r = Math.round(n);
+    if (r > 0) return base + ' hourly-strike-yesno-diff--pos';
+    if (r < 0) return base + ' hourly-strike-yesno-diff--neg';
+    return base + ' hourly-strike-yesno-diff--zero';
   }
 
   /** Class names for strike-row Yes/No ask displays (green if yes ask higher, red if no ask higher). */
@@ -910,6 +1011,8 @@
   function renderHourlyRows() {
     const root = document.getElementById('hourlyStrikeList');
     if (!root) return;
+    const prevScrollEl = root.querySelector('[data-hourly-strike-scroll]');
+    const prevScrollTop = prevScrollEl ? prevScrollEl.scrollTop : 0;
     const bodyRows = hourlyStrikeRows
       .map((r) => {
         const isOpen = expandedHourlyTicker === r.ticker;
@@ -923,10 +1026,10 @@
           r.ticker +
           '">' +
           '<td class="hourly-col-strike">' +
+          '<span class="quote-strike-atm-ind" aria-hidden="true"></span>' +
           '<span class="quote-strike-value">' +
           fmtStrike(r.strike) +
           '</span>' +
-          '<span class="quote-strike-cp" aria-hidden="true"></span>' +
           '</td>' +
           '<td class="hourly-col-buffer"><span data-hourly-stat="buf">' +
           fmtHourlyBuffer(r.buffer) +
@@ -938,17 +1041,29 @@
           fmtHourlyProb(r.probActive) +
           '</span></td>' +
           '<td class="hourly-col-yes">' +
+          '<span class="hourly-strike-pill-wrap">' +
           '<span class="' +
           pill.yes +
           '">' +
           fmtAsk(r.yesAsk) +
-          '</span></td>' +
+          '</span>' +
+          '<span class="' +
+          hourlyStrikeDiffClassName(r.yesDiff) +
+          '" data-hourly-strike-diff="yes">' +
+          fmtHourlyStrikeDiff(r.yesDiff) +
+          '</span></span></td>' +
           '<td class="hourly-col-no">' +
+          '<span class="hourly-strike-pill-wrap">' +
           '<span class="' +
           pill.no +
           '">' +
           fmtAsk(r.noAsk) +
-          '</span></td>' +
+          '</span>' +
+          '<span class="' +
+          hourlyStrikeDiffClassName(r.noDiff) +
+          '" data-hourly-strike-diff="no">' +
+          fmtHourlyStrikeDiff(r.noDiff) +
+          '</span></span></td>' +
           '</tr>';
         const bookTr = isOpen
           ? '<tr class="hourly-strike-book-row" data-hourly-book-row="' +
@@ -960,8 +1075,7 @@
         return dataTr + bookTr;
       })
       .join('');
-    const tableHtml =
-      '<table class="hourly-strike-table">' +
+    const colgroup =
       '<colgroup>' +
       '<col class="hourly-col-strike-w" />' +
       '<col class="hourly-col-buffer-w" />' +
@@ -969,7 +1083,11 @@
       '<col class="hourly-col-prob-w" />' +
       '<col class="hourly-col-yes-w" />' +
       '<col class="hourly-col-no-w" />' +
-      '</colgroup>' +
+      '</colgroup>';
+    const tableHtml =
+      '<div class="hourly-strike-head">' +
+      '<table class="hourly-strike-table">' +
+      colgroup +
       '<thead><tr>' +
       '<th scope="col">STRIKE</th>' +
       '<th scope="col">BUFFER</th>' +
@@ -977,11 +1095,18 @@
       '<th scope="col">Prob</th>' +
       '<th scope="col">YES</th>' +
       '<th scope="col">NO</th>' +
-      '</tr></thead>' +
+      '</tr></thead></table></div>' +
+      '<div class="hourly-strike-scroll" data-hourly-strike-scroll>' +
+      '<table class="hourly-strike-table">' +
+      colgroup +
       '<tbody>' +
       (bodyRows || '<tr><td colspan="6" class="hourly-strike-empty">No strikes.</td></tr>') +
-      '</tbody></table>';
+      '</tbody></table></div>';
     root.innerHTML = hourlyStrikeRows.length ? tableHtml : '<div class="load-err">No strikes.</div>';
+    const newScrollEl = root.querySelector('[data-hourly-strike-scroll]');
+    if (newScrollEl && !centerAtmStrikeOnNextRender) {
+      newScrollEl.scrollTop = Math.max(0, prevScrollTop);
+    }
     root.querySelectorAll('tr[data-hourly-toggle]').forEach((trEl) => {
       trEl.addEventListener('click', (ev) => {
         if (
@@ -1000,6 +1125,7 @@
           st.lastScrollTop = 0;
         }
         renderHourlyRows();
+        requestDataRefresh();
       });
     });
     root.querySelectorAll('.hourly-col-yes, .hourly-col-no').forEach((td) => {
@@ -1007,7 +1133,7 @@
         ev.stopPropagation();
       });
     });
-    syncStrikeTableCurrentPriceLine();
+    syncStrikeTableAtmMarker();
   }
 
   function patchHourlyRowQuotesInPlace() {
@@ -1020,8 +1146,7 @@
       if (!row) continue;
       const strikeTd = row.querySelector('td.hourly-col-strike');
       const valEl = strikeTd && strikeTd.querySelector('.quote-strike-value');
-      const cpEl = strikeTd && strikeTd.querySelector('.quote-strike-cp');
-      if (!strikeTd || !valEl || !cpEl) {
+      if (!strikeTd || !valEl) {
         renderHourlyRows();
         return;
       }
@@ -1047,8 +1172,18 @@
       bufEl.textContent = fmtHourlyBuffer(r.buffer);
       bufPctEl.textContent = fmtHourlyBufferPct(r.bufferPct);
       probEl.textContent = fmtHourlyProb(r.probActive);
+      const yesDiffEl = row.querySelector('[data-hourly-strike-diff="yes"]');
+      const noDiffEl = row.querySelector('[data-hourly-strike-diff="no"]');
+      if (yesDiffEl) {
+        yesDiffEl.textContent = fmtHourlyStrikeDiff(r.yesDiff);
+        yesDiffEl.className = hourlyStrikeDiffClassName(r.yesDiff);
+      }
+      if (noDiffEl) {
+        noDiffEl.textContent = fmtHourlyStrikeDiff(r.noDiff);
+        noDiffEl.className = hourlyStrikeDiffClassName(r.noDiff);
+      }
     }
-    syncStrikeTableCurrentPriceLine();
+    syncStrikeTableAtmMarker();
   }
 
   /** If spot moved and the true closest strike was liquidity-filtered out, add it from raw rows. */
@@ -1193,12 +1328,21 @@
           applyLiveSymbolSpotMessage(msg);
           return;
         }
-        if (
-          msg &&
-          msg.type === 'db_change' &&
-          (msg.database === 'strike_table_hourly' || msg.database === 'strike_table_15m')
-        ) {
-          lastStrikeTableFetchMs = 0;
+        if (msg && msg.type === 'db_change') {
+          if (
+            msg.database === 'strike_table_hourly' ||
+            msg.database === 'strike_table_15m' ||
+            msg.database === 'market_kalshi_hourly' ||
+            msg.database === 'market_kalshi_15m' ||
+            msg.database === 'orderbook_kalshi'
+          ) {
+            requestDataRefresh();
+          }
+          if (msg.database === 'monitor_list') {
+            try {
+              window.dispatchEvent(new CustomEvent('rec:tm-db-monitor-list'));
+            } catch (e3) {}
+          }
         }
       } catch (e2) {}
     };
@@ -1228,7 +1372,6 @@
     }
 
     clearMarketExpiration();
-    lastStrikeTableFetchMs = 0;
     hourlyHeaderLastFetchSymbol = '';
     lastMarketMode = mkt;
 
@@ -1239,12 +1382,20 @@
     connectStrikeTableDbWs();
   }
 
-  async function tick() {
-    if (tickBusy) {
-      tickPending = true;
+  function requestDataRefresh() {
+    if (refreshTimer) return;
+    refreshTimer = setTimeout(() => {
+      refreshTimer = null;
+      void refreshDataNow();
+    }, 40);
+  }
+
+  async function refreshDataNow() {
+    if (refreshBusy) {
+      refreshPending = true;
       return;
     }
-    tickBusy = true;
+    refreshBusy = true;
     try {
       try {
         await runDataTick();
@@ -1256,10 +1407,10 @@
         }
       }
     } finally {
-      tickBusy = false;
-      if (tickPending) {
-        tickPending = false;
-        tick();
+      refreshBusy = false;
+      if (refreshPending) {
+        refreshPending = false;
+        requestDataRefresh();
       }
     }
   }
@@ -1270,57 +1421,57 @@
     const symNow = currentSymbol();
     if (symNow !== hourlyHeaderLastFetchSymbol) {
       hourlyHeaderLastFetchSymbol = symNow;
-      lastStrikeTableFetchMs = 0;
       clearMarketExpiration();
     }
     ensureClosestStrikeRowVisible();
-    const nowMs = Date.now();
-    if (nowMs - lastStrikeTableFetchMs > 1500) {
-      lastStrikeTableFetchMs = nowMs;
-      const pack = await fetchStrikeTablePack(currentSymbol(), mkt);
-      applyStrikePackHeader(pack, mkt);
-      const errEl = document.getElementById('loadErr');
-      if (!pack.fetchFailed) {
-        if (errEl) {
-          errEl.classList.add('u-hidden');
-          errEl.textContent = '';
-        }
-        const rawRows = pack.rows || [];
-        hourlyRawStrikeRows = rawRows.slice();
-        hourlyCurrentPrice =
-          pack.currentPrice != null && Number.isFinite(pack.currentPrice) ? pack.currentPrice : null;
-        const fetchedRows = await filterHourlyRowsByLiquidity(rawRows, hourlySpotPrice());
-        const nextStructSig = hourlyStructureSignature(fetchedRows);
-        const nextSig = hourlyQuotesSignature(fetchedRows);
-        hourlyStrikeRows = fetchedRows;
-        ensureHourlyExpandedTicker();
-        if (nextStructSig !== lastHourlyStructureSignature) {
-          lastHourlyStructureSignature = nextStructSig;
-          lastHourlyRowsSignature = nextSig;
-          renderHourlyRows();
-        } else if (nextSig !== lastHourlyRowsSignature) {
-          lastHourlyRowsSignature = nextSig;
-          patchHourlyRowQuotesInPlace();
-        }
-      } else if (errEl) {
-        errEl.classList.remove('u-hidden');
-        errEl.textContent = 'No strike table data';
+    const pack = await fetchStrikeTablePack(currentSymbol(), mkt);
+    applyStrikePackHeader(pack, mkt);
+    const errEl = document.getElementById('loadErr');
+    if (!pack.fetchFailed) {
+      if (errEl) {
+        errEl.classList.add('u-hidden');
+        errEl.textContent = '';
       }
+      const rawRows = pack.rows || [];
+      hourlyRawStrikeRows = rawRows.slice();
+      hourlyCurrentPrice =
+        pack.currentPrice != null && Number.isFinite(pack.currentPrice) ? pack.currentPrice : null;
+      const fetchedRows = await filterHourlyRowsByLiquidity(rawRows, hourlySpotPrice());
+      if (symNow !== currentSymbol() || mkt !== currentMarket()) {
+        return;
+      }
+      const nextStructSig = hourlyStructureSignature(fetchedRows);
+      const nextSig = hourlyQuotesSignature(fetchedRows);
+      hourlyStrikeRows = fetchedRows;
+      ensureHourlyExpandedTicker();
+      if (nextStructSig !== lastHourlyStructureSignature) {
+        lastHourlyStructureSignature = nextStructSig;
+        lastHourlyRowsSignature = nextSig;
+        // Re-arm centering when the strike ladder structure changes (e.g. initial 1-row -> full rows hydrate).
+        centerAtmStrikeOnNextRender = true;
+        renderHourlyRows();
+      } else if (nextSig !== lastHourlyRowsSignature) {
+        lastHourlyRowsSignature = nextSig;
+        patchHourlyRowQuotesInPlace();
+      }
+    } else if (errEl) {
+      errEl.classList.remove('u-hidden');
+      errEl.textContent = 'No strike table data';
     }
-    if (hourlyStrikeRows.length) syncStrikeTableCurrentPriceLine();
+    if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
     if (!expandedHourlyTicker) return;
     const mount = document.querySelector(
       '[data-hourly-expanded="' + expandedHourlyTicker + '"]'
     );
     if (!mount) return;
-    const hrRes = await fetch(orderbookUrlForTicker(expandedHourlyTicker), { cache: 'no-store' });
+    const expandedTicker = expandedHourlyTicker;
+    const hrRes = await fetch(orderbookUrlForTicker(expandedTicker), { cache: 'no-store' });
     const hrData = await hrRes.json();
+    if (expandedTicker !== expandedHourlyTicker) return;
     if (hrData && !hrData.error) {
       const mth = (hrData.market_ticker || '').trim();
       if (mth) {
         armExpirationFromTicker(mth);
-        const wExp = document.getElementById('mktWindow');
-        if (wExp) wExp.textContent = hourlyMarketWindowLabelFromTicker(mth);
       }
       const expandedSig = JSON.stringify({
         ticker: hrData.market_ticker || '',
@@ -1338,7 +1489,8 @@
 
   try {
     window.addEventListener('rec:live-symbol-spot', function () {
-      if (hourlyStrikeRows.length) syncStrikeTableCurrentPriceLine();
+      if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
+      applyHeaderTtcToClock();
     });
   } catch (e) {}
 
@@ -1347,8 +1499,18 @@
     if (symPick) {
       symPick.addEventListener('change', function () {
         window.tmNewRefreshLiveSpotPanel();
+        requestDataRefresh();
       });
     }
+    window.addEventListener('rec:tm-monitor-changed', function () {
+      hourlyHeaderLastFetchSymbol = '';
+      lastHourlyRowsSignature = '';
+      lastHourlyStructureSignature = '';
+      lastExpandedOrderbookSignature = '';
+      hourlyLiquidityByTicker.clear();
+      centerAtmStrikeOnNextRender = true;
+      requestDataRefresh();
+    });
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', function () {
         connectStrikeTableDbWs();
@@ -1359,11 +1521,6 @@
   }
 
   ensureInitialVisibility();
-  setInterval(function () {
-    try {
-      applyHeaderTtcToClock();
-    } catch (e) {}
-  }, 200);
-  setInterval(tick, 500);
-  tick();
+  centerAtmStrikeOnNextRender = true;
+  requestDataRefresh();
 })();

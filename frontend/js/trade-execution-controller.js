@@ -18,6 +18,32 @@ window.TRADE_STATE = {
   executedTrades: new Set()
 };
 
+function _positiveNumberOrNull(v) {
+  if (v === '' || v === null || v === undefined) return null;
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return n;
+}
+
+function _serverErrorMessage(result) {
+  if (!result || typeof result !== 'object') return null;
+  if (typeof result.error === 'string' && result.error.trim()) return result.error.trim();
+  const d = result.detail;
+  if (typeof d === 'string' && d.trim()) return d.trim();
+  if (Array.isArray(d) && d.length) {
+    return d
+      .map(function (x) {
+        if (!x) return '';
+        if (typeof x === 'string') return x;
+        if (typeof x.msg === 'string') return x.msg;
+        return JSON.stringify(x);
+      })
+      .filter(Boolean)
+      .join('; ');
+  }
+  return null;
+}
+
 // === CENTRALIZED CLOSE TRADE FUNCTION ===
 // This is the ONLY function that should close trades
 window.closeTrade = async function(tradeId, sellPrice, event) {
@@ -29,9 +55,8 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
     return { success: false, error: 'Trade already executing' };
   }
 
-  // Validate inputs
-  if (!tradeId || !sellPrice) {
-    return { success: false, error: 'Invalid close trade parameters' };
+  if (!tradeId) {
+    return { success: false, error: 'Invalid close trade parameters: missing trade id' };
   }
 
   // Generate unique ticket ID
@@ -42,19 +67,17 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
   window.TRADE_STATE.isExecuting = true;
 
   try {
-    // Fetch trade details to construct the close ticket
+    // Fetch open trades only (same rows the UI lists for Close)
     const trades = await recFetchTradesMerged(
-      window.location.origin + '/trades',
+      window.location.origin + '/trades?status=open',
       { cache: 'no-store' }
     );
     
     // Find the specific trade by ID
     const trade = trades.find(t => t.id == tradeId);
     if (!trade) {
-      throw new Error(`Trade with ID ${tradeId} not found`);
+      throw new Error(`Trade with ID ${tradeId} not found among open trades (still pending or already closed?)`);
     }
-
-
 
     // === Get the ACTUAL position count from the trade data ===
     let count = trade.position;
@@ -70,12 +93,25 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
     else if (trade.side === 'N' || trade.side === 'NO') invertedSide = 'Y';
     else invertedSide = trade.side;
 
-    // Use current BTC price for symbol_close
-    const symbolClose = typeof getCurrentBTCTickerPrice === 'function' ? getCurrentBTCTickerPrice() : null;
+    // Spot for symbol_close (prefer symbol strip price, same as open flow)
+    let symSpot = null;
+    if (typeof getCurrentSymbolTickerPrice === 'function') {
+      symSpot = _positiveNumberOrNull(getCurrentSymbolTickerPrice());
+    }
+    if (symSpot === null && typeof getCurrentBTCTickerPrice === 'function') {
+      symSpot = _positiveNumberOrNull(getCurrentBTCTickerPrice());
+    }
+    const symbolClose = symSpot;
+
+    let finalSellPrice = _positiveNumberOrNull(sellPrice);
+
+    const isPaper =
+      trade.paper_trade === true ||
+      trade.paper_trade === 1 ||
+      (typeof trade.paper_trade === 'string' && trade.paper_trade.toLowerCase() === 'true');
 
     // For paper trades, fetch current_close_price from active trades and calculate sell_price = 1 - current_close_price
-    let finalSellPrice = sellPrice;
-    if (trade.paper_trade) {
+    if (isPaper) {
       try {
         // Get current monitor name for monitor-specific active trades
         const currentMonitorName = window.currentMonitorName;
@@ -97,6 +133,17 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
         }
       } catch (error) {
         console.warn(`[PAPER TRADE] Could not fetch current_close_price from active trades: ${error}, using provided sellPrice`);
+      }
+    }
+
+    if (isPaper) {
+      if (finalSellPrice === null || !Number.isFinite(finalSellPrice) || finalSellPrice <= 0 || finalSellPrice >= 1) {
+        throw new Error('Paper close needs a valid contract sell price (spot or active-trades quote)');
+      }
+    } else {
+      // Live IOC/market close: trade_manager + executor use aggressive limit; placeholder if spot strip is empty
+      if (finalSellPrice === null) {
+        finalSellPrice = 0.99;
       }
     }
 
@@ -124,11 +171,21 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
       body: JSON.stringify(payload)
     });
 
-    if (!response.ok) {
-      throw new Error(`Close trade execution failed: ${response.status}`);
+    const rawText = await response.text();
+    let result;
+    try {
+      result = rawText ? JSON.parse(rawText) : {};
+    } catch (parseErr) {
+      throw new Error('Close failed: server returned non-JSON (HTTP ' + response.status + ')');
     }
 
-    const result = await response.json();
+    const errMsg = _serverErrorMessage(result);
+    if (!response.ok) {
+      throw new Error(errMsg || 'Close trade execution failed: HTTP ' + response.status);
+    }
+    if (errMsg) {
+      throw new Error(errMsg);
+    }
     
     // Add to executed trades
     window.TRADE_STATE.executedTrades.add(ticket_id);
@@ -213,8 +270,6 @@ window.prepareTradeData = async function(target) {
     return null;
   }
 
-  const contract = typeof getTruncatedMarketTitle === 'function' ? getTruncatedMarketTitle() : 'BTC Market';
-
   // Get strike and side from button context
   let strike = null;
   let side = null;
@@ -242,6 +297,12 @@ window.prepareTradeData = async function(target) {
   let kalshiTicker = target.dataset.ticker || null;
   if (!kalshiTicker && target.parentElement && target.parentElement.dataset.ticker) {
     kalshiTicker = target.parentElement.dataset.ticker;
+  }
+
+  // Contract: prefer strike-panel title; if parse failed ('SYMBOL Unknown') but we have a Kalshi ticker, omit so backend derives from ticker.
+  let contract = typeof getTruncatedMarketTitle === 'function' ? getTruncatedMarketTitle() : 'BTC Market';
+  if (kalshiTicker && contract && /(?:^|\s)Unknown\s*$/i.test(String(contract).trim())) {
+    contract = '';
   }
 
   // Get diff value from data attribute

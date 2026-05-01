@@ -432,7 +432,10 @@ async function closeActiveTrade(tradeId, ticketId, currentClosePrice = null) {
       
       // Call the centralized close trade function - let it handle all notifications
       
-      await window.closeTrade(tradeId, sellPrice, mockEvent);
+      const closeResult = await window.closeTrade(tradeId, sellPrice, mockEvent);
+      if (!closeResult || !closeResult.success) {
+        console.error('[ACTIVE TRADE SUPERVISOR] Close failed:', closeResult && closeResult.error);
+      }
       
     } else {
       console.error('[ACTIVE TRADE SUPERVISOR] Centralized closeTrade function not available');

@@ -1,0 +1,12 @@
+---
+description: "Keep backend/main.py minimal: no feature or UI-specific logic there."
+globs:
+  - backend/main.py
+alwaysApply: false
+---
+
+# `backend/main.py` stays slim
+
+- **Do not** add or expand endpoints, SQL, domain rules, or UI-driven behavior in `backend/main.py` for polish, nit fixes, or one-off display concerns.
+- **Prefer** `monitor_manager.py`, `read_api`, dedicated service modules, or new small modules wired from existing patterns. If an HTTP route must live on the main app, keep the handler as a thin delegate to a function in another module.
+- **Redis / WebSocket / UI sync** belongs in the service that owns the event (e.g. supervisor fanout, prefs payload shape) or in the **frontend** consumer (normalize envelopes, apply fields), not new branches in `main.py`.
