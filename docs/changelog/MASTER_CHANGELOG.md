@@ -6,6 +6,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-01 — Release v3.4.5: Hotfix — monitor_list symbol_wide columns (restore /api/monitors)
+
+**Summary**
+- **Release: v3.4.5**
+- **Root cause:** `GET /api/monitors` (via `backend/core/monitor_list_api.py`) selects `symbol_wide_loss_prevention`, `symbol_wide_cooldown_duration`, and `symbol_wide_cooldown_start_time` on every `monitor_list_%`. Those columns existed only in **`init_database()`** repair loops, not in a shipped migration, so **production** tables never gained them → SQL error → API returned `status: error` → dashboard/trade-history UI fell back to **NEW MONITOR** only while **`/api/monitors/allocation`** (narrower SELECT) still worked.
+- **Fix:** Reversible migration **`20260501_2200_monitor_list_symbol_wide_columns`** adds the three columns on all **`monitor_list_%`** under **`users`** and **`users_NNNN`** (idempotent).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260501_2200_monitor_list_symbol_wide_columns`
+- [ ] Verify: spot-check `GET /api/monitors` from the app (monitor tiles and trade-history monitor strip); `curl -sSf http://localhost:3000/health`
+- [ ] Record release in DB on **production**:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.5`
+
+---
+
 ## 2026-05-01 — Release v3.4.4: Strategy list schema migration, monitor defaults parity, symbol-wide LP stack
 
 **Summary**

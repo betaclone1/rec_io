@@ -10262,6 +10262,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `flip_sell_floor_mult` | `character varying(32)` | YES | - | Same for floor stops. |
 | `time_in_force` | `text` | NO | fill_or_kill | Kalshi **time in force** for auto-entry orders: `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled`. Migration `20260426_1600_monitor_trades_execution_settings`. |
 | `order_type` | `text` | NO | market | Execution pricing policy `limit` or `market` (Kalshi request still uses limit pricing where applicable). Same migration. |
+| `symbol_wide_loss_prevention` | `boolean` | YES | false | Symbol-wide LP gate; **`GET /api/monitors`** depends on this column. Migration **`20260501_2200_monitor_list_symbol_wide_columns`**. |
+| `symbol_wide_cooldown_duration` | `integer(32)` | YES | 4 | Cooldown duration (hours) when symbol-wide LP is active. Same migration. |
+| `symbol_wide_cooldown_start_time` | `timestamp with time zone` | YES | - | When symbol-wide cooldown began. Same migration. |
 
 #### Constraints
 
