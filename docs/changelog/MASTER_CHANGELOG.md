@@ -14,12 +14,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Fix:** Reversible migration **`20260501_2200_monitor_list_symbol_wide_columns`** adds the three columns on all **`monitor_list_%`** under **`users`** and **`users_NNNN`** (idempotent).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (idempotent):  
+- [x] Apply migration (idempotent):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260501_2200_monitor_list_symbol_wide_columns`
-- [ ] Verify: spot-check `GET /api/monitors` from the app (monitor tiles and trade-history monitor strip); `curl -sSf http://localhost:3000/health`
-- [ ] Record release in DB on **production**:  
+- [x] Verify: spot-check `GET /api/monitors` from the app (monitor tiles and trade-history monitor strip); `curl -sSf http://localhost:3000/health`
+- [x] Record release in DB on **production**:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.5`
 
 ---
