@@ -57,52 +57,6 @@ def _performance_panel_trade_mode_clause(trading_mode: Optional[str]) -> str:
     return "AND (COALESCE(trades_all.paper_trade, FALSE) = FALSE)\n"
 
 
-def _ret_pct_from_equity(pnl: float, equity_dollars: Optional[float]) -> Optional[float]:
-    if equity_dollars is None or equity_dollars <= 0:
-        return None
-    return round(100.0 * float(pnl) / float(equity_dollars), 2)
-
-
-def _account_balance_opening_equity_row(
-    cursor: Any,
-    ab_ident: Any,
-    period_start: datetime,
-) -> Tuple[Optional[Any], Optional[Any]]:
-    """
-    Opening bankroll / MTB base for return %: last snapshot strictly before period_start;
-    if none, earliest snapshot in the table (per product requirement).
-    """
-    cursor.execute(
-        psql.SQL(
-            """
-            SELECT COALESCE(master_trading_bankroll, bankroll_current), mtb_base_value
-            FROM {}
-            WHERE updated_at < %s
-            ORDER BY updated_at DESC, id DESC
-            LIMIT 1
-            """
-        ).format(ab_ident),
-        (period_start,),
-    )
-    row = cursor.fetchone()
-    if row and (row[0] is not None or row[1] is not None):
-        return row[0], row[1]
-    cursor.execute(
-        psql.SQL(
-            """
-            SELECT COALESCE(master_trading_bankroll, bankroll_current), mtb_base_value
-            FROM {}
-            ORDER BY updated_at ASC, id ASC
-            LIMIT 1
-            """
-        ).format(ab_ident),
-    )
-    row2 = cursor.fetchone()
-    if row2:
-        return row2[0], row2[1]
-    return None, None
-
-
 def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str, Any]:
     conn = None
     try:
@@ -391,8 +345,7 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
     Calendar periods in America/New_York: today (trade ``date``), week from Sunday 00:00 through today,
     month-to-date, YTD. Same ``date`` bounds and live/paper rules as trade_history (insights / min_date).
 
-    ``ret_pct`` / ``ret_pct_base`` use opening equity from account_balance (snapshot before period start,
-    else earliest snapshot); if denominator missing or non-positive, falls back to SUM(row ret fields).
+    ``ret_pct`` / ``ret_pct_base`` are SUM(per-trade values), matching trade_history cumulative Ret %.
     """
     conn = None
     try:
@@ -409,16 +362,8 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
         now = datetime.now(eastern)
         today = now.date()
 
-        def et_start(y: int, m: int, d: int) -> datetime:
-            return datetime(y, m, d, 0, 0, 0, tzinfo=eastern)
-
-        day_start = et_start(today.year, today.month, today.day)
         days_since_sunday = (today.weekday() + 1) % 7
         sunday_d = today - timedelta(days=days_since_sunday)
-        week_start = et_start(sunday_d.year, sunday_d.month, sunday_d.day)
-        month_start = et_start(today.year, today.month, 1)
-        year_start = et_start(today.year, 1, 1)
-
         month_first_d = today.replace(day=1)
         year_first_d = Date(today.year, 1, 1)
         yesterday = today - timedelta(days=1)
@@ -429,17 +374,14 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
         first_prev_year = Date(today.year - 1, 1, 1)
         last_prev_year = Date(today.year - 1, 12, 31)
 
-        periods_spec: List[Tuple[str, Date, Date, datetime, Date, Date]] = [
-            ("day", today, today, day_start, yesterday, yesterday),
-            ("week", sunday_d, today, week_start, prev_week_start, prev_week_end),
-            ("month", month_first_d, today, month_start, first_prev_month, last_prev_month),
-            ("year", year_first_d, today, year_start, first_prev_year, last_prev_year),
+        periods_spec: List[Tuple[str, Date, Date, Date, Date]] = [
+            ("day", today, today, yesterday, yesterday),
+            ("week", sunday_d, today, prev_week_start, prev_week_end),
+            ("month", month_first_d, today, first_prev_month, last_prev_month),
+            ("year", year_first_d, today, first_prev_year, last_prev_year),
         ]
 
         mode_clause = _performance_panel_trade_mode_clause(trading_mode)
-        ab_ident = sql_ident_qualified_table(
-            account_balance_table_for_user(slot, client_trading_mode=trading_mode)
-        )
 
         sum_sql = (
             """
@@ -482,7 +424,7 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
             union_sql = None
             if has_trades:
                 union_sql, _ = union_trades_with_archives_select(cursor, slot)
-            for key, d_lo, d_hi, period_start_et, prev_lo, prev_hi in periods_spec:
+            for key, d_lo, d_hi, prev_lo, prev_hi in periods_spec:
                 if not union_sql:
                     result[key] = {
                         "pnl": 0.0,
@@ -502,23 +444,8 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
                 ret_pct_sum = float(row[1]) if row and row[1] is not None else 0.0
                 ret_pct_base_sum = float(row[2]) if row and row[2] is not None else 0.0
 
-                br_raw, mtb_raw = _account_balance_opening_equity_row(
-                    cursor, ab_ident, period_start_et
-                )
-                br0 = _format_currency_cents(br_raw) if br_raw is not None else None
-                mtb0 = _format_currency_cents(mtb_raw) if mtb_raw is not None else None
-                ret_pct_calc = _ret_pct_from_equity(pnl, br0)
-                ret_pct_base_calc = _ret_pct_from_equity(pnl, mtb0)
-                ret_pct = (
-                    ret_pct_calc
-                    if ret_pct_calc is not None
-                    else round(ret_pct_sum, 2)
-                )
-                ret_pct_base = (
-                    ret_pct_base_calc
-                    if ret_pct_base_calc is not None
-                    else round(ret_pct_base_sum, 2)
-                )
+                ret_pct = round(ret_pct_sum, 2)
+                ret_pct_base = round(ret_pct_base_sum, 2)
 
                 cursor.execute(
                     q_prev,
