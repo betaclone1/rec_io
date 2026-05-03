@@ -120,14 +120,14 @@ def refresh_open_trades_telemetry_for_user(user_number: str) -> int:
                 except (TypeError, ValueError):
                     continue
                 per = 1.0 - close_px - bp
-                unrealized = round(per * pos, 2)
+                unrealized = round(per * pos, 6)
                 fee_val = 0.0
                 if fees is not None:
                     try:
                         fee_val = float(fees)
                     except (TypeError, ValueError):
                         fee_val = 0.0
-                unrealized_net = round(unrealized - fee_val, 2)
+                unrealized_net = round(unrealized - fee_val, 6)
 
                 mkt = (market or "hourly").strip().lower()
                 if mkt == "15m":

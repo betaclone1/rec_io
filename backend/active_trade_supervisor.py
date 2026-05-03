@@ -3095,8 +3095,9 @@ def update_active_trade_monitoring_data():
                 # YES row: current_market_price is the NO-side ask in $ space → implied YES mark ≈ 1 − that quote.
                 per_contract_pnl = 1.0 - float(current_market_price) - buy_price_float
                 # Total dollars: scale by contracts, subtract fees paid (sunk cost on the trade).
-                total_unrealized = per_contract_pnl * qty - fees_val
-                pnl_formatted = f"{total_unrealized:.2f}"
+                total_unrealized = float(per_contract_pnl * qty - fees_val)
+                pnl_val = round(total_unrealized, 6)
+                pnl_formatted = f"{round(total_unrealized, 2):.2f}"
 
                 # Position value from exit ask (high/low tracking)
                 position_value = 1.0 - float(current_market_price)
@@ -3123,7 +3124,6 @@ def update_active_trade_monitoring_data():
                 # (kalshi_lifecycle_trade_outcome: FOR UPDATE on tenant trades first), reducing deadlocks.
                 # SAVEPOINT so deadlock / errors on the mirror do not abort the active_trades UPDATE.
                 try:
-                    pnl_val = float(pnl_formatted)
                     tid_int = int(trade_id)
                 except (TypeError, ValueError):
                     pnl_val = tid_int = None

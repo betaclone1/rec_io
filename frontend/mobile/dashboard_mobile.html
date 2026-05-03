@@ -2503,6 +2503,19 @@
       return Number.isFinite(n) ? n : 0;
     }
 
+    /** Monitor tile PnL: nearest dollar, no decimal places (full precision may exist in API/DB). */
+    function formatMonitorTilePnlUsd(raw) {
+      const v = typeof raw === 'number' ? raw : Number(String(raw == null ? '' : raw).replace(/[^\d.-]/g, ''));
+      if (!Number.isFinite(v)) return null;
+      const rounded = Math.round(v);
+      const neg = rounded < 0;
+      const body = Math.abs(rounded).toLocaleString('en-US', {
+        minimumFractionDigits: 0,
+        maximumFractionDigits: 0,
+      });
+      return (neg ? '-$' : '$') + body;
+    }
+
     // Helper function to get monitor stat value (calculated or default)
     function getMonitorStatValue(monitor, statType, defaultValue) {
       // Check if monitor history display has calculated values
@@ -2525,9 +2538,8 @@
               break;
             case 'pnl':
               if (stats.pnl !== undefined && stats.pnl !== null) {
-                const pnlValue = Math.round(stats.pnl);
-                const formattedPnl = pnlValue.toLocaleString();
-                return pnlValue >= 0 ? `$${formattedPnl}` : `-$${Math.abs(pnlValue).toLocaleString()}`;
+                const fp = formatMonitorTilePnlUsd(stats.pnl);
+                if (fp) return fp;
               }
               break;
           }
@@ -2547,8 +2559,14 @@
           return (monitor.winRate !== undefined && monitor.winRate !== null) ? monitor.winRate : defaultValue;
         case 'ret_pct':
           return (monitor.return !== undefined && monitor.return !== null) ? monitor.return : defaultValue;
-        case 'pnl':
-          return (monitor.pnl !== undefined && monitor.pnl !== null) ? monitor.pnl : defaultValue;
+        case 'pnl': {
+          if (monitor.pnl !== undefined && monitor.pnl !== null) {
+            const fp = formatMonitorTilePnlUsd(monitor.pnl);
+            if (fp) return fp;
+            return monitor.pnl;
+          }
+          return defaultValue;
+        }
         default:
           return defaultValue;
       }

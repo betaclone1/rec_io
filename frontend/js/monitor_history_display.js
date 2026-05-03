@@ -498,9 +498,16 @@ class MonitorHistoryDisplay {
         // Find and update PnL
         const pnlElement = tile.querySelector('.pnl, .stat-pnl, [data-stat="pnl"]');
         if (pnlElement) {
-            const pnlValue = Math.round(stats.pnl);
-            const pnlFormatted = pnlValue >= 0 ? `$${pnlValue}` : `-$${Math.abs(pnlValue)}`;
-            pnlElement.textContent = pnlFormatted;
+            const v = Number(stats.pnl);
+            if (Number.isFinite(v)) {
+                const rounded = Math.round(v);
+                const neg = rounded < 0;
+                const body = Math.abs(rounded).toLocaleString('en-US', {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0,
+                });
+                pnlElement.textContent = (neg ? '-$' : '$') + body;
+            }
         }
 
         const tradesStreakEl = tile.querySelector('.stat-win-streak');

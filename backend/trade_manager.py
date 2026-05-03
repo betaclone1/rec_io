@@ -3523,7 +3523,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                             # Calculate PnL with total fees
                             buy_value = buy_price * position
                             sell_value = sell_price * position
-                            pnl = round(sell_value - buy_value - total_fees, 2)
+                            pnl = round(sell_value - buy_value - total_fees, 6)
                             roi_pct = None
                             if buy_value is not None and buy_value > 0:
                                 roi_pct = round((pnl / buy_value) * 100.0, 5)
@@ -4507,7 +4507,7 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
                 buy_value = buy_price * position
                 sell_value = sell_price * position
                 fees = fees_paid if fees_paid is not None else 0.0
-                calculated_pnl = round(sell_value - buy_value - fees, 2)
+                calculated_pnl = round(sell_value - buy_value - fees, 6)
 
         # Calculate roi_pct if not provided and we have enough data
         roi_value = roi_pct
@@ -4704,7 +4704,7 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
                 buy_value = buy_price * position
                 sell_value = sell_price * position
                 fees = fees_paid if fees_paid is not None else 0.0
-                calculated_pnl = round(sell_value - buy_value - fees, 2)
+                calculated_pnl = round(sell_value - buy_value - fees, 6)
 
     # Update PostgreSQL only
     try:
@@ -5423,7 +5423,7 @@ async def add_trade(request: Request):
                             total_fees = existing_fees + close_fee
                             buy_value = buy_pf * pos_f
                             sell_value = sell_pf * pos_f
-                            pnl = round(sell_value - buy_value - total_fees, 2)
+                            pnl = round(sell_value - buy_value - total_fees, 6)
                             win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
                             
                             # Calculate ret_pct, ret_pct_base, and roi_pct
@@ -6477,7 +6477,7 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         pos_f = float(position)
         buy_value = bp_f * pos_f
         sell_value = float(sell_price) * pos_f
-        pnl = round(sell_value - buy_value - existing_fees_f, 2)
+        pnl = round(sell_value - buy_value - existing_fees_f, 6)
         if bankroll is not None and float(bankroll) > 0 and pnl is not None:
             ret_pct = round((pnl / (float(bankroll) / 100.0)) * 100, 5)
         if mtb_base is not None and float(mtb_base) > 0 and pnl is not None:

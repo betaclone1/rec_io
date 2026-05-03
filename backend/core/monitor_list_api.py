@@ -183,7 +183,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             "trades": trades,
             "winRate": f"{win_loss}%" if win_loss is not None else "0%",
             "return": f"{ret_pct}%" if ret_pct is not None else "0%",
-            "pnl": f"${pnl:,.0f}" if pnl is not None else "$0",
+            "pnl": f"${round(float(pnl)):,}" if pnl is not None else "$0",
             "uptime": uptime_str,
             "name": name,
             "bankroll_allotment": bankroll_allotment_pct,

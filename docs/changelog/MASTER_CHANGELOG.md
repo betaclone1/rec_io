@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-03 — Release v3.4.7: Trades PnL NUMERIC(12,6), dashboard monitor PnL whole dollars
+
+**Summary**
+- **Release: v3.4.7**
+- **Database:** Reversible migration **`20260503_1500_trades_pnl_numeric_6dp`** sets **`pnl`** to **`NUMERIC(12,6)`** on tenant **`trades_*`**, **`trades_simulated_*`**, and **`archive.trades_archive_{live|paper}_*`** (aligned with buy/sell and fee precision). **`database.py`** greenfield templates updated; **`docs/MASTER_DB_SCHEMA_REFERENCE.md`** updated.
+- **Backend:** **`trade_manager`**, **`active_trade_supervisor`** (open-trade mirror to **`trades_*`**), and **`trade_open_telemetry_sync`** compute/store PnL at **six** decimal places; active_trades **`current_pnl`** display string stays **two** decimals for ATS UI.
+- **Frontend:** Dashboard and mobile **`getMonitorStatValue`** / **`monitor_history_display`** show monitor-tile PnL **rounded to the nearest dollar** (no cents). **`monitor_list_api`** monitor **`pnl`** string matches whole-dollar formatting.
+- **Assets:** **`frontend/images`** updates (PSD + new PNGs) included in this batch.
+- **Plans:** Session work (PnL precision + tile display); no single **`Status: done`** `.cursor/plans/*.md` slug.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260503_1500_trades_pnl_numeric_6dp`
+- [ ] Schema drift check (non-blocking if clean):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.7`
+
+---
+
 ## 2026-05-03 — Release v3.4.6: Trade fee confirm serialization, position NUMERIC(12,2), repair script
 
 **Summary**
