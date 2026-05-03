@@ -4940,8 +4940,8 @@
             pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
           }
           if (retEl) {
-            const useBase = (portfolioPanelActiveTab === 'bankroll');
-            const rawRet = useBase ? (p.ret_pct_base != null ? p.ret_pct_base : p.ret_pct) : p.ret_pct;
+            // Always sum-of-trade ret_pct (matches trade_history footer); not ret_pct_base (MTB column).
+            const rawRet = p.ret_pct;
             const retPct = rawRet != null ? rawRet : (pnl === 0 ? 0 : null);
             if (retPct != null) {
               retEl.textContent = retPct.toFixed(2) + '%';
