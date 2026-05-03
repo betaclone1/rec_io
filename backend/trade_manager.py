@@ -3038,29 +3038,58 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     if terminal_ioc and fill_val > 0 and row_status in ("pending", "partial"):
                         taker_fees_usd = _parse_dollars(taker_fees_dollars)
                         maker_fees_usd = _parse_dollars(maker_fees_dollars)
-                        total_fees_increment = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
-                        increment_cost = _parse_dollars(taker_fill_cost_dollars) or 0.0
-                        increment_fill = float(fill_val)
-                        # Pending INSERT uses `position` = requested size (same as initial_count), not fills.
-                        # Partial rows use `position` as cumulative filled contracts for IOC top-ups.
-                        if row_status == "pending":
-                            old_pos = 0.0
-                        else:
-                            old_pos = _trade_position_for_db(tr_pos)
+                        order_fees_cumulative = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
+                        order_cost_cumulative = _parse_dollars(taker_fill_cost_dollars) or 0.0
+                        order_fill_cumulative = float(fill_val)
                         old_buy = float(tr_bp) if tr_bp is not None else 0.0
                         old_fees = float(tr_fees) if tr_fees is not None else 0.0
                         try:
                             tr_ic_int = int(tr_ic) if tr_ic is not None else int(round(initial_val))
                         except (TypeError, ValueError):
                             tr_ic_int = int(round(initial_val))
-                        new_pos = _trade_position_for_db(old_pos + increment_fill)
-                        if old_pos > 0 and old_buy > 0 and increment_fill > 0:
-                            avg_buy = (old_buy * old_pos + increment_cost) / new_pos if new_pos > 0 else old_buy
-                        elif increment_fill > 0:
-                            avg_buy = increment_cost / increment_fill
+                        tr_pos_f = _trade_position_for_db(tr_pos)
+                        ic_f = float(tr_ic_int)
+                        # `orders_*`.fill_count_fp and fees are cumulative for this order_id. Pending INSERT
+                        # stores `position` = requested size (= initial_count) until first IOC confirm; partial
+                        # / top-up pending rows store cumulative filled contracts. Never add full fill twice
+                        # when a second confirm runs after status is already partial (see prod 17679).
+                        if row_status == "pending":
+                            if tr_pos_f + 1e-6 >= ic_f:
+                                fill_increment = order_fill_cumulative
+                                pos_basis_for_avg = 0.0
+                            else:
+                                fill_increment = order_fill_cumulative
+                                pos_basis_for_avg = tr_pos_f
+                        else:
+                            fill_increment = max(0.0, order_fill_cumulative - tr_pos_f)
+                            pos_basis_for_avg = tr_pos_f
+                        if fill_increment <= 0:
+                            log_event(
+                                ticket_id,
+                                f"MANAGER: IOC terminal order already applied (fill={order_fill_cumulative} trade_pos={tr_pos_f}) — skipping duplicate confirm",
+                            )
+                            pg_conn.close()
+                            ioc_handled = True
+                            break
+                        ratio = (
+                            (fill_increment / order_fill_cumulative)
+                            if order_fill_cumulative > 0
+                            else 1.0
+                        )
+                        fee_increment = order_fees_cumulative * ratio
+                        cost_increment = order_cost_cumulative * ratio
+                        new_pos = _trade_position_for_db(pos_basis_for_avg + fill_increment)
+                        if pos_basis_for_avg > 0 and old_buy > 0 and fill_increment > 0:
+                            avg_buy = (
+                                (old_buy * pos_basis_for_avg + cost_increment) / new_pos
+                                if new_pos > 0
+                                else old_buy
+                            )
+                        elif fill_increment > 0:
+                            avg_buy = cost_increment / fill_increment
                         else:
                             avg_buy = old_buy
-                        total_fees_dollars = old_fees + total_fees_increment
+                        total_fees_dollars = old_fees + fee_increment
                         position_for_db = new_pos
                         buy_price = avg_buy
                         next_st = "open" if new_pos >= tr_ic_int else "partial"
