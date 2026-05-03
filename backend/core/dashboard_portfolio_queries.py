@@ -7,8 +7,9 @@ Keeps SQL in one place so we do not rely on HTTP proxy + forwarded cookies betwe
 
 from __future__ import annotations
 
+from datetime import date as Date
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg2 import sql as psql
 
@@ -44,6 +45,62 @@ def _paper_trade_sql_clause(trading_mode: Optional[str]) -> str:
 
 def _trading_mode_label(trading_mode: Optional[str]) -> str:
     return "paper" if use_paper_for_request(trading_mode) else "live"
+
+
+def _performance_panel_trade_mode_clause(trading_mode: Optional[str]) -> str:
+    """
+    Live mode: closed trades with paper_trade false only.
+    Paper (global or client): include both live and paper rows (matches trade_history with both boxes on).
+    """
+    if use_paper_for_request(trading_mode):
+        return ""
+    return "AND (COALESCE(trades_all.paper_trade, FALSE) = FALSE)\n"
+
+
+def _ret_pct_from_equity(pnl: float, equity_dollars: Optional[float]) -> Optional[float]:
+    if equity_dollars is None or equity_dollars <= 0:
+        return None
+    return round(100.0 * float(pnl) / float(equity_dollars), 2)
+
+
+def _account_balance_opening_equity_row(
+    cursor: Any,
+    ab_ident: Any,
+    period_start: datetime,
+) -> Tuple[Optional[Any], Optional[Any]]:
+    """
+    Opening bankroll / MTB base for return %: last snapshot strictly before period_start;
+    if none, earliest snapshot in the table (per product requirement).
+    """
+    cursor.execute(
+        psql.SQL(
+            """
+            SELECT COALESCE(master_trading_bankroll, bankroll_current), mtb_base_value
+            FROM {}
+            WHERE updated_at < %s
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """
+        ).format(ab_ident),
+        (period_start,),
+    )
+    row = cursor.fetchone()
+    if row and (row[0] is not None or row[1] is not None):
+        return row[0], row[1]
+    cursor.execute(
+        psql.SQL(
+            """
+            SELECT COALESCE(master_trading_bankroll, bankroll_current), mtb_base_value
+            FROM {}
+            ORDER BY updated_at ASC, id ASC
+            LIMIT 1
+            """
+        ).format(ab_ident),
+    )
+    row2 = cursor.fetchone()
+    if row2:
+        return row2[0], row2[1]
+    return None, None
 
 
 def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str, Any]:
@@ -330,6 +387,13 @@ def pnl_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str
 
 
 def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, Any]:
+    """
+    Calendar periods in America/New_York: today (trade ``date``), week from Sunday 00:00 through today,
+    month-to-date, YTD. Same ``date`` bounds and live/paper rules as trade_history (insights / min_date).
+
+    ``ret_pct`` / ``ret_pct_base`` use opening equity from account_balance (snapshot before period start,
+    else earliest snapshot); if denominator missing or non-positive, falls back to SUM(row ret fields).
+    """
     conn = None
     try:
         from zoneinfo import ZoneInfo
@@ -350,29 +414,67 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
 
         day_start = et_start(today.year, today.month, today.day)
         days_since_sunday = (today.weekday() + 1) % 7
-        sunday = today - timedelta(days=days_since_sunday)
-        week_start = et_start(sunday.year, sunday.month, sunday.day)
+        sunday_d = today - timedelta(days=days_since_sunday)
+        week_start = et_start(sunday_d.year, sunday_d.month, sunday_d.day)
         month_start = et_start(today.year, today.month, 1)
         year_start = et_start(today.year, 1, 1)
 
+        month_first_d = today.replace(day=1)
+        year_first_d = Date(today.year, 1, 1)
         yesterday = today - timedelta(days=1)
-        prev_sunday = sunday - timedelta(days=7)
-        prev_month_first = (today.replace(day=1) - timedelta(days=1)).replace(day=1)
-        prev_year_first = today.replace(month=1, day=1, year=today.year - 1)
+        prev_week_end = sunday_d - timedelta(days=1)
+        prev_week_start = prev_week_end - timedelta(days=6)
+        last_prev_month = month_first_d - timedelta(days=1)
+        first_prev_month = last_prev_month.replace(day=1)
+        first_prev_year = Date(today.year - 1, 1, 1)
+        last_prev_year = Date(today.year - 1, 12, 31)
 
-        prev_day_start = et_start(yesterday.year, yesterday.month, yesterday.day)
-        prev_week_start = et_start(prev_sunday.year, prev_sunday.month, prev_sunday.day)
-        prev_month_start = et_start(prev_month_first.year, prev_month_first.month, prev_month_first.day)
-        prev_year_start = et_start(prev_year_first.year, prev_year_first.month, prev_year_first.day)
-
-        periods_spec = [
-            ("day", day_start, prev_day_start),
-            ("week", week_start, prev_week_start),
-            ("month", month_start, prev_month_start),
-            ("year", year_start, prev_year_start),
+        periods_spec: List[Tuple[str, Date, Date, datetime, Date, Date]] = [
+            ("day", today, today, day_start, yesterday, yesterday),
+            ("week", sunday_d, today, week_start, prev_week_start, prev_week_end),
+            ("month", month_first_d, today, month_start, first_prev_month, last_prev_month),
+            ("year", year_first_d, today, year_start, first_prev_year, last_prev_year),
         ]
 
-        paper_clause = _paper_trade_sql_clause(trading_mode)
+        mode_clause = _performance_panel_trade_mode_clause(trading_mode)
+        ab_ident = sql_ident_qualified_table(
+            account_balance_table_for_user(slot, client_trading_mode=trading_mode)
+        )
+
+        sum_sql = (
+            """
+                    SELECT COALESCE(SUM(trades_all.pnl), 0), COALESCE(SUM(trades_all.ret_pct), 0), COALESCE(SUM(trades_all.ret_pct_base), 0)
+                    FROM ("""
+            + "{union}"
+            + """) AS trades_all
+                    WHERE (trades_all.test_filter IS NULL OR trades_all.test_filter = FALSE)
+                    """
+            + mode_clause
+            + """
+                      AND LOWER(TRIM(trades_all.status)) IN ('closed', 'settled')
+                      AND trades_all.pnl IS NOT NULL
+                      AND trades_all."date" IS NOT NULL
+                      AND (trades_all."date"::date) >= %s::date
+                      AND (trades_all."date"::date) <= %s::date
+                """
+        )
+        prev_sql = (
+            """
+                    SELECT COALESCE(SUM(trades_all.pnl), 0)
+                    FROM ("""
+            + "{union}"
+            + """) AS trades_all
+                    WHERE (trades_all.test_filter IS NULL OR trades_all.test_filter = FALSE)
+                    """
+            + mode_clause
+            + """
+                      AND LOWER(TRIM(trades_all.status)) IN ('closed', 'settled')
+                      AND trades_all.pnl IS NOT NULL
+                      AND trades_all."date" IS NOT NULL
+                      AND (trades_all."date"::date) >= %s::date
+                      AND (trades_all."date"::date) <= %s::date
+                """
+        )
 
         result: Dict[str, Any] = {}
         with conn.cursor() as cursor:
@@ -380,7 +482,7 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
             union_sql = None
             if has_trades:
                 union_sql, _ = union_trades_with_archives_select(cursor, slot)
-            for key, period_start, prev_start in periods_spec:
+            for key, d_lo, d_hi, period_start_et, prev_lo, prev_hi in periods_spec:
                 if not union_sql:
                     result[key] = {
                         "pnl": 0.0,
@@ -389,53 +491,42 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
                         "prev_pnl": 0.0,
                     }
                     continue
-                period_end = now
+                q_sum = sum_sql.replace("{union}", union_sql)
+                q_prev = prev_sql.replace("{union}", union_sql)
                 cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(pnl), 0), COALESCE(SUM(ret_pct), 0), COALESCE(SUM(ret_pct_base), 0)
-                    FROM ("""
-                    + union_sql
-                    + """) AS trades_all
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
-                    """
-                    + paper_clause
-                    + """
-                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                      AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
-                """,
-                    (period_start, period_end),
+                    q_sum,
+                    (d_lo.isoformat(), d_hi.isoformat()),
                 )
                 row = cursor.fetchone()
                 pnl = float(row[0]) if row and row[0] is not None else 0.0
-                ret_pct_sum = float(row[1]) if row and row[1] is not None else None
-                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else None
+                ret_pct_sum = float(row[1]) if row and row[1] is not None else 0.0
+                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else 0.0
 
-                duration = period_end - period_start
-                prev_end = prev_start + duration
+                br_raw, mtb_raw = _account_balance_opening_equity_row(
+                    cursor, ab_ident, period_start_et
+                )
+                br0 = _format_currency_cents(br_raw) if br_raw is not None else None
+                mtb0 = _format_currency_cents(mtb_raw) if mtb_raw is not None else None
+                ret_pct_calc = _ret_pct_from_equity(pnl, br0)
+                ret_pct_base_calc = _ret_pct_from_equity(pnl, mtb0)
+                ret_pct = (
+                    ret_pct_calc
+                    if ret_pct_calc is not None
+                    else round(ret_pct_sum, 2)
+                )
+                ret_pct_base = (
+                    ret_pct_base_calc
+                    if ret_pct_base_calc is not None
+                    else round(ret_pct_base_sum, 2)
+                )
+
                 cursor.execute(
-                    """
-                    SELECT COALESCE(SUM(pnl), 0)
-                    FROM ("""
-                    + union_sql
-                    + """) AS trades_all
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
-                    """
-                    + paper_clause
-                    + """
-                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
-                      AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) >= %s
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE created_at END) <= %s
-                """,
-                    (prev_start, prev_end),
+                    q_prev,
+                    (prev_lo.isoformat(), prev_hi.isoformat()),
                 )
                 prev_row = cursor.fetchone()
                 prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
 
-                ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
-                ret_pct_base = round(ret_pct_base_sum, 2) if ret_pct_base_sum is not None else None
                 result[key] = {
                     "pnl": round(pnl, 2),
                     "ret_pct": ret_pct,
