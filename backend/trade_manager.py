@@ -3010,7 +3010,12 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     total_fees_increment = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
                     increment_cost = _parse_dollars(taker_fill_cost_dollars) or 0.0
                     increment_fill = float(fill_val)
-                    old_pos = int(round(float(tr_pos or 0)))
+                    # Pending INSERT uses `position` = requested size (same as initial_count), not fills.
+                    # Partial rows use `position` as cumulative filled contracts for IOC top-ups.
+                    if row_status == "pending":
+                        old_pos = 0
+                    else:
+                        old_pos = int(round(float(tr_pos or 0)))
                     old_buy = float(tr_bp) if tr_bp is not None else 0.0
                     old_fees = float(tr_fees) if tr_fees is not None else 0.0
                     try:
