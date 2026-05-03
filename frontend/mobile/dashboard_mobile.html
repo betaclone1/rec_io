@@ -1824,6 +1824,8 @@
     let dbChangesBankrollQueuedStreams = null;
     const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
     let monitorHistoryRefreshDebounceTimer = null;
+    /** Shell hid this iframe — tear down WS + polling to reduce main.py load (same contract as desktop `tabs/dashboard.html`). */
+    let dashboardMobileTabPaused = false;
 
     let accountBalanceSnapshot = null;
 
@@ -7140,7 +7142,10 @@
       };
 
       ws.onclose = function() {
-        setTimeout(connectWebSocket, 5000);
+        if (dashboardMobileTabPaused) return;
+        setTimeout(function() {
+          if (!dashboardMobileTabPaused) connectWebSocket();
+        }, 5000);
       };
 
       ws.onerror = function(error) {
@@ -7249,10 +7254,11 @@
       sock.onclose = function(ev) {
         console.log('Dashboard mobile db_changes closed', ev.code, ev.reason, 'reconnect in', dbChangesWsBackoffMs, 'ms');
         wsDbChanges = null;
+        if (dashboardMobileTabPaused) return;
         if (dbChangesWsReconnectTimer) return;
         dbChangesWsReconnectTimer = setTimeout(function() {
           dbChangesWsReconnectTimer = null;
-          connectDbChangesWebSocket();
+          if (!dashboardMobileTabPaused) connectDbChangesWebSocket();
         }, dbChangesWsBackoffMs);
         dbChangesWsBackoffMs = Math.min(dbChangesWsBackoffMs * 2, DB_CHANGES_WS_BACKOFF_CAP_MS);
       };
@@ -7307,6 +7313,90 @@
           console.error('Dashboard mobile: error handling db_changes WebSocket message:', e);
         }
       };
+    }
+
+    function pauseDashboardMobileShellTab() {
+      dashboardMobileTabPaused = true;
+      if (window._dmPerformanceInterval) {
+        clearInterval(window._dmPerformanceInterval);
+        window._dmPerformanceInterval = null;
+      }
+      if (window._dmMonitorRefreshInterval) {
+        clearInterval(window._dmMonitorRefreshInterval);
+        window._dmMonitorRefreshInterval = null;
+      }
+      if (window._dmAutoTradeInterval) {
+        clearInterval(window._dmAutoTradeInterval);
+        window._dmAutoTradeInterval = null;
+      }
+      if (window._dmPortfolioInterval) {
+        clearInterval(window._dmPortfolioInterval);
+        window._dmPortfolioInterval = null;
+      }
+      if (window._dmHistoryInterval) {
+        clearInterval(window._dmHistoryInterval);
+        window._dmHistoryInterval = null;
+      }
+      if (window._dmMarketDataInterval) {
+        clearInterval(window._dmMarketDataInterval);
+        window._dmMarketDataInterval = null;
+      }
+      if (dbChangesWsReconnectTimer) {
+        clearTimeout(dbChangesWsReconnectTimer);
+        dbChangesWsReconnectTimer = null;
+      }
+      if (wsDbChanges) {
+        try {
+          wsDbChanges.onclose = null;
+        } catch (e) { /* ignore */ }
+        try {
+          wsDbChanges.close();
+        } catch (e) { /* ignore */ }
+        wsDbChanges = null;
+      }
+      if (ws) {
+        try {
+          ws.onclose = null;
+        } catch (e) { /* ignore */ }
+        try {
+          ws.close();
+        } catch (e) { /* ignore */ }
+        ws = null;
+      }
+      if (monitorHealthRefreshTimer) {
+        clearTimeout(monitorHealthRefreshTimer);
+        monitorHealthRefreshTimer = null;
+      }
+    }
+
+    async function dashboardMobileTabResumeRefreshFromServer() {
+      try {
+        await fetchAccountBalanceSnapshot();
+        await refreshPortfolioPanelAllTabsData({
+          rerenderActive: true,
+          rerenderAllCharts: true,
+          skipBalanceSnapshotFetch: true,
+        });
+        await refreshMonitorsSoft();
+        await loadPerformanceData();
+        await loadPerformancePanelCashBalance();
+        scheduleMonitorHealthRefresh();
+      } catch (e) {
+        console.error('Dashboard mobile tab resume refresh failed:', e);
+      }
+    }
+
+    function resumeDashboardMobileShellTab() {
+      if (!dashboardMobileTabPaused) return;
+      dashboardMobileTabPaused = false;
+      dbChangesWsBackoffMs = 1000;
+      connectWebSocket();
+      connectDbChangesWebSocket();
+      startDashboardMobilePolling();
+      if (typeof window.startDashboardMarketDataPolling === 'function') {
+        window.startDashboardMarketDataPolling();
+      }
+      void dashboardMobileTabResumeRefreshFromServer();
     }
 
   </script>
@@ -9788,11 +9878,22 @@
       window.hideMobileUnifiedAutoTradeSettings = hideModal;
     })();
   </script>
-  <!-- Tab visibility messages are ignored for dashboard refresh logic to avoid interfering with normal polling/WebSocket behavior -->
+  <!-- Tab visibility: pause WS + polling when shell hides this iframe (parity with desktop dashboard). -->
   <script>
   (function() {
     window.addEventListener('message', function(event) {
       if (!event.data || event.data.type !== 'tab-visibility') return;
+      try {
+        var origin = window.location.origin;
+        if (event.origin !== origin) return;
+      } catch (e) {
+        return;
+      }
+      if (event.data.visible === true) {
+        if (typeof resumeDashboardMobileShellTab === 'function') resumeDashboardMobileShellTab();
+      } else {
+        if (typeof pauseDashboardMobileShellTab === 'function') pauseDashboardMobileShellTab();
+      }
     });
   })();
   </script>

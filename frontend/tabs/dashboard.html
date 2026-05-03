@@ -1977,6 +1977,10 @@
     let dbChangesBankrollQueuedStreams = null;
     const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
     let monitorHistoryRefreshDebounceTimer = null;
+    /** When true, shell hid this iframe — WebSockets and periodic polls are torn down to reduce main.py load. */
+    let dashboardTabPaused = false;
+    let dashboardPerfPanelIntervalId = null;
+    let dashboardMonitorsSoftIntervalId = null;
 
     // Latest row from live or paper account_balance (via /api/account/balance); drives portfolio/bankroll top line.
     let accountBalanceSnapshot = null;
@@ -6394,11 +6398,8 @@
       return 1871.27; // Default value from your dummy data
     }
 
-    // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel
-    setInterval(() => {
-      loadPerformanceData();
-      loadPerformancePanelCashBalance();
-    }, 30000);
+    // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel;
+    // started via startDashboardPeriodicIntervals() (also pauses when shell hides this tab).
     
     // TODO: Re-enable allocation data refresh when ready
     // setInterval(loadAllocationData, 30000);
@@ -6477,10 +6478,7 @@
       }, delayMs);
     }
 
-    // Refresh monitor data every 30 seconds (reload from database)
-    setInterval(() => {
-      refreshMonitorsSoft();
-    }, 30000);
+    startDashboardPeriodicIntervals();
 
     // Market data functions - commented out with symbol price panel (may move elsewhere later)
     /*
@@ -7570,8 +7568,10 @@
       };
 
       ws.onclose = function() {
-        // Reconnect after a delay
-        setTimeout(connectWebSocket, 5000);
+        if (dashboardTabPaused) return;
+        setTimeout(function() {
+          if (!dashboardTabPaused) connectWebSocket();
+        }, 5000);
       };
 
       ws.onerror = function(error) {
@@ -7680,10 +7680,11 @@
       sock.onclose = function(ev) {
         console.log('Dashboard db_changes WebSocket closed', ev.code, ev.reason, 'reconnect in', dbChangesWsBackoffMs, 'ms');
         wsDbChanges = null;
+        if (dashboardTabPaused) return;
         if (dbChangesWsReconnectTimer) return;
         dbChangesWsReconnectTimer = setTimeout(function() {
           dbChangesWsReconnectTimer = null;
-          connectDbChangesWebSocket();
+          if (!dashboardTabPaused) connectDbChangesWebSocket();
         }, dbChangesWsBackoffMs);
         dbChangesWsBackoffMs = Math.min(dbChangesWsBackoffMs * 2, DB_CHANGES_WS_BACKOFF_CAP_MS);
       };
@@ -7737,6 +7738,98 @@
         }
       };
     }
+
+    function startDashboardPeriodicIntervals() {
+      if (dashboardPerfPanelIntervalId) clearInterval(dashboardPerfPanelIntervalId);
+      if (dashboardMonitorsSoftIntervalId) clearInterval(dashboardMonitorsSoftIntervalId);
+      dashboardPerfPanelIntervalId = setInterval(function() {
+        loadPerformanceData();
+        loadPerformancePanelCashBalance();
+      }, 30000);
+      dashboardMonitorsSoftIntervalId = setInterval(function() {
+        refreshMonitorsSoft();
+      }, 30000);
+    }
+
+    function pauseDashboardShellTab() {
+      dashboardTabPaused = true;
+      if (dashboardPerfPanelIntervalId) {
+        clearInterval(dashboardPerfPanelIntervalId);
+        dashboardPerfPanelIntervalId = null;
+      }
+      if (dashboardMonitorsSoftIntervalId) {
+        clearInterval(dashboardMonitorsSoftIntervalId);
+        dashboardMonitorsSoftIntervalId = null;
+      }
+      if (dbChangesWsReconnectTimer) {
+        clearTimeout(dbChangesWsReconnectTimer);
+        dbChangesWsReconnectTimer = null;
+      }
+      if (wsDbChanges) {
+        try {
+          wsDbChanges.onclose = null;
+        } catch (e) { /* ignore */ }
+        try {
+          wsDbChanges.close();
+        } catch (e) { /* ignore */ }
+        wsDbChanges = null;
+      }
+      if (ws) {
+        try {
+          ws.onclose = null;
+        } catch (e) { /* ignore */ }
+        try {
+          ws.close();
+        } catch (e) { /* ignore */ }
+        ws = null;
+      }
+      if (monitorHealthRefreshTimer) {
+        clearTimeout(monitorHealthRefreshTimer);
+        monitorHealthRefreshTimer = null;
+      }
+    }
+
+    async function dashboardTabResumeRefreshFromServer() {
+      try {
+        await fetchAccountBalanceSnapshot();
+        await refreshPortfolioPanelAllTabsData({
+          rerenderActive: true,
+          rerenderAllCharts: true,
+          skipBalanceSnapshotFetch: true,
+        });
+        await refreshMonitorsSoft();
+        await loadPerformanceData();
+        await loadPerformancePanelCashBalance();
+        scheduleMonitorHealthRefresh();
+      } catch (e) {
+        console.error('Dashboard tab resume refresh failed:', e);
+      }
+    }
+
+    function resumeDashboardShellTab() {
+      if (!dashboardTabPaused) return;
+      dashboardTabPaused = false;
+      dbChangesWsBackoffMs = 1000;
+      connectWebSocket();
+      connectDbChangesWebSocket();
+      startDashboardPeriodicIntervals();
+      void dashboardTabResumeRefreshFromServer();
+    }
+
+    window.addEventListener('message', function(event) {
+      if (!event.data || event.data.type !== 'tab-visibility') return;
+      try {
+        var origin = window.location.origin;
+        if (event.origin !== origin) return;
+      } catch (e) {
+        return;
+      }
+      if (event.data.visible === true) {
+        resumeDashboardShellTab();
+      } else {
+        pauseDashboardShellTab();
+      }
+    });
 
 
   </script>
