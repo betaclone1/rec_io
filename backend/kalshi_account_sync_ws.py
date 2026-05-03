@@ -518,9 +518,18 @@ def _normalize_created_at(created_at):
         return None
     if hasattr(created_at, "replace") and hasattr(created_at, "hour"):
         return created_at
-    s = str(created_at).replace("Z", "+00:00")
+    s = str(created_at).strip()
     try:
-        return datetime.fromisoformat(s)
+        return datetime.fromisoformat(s.replace("Z", "+00:00"))
+    except ValueError:
+        # Kalshi often returns fractional seconds with fewer than 6 digits (e.g. .26132Z).
+        # datetime.fromisoformat rejects those on Python 3.10; dateutil handles them.
+        try:
+            from dateutil.parser import isoparse
+
+            return isoparse(s)
+        except Exception:
+            return None
     except Exception:
         return None
 

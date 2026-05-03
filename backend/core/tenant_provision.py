@@ -26,6 +26,11 @@ _LOG = logging.getLogger(__name__)
 _SCHEMA_RE = re.compile(r"^users_(\d{4})$")
 _USER_NO_RAW_RE = re.compile(r"^\d{1,4}$")
 _LEGACY_USER_ID_RE = re.compile(r"(?:user_)?(\d{4})", re.IGNORECASE)
+# Point-in-time snapshot tables (often moved to schema ``archive``); must not be cloned per-tenant.
+_DATED_TENANT_ARCHIVE_TBL = re.compile(
+    r"^(trades|transfers)_\d{4}_archive_\d{8}$",
+    re.IGNORECASE,
+)
 _TENANT_PROVISION_LOCK_A = 672804213
 _TENANT_PROVISION_LOCK_B = 1103
 _TENANT_PROVISION_RETRIES = 3
@@ -67,6 +72,11 @@ def _should_clone_table(table_name: str, src_no: str) -> bool:
 def _excluded_from_tenant_schema_clone(table_name: str) -> bool:
     """Runtime per-monitor tables; empty until populated for that user's monitors."""
     return table_name.startswith("monitor_cycle_performance_")
+
+
+def _is_dated_tenant_snapshot_archive_table(table_name: str) -> bool:
+    """True for e.g. ``trades_0001_archive_20260503`` (any case); lives in ``archive`` on prod."""
+    return bool(_DATED_TENANT_ARCHIVE_TBL.match(table_name))
 
 
 def _list_base_tables(cur, schema: str) -> List[str]:
@@ -457,7 +467,9 @@ def provision_tenant_schema_clone(
     tables = [
         t
         for t in _list_base_tables(cur, tpl)
-        if _should_clone_table(t, src_no) and not _excluded_from_tenant_schema_clone(t)
+        if _should_clone_table(t, src_no)
+        and not _excluded_from_tenant_schema_clone(t)
+        and not _is_dated_tenant_snapshot_archive_table(t)
     ]
     for old_name in tables:
         new_name = _remap_tenant_identifier(old_name, src_no, target_user_no)
