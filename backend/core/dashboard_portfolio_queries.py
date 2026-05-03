@@ -46,6 +46,51 @@ def _trading_mode_label(trading_mode: Optional[str]) -> str:
     return "paper" if use_paper_for_request(trading_mode) else "live"
 
 
+def _period_return_vs_equity(pnl: float, equity_dollars: Optional[float]) -> Optional[float]:
+    if equity_dollars is None or equity_dollars <= 0:
+        return None
+    return round(100.0 * float(pnl) / float(equity_dollars), 2)
+
+
+def _account_balance_row_near_period_start(
+    cursor: Any,
+    ab_ident: Any,
+    period_start: datetime,
+    period_end: datetime,
+) -> Any:
+    """
+    Prefer last snapshot strictly before period_start; else first snapshot inside [period_start, period_end].
+    """
+    cursor.execute(
+        psql.SQL(
+            """
+            SELECT COALESCE(master_trading_bankroll, bankroll_current), mtb_base_value
+            FROM {}
+            WHERE updated_at < %s
+            ORDER BY updated_at DESC, id DESC
+            LIMIT 1
+            """
+        ).format(ab_ident),
+        (period_start,),
+    )
+    row = cursor.fetchone()
+    if row and (row[0] is not None or row[1] is not None):
+        return row
+    cursor.execute(
+        psql.SQL(
+            """
+            SELECT COALESCE(master_trading_bankroll, bankroll_current), mtb_base_value
+            FROM {}
+            WHERE updated_at >= %s AND updated_at <= %s
+            ORDER BY updated_at ASC, id ASC
+            LIMIT 1
+            """
+        ).format(ab_ident),
+        (period_start, period_end),
+    )
+    return cursor.fetchone()
+
+
 def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str, Any]:
     conn = None
     try:
@@ -373,6 +418,9 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
         ]
 
         paper_clause = _paper_trade_sql_clause(trading_mode)
+        ab_ident = sql_ident_qualified_table(
+            account_balance_table_for_user(slot, client_trading_mode=trading_mode)
+        )
 
         result: Dict[str, Any] = {}
         with conn.cursor() as cursor:
@@ -409,8 +457,33 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
                 )
                 row = cursor.fetchone()
                 pnl = float(row[0]) if row and row[0] is not None else 0.0
-                ret_pct_sum = float(row[1]) if row and row[1] is not None else None
-                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else None
+                ret_pct_sum = float(row[1]) if row and row[1] is not None else 0.0
+                ret_pct_base_sum = float(row[2]) if row and row[2] is not None else 0.0
+
+                bal_row = _account_balance_row_near_period_start(
+                    cursor, ab_ident, period_start, period_end
+                )
+                br0: Optional[float] = None
+                mtb0: Optional[float] = None
+                if bal_row:
+                    br_raw, mtb_raw = bal_row[0], bal_row[1]
+                    if br_raw is not None:
+                        br0 = _format_currency_cents(br_raw)
+                    if mtb_raw is not None:
+                        mtb0 = _format_currency_cents(mtb_raw)
+
+                ret_pct_calc = _period_return_vs_equity(pnl, br0)
+                ret_pct_base_calc = _period_return_vs_equity(pnl, mtb0)
+                ret_pct = (
+                    ret_pct_calc
+                    if ret_pct_calc is not None
+                    else round(ret_pct_sum, 2)
+                )
+                ret_pct_base = (
+                    ret_pct_base_calc
+                    if ret_pct_base_calc is not None
+                    else round(ret_pct_base_sum, 2)
+                )
 
                 duration = period_end - period_start
                 prev_end = prev_start + duration
@@ -434,8 +507,6 @@ def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, An
                 prev_row = cursor.fetchone()
                 prev_pnl = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
 
-                ret_pct = round(ret_pct_sum, 2) if ret_pct_sum is not None else None
-                ret_pct_base = round(ret_pct_base_sum, 2) if ret_pct_base_sum is not None else None
                 result[key] = {
                     "pnl": round(pnl, 2),
                     "ret_pct": ret_pct,
