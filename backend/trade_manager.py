@@ -3030,6 +3030,49 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     terminal_ioc = is_ioc and order_status in ("canceled", "executed")
 
                     if terminal_ioc and fill_val <= 0 and row_status == "pending":
+                        # Live IOC top-up resets the row to pending + NULL order_id_open before the
+                        # replacement Kalshi order is stored. A zero-fill terminal leg on that new
+                        # order_id must not delete the trade if a prior leg already reduced position
+                        # below initial_count (exchange holds contracts not reflected in this leg's
+                        # fill_count). A brand-new pending row still has position == initial_count
+                        # until the first IOC confirm; those true zero-fills must keep IOC_ZERO_FILL.
+                        tr_pos_f_pending = _trade_position_for_db(tr_pos)
+                        try:
+                            tr_ic_chk = int(tr_ic) if tr_ic is not None else 0
+                        except (TypeError, ValueError):
+                            tr_ic_chk = 0
+                        prior_leg_filled_some = (
+                            tr_ic_chk > 0 and tr_pos_f_pending + 1e-9 < float(tr_ic_chk)
+                        )
+                        if prior_leg_filled_some:
+                            pg_conn.close()
+                            try:
+                                pg_conn_rev = get_postgresql_connection()
+                                if pg_conn_rev:
+                                    with pg_conn_rev.cursor() as cur_rev:
+                                        cur_rev.execute(
+                                            f"""
+                                            UPDATE {_tm_trades_table()}
+                                            SET order_id_open = NULL
+                                            WHERE id = %s
+                                            """,
+                                            (id,),
+                                        )
+                                    pg_conn_rev.commit()
+                                    pg_conn_rev.close()
+                            except Exception as e_rev:
+                                log_event(
+                                    ticket_id,
+                                    f"MANAGER: IOC top-up zero-fill clear order_id_open failed: {e_rev}",
+                                )
+                            update_trade_status(id, "partial")
+                            log_event(
+                                ticket_id,
+                                f"MANAGER: IOC top-up leg zero fill — keeping trade partial "
+                                f"(pos={tr_pos_f_pending}); prior leg already on exchange",
+                            )
+                            notify_strike_table_trade_change(id, "partial")
+                            break
                         pg_conn.close()
                         _delete_pending_trade_for_rejection(id, ticket_id, "IOC_ZERO_FILL")
                         break

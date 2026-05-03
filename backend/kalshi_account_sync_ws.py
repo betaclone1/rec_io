@@ -940,12 +940,17 @@ def sync_balance():
                 with pg_conn.cursor() as cursor:
                     current_timestamp = now_est().isoformat()
 
-                    from backend.balance_snapshot import apply_balance_snapshot
+                    from backend.balance_snapshot import (
+                        append_account_balance_after_withdrawal_cycle,
+                        apply_balance_snapshot,
+                        update_mtb_balance_from_primary_and_ct,
+                    )
                     from backend.core.tenant_context import process_tenant_context
                     from backend.trading_mode import (
                         account_balance_table_for_user,
                         sql_ident_qualified_table,
                         subaccounts_table_for_user,
+                        transfers_table_for_user,
                     )
 
                     portfolio_value = int(total_portfolio_value)
@@ -1042,27 +1047,22 @@ def sync_balance():
                             notify_monitor_manager()
                             logger.debug("New deposit(s) applied to Cash Transfer + PRIMARY: %s cents total", sum(new_deposit_amounts))
                         if new_withdrawal_amounts:
-                            _sa_id = sql_ident_qualified_table(
-                                subaccounts_table_for_user(_slot, force_live=True)
+                            _sa_fqn = subaccounts_table_for_user(_slot, force_live=True)
+                            _ab_fqn = account_balance_table_for_user(_slot, force_live=True)
+                            _sa_id = sql_ident_qualified_table(_sa_fqn)
+                            _ab_id = sql_ident_qualified_table(_ab_fqn)
+                            _xfer_id = sql_ident_qualified_table(
+                                transfers_table_for_user(_slot, force_live=True)
                             )
-                            _ab_id = sql_ident_qualified_table(
-                                account_balance_table_for_user(_slot, force_live=True)
-                            )
+                            _ts_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
+                            inserted_w, stepped = False, False
                             with pg_conn.cursor() as cur:
                                 for amount_net in new_withdrawal_amounts:
                                     cur.execute(
                                         psql.SQL(
-                                            "SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'"
-                                        ).format(_sa_id)
-                                    )
-                                    cash_balance = (cur.fetchone() or (0,))[0]
-                                    amount_subtracted = min(amount_net, cash_balance)
-                                    new_cash = cash_balance - amount_subtracted
-                                    cur.execute(
-                                        psql.SQL(
-                                            "UPDATE {} SET balance = %s WHERE subaccount = 'Cash Transfer'"
+                                            "UPDATE {} SET balance = balance - %s WHERE subaccount = 'Cash Transfer'"
                                         ).format(_sa_id),
-                                        (new_cash,),
+                                        (int(amount_net),),
                                     )
                                 cur.execute(
                                     psql.SQL("SELECT portfolio FROM {} ORDER BY id DESC LIMIT 1").format(
@@ -1070,18 +1070,79 @@ def sync_balance():
                                     )
                                 )
                                 row = cur.fetchone()
-                                if row and row[0] is not None:
+                                primary_cents = int(row[0]) if row and row[0] is not None else None
+                                if primary_cents is not None:
                                     cur.execute(
                                         psql.SQL(
                                             "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
                                         ).format(_sa_id),
-                                        (int(row[0]),),
+                                        (primary_cents,),
+                                    )
+                                    update_mtb_balance_from_primary_and_ct(cur, _sa_fqn, primary_cents)
+                                cur.execute(
+                                    psql.SQL(
+                                        "SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'"
+                                    ).format(_sa_id)
+                                )
+                                ct_after = int((cur.fetchone() or (0,))[0])
+                                if ct_after < 0:
+                                    topup = -ct_after
+                                    cur.execute(
+                                        psql.SQL(
+                                            "UPDATE {} SET balance = balance - %s WHERE subaccount = 'Master Trading Bankroll'"
+                                        ).format(_sa_id),
+                                        (topup,),
+                                    )
+                                    cur.execute(
+                                        psql.SQL(
+                                            "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
+                                        ).format(_sa_id),
+                                        (topup,),
+                                    )
+                                    cur.execute(
+                                        psql.SQL(
+                                            """
+                                            INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
+                                            VALUES (%s, %s, %s, %s, %s, %s)
+                                            """
+                                        ).format(_xfer_id),
+                                        (
+                                            _ts_est,
+                                            "internal",
+                                            "Master Trading Bankroll",
+                                            "Cash Transfer",
+                                            topup,
+                                            "automatic",
+                                        ),
+                                    )
+                                    if primary_cents is not None:
+                                        update_mtb_balance_from_primary_and_ct(cur, _sa_fqn, primary_cents)
+                                if primary_cents is not None:
+                                    inserted_w, stepped = append_account_balance_after_withdrawal_cycle(
+                                        cur,
+                                        account_balance_table=_ab_fqn,
+                                        subaccounts_table=_sa_fqn,
+                                        current_timestamp=current_timestamp,
+                                    )
+                                    if not inserted_w:
+                                        logger.warning(
+                                            "Withdrawal cycle: append account_balance after drawdown ratchet skipped (no prior row?)"
+                                        )
+                                else:
+                                    logger.warning(
+                                        "external withdrawal: skipping MTB reconcile and bankroll append (no portfolio row)"
                                     )
                             pg_conn.commit()
                             notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
                             notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
-                            notify_monitor_manager()
-                            logger.debug("New withdrawal(s) applied: Cash Transfer reduced (PRIMARY adjusted), %s cents total", sum(new_withdrawal_amounts))
+                            if not inserted_w:
+                                notify_monitor_manager()
+                            logger.debug(
+                                "New withdrawal(s): CT reduced by net %s; MTB reconciled; drawdown row inserted=%s stepped=%s",
+                                sum(new_withdrawal_amounts),
+                                inserted_w,
+                                stepped,
+                            )
                     except Exception as sync_exc:
                         logger.warning("Account history sync error: %s", sync_exc)
                 if pg_conn:

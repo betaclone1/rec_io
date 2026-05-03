@@ -294,10 +294,15 @@ def subaccounts_table_for_user(
 
 
 def transfers_table_for_user(
-    user_number: str, *, client_trading_mode: Optional[str] = None
+    user_number: str,
+    *,
+    client_trading_mode: Optional[str] = None,
+    force_live: bool = False,
 ) -> str:
     """Live vs paper transfer log (per four-digit slot)."""
     u = _norm_slot(user_number)
+    if force_live:
+        return f"users_{u}.transfers_{u}"
     if use_paper_for_request(client_trading_mode):
         return f"users_{u}.transfers_paper_{u}"
     return f"users_{u}.transfers_{u}"

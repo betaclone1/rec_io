@@ -193,6 +193,190 @@ def subaccounts_update(
     return (master_bankroll_balance, transfer_triggered)
 
 
+def update_mtb_balance_from_primary_and_ct(
+    cursor,
+    subaccounts_table: str,
+    primary_cents: int,
+) -> Optional[int]:
+    """
+    Set Master Trading Bankroll balance to ``primary_cents - Cash Transfer`` and refresh
+    realized_pnl / realized_pnl_pct from MTB base_value (same formulas as ``subaccounts_update``).
+
+    Call after PRIMARY and Cash Transfer have been updated so MTB + CT == PRIMARY holds.
+    Returns the new MTB balance in cents, or None if the MTB row is missing.
+    """
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+    sch, tbl = _split_fqn(subaccounts_table)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL("SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'").format(ident),
+    )
+    cash_transfer_row = cursor.fetchone()
+    cash_transfer_balance = int(cash_transfer_row[0]) if cash_transfer_row else 0
+    master_bankroll_balance = int(primary_cents) - cash_transfer_balance
+
+    cursor.execute(
+        sql.SQL(
+            "SELECT base_value, target_pnl__pct, transfer_amt, automatic_transfers FROM {} WHERE subaccount = 'Master Trading Bankroll'"
+        ).format(ident),
+    )
+    mtb_row = cursor.fetchone()
+    base_value = int(mtb_row[0]) if mtb_row and mtb_row[0] is not None else None
+    if base_value is not None and base_value != 0:
+        realized_pnl = master_bankroll_balance - base_value
+        ratio = (master_bankroll_balance - base_value) / base_value
+        realized_pnl_pct = float(int(ratio * 10000)) / 10000.0
+    else:
+        realized_pnl = None
+        realized_pnl_pct = None
+
+    cursor.execute(
+        sql.SQL(
+            "UPDATE {} SET balance = %s, realized_pnl = %s, realized_pnl_pct = %s WHERE subaccount = 'Master Trading Bankroll'"
+        ).format(ident),
+        (master_bankroll_balance, realized_pnl, realized_pnl_pct),
+    )
+    return master_bankroll_balance
+
+
+def compute_bankroll_current_ratchet_from_mtb(
+    master_bankroll_balance: int,
+    prev_bankroll: Optional[int],
+    *,
+    drawdown_halt_on: bool,
+    drawdown_pct: Any,
+) -> Tuple[int, bool]:
+    """
+    Same sticky bankroll / drawdown step-down rules as the non-transfer branch of
+    ``apply_balance_snapshot`` (when automatic internal transfer did not fire).
+    Returns (bankroll_current, bankroll_stepped_down).
+    """
+    try:
+        _dd_ratio = float((100.0 - float(drawdown_pct)) / 100.0)
+    except (TypeError, ValueError):
+        _dd_ratio = 0.5
+
+    drawdown_threshold = (int(round(prev_bankroll * _dd_ratio)) if prev_bankroll else None)
+    bankroll_stepped_down = False
+
+    if prev_bankroll is None:
+        return master_bankroll_balance, False
+    if master_bankroll_balance > prev_bankroll:
+        return master_bankroll_balance, False
+    if (
+        drawdown_halt_on
+        and drawdown_threshold is not None
+        and master_bankroll_balance <= drawdown_threshold
+    ):
+        if prev_bankroll > drawdown_threshold:
+            bankroll_stepped_down = True
+        return master_bankroll_balance, bankroll_stepped_down
+    return prev_bankroll, False
+
+
+def append_account_balance_after_withdrawal_cycle(
+    cursor,
+    *,
+    account_balance_table: str,
+    subaccounts_table: str,
+    current_timestamp: str,
+) -> Tuple[bool, bool]:
+    """
+    Append one ``account_balance`` row after external withdrawal + MTB↔CT reconciliation.
+    Uses current MTB from subaccounts and applies the drawdown ratchet against the latest
+    sticky ``bankroll_current`` (same logic as ``apply_balance_snapshot``).
+
+    Returns (inserted, bankroll_stepped_down). On success, notifies frontend and monitor_manager.
+    """
+    if not _allowed_account_balance_fqn(account_balance_table):
+        raise ValueError(f"Invalid account_balance table: {account_balance_table}")
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+
+    ab_sch, ab_tbl = _split_fqn(account_balance_table)
+    ab_ident = sql.SQL("{}.{}").format(sql.Identifier(ab_sch), sql.Identifier(ab_tbl))
+
+    cursor.execute(
+        sql.SQL(
+            """
+            SELECT balance, exposure, positions, portfolio, bankroll_current, COALESCE(portfolio_value, 0)
+            FROM {}
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).format(ab_ident),
+    )
+    prev_row = cursor.fetchone()
+    if not prev_row:
+        return False, False
+
+    balance_amount, exposure_v, positions_v, portfolio_v, prev_bankroll, portfolio_value_raw = prev_row
+    mtb_balance, mtb_base = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+    if mtb_balance is None:
+        return False, False
+
+    user_no = parse_user_number_from_account_balance_table(account_balance_table)
+    drawdown_halt_on, drawdown_pct = get_drawdown_trading_controls(
+        cursor, user_number=user_no or resolved_tenant_user_no_for_app()
+    )
+    bankroll_current, bankroll_stepped_down = compute_bankroll_current_ratchet_from_mtb(
+        int(mtb_balance),
+        int(prev_bankroll) if prev_bankroll is not None else None,
+        drawdown_halt_on=drawdown_halt_on,
+        drawdown_pct=drawdown_pct,
+    )
+
+    bal_i = _balance_cents_int(balance_amount)
+    exp_i = int(exposure_v or 0)
+    pos_i = int(positions_v or 0)
+    ptf_i = int(portfolio_v or 0)
+    pvr_i = int(portfolio_value_raw or 0)
+
+    cursor.execute(
+        sql.SQL(
+            """
+            INSERT INTO {} (
+                balance, exposure, positions, portfolio, bankroll_current,
+                portfolio_value, "timestamp", master_trading_bankroll, mtb_base_value,
+                created_at, updated_at
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+            """
+        ).format(ab_ident),
+        (
+            bal_i,
+            exp_i,
+            pos_i,
+            ptf_i,
+            bankroll_current,
+            pvr_i,
+            current_timestamp,
+            int(mtb_balance),
+            int(mtb_base) if mtb_base is not None else None,
+        ),
+    )
+
+    from backend.kalshi_account_sync_ws import notify_frontend_db_change, notify_monitor_manager
+
+    total_portfolio_value = bal_i + pvr_i
+    notify_db_name = "account_balance_paper" if "_paper_" in account_balance_table else "account_balance"
+    notify_frontend_db_change(
+        notify_db_name,
+        {
+            "balance": bal_i,
+            "exposure": exp_i,
+            "positions": pos_i,
+            "portfolio": ptf_i,
+            "portfolio_value_raw": pvr_i,
+            "total_portfolio": total_portfolio_value,
+            "source": "external_withdrawal_bankroll",
+        },
+    )
+    notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
+    return True, bankroll_stepped_down
+
+
 def get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table: str = "users.subaccounts_0001") -> Tuple[Optional[int], Optional[int]]:
     if not _allowed_subaccounts_fqn(subaccounts_table):
         raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
