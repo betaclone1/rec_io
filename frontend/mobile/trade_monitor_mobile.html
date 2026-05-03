@@ -3971,7 +3971,7 @@ async function fetchAndRenderTrades() {
         <td>${trade.strike || ''}</td>
         <td>${trade.side || ''}</td>
         <td>${trade.buy_price || ''}</td>
-        <td>${trade.position || ''}</td>
+        <td>${trade.position != null && trade.position !== '' ? Math.trunc(Number(trade.position)) : ''}</td>
       `;
       
       // Add Close button cell
@@ -4196,7 +4196,7 @@ async function fetchAndRenderTradeHistory() {
         <td>${plusSign(trade.diff)}</td>
         <td>${buyPrice}</td>
         <td>${sellPrice}</td>
-        <td>${trade.position || ''}</td>
+        <td>${trade.position != null && trade.position !== '' ? Math.trunc(Number(trade.position)) : ''}</td>
         <td>${fees}</td>
         <td>${pnl}</td>
         <td>${trade.closed_at || ''}</td>

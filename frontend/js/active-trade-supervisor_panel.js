@@ -11,6 +11,13 @@ let activeTradeSupervisorRefreshInterval = null;
 let activeTradeSupervisorPendingCheckIntervalId = null;
 let hasPendingTrades = false;
 
+/** Truncate fractional contracts for display (DB stores 2dp). */
+function displayContractsTruncated(v) {
+  if (v === null || v === undefined || v === "") return "";
+  const n = Number(v);
+  return Number.isFinite(n) ? String(Math.trunc(n)) : String(v);
+}
+
 // Helper function to insert row in correct sorted position
 function insertRowInSortedPosition(tableBody, newRow, newStrike) {
   const allRows = Array.from(tableBody.children);
@@ -176,7 +183,7 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
       
       // Position
       const posCell = document.createElement("td");
-      posCell.textContent = trade.position ?? "";
+      posCell.textContent = displayContractsTruncated(trade.position);
       row.appendChild(posCell);
       
       // Buffer (from PostgreSQL)
@@ -278,7 +285,7 @@ function renderActiveTradeSupervisorTrades(activeTrades) {
       
       // Update POS column (position)
       if (cells.length > 3 && trade.position !== null && trade.position !== undefined) {
-        cells[3].textContent = trade.position;
+        cells[3].textContent = displayContractsTruncated(trade.position);
       }
       
       // Update buffer

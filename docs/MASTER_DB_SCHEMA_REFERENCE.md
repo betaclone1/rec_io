@@ -10652,7 +10652,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `prob` | `real(24)` | YES | - | |
 | `diff` | `text` | YES | - | |
 | `buy_price` | `numeric(12,6)` | NO | - | Stored at 6dp in DB for execution precision; UI may display rounded/truncated values. |
-| `position` | `integer(32)` | NO | - | |
+| `position` | `numeric(12,2)` | NO | - | Filled contracts to **2dp** (Kalshi fractional fills). UI may show integer-truncated counts. Migration `20260501_1700_trades_position_numeric_2dp`. |
 | `initial_price` | `numeric(10,4)` | YES | - | Immutable **intended entry price** from the original open-trade ticket (`trade_manager` insert payload `buy_price`). Never updated after insert. |
 | `slippage` | `numeric(10,4)` | YES | - | Execution slippage on open fill: `final buy_price - initial_price` when fill-confirmed average price is written. |
 | `initial_count` | `integer(32)` | YES | - | Immutable **intended size** from the original open-trade ticket (`position` at insert time). |
@@ -10838,7 +10838,7 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `prob` | real |
 | `diff` | text |
 | `buy_price` | numeric(12,6) |
-| `position` | integer |
+| `position` | numeric(12,2) |
 | `sell_price` | numeric(12,6) |
 | `closed_at` | text |
 | `fees` | real |

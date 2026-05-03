@@ -394,27 +394,39 @@ def apply_balance_snapshot(
     return True, bankroll_stepped_down
 
 
-def estimate_kalshi_taker_fee_dollars(position: int, price: float) -> float:
+def estimate_kalshi_taker_fee_dollars(position, price: float) -> float:
     """Same formula as trade_manager.estimate_kalshi_taker_fee (taker leg, dollars)."""
-    if position is None or int(position) <= 0 or price is None or float(price) <= 0 or float(price) >= 1:
+    try:
+        pos = float(position)
+    except (TypeError, ValueError):
         return 0.0
-    raw = 0.07 * int(position) * float(price) * (1.0 - float(price))
+    if pos <= 0 or price is None or float(price) <= 0 or float(price) >= 1:
+        return 0.0
+    raw = 0.07 * pos * float(price) * (1.0 - float(price))
     return math.ceil(raw * 100) / 100
 
 
-def paper_open_cost_and_fee_cents(buy_price: float, position: int, open_fee_dollars: float) -> Tuple[int, int]:
+def paper_open_cost_and_fee_cents(buy_price: float, position, open_fee_dollars: float) -> Tuple[int, int]:
     """Premium (position mark) in cents, and open fee in cents."""
-    cost_cents = int(round(float(buy_price) * int(position) * 100.0))
+    try:
+        pos = float(position)
+    except (TypeError, ValueError):
+        pos = 0.0
+    cost_cents = int(round(float(buy_price) * pos * 100.0))
     fee_cents = int(round(float(open_fee_dollars) * 100.0))
     return cost_cents, fee_cents
 
 
-def paper_close_adjust_cents(buy_price: float, position: int, pnl_dollars: float) -> Tuple[int, int, int]:
+def paper_close_adjust_cents(buy_price: float, position, pnl_dollars: float) -> Tuple[int, int, int]:
     """
     Return (cost_basis_cents, balance_delta_cents, positions_delta_cents) for a closed paper trade.
     balance increases by cost_basis + pnl (in cents); positions decrease by cost_basis.
     """
-    cost_cents = int(round(float(buy_price) * int(position) * 100.0))
+    try:
+        pos = float(position)
+    except (TypeError, ValueError):
+        pos = 0.0
+    cost_cents = int(round(float(buy_price) * pos * 100.0))
     pnl_cents = int(round(float(pnl_dollars) * 100.0))
     return cost_cents, cost_cents + pnl_cents, -cost_cents
 
@@ -700,7 +712,7 @@ def sync_paper_balance_feed_after_open(open_fee_cents: int) -> bool:
         conn.close()
 
 
-def sync_paper_balance_feed_after_close(pnl_cents: int, buy_price: float, position: int) -> bool:
+def sync_paper_balance_feed_after_close(pnl_cents: int, buy_price: float, position) -> bool:
     """
     Mimic one Kalshi balance poll after a paper close (row already ``closed`` in DB).
 
@@ -729,7 +741,7 @@ def sync_paper_balance_feed_after_close(pnl_cents: int, buy_price: float, positi
         return False
     _ensure_tx_connection(conn)
     ts = now_est().isoformat()
-    open_fee_cents = int(round(estimate_kalshi_taker_fee_dollars(int(position), float(buy_price)) * 100.0))
+    open_fee_cents = int(round(estimate_kalshi_taker_fee_dollars(float(position), float(buy_price)) * 100.0))
     try:
         with conn.cursor() as cursor:
             _paper_aggregate_xact_lock(cursor, slot)

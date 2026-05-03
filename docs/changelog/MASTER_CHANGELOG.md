@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-03 — Release v3.4.6: Trade fee confirm serialization, position NUMERIC(12,2), repair script
+
+**Summary**
+- **Release: v3.4.6**
+- **Trade manager:** Per-trade `threading.Lock` serializes **`confirm_open_trade`** and **`confirm_close_trade`** so overlapping notifications (executor failsafe vs `positions_updated`) cannot apply the same **`orders_*`** fee twice to **`trades_*`.fees.
+- **Database:** Reversible migration **`20260501_1700_trades_position_numeric_2dp`** alters **`position`** to **`NUMERIC(12,2)`** on tenant **`trades_*`**, **`trades_simulated_*`**, and **`active_trades_*`** where still integer (Kalshi fractional fills). **`database.py`** bootstrap and **`trade_manager`** / **`active_trade_supervisor`** / **`balance_snapshot`** / **`paper_collateral`** / **`main.py`** aligned; **`docs/MASTER_DB_SCHEMA_REFERENCE.md`** updated.
+- **Frontend:** Active trade supervisor and mobile trade views show position with integer truncation where appropriate.
+- **Tooling:** **`scripts/db/repair_trade_fees_pnl_from_orders.py`** — one-off repair of fees + PnL / ret metrics from synced order rows for a closed trade.
+- **Plans:** Session work (fee accuracy, fractional position storage); no single **`Status: done`** `.cursor/plans/*.md` slug for this batch.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (idempotent):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260501_1700_trades_position_numeric_2dp`
+- [ ] Schema drift check (non-blocking if clean):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.6`
+
+---
+
 ## 2026-05-01 — Release v3.4.5: Hotfix — monitor_list symbol_wide columns (restore /api/monitors)
 
 **Summary**

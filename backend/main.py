@@ -4109,7 +4109,7 @@ async def get_active_trades_for_monitor(monitor_name: str):
                     "strike": str(row[4]) if row[4] else None,
                     "side": row[5],
                     "buy_price": float(row[6]) if row[6] else None,
-                    "position": int(row[7]) if row[7] else None,
+                    "position": round(float(row[7]), 2) if row[7] is not None else None,
                     "contract": row[8],
                     "ticker": row[9],
                     "symbol": row[10],

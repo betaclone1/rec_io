@@ -1623,7 +1623,7 @@
                     <td>${plusSign(trade.diff)}</td>
                     <td>${trade.buy_price !== null ? Number(trade.buy_price).toFixed(2) : ''}</td>
                     <td>${trade.sell_price !== null ? Number(trade.sell_price).toFixed(2) : ''}</td>
-                    ${!isPercentMode ? `<td>${trade.position !== null ? trade.position : ''}</td>` : ''}
+                    ${!isPercentMode ? `<td>${trade.position !== null && trade.position !== undefined && trade.position !== '' ? Math.trunc(Number(trade.position)) : ''}</td>` : ''}
                     ${!isPercentMode ? `<td>${trade.fees !== null ? Number(trade.fees).toFixed(2) : ''}</td>` : ''}
                     ${!isPercentMode ? `<td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>` : ''}
                     <td>${trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '' ? Number(trade.ret_pct).toFixed(2) : ''}</td>

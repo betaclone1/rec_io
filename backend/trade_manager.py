@@ -718,7 +718,7 @@ def _find_paper_blocking_duplicate_trade_id(data: dict) -> Optional[int]:
 
 def _apply_paper_ioc_partial_topup(
     trade_id: int,
-    pos_existing: int,
+    pos_existing,
     ic_existing: int,
     data: dict,
     proj_side: Optional[str],
@@ -797,10 +797,10 @@ def _apply_paper_ioc_partial_topup(
             pass
         return {"id": trade_id}
 
-    old_pos = int(pos_existing or 0)
-    new_pos = old_pos + fill
+    old_pos = _trade_position_for_db(pos_existing)
+    new_pos = _trade_position_for_db(old_pos + fill)
     if new_pos > ic_existing:
-        new_pos = int(ic_existing)
+        new_pos = _trade_position_for_db(ic_existing)
     if old_pos > 0 and fill > 0:
         avg_buy = (old_buy * old_pos + pb * fill) / new_pos if new_pos > 0 else pb
     elif fill > 0:
@@ -1647,6 +1647,19 @@ TRADE_MANAGER_PORT = get_port("trade_manager")
 processing_trades = set()
 processing_lock = threading.Lock()
 
+_trade_confirm_locks: dict[int, threading.Lock] = {}
+_trade_confirm_locks_guard = threading.Lock()
+
+
+def _trade_confirm_lock(trade_id: int) -> threading.Lock:
+    """Serialize confirm_open_trade / confirm_close_trade per trade id (overlapping notifications)."""
+    with _trade_confirm_locks_guard:
+        lock = _trade_confirm_locks.get(trade_id)
+        if lock is None:
+            lock = threading.Lock()
+            _trade_confirm_locks[trade_id] = lock
+        return lock
+
 
 def _order_count_val(legacy, fp):
     """Prefer _fp (NUMERIC) for order counts; fall back to legacy integer. Returns float for math."""
@@ -1655,6 +1668,14 @@ def _order_count_val(legacy, fp):
     if legacy is not None:
         return float(legacy)
     return 0.0
+
+
+def _trade_position_for_db(value) -> float:
+    """Normalize stored contract count on trades.position to 2dp (Kalshi fractional fills)."""
+    try:
+        return round(float(value), 2)
+    except (TypeError, ValueError):
+        return 0.0
 
 
 def _parse_dollars(value):
@@ -1702,11 +1723,15 @@ def _sql_slippage_from_buy_price_params():
     return "slippage = %s - COALESCE(initial_price, %s)"
 
 
-def estimate_kalshi_taker_fee(position: int, price: float) -> float:
+def estimate_kalshi_taker_fee(position, price: float) -> float:
     """Estimate taker fee for one leg: 0.07 * C * P * (1 - P), rounded up to next cent. Taker only."""
-    if position is None or position <= 0 or price is None or price <= 0 or price >= 1:
+    try:
+        pos = float(position)
+    except (TypeError, ValueError):
         return 0.0
-    raw = 0.07 * position * price * (1.0 - price)
+    if pos <= 0 or price is None or price <= 0 or price >= 1:
+        return 0.0
+    raw = 0.07 * pos * float(price) * (1.0 - float(price))
     return math.ceil(raw * 100) / 100
 
 
@@ -1996,7 +2021,7 @@ def _project_paper_ioc_at_limit(
     return result
 
 
-def _project_orderbook_close(ticker: str, side: str, position: int) -> dict:
+def _project_orderbook_close(ticker: str, side: str, position: float) -> dict:
     """
     Build close projection from current orderbook bids on the same side.
     Returns keys: ok, reason, projected_sell_price, projected_close_fee, available_contracts.
@@ -2065,7 +2090,7 @@ def _project_orderbook_close(ticker: str, side: str, position: int) -> dict:
     return result
 
 
-def _paper_ledger_on_open(buy_price: float, position: int, open_fee_dollars: float) -> None:
+def _paper_ledger_on_open(buy_price: float, position, open_fee_dollars: float) -> None:
     """
     Mimic live Kalshi balance feed: ``portfolio_value`` from OPEN paper trades in DB;
     cash = total equity minus that; total equity decreases by open fees only (premium is neutral).
@@ -2074,19 +2099,19 @@ def _paper_ledger_on_open(buy_price: float, position: int, open_fee_dollars: flo
         from backend.balance_snapshot import paper_open_cost_and_fee_cents, sync_paper_balance_feed_after_open
 
         _cost_cents, fee_cents = paper_open_cost_and_fee_cents(
-            float(buy_price), int(position), float(open_fee_dollars or 0.0)
+            float(buy_price), float(position), float(open_fee_dollars or 0.0)
         )
         sync_paper_balance_feed_after_open(fee_cents)
     except Exception as e:
         log(f"⚠️ paper ledger open: {e}")
 
 
-def _paper_ledger_on_close(buy_price: float, position: int, pnl_dollars: float) -> None:
+def _paper_ledger_on_close(buy_price: float, position, pnl_dollars: float) -> None:
     try:
         from backend.balance_snapshot import sync_paper_balance_feed_after_close
 
         pnl_cents = int(round(float(pnl_dollars) * 100.0))
-        sync_paper_balance_feed_after_close(pnl_cents, float(buy_price), int(position))
+        sync_paper_balance_feed_after_close(pnl_cents, float(buy_price), float(position))
     except Exception as e:
         log(f"⚠️ paper ledger close: {e}")
 
@@ -2630,7 +2655,7 @@ def insert_trade(trade):
                     trade.get('status', 'pending'), trade['date'], trade['time'],
                     symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
-                    diff_formatted, trade['buy_price'], trade['position'], initial_price_for_db, initial_count_for_db, slippage_for_db,
+                    diff_formatted, trade['buy_price'], _trade_position_for_db(trade.get('position')), initial_price_for_db, initial_count_for_db, slippage_for_db,
                     trade.get('initial_proj_price'), trade.get('initial_proj_fees'),
                     None, None,
                     None, None, symbol_open, None, momentum_for_db,
@@ -2910,7 +2935,13 @@ def insert_simulated_trade(trade):
 
 
 def confirm_open_trade(id: int, ticket_id: str) -> None:
-    """Confirms a PENDING trade has been opened by checking ORDERS table for complete fill"""
+    """Confirms a PENDING trade has been opened by checking ORDERS table for complete fill.
+
+    Cumulative open fees on the trade row are: fees already stored from prior IOC legs plus
+    (taker_fees_dollars + maker_fees_dollars) from the tenant orders row for the current
+    order_id_open (synced Kalshi API). A per-trade lock prevents     overlapping confirms from
+    double-counting the same order fee. Uses the same per-id lock as close confirmation.
+    """
     # Get initial trade info including the order_id_open we stored
     pg_conn = get_postgresql_connection()
     if pg_conn:
@@ -2925,7 +2956,6 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
         log_event(ticket_id, f"MANAGER: No trade found for ID {id}")
         return
     
-    expected_ticker = row[0]
     symbol = row[1]
     stored_order_id_open = row[2]
     
@@ -2933,376 +2963,380 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
         log_event(ticket_id, f"MANAGER: No order_id_open stored for trade ID {id} - cannot confirm via ORDERS table")
         return
     
-    deadline = time.time() + 30  # 30 second timeout
-    
-    while time.time() < deadline:
-        try:
-            pg_conn = get_postgresql_connection()
-            if not pg_conn:
-                log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
-                time.sleep(1)
-                continue
+    with _trade_confirm_lock(id):
+        deadline = time.time() + 30  # 30 second timeout
+        
+        while time.time() < deadline:
+            try:
+                pg_conn = get_postgresql_connection()
+                if not pg_conn:
+                    log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
+                    time.sleep(1)
+                    continue
             
-            # Check ORDERS table for our specific order_id (prefer _fp columns for counts and *_dollars for prices/fees)
-            with pg_conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, side,
-                           taker_fees_dollars, maker_fees_dollars,
-                           taker_fill_cost_dollars, maker_fill_cost_dollars
-                    FROM {_tm_orders_table()} 
-                    WHERE order_id = %s
-                """, (stored_order_id_open,))
-                order_row = cursor.fetchone()
+                # Check ORDERS table for our specific order_id (prefer _fp columns for counts and *_dollars for prices/fees)
+                with pg_conn.cursor() as cursor:
+                    cursor.execute(f"""
+                        SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, side,
+                               taker_fees_dollars, maker_fees_dollars,
+                               taker_fill_cost_dollars, maker_fill_cost_dollars
+                        FROM {_tm_orders_table()} 
+                        WHERE order_id = %s
+                    """, (stored_order_id_open,))
+                    order_row = cursor.fetchone()
             
-            if order_row:
-                (remaining_count_fp, fill_count_fp, initial_count_fp, order_status, side,
-                 taker_fees_dollars, maker_fees_dollars,
-                 taker_fill_cost_dollars, maker_fill_cost_dollars) = order_row
-                # Legacy integer counts were removed; use *_fp only.
-                remaining_val = _order_count_val(None, remaining_count_fp)
-                fill_val = _order_count_val(None, fill_count_fp)
-                initial_val = _order_count_val(None, initial_count_fp)
-                log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}/{initial_val}")
+                if order_row:
+                    (remaining_count_fp, fill_count_fp, initial_count_fp, order_status, side,
+                     taker_fees_dollars, maker_fees_dollars,
+                     taker_fill_cost_dollars, maker_fill_cost_dollars) = order_row
+                    # Legacy integer counts were removed; use *_fp only.
+                    remaining_val = _order_count_val(None, remaining_count_fp)
+                    fill_val = _order_count_val(None, fill_count_fp)
+                    initial_val = _order_count_val(None, initial_count_fp)
+                    log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}/{initial_val}")
 
-                pg_snap = get_postgresql_connection()
-                tr_snap = None
-                if pg_snap:
-                    try:
-                        with pg_snap.cursor() as cur:
-                            cur.execute(
-                                f"""
-                                SELECT status, time_in_force, initial_count, position, buy_price, fees, prob
-                                FROM {_tm_trades_table()}
-                                WHERE id = %s
-                                """,
-                                (id,),
-                            )
-                            tr_snap = cur.fetchone()
-                    finally:
+                    pg_snap = get_postgresql_connection()
+                    tr_snap = None
+                    if pg_snap:
                         try:
-                            pg_snap.close()
-                        except Exception:
-                            pass
-                if not tr_snap:
-                    log_event(ticket_id, "MANAGER: trade row missing during confirm_open")
-                    pg_conn.close()
-                    break
-                row_status = tr_snap[0]
-                tr_tif = str(tr_snap[1] or "").strip().lower()
-                tr_ic = tr_snap[2]
-                tr_pos = tr_snap[3]
-                tr_bp = tr_snap[4]
-                tr_fees = tr_snap[5]
-                prob_value_seed = tr_snap[6]
-
-                is_ioc = tr_tif == "immediate_or_cancel"
-                terminal_ioc = is_ioc and order_status in ("canceled", "executed")
-
-                if terminal_ioc and fill_val <= 0 and row_status == "pending":
-                    pg_conn.close()
-                    _delete_pending_trade_for_rejection(id, ticket_id, "IOC_ZERO_FILL")
-                    break
-
-                ioc_handled = False
-                if terminal_ioc and fill_val > 0 and row_status in ("pending", "partial"):
-                    taker_fees_usd = _parse_dollars(taker_fees_dollars)
-                    maker_fees_usd = _parse_dollars(maker_fees_dollars)
-                    total_fees_increment = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
-                    increment_cost = _parse_dollars(taker_fill_cost_dollars) or 0.0
-                    increment_fill = float(fill_val)
-                    # Pending INSERT uses `position` = requested size (same as initial_count), not fills.
-                    # Partial rows use `position` as cumulative filled contracts for IOC top-ups.
-                    if row_status == "pending":
-                        old_pos = 0
-                    else:
-                        old_pos = int(round(float(tr_pos or 0)))
-                    old_buy = float(tr_bp) if tr_bp is not None else 0.0
-                    old_fees = float(tr_fees) if tr_fees is not None else 0.0
-                    try:
-                        tr_ic_int = int(tr_ic) if tr_ic is not None else int(round(initial_val))
-                    except (TypeError, ValueError):
-                        tr_ic_int = int(round(initial_val))
-                    new_pos = int(round(old_pos + increment_fill))
-                    if old_pos > 0 and old_buy > 0 and increment_fill > 0:
-                        avg_buy = (old_buy * old_pos + increment_cost) / new_pos if new_pos > 0 else old_buy
-                    elif increment_fill > 0:
-                        avg_buy = increment_cost / increment_fill
-                    else:
-                        avg_buy = old_buy
-                    total_fees_dollars = old_fees + total_fees_increment
-                    position_for_db = new_pos
-                    buy_price = avg_buy
-                    next_st = "open" if new_pos >= tr_ic_int else "partial"
-                    prob_value = prob_value_seed
-                    diff_formatted = _format_diff_from_prob_and_buy(prob_value, buy_price)
-
-                    symbol_open = None
-                    try:
-                        main_port = get_port("main_app")
-                        response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
-                        if response.ok:
-                            symbol_data = response.json()
-                            raw_price = symbol_data.get("price")
-                            if raw_price is not None:
-                                symbol_open = normalize_trade_spot_price(symbol, raw_price)
-                    except Exception as e:
-                        log_event(ticket_id, f"MANAGER: symbol_open fetch failed: {e}")
-                    if symbol_open is None:
-                        try:
-                            pg_conn_price = get_postgresql_connection()
-                            if pg_conn_price:
-                                with pg_conn_price.cursor() as cur:
-                                    cur.execute(
-                                        f"""
-                                        SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
-                                        ORDER BY timestamp DESC LIMIT 1
-                                        """
-                                    )
-                                    row_sp = cur.fetchone()
-                                    if row_sp and row_sp[0] is not None:
-                                        symbol_open = normalize_trade_spot_price(symbol, row_sp[0])
-                                pg_conn_price.close()
-                        except Exception as e:
-                            log_event(ticket_id, f"MANAGER: live_price_log symbol_open failed: {e}")
-                    if symbol_open is None:
-                        try:
-                            pg_conn_exist = get_postgresql_connection()
-                            if pg_conn_exist:
-                                with pg_conn_exist.cursor() as cur:
-                                    cur.execute(f"SELECT symbol_open FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                                    row_e = cur.fetchone()
-                                    if row_e and row_e[0] is not None:
-                                        symbol_open = normalize_trade_spot_price(symbol, row_e[0])
-                                pg_conn_exist.close()
-                        except Exception as e:
-                            log_event(ticket_id, f"MANAGER: existing symbol_open read failed: {e}")
-
-                    try:
-                        pg_conn_update = get_postgresql_connection()
-                        if pg_conn_update:
-                            with pg_conn_update.cursor() as cursor:
-                                cursor.execute(
+                            with pg_snap.cursor() as cur:
+                                cur.execute(
                                     f"""
-                                    UPDATE {_tm_trades_table()}
-                                    SET position = %s,
-                                        buy_price = %s,
-                                        {_sql_slippage_from_buy_price_params()},
-                                        fees = %s,
-                                        diff = %s,
-                                        symbol_open = COALESCE(%s, symbol_open)
+                                    SELECT status, time_in_force, initial_count, position, buy_price, fees, prob
+                                    FROM {_tm_trades_table()}
                                     WHERE id = %s
                                     """,
-                                    (
-                                        position_for_db,
-                                        buy_price,
-                                        buy_price,
-                                        buy_price,
-                                        total_fees_dollars,
-                                        diff_formatted,
-                                        symbol_open,
-                                        id,
-                                    ),
+                                    (id,),
                                 )
-                                pg_conn_update.commit()
-                            pg_conn_update.close()
-                    except Exception as pg_err:
-                        log(f"❌ IOC confirm update failed: {pg_err}")
+                                tr_snap = cur.fetchone()
+                        finally:
+                            try:
+                                pg_snap.close()
+                            except Exception:
+                                pass
+                    if not tr_snap:
+                        log_event(ticket_id, "MANAGER: trade row missing during confirm_open")
+                        pg_conn.close()
+                        break
+                    row_status = tr_snap[0]
+                    tr_tif = str(tr_snap[1] or "").strip().lower()
+                    tr_ic = tr_snap[2]
+                    tr_pos = tr_snap[3]
+                    tr_bp = tr_snap[4]
+                    tr_fees = tr_snap[5]
+                    prob_value_seed = tr_snap[6]
 
-                    update_trade_status(id, next_st)
-                    log_event(
-                        ticket_id,
-                        f"MANAGER: IOC fill — status={next_st} pos={position_for_db} price={buy_price:.4f} fees=${total_fees_dollars:.4f}",
-                    )
-                    notify_strike_table_trade_change(id, next_st)
-                    pg_conn.close()
-                    ioc_handled = True
-                    break
+                    is_ioc = tr_tif == "immediate_or_cancel"
+                    terminal_ioc = is_ioc and order_status in ("canceled", "executed")
 
-                # Non-IOC (and IOC that did not match above): full fill only
-                if (not ioc_handled) and order_status == "executed" and remaining_val == 0 and fill_val > 0:
-                    # Calculate fees from orders table, using *_dollars fixed-point fields
-                    taker_fees_usd = _parse_dollars(taker_fees_dollars)
-                    maker_fees_usd = _parse_dollars(maker_fees_dollars)
-                    total_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
-                    
-                    # Calculate position size and buy price from order data (use _fp and *_dollars for precision)
-                    position_size = fill_val
+                    if terminal_ioc and fill_val <= 0 and row_status == "pending":
+                        pg_conn.close()
+                        _delete_pending_trade_for_rejection(id, ticket_id, "IOC_ZERO_FILL")
+                        break
 
-                    # taker_fill_cost_dollars is the fixed-point total cost for the filled taker quantity.
-                    buy_price = 0.0
-                    total_cost_usd = _parse_dollars(taker_fill_cost_dollars)
-
-                    if total_cost_usd is not None and position_size > 0:
-                        buy_price = total_cost_usd / position_size
-                    elif position_size > 0:
-                        # Fallback: orders table had no dollar cost (e.g. API gap); keep existing buy_price from trade row
-                        try:
-                            pg_conn_bp = get_postgresql_connection()
-                            if pg_conn_bp:
-                                with pg_conn_bp.cursor() as cur:
-                                    cur.execute(f"SELECT buy_price FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                                    bp_row = cur.fetchone()
-                                    if bp_row and bp_row[0] is not None:
-                                        buy_price = float(bp_row[0])
-                                pg_conn_bp.close()
-                        except Exception as e:
-                            log_event(ticket_id, f"MANAGER: Could not read existing buy_price for open: {e}")
-
-                    # trades_0001.position is integer; round for DB write
-                    position_for_db = int(round(position_size))
-                    log_event(ticket_id, f"MANAGER: Order completely filled - pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}")
-                
-                    # Get current trade status
-                    pg_conn_status = get_postgresql_connection()
-                    if pg_conn_status:
-                        with pg_conn_status.cursor() as cursor:
-                            cursor.execute(f"SELECT status FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                            status_row = cursor.fetchone()
-                            current_status = status_row[0] if status_row else None
-                        pg_conn_status.close()
-                    else:
-                        current_status = None
-                    
-                    if current_status == "pending":
-                        # Get probability for diff calculation
-                        pg_conn_prob = get_postgresql_connection()
-                        if pg_conn_prob:
-                            with pg_conn_prob.cursor() as cursor:
-                                cursor.execute(f"SELECT prob FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                                prob_row = cursor.fetchone()
-                            pg_conn_prob.close()
+                    ioc_handled = False
+                    if terminal_ioc and fill_val > 0 and row_status in ("pending", "partial"):
+                        taker_fees_usd = _parse_dollars(taker_fees_dollars)
+                        maker_fees_usd = _parse_dollars(maker_fees_dollars)
+                        total_fees_increment = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
+                        increment_cost = _parse_dollars(taker_fill_cost_dollars) or 0.0
+                        increment_fill = float(fill_val)
+                        # Pending INSERT uses `position` = requested size (same as initial_count), not fills.
+                        # Partial rows use `position` as cumulative filled contracts for IOC top-ups.
+                        if row_status == "pending":
+                            old_pos = 0.0
                         else:
-                            prob_row = None
-                        
-                        prob_value = prob_row[0] if prob_row and prob_row[0] is not None else None
-                        diff_value = None
-                        
+                            old_pos = _trade_position_for_db(tr_pos)
+                        old_buy = float(tr_bp) if tr_bp is not None else 0.0
+                        old_fees = float(tr_fees) if tr_fees is not None else 0.0
+                        try:
+                            tr_ic_int = int(tr_ic) if tr_ic is not None else int(round(initial_val))
+                        except (TypeError, ValueError):
+                            tr_ic_int = int(round(initial_val))
+                        new_pos = _trade_position_for_db(old_pos + increment_fill)
+                        if old_pos > 0 and old_buy > 0 and increment_fill > 0:
+                            avg_buy = (old_buy * old_pos + increment_cost) / new_pos if new_pos > 0 else old_buy
+                        elif increment_fill > 0:
+                            avg_buy = increment_cost / increment_fill
+                        else:
+                            avg_buy = old_buy
+                        total_fees_dollars = old_fees + total_fees_increment
+                        position_for_db = new_pos
+                        buy_price = avg_buy
+                        next_st = "open" if new_pos >= tr_ic_int else "partial"
+                        prob_value = prob_value_seed
                         diff_formatted = _format_diff_from_prob_and_buy(prob_value, buy_price)
-                    
-                        # Get current symbol price for symbol_open (never overwrite existing with NULL)
+
                         symbol_open = None
                         try:
                             main_port = get_port("main_app")
                             response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
                             if response.ok:
                                 symbol_data = response.json()
-                                raw_price = symbol_data.get('price')
+                                raw_price = symbol_data.get("price")
                                 if raw_price is not None:
                                     symbol_open = normalize_trade_spot_price(symbol, raw_price)
-                                    log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
-                                else:
-                                    log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
-                                    symbol_open = None
-                            else:
-                                log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
-                                symbol_open = None
                         except Exception as e:
-                            log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
-                            symbol_open = None
-
-                        # Fallback: try live_price_log_1s table (same as insert_trade)
+                            log_event(ticket_id, f"MANAGER: symbol_open fetch failed: {e}")
                         if symbol_open is None:
                             try:
                                 pg_conn_price = get_postgresql_connection()
                                 if pg_conn_price:
                                     with pg_conn_price.cursor() as cur:
-                                        cur.execute(f"""
+                                        cur.execute(
+                                            f"""
                                             SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
                                             ORDER BY timestamp DESC LIMIT 1
-                                        """)
-                                        row = cur.fetchone()
-                                        if row and row[0] is not None:
-                                            symbol_open = normalize_trade_spot_price(symbol, row[0])
+                                            """
+                                        )
+                                        row_sp = cur.fetchone()
+                                        if row_sp and row_sp[0] is not None:
+                                            symbol_open = normalize_trade_spot_price(symbol, row_sp[0])
                                     pg_conn_price.close()
                             except Exception as e:
-                                log_event(ticket_id, f"MANAGER: live_price_log_1s fallback for symbol_open failed: {e}")
-
-                        # If we still have no price, keep existing symbol_open from DB (do not overwrite with NULL)
+                                log_event(ticket_id, f"MANAGER: live_price_log symbol_open failed: {e}")
                         if symbol_open is None:
                             try:
                                 pg_conn_exist = get_postgresql_connection()
                                 if pg_conn_exist:
                                     with pg_conn_exist.cursor() as cur:
                                         cur.execute(f"SELECT symbol_open FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                                        row = cur.fetchone()
-                                        if row and row[0] is not None:
-                                            symbol_open = normalize_trade_spot_price(symbol, row[0])
-                                            log_event(ticket_id, f"MANAGER: Keeping existing symbol_open: {symbol_open}")
+                                        row_e = cur.fetchone()
+                                        if row_e and row_e[0] is not None:
+                                            symbol_open = normalize_trade_spot_price(symbol, row_e[0])
                                     pg_conn_exist.close()
                             except Exception as e:
-                                log_event(ticket_id, f"MANAGER: Could not read existing symbol_open: {e}")
+                                log_event(ticket_id, f"MANAGER: existing symbol_open read failed: {e}")
 
-                        # Update additional fields in PostgreSQL BEFORE status change
                         try:
                             pg_conn_update = get_postgresql_connection()
                             if pg_conn_update:
                                 with pg_conn_update.cursor() as cursor:
-                                    cursor.execute(f"""
+                                    cursor.execute(
+                                        f"""
                                         UPDATE {_tm_trades_table()}
                                         SET position = %s,
                                             buy_price = %s,
                                             {_sql_slippage_from_buy_price_params()},
                                             fees = %s,
                                             diff = %s,
-                                            symbol_open = %s
+                                            symbol_open = COALESCE(%s, symbol_open)
                                         WHERE id = %s
-                                    """, (position_for_db, buy_price, buy_price, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
-                                    
-                                    if cursor.rowcount > 0:
-                                        log_debug(f"💾 Trade additional fields updated in PostgreSQL tenant trades from ORDERS data")
-                                    else:
-                                        log(f"⚠️ No matching trade found in PostgreSQL for ID {id}")
-                                    
+                                        """,
+                                        (
+                                            position_for_db,
+                                            buy_price,
+                                            buy_price,
+                                            buy_price,
+                                            total_fees_dollars,
+                                            diff_formatted,
+                                            symbol_open,
+                                            id,
+                                        ),
+                                    )
                                     pg_conn_update.commit()
                                 pg_conn_update.close()
-                            else:
-                                log(f"⚠️ Skipping PostgreSQL additional fields update - no connection available")
                         except Exception as pg_err:
-                            log(f"❌ Failed to update trade additional fields in PostgreSQL: {pg_err}")
-                        
-                        # Update trade status to open (this will also update PostgreSQL and notify ATS)
-                        update_trade_status(id, 'open')
-                        
-                        log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via ORDERS table — pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
-                        # Notify strike table for display update (lowest priority)
-                        notify_strike_table_trade_change(id, "open")
+                            log(f"❌ IOC confirm update failed: {pg_err}")
+
+                        update_trade_status(id, next_st)
+                        log_event(
+                            ticket_id,
+                            f"MANAGER: IOC fill — status={next_st} pos={position_for_db} price={buy_price:.4f} fees=${total_fees_dollars:.4f}",
+                        )
+                        notify_strike_table_trade_change(id, next_st)
                         pg_conn.close()
+                        ioc_handled = True
                         break
-                    else:
-                        log_event(ticket_id, f"MANAGER: Trade status is not pending (current: {current_status}) - skipping confirmation")
-                        pg_conn.close()
-                        break
-                else:
-                    log_event(ticket_id, f"MANAGER: Order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
-            else:
-                log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} not found in ORDERS table yet")
-            
-            pg_conn.close()
+
+                    # Non-IOC (and IOC that did not match above): full fill only
+                    if (not ioc_handled) and order_status == "executed" and remaining_val == 0 and fill_val > 0:
+                        # Calculate fees from orders table, using *_dollars fixed-point fields
+                        taker_fees_usd = _parse_dollars(taker_fees_dollars)
+                        maker_fees_usd = _parse_dollars(maker_fees_dollars)
+                        total_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
                     
-        except Exception as e:
-            log_event(ticket_id, f"MANAGER: OPEN TRADE WATCH DB read error: {e}")
+                        # Calculate position size and buy price from order data (use _fp and *_dollars for precision)
+                        position_size = fill_val
+
+                        # taker_fill_cost_dollars is the fixed-point total cost for the filled taker quantity.
+                        buy_price = 0.0
+                        total_cost_usd = _parse_dollars(taker_fill_cost_dollars)
+
+                        if total_cost_usd is not None and position_size > 0:
+                            buy_price = total_cost_usd / position_size
+                        elif position_size > 0:
+                            # Fallback: orders table had no dollar cost (e.g. API gap); keep existing buy_price from trade row
+                            try:
+                                pg_conn_bp = get_postgresql_connection()
+                                if pg_conn_bp:
+                                    with pg_conn_bp.cursor() as cur:
+                                        cur.execute(f"SELECT buy_price FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                        bp_row = cur.fetchone()
+                                        if bp_row and bp_row[0] is not None:
+                                            buy_price = float(bp_row[0])
+                                    pg_conn_bp.close()
+                            except Exception as e:
+                                log_event(ticket_id, f"MANAGER: Could not read existing buy_price for open: {e}")
+
+                        position_for_db = _trade_position_for_db(position_size)
+                        log_event(ticket_id, f"MANAGER: Order completely filled - pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}")
+                
+                        # Get current trade status
+                        pg_conn_status = get_postgresql_connection()
+                        if pg_conn_status:
+                            with pg_conn_status.cursor() as cursor:
+                                cursor.execute(f"SELECT status FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                status_row = cursor.fetchone()
+                                current_status = status_row[0] if status_row else None
+                            pg_conn_status.close()
+                        else:
+                            current_status = None
+                    
+                        if current_status == "pending":
+                            # Get probability for diff calculation
+                            pg_conn_prob = get_postgresql_connection()
+                            if pg_conn_prob:
+                                with pg_conn_prob.cursor() as cursor:
+                                    cursor.execute(f"SELECT prob FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                    prob_row = cursor.fetchone()
+                                pg_conn_prob.close()
+                            else:
+                                prob_row = None
+                        
+                            prob_value = prob_row[0] if prob_row and prob_row[0] is not None else None
+                            diff_value = None
+                        
+                            diff_formatted = _format_diff_from_prob_and_buy(prob_value, buy_price)
+                    
+                            # Get current symbol price for symbol_open (never overwrite existing with NULL)
+                            symbol_open = None
+                            try:
+                                main_port = get_port("main_app")
+                                response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
+                                if response.ok:
+                                    symbol_data = response.json()
+                                    raw_price = symbol_data.get('price')
+                                    if raw_price is not None:
+                                        symbol_open = normalize_trade_spot_price(symbol, raw_price)
+                                        log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
+                                    else:
+                                        log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
+                                        symbol_open = None
+                                else:
+                                    log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
+                                    symbol_open = None
+                            except Exception as e:
+                                log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
+                                symbol_open = None
+
+                            # Fallback: try live_price_log_1s table (same as insert_trade)
+                            if symbol_open is None:
+                                try:
+                                    pg_conn_price = get_postgresql_connection()
+                                    if pg_conn_price:
+                                        with pg_conn_price.cursor() as cur:
+                                            cur.execute(f"""
+                                                SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
+                                                ORDER BY timestamp DESC LIMIT 1
+                                            """)
+                                            row = cur.fetchone()
+                                            if row and row[0] is not None:
+                                                symbol_open = normalize_trade_spot_price(symbol, row[0])
+                                        pg_conn_price.close()
+                                except Exception as e:
+                                    log_event(ticket_id, f"MANAGER: live_price_log_1s fallback for symbol_open failed: {e}")
+
+                            # If we still have no price, keep existing symbol_open from DB (do not overwrite with NULL)
+                            if symbol_open is None:
+                                try:
+                                    pg_conn_exist = get_postgresql_connection()
+                                    if pg_conn_exist:
+                                        with pg_conn_exist.cursor() as cur:
+                                            cur.execute(f"SELECT symbol_open FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                            row = cur.fetchone()
+                                            if row and row[0] is not None:
+                                                symbol_open = normalize_trade_spot_price(symbol, row[0])
+                                                log_event(ticket_id, f"MANAGER: Keeping existing symbol_open: {symbol_open}")
+                                        pg_conn_exist.close()
+                                except Exception as e:
+                                    log_event(ticket_id, f"MANAGER: Could not read existing symbol_open: {e}")
+
+                            # Update additional fields in PostgreSQL BEFORE status change
+                            try:
+                                pg_conn_update = get_postgresql_connection()
+                                if pg_conn_update:
+                                    with pg_conn_update.cursor() as cursor:
+                                        cursor.execute(f"""
+                                            UPDATE {_tm_trades_table()}
+                                            SET position = %s,
+                                                buy_price = %s,
+                                                {_sql_slippage_from_buy_price_params()},
+                                                fees = %s,
+                                                diff = %s,
+                                                symbol_open = %s
+                                            WHERE id = %s
+                                        """, (position_for_db, buy_price, buy_price, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
+                                    
+                                        if cursor.rowcount > 0:
+                                            log_debug(f"💾 Trade additional fields updated in PostgreSQL tenant trades from ORDERS data")
+                                        else:
+                                            log(f"⚠️ No matching trade found in PostgreSQL for ID {id}")
+                                    
+                                        pg_conn_update.commit()
+                                    pg_conn_update.close()
+                                else:
+                                    log(f"⚠️ Skipping PostgreSQL additional fields update - no connection available")
+                            except Exception as pg_err:
+                                log(f"❌ Failed to update trade additional fields in PostgreSQL: {pg_err}")
+                        
+                            # Update trade status to open (this will also update PostgreSQL and notify ATS)
+                            update_trade_status(id, 'open')
+                        
+                            log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via ORDERS table — pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
+                            # Notify strike table for display update (lowest priority)
+                            notify_strike_table_trade_change(id, "open")
+                            pg_conn.close()
+                            break
+                        else:
+                            log_event(ticket_id, f"MANAGER: Trade status is not pending (current: {current_status}) - skipping confirmation")
+                            pg_conn.close()
+                            break
+                    else:
+                        log_event(ticket_id, f"MANAGER: Order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
+                else:
+                    log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} not found in ORDERS table yet")
+            
+                pg_conn.close()
+                    
+            except Exception as e:
+                log_event(ticket_id, f"MANAGER: OPEN TRADE WATCH DB read error: {e}")
         
-        time.sleep(1)
+            time.sleep(1)
     
-    log_event(ticket_id, f"MANAGER: OPEN TRADE polling complete for order_id_open: {stored_order_id_open}")
+        log_event(ticket_id, f"MANAGER: OPEN TRADE polling complete for order_id_open: {stored_order_id_open}")
     
-    # Final status check with fresh connection
-    pg_conn_final = get_postgresql_connection()
-    if pg_conn_final:
-        with pg_conn_final.cursor() as cursor:
-            cursor.execute(f"SELECT status FROM {_tm_trades_table()} WHERE id = %s", (id,))
-            status_row = cursor.fetchone()
-            current_status = status_row[0] if status_row else None
-        pg_conn_final.close()
-    else:
-        current_status = None
+        # Final status check with fresh connection
+        pg_conn_final = get_postgresql_connection()
+        if pg_conn_final:
+            with pg_conn_final.cursor() as cursor:
+                cursor.execute(f"SELECT status FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                status_row = cursor.fetchone()
+                current_status = status_row[0] if status_row else None
+            pg_conn_final.close()
+        else:
+            current_status = None
     
-    if current_status == "pending":
-        log_event(ticket_id, f"MANAGER: PENDING TRADE FAILED TO FILL - TIMEOUT (order_id_open: {stored_order_id_open})")
-        notify_active_trade_supervisor_direct(id, ticket_id, "error")
+        if current_status == "pending":
+            log_event(ticket_id, f"MANAGER: PENDING TRADE FAILED TO FILL - TIMEOUT (order_id_open: {stored_order_id_open})")
+            notify_active_trade_supervisor_direct(id, ticket_id, "error")
 
 def confirm_close_trade(id: int, ticket_id: str) -> None:
-    """Confirms a CLOSING trade has been closed by checking ORDERS table for complete close fill"""
+    """Confirms a CLOSING trade has been closed by checking ORDERS table for complete close fill.
+
+    Total fees on the trade row are existing fees (open + prior legs) plus close-order taker+maker
+    from the synced orders row for order_id_close. Serialized with confirm_open_trade per trade id.
+    """
     log(f"CONFIRMING CLOSE TRADE: {id}")
     
     try:
@@ -3330,221 +3364,222 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
             log(f"NO CLOSE ORDER_ID FOR TRADE: {id}")
             return
         
-        # Check ORDERS table for our specific close order_id
-        pg_conn = get_postgresql_connection()
-        if not pg_conn:
-            log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
-            return
+        with _trade_confirm_lock(id):
+            # Check ORDERS table for our specific close order_id
+            pg_conn = get_postgresql_connection()
+            if not pg_conn:
+                log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
+                return
         
-        # Check close order once - orders change notification should handle timing
-        try:
-            with pg_conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT remaining_count_fp, fill_count_fp, status,
-                           taker_fees_dollars, maker_fees_dollars
-                    FROM {_tm_orders_table()} 
-                    WHERE order_id = %s
-                """, (stored_order_id_close,))
-                order_row = cursor.fetchone()
+            # Check close order once - orders change notification should handle timing
+            try:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute(f"""
+                        SELECT remaining_count_fp, fill_count_fp, status,
+                               taker_fees_dollars, maker_fees_dollars
+                        FROM {_tm_orders_table()} 
+                        WHERE order_id = %s
+                    """, (stored_order_id_close,))
+                    order_row = cursor.fetchone()
             
-            if order_row:
-                remaining_count_fp, fill_count_fp, order_status, taker_fees_dollars, maker_fees_dollars = order_row
-                # Legacy integer counts were removed; use *_fp only.
-                remaining_val = _order_count_val(None, remaining_count_fp)
-                fill_val = _order_count_val(None, fill_count_fp)
-                log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}")
+                if order_row:
+                    remaining_count_fp, fill_count_fp, order_status, taker_fees_dollars, maker_fees_dollars = order_row
+                    # Legacy integer counts were removed; use *_fp only.
+                    remaining_val = _order_count_val(None, remaining_count_fp)
+                    fill_val = _order_count_val(None, fill_count_fp)
+                    log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}")
                 
-                # Check if close order is completely filled (remaining = 0) and executed
-                if order_status == "executed" and remaining_val == 0 and fill_val > 0:
-                    log_event(ticket_id, f"MANAGER: CLOSE ORDER COMPLETELY FILLED - Trade {id} confirmed closed")
-                    log(f"CLOSE ORDER COMPLETELY FILLED: {expected_ticker}")
+                    # Check if close order is completely filled (remaining = 0) and executed
+                    if order_status == "executed" and remaining_val == 0 and fill_val > 0:
+                        log_event(ticket_id, f"MANAGER: CLOSE ORDER COMPLETELY FILLED - Trade {id} confirmed closed")
+                        log(f"CLOSE ORDER COMPLETELY FILLED: {expected_ticker}")
                     
-                    now_est = datetime.now(ZoneInfo("America/New_York"))
-                    closed_at = now_est.strftime("%H:%M:%S")
+                        now_est = datetime.now(ZoneInfo("America/New_York"))
+                        closed_at = now_est.strftime("%H:%M:%S")
                     
-                    # SIMPLE: Get opening fees already recorded + add closing fees from this order
-                    pg_conn_trade = get_postgresql_connection()
-                    if pg_conn_trade:
-                        with pg_conn_trade.cursor() as cursor:
-                            cursor.execute(f"SELECT fees FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                            existing_fees_row = cursor.fetchone()
-                            existing_fees = existing_fees_row[0] if existing_fees_row else 0.0
-                        pg_conn_trade.close()
-                    else:
-                        existing_fees = 0.0
-                    
-                    # Add closing order fees to existing opening fees (prefer *_dollars fixed-point fields)
-                    taker_fees_usd = _parse_dollars(taker_fees_dollars)
-                    maker_fees_usd = _parse_dollars(maker_fees_dollars)
-                    close_order_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
-                    total_fees_paid = existing_fees + close_order_fees_dollars
-                    
-                    log_event(ticket_id, f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, close order: ${close_order_fees_dollars}, total: ${total_fees_paid}")
-                    
-                    # Get sell price from the close order data
-                    pg_conn_close_order = get_postgresql_connection()
-                    if pg_conn_close_order:
-                        with pg_conn_close_order.cursor() as cursor:
-                            cursor.execute(f"""
-                                SELECT side, taker_fill_cost_dollars, fill_count_fp
-                                FROM {_tm_orders_table()} 
-                                WHERE order_id = %s
-                            """, (stored_order_id_close,))
-                            close_order_data = cursor.fetchone()
-                        pg_conn_close_order.close()
-                    else:
-                        close_order_data = None
-                    
-                    if close_order_data:
-                        close_side, close_fill_cost_dollars, close_fill_count_fp = close_order_data
-                        close_fill_val = _order_count_val(None, close_fill_count_fp)
-                        # Calculate sell price from close order (cost per share) using fixed-point dollars
-                        total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
-                        sell_price = (total_close_cost_usd / close_fill_val) if (total_close_cost_usd is not None and close_fill_val > 0) else 0.0
-                        # For close orders, sell_price should be 1 - the price we paid to close
-                        sell_price = 1 - sell_price
-                        log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
-                    else:
-                        sell_price = None
-                        log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
-                    
-                    # symbol_close from latest one_minute_avg only (no raw price column fallback)
-                    symbol_close = None
-                    try:
-                        pg_conn_symbol = get_postgresql_connection()
-                        if pg_conn_symbol:
-                            with pg_conn_symbol.cursor() as cursor:
-                                cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                                result = cursor.fetchone()
-                                if result and result[0] is not None:
-                                    symbol_close = normalize_trade_spot_price(symbol, result[0])
-                                    log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
-                                else:
-                                    log_event(
-                                        ticket_id,
-                                        f"MANAGER: No one_minute_avg in live price log for {symbol}; symbol_close left unset",
-                                    )
-                            pg_conn_symbol.close()
-                    except Exception as e:
-                        log_event(ticket_id, f"MANAGER: Failed to get one_minute_avg from live price log: {e}")
-                    
-                    # Get trade data for PnL calculation including existing fees
-                    pg_conn_trade = get_postgresql_connection()
-                    if pg_conn_trade:
-                        with pg_conn_trade.cursor() as cursor:
-                            cursor.execute(f"SELECT buy_price, position, close_method, fees FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                            trade_data = cursor.fetchone()
-                        pg_conn_trade.close()
-                    else:
-                        trade_data = None
-                    
-                    if trade_data and sell_price is not None:
-                        buy_price, position, close_method, existing_fees = trade_data
-                        close_method = close_method or "manual"
-                        existing_fees = existing_fees or 0.0
-                        try:
-                            buy_price = float(buy_price or 0.0)
-                        except (TypeError, ValueError):
-                            buy_price = 0.0
-                        try:
-                            position = float(position or 0.0)
-                        except (TypeError, ValueError):
-                            position = 0.0
-                        
-                        # Use the total fees we calculated (existing + close order fees)
-                        total_fees = float(total_fees_paid) if total_fees_paid is not None else 0.0
-                        
-                        log_event(ticket_id, f"MANAGER: Final total fees for PnL: ${total_fees}")
-                        
-                        # Calculate PnL with total fees
-                        buy_value = buy_price * position
-                        sell_value = sell_price * position
-                        pnl = round(sell_value - buy_value - total_fees, 2)
-                        roi_pct = None
-                        if buy_value is not None and buy_value > 0:
-                            roi_pct = round((pnl / buy_value) * 100.0, 5)
-                        win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
-                        
-                        log_event(ticket_id, f"MANAGER: PnL calculation - buy: ${buy_price}, sell: ${sell_price}, total_fees: ${total_fees}, pnl: ${pnl}")
-                        
-                        # Calculate ret_pct and ret_pct_base (return % vs bankroll and vs mtb_base_value)
-                        ret_pct = None
-                        ret_pct_base = None
-                        pg_conn_bankroll = get_postgresql_connection()
-                        if pg_conn_bankroll:
-                            with pg_conn_bankroll.cursor() as cursor_bankroll:
-                                cursor_bankroll.execute(f"SELECT bankroll, mtb_base_value FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                                bankroll_row = cursor_bankroll.fetchone()
-                                bankroll = bankroll_row[0] if bankroll_row else None
-                                mtb_base = bankroll_row[1] if bankroll_row and len(bankroll_row) > 1 else None
-                            pg_conn_bankroll.close()
+                        # SIMPLE: Get opening fees already recorded + add closing fees from this order
+                        pg_conn_trade = get_postgresql_connection()
+                        if pg_conn_trade:
+                            with pg_conn_trade.cursor() as cursor:
+                                cursor.execute(f"SELECT fees FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                existing_fees_row = cursor.fetchone()
+                                existing_fees = existing_fees_row[0] if existing_fees_row else 0.0
+                            pg_conn_trade.close()
                         else:
-                            bankroll = None
-                            mtb_base = None
-                        
-                        if bankroll is not None and bankroll > 0:  # Prevent division by zero
-                            ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
-                            log_event(ticket_id, f"MANAGER: Calculated ret_pct: {ret_pct}% (PnL: ${pnl}, Bankroll: {bankroll} cents)")
+                            existing_fees = 0.0
+                    
+                        # Add closing order fees to existing opening fees (prefer *_dollars fixed-point fields)
+                        taker_fees_usd = _parse_dollars(taker_fees_dollars)
+                        maker_fees_usd = _parse_dollars(maker_fees_dollars)
+                        close_order_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
+                        total_fees_paid = existing_fees + close_order_fees_dollars
+                    
+                        log_event(ticket_id, f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, close order: ${close_order_fees_dollars}, total: ${total_fees_paid}")
+                    
+                        # Get sell price from the close order data
+                        pg_conn_close_order = get_postgresql_connection()
+                        if pg_conn_close_order:
+                            with pg_conn_close_order.cursor() as cursor:
+                                cursor.execute(f"""
+                                    SELECT side, taker_fill_cost_dollars, fill_count_fp
+                                    FROM {_tm_orders_table()} 
+                                    WHERE order_id = %s
+                                """, (stored_order_id_close,))
+                                close_order_data = cursor.fetchone()
+                            pg_conn_close_order.close()
                         else:
-                            log_event(ticket_id, f"MANAGER: Bankroll is zero or None for trade {id}, cannot calculate ret_pct")
-                        if mtb_base is not None and mtb_base > 0:
-                            ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+                            close_order_data = None
+                    
+                        if close_order_data:
+                            close_side, close_fill_cost_dollars, close_fill_count_fp = close_order_data
+                            close_fill_val = _order_count_val(None, close_fill_count_fp)
+                            # Calculate sell price from close order (cost per share) using fixed-point dollars
+                            total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+                            sell_price = (total_close_cost_usd / close_fill_val) if (total_close_cost_usd is not None and close_fill_val > 0) else 0.0
+                            # For close orders, sell_price should be 1 - the price we paid to close
+                            sell_price = 1 - sell_price
+                            log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
+                        else:
+                            sell_price = None
+                            log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
+                    
+                        # symbol_close from latest one_minute_avg only (no raw price column fallback)
+                        symbol_close = None
+                        try:
+                            pg_conn_symbol = get_postgresql_connection()
+                            if pg_conn_symbol:
+                                with pg_conn_symbol.cursor() as cursor:
+                                    cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+                                    result = cursor.fetchone()
+                                    if result and result[0] is not None:
+                                        symbol_close = normalize_trade_spot_price(symbol, result[0])
+                                        log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
+                                    else:
+                                        log_event(
+                                            ticket_id,
+                                            f"MANAGER: No one_minute_avg in live price log for {symbol}; symbol_close left unset",
+                                        )
+                                pg_conn_symbol.close()
+                        except Exception as e:
+                            log_event(ticket_id, f"MANAGER: Failed to get one_minute_avg from live price log: {e}")
+                    
+                        # Get trade data for PnL calculation including existing fees
+                        pg_conn_trade = get_postgresql_connection()
+                        if pg_conn_trade:
+                            with pg_conn_trade.cursor() as cursor:
+                                cursor.execute(f"SELECT buy_price, position, close_method, fees FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                trade_data = cursor.fetchone()
+                            pg_conn_trade.close()
+                        else:
+                            trade_data = None
+                    
+                        if trade_data and sell_price is not None:
+                            buy_price, position, close_method, existing_fees = trade_data
+                            close_method = close_method or "manual"
+                            existing_fees = existing_fees or 0.0
+                            try:
+                                buy_price = float(buy_price or 0.0)
+                            except (TypeError, ValueError):
+                                buy_price = 0.0
+                            try:
+                                position = float(position or 0.0)
+                            except (TypeError, ValueError):
+                                position = 0.0
                         
-                        # Get high_price and low_price from active_trades before it's removed
-                        high_price, low_price = get_high_low_prices_from_active_trades(id)
+                            # Use the total fees we calculated (existing + close order fees)
+                            total_fees = float(total_fees_paid) if total_fees_paid is not None else 0.0
                         
-                        # SECOND FAILSAFE CHECK: Validate that ATS was monitoring correctly
-                        # If high_price == low_price, it means ATS was NOT monitoring (values never changed from initial buy_price)
-                        if high_price is not None and low_price is not None and high_price == low_price:
-                            log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE DETECTED - high_price == low_price ({high_price}) - ATS monitoring failure!")
-                            log(f"⚠️ FAILSAFE: Trade {id} has high_price == low_price - ATS was not monitoring correctly")
+                            log_event(ticket_id, f"MANAGER: Final total fees for PnL: ${total_fees}")
+                        
+                            # Calculate PnL with total fees
+                            buy_value = buy_price * position
+                            sell_value = sell_price * position
+                            pnl = round(sell_value - buy_value - total_fees, 2)
+                            roi_pct = None
+                            if buy_value is not None and buy_value > 0:
+                                roi_pct = round((pnl / buy_value) * 100.0, 5)
+                            win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
+                        
+                            log_event(ticket_id, f"MANAGER: PnL calculation - buy: ${buy_price}, sell: ${sell_price}, total_fees: ${total_fees}, pnl: ${pnl}")
+                        
+                            # Calculate ret_pct and ret_pct_base (return % vs bankroll and vs mtb_base_value)
+                            ret_pct = None
+                            ret_pct_base = None
+                            pg_conn_bankroll = get_postgresql_connection()
+                            if pg_conn_bankroll:
+                                with pg_conn_bankroll.cursor() as cursor_bankroll:
+                                    cursor_bankroll.execute(f"SELECT bankroll, mtb_base_value FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                    bankroll_row = cursor_bankroll.fetchone()
+                                    bankroll = bankroll_row[0] if bankroll_row else None
+                                    mtb_base = bankroll_row[1] if bankroll_row and len(bankroll_row) > 1 else None
+                                pg_conn_bankroll.close()
+                            else:
+                                bankroll = None
+                                mtb_base = None
+                        
+                            if bankroll is not None and bankroll > 0:  # Prevent division by zero
+                                ret_pct = round((pnl / (bankroll / 100.0)) * 100, 5)
+                                log_event(ticket_id, f"MANAGER: Calculated ret_pct: {ret_pct}% (PnL: ${pnl}, Bankroll: {bankroll} cents)")
+                            else:
+                                log_event(ticket_id, f"MANAGER: Bankroll is zero or None for trade {id}, cannot calculate ret_pct")
+                            if mtb_base is not None and mtb_base > 0:
+                                ret_pct_base = round((pnl / (mtb_base / 100.0)) * 100, 5)
+                        
+                            # Get high_price and low_price from active_trades before it's removed
+                            high_price, low_price = get_high_low_prices_from_active_trades(id)
+                        
+                            # SECOND FAILSAFE CHECK: Validate that ATS was monitoring correctly
+                            # If high_price == low_price, it means ATS was NOT monitoring (values never changed from initial buy_price)
+                            if high_price is not None and low_price is not None and high_price == low_price:
+                                log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE DETECTED - high_price == low_price ({high_price}) - ATS monitoring failure!")
+                                log(f"⚠️ FAILSAFE: Trade {id} has high_price == low_price - ATS was not monitoring correctly")
                             
-                            # Get monitor identifier to notify the specific ATS instance
-                            pg_conn_monitor = get_postgresql_connection()
-                            monitor_identifier = None
-                            if pg_conn_monitor:
-                                with pg_conn_monitor.cursor() as cursor:
-                                    cursor.execute(f"SELECT monitor FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                                    monitor_row = cursor.fetchone()
-                                    if monitor_row and monitor_row[0]:
-                                        monitor_identifier = monitor_row[0]
-                                pg_conn_monitor.close()
+                                # Get monitor identifier to notify the specific ATS instance
+                                pg_conn_monitor = get_postgresql_connection()
+                                monitor_identifier = None
+                                if pg_conn_monitor:
+                                    with pg_conn_monitor.cursor() as cursor:
+                                        cursor.execute(f"SELECT monitor FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                                        monitor_row = cursor.fetchone()
+                                        if monitor_row and monitor_row[0]:
+                                            monitor_identifier = monitor_row[0]
+                                    pg_conn_monitor.close()
                             
-                            # Alert the specific ATS instance to restart via monitoring_failure notification
-                            if monitor_identifier:
-                                notify_active_trade_supervisor_direct_with_monitor(id, ticket_id, "monitoring_failure", monitor_identifier)
-                                log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE: Notified ATS instance {monitor_identifier} of monitoring failure")
-                                log(f"⚠️ FAILSAFE: Triggered ATS restart for monitor {monitor_identifier}")
+                                # Alert the specific ATS instance to restart via monitoring_failure notification
+                                if monitor_identifier:
+                                    notify_active_trade_supervisor_direct_with_monitor(id, ticket_id, "monitoring_failure", monitor_identifier)
+                                    log_event(ticket_id, f"MANAGER: ⚠️ FAILSAFE: Notified ATS instance {monitor_identifier} of monitoring failure")
+                                    log(f"⚠️ FAILSAFE: Triggered ATS restart for monitor {monitor_identifier}")
                         
-                        # Update trade status to closed with all calculated values including ret_pct, ret_pct_base, roi_pct, and high/low prices
-                        update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
+                            # Update trade status to closed with all calculated values including ret_pct, ret_pct_base, roi_pct, and high/low prices
+                            update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
                         
-                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
-                        log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
+                            log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
+                            log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
+                        else:
+                            # Fallback - just mark as closed without detailed calculations
+                            update_trade_status(id, "closed")
+                            log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED (minimal data)")
+                    
+                        # Notify active trade supervisor
+                        notify_active_trade_supervisor_direct(id, ticket_id, "closed")
+                    
+                        # Notify strike table for display update
+                        notify_strike_table_trade_change(id, "closed")
+                    
+                        pg_conn.close()
+                        return
                     else:
-                        # Fallback - just mark as closed without detailed calculations
-                        update_trade_status(id, "closed")
-                        log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED (minimal data)")
-                    
-                    # Notify active trade supervisor
-                    notify_active_trade_supervisor_direct(id, ticket_id, "closed")
-                    
-                    # Notify strike table for display update
-                    notify_strike_table_trade_change(id, "closed")
-                    
-                    pg_conn.close()
-                    return
+                        log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
                 else:
-                    log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
-            else:
-                log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} not found in ORDERS table yet")
+                    log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} not found in ORDERS table yet")
             
-            pg_conn.close()
+                pg_conn.close()
                     
-        except Exception as e:
-            log_event(ticket_id, f"MANAGER: CLOSE TRADE WATCH DB read error: {e}")
-            log(f"ERROR CHECKING CLOSE ORDER: {e}")
-            return
+            except Exception as e:
+                log_event(ticket_id, f"MANAGER: CLOSE TRADE WATCH DB read error: {e}")
+                log(f"ERROR CHECKING CLOSE ORDER: {e}")
+                return
     except Exception as e:
         log_event(ticket_id, f"MANAGER: Error in confirm_close_trade: {e}")
         log(f"ERROR IN CONFIRM_CLOSE_TRADE: {e}")
@@ -4241,7 +4276,7 @@ def init_trades_db():
                     prob REAL,
                     diff TEXT,
                     buy_price NUMERIC(12,6) NOT NULL,
-                    position INTEGER NOT NULL,
+                    position NUMERIC(12,2) NOT NULL,
                     sell_price NUMERIC(12,6),
                     closed_at TEXT,
                     fees REAL,
@@ -5198,7 +5233,7 @@ async def add_trade(request: Request):
                 verified_ticker = row[0]
                 paper_trade = row[2] if len(row) > 2 else False
                 trade_side = _normalize_trade_side(row[3]) if len(row) > 3 else None
-                trade_position = int(row[4]) if len(row) > 4 and row[4] is not None else 0
+                trade_position = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
                 if isinstance(paper_trade, str):
                     paper_trade = paper_trade.lower() in ('true', '1', 'yes')
                 elif paper_trade is None:
@@ -5213,7 +5248,7 @@ async def add_trade(request: Request):
                 count_fp_in = data.get("count_fp")
                 if count_fp_in is not None and str(count_fp_in).strip() != "":
                     try:
-                        requested_close_count = int(round(float(count_fp_in)))
+                        requested_close_count = round(float(count_fp_in), 2)
                     except (TypeError, ValueError):
                         requested_close_count = None
                 if requested_close_count is None:
@@ -5222,14 +5257,14 @@ async def add_trade(request: Request):
                         if value is None:
                             continue
                         try:
-                            requested_close_count = int(round(float(value)))
+                            requested_close_count = round(float(value), 2)
                             break
                         except (TypeError, ValueError):
                             continue
                 if requested_close_count is None:
-                    requested_close_count = trade_position
+                    requested_close_count = _trade_position_for_db(trade_position)
                 if requested_close_count <= 0:
-                    requested_close_count = trade_position
+                    requested_close_count = _trade_position_for_db(trade_position)
 
                 close_projection = {
                     "ok": None,
@@ -5342,7 +5377,7 @@ async def add_trade(request: Request):
                             existing_fees = float(existing_fees) if existing_fees is not None else 0.0
                             buy_pf = float(buy_price) if buy_price is not None else 0.0
                             sell_pf = float(sell_price) if sell_price is not None else 0.0
-                            pos_i = int(position) if position is not None else 0
+                            pos_f = float(position) if position is not None else 0.0
                             bankroll_f = float(bankroll) if bankroll is not None else 0.0
                             mtb_base_f = float(mtb_base) if mtb_base is not None else 0.0
                             # Close leg fee comes from orderbook projection when available.
@@ -5352,13 +5387,13 @@ async def add_trade(request: Request):
                             else:
                                 price_to_close = 1.0 - sell_pf
                                 close_fee = (
-                                    estimate_kalshi_taker_fee(pos_i, price_to_close)
+                                    estimate_kalshi_taker_fee(pos_f, price_to_close)
                                     if 0 < price_to_close < 1
                                     else 0.0
                                 )
                             total_fees = existing_fees + close_fee
-                            buy_value = buy_pf * pos_i
-                            sell_value = sell_pf * pos_i
+                            buy_value = buy_pf * pos_f
+                            sell_value = sell_pf * pos_f
                             pnl = round(sell_value - buy_value - total_fees, 2)
                             win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
                             
@@ -5370,8 +5405,8 @@ async def add_trade(request: Request):
                                 ret_pct = round((pnl / (bankroll_f / 100.0)) * 100, 5)
                             if mtb_base_f > 0:
                                 ret_pct_base = round((pnl / (mtb_base_f / 100.0)) * 100, 5)
-                            if buy_pf > 0 and pos_i:
-                                buy_value_roi = buy_pf * pos_i
+                            if buy_pf > 0 and pos_f:
+                                buy_value_roi = buy_pf * pos_f
                                 if buy_value_roi > 0:
                                     roi_pct = round((pnl / buy_value_roi) * 100.0, 5)
                             
@@ -5811,9 +5846,10 @@ async def add_trade(request: Request):
                 open_fee = float(projected_open_fee)
             elif buy_price is not None and position is not None:
                 try:
-                    open_fee = estimate_kalshi_taker_fee(int(position), float(buy_price))
+                    open_fee = estimate_kalshi_taker_fee(float(position), float(buy_price))
                 except (TypeError, ValueError):
                     pass
+            pos_for_db = _trade_position_for_db(position) if position is not None else None
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
@@ -5842,7 +5878,7 @@ async def add_trade(request: Request):
                             """,
                             (
                                 next_paper_status,
-                                int(position),
+                                pos_for_db,
                                 buy_px_float,
                                 open_fee,
                                 diff_for_buy,
@@ -5861,7 +5897,7 @@ async def add_trade(request: Request):
                                 order_id_open = NULL
                             WHERE id = %s
                             """,
-                            (next_paper_status, int(position), open_fee, trade_id),
+                            (next_paper_status, pos_for_db, open_fee, trade_id),
                         )
                     pg_conn.commit()
                 pg_conn.close()
@@ -5894,7 +5930,7 @@ async def add_trade(request: Request):
                 and position is not None
                 and not skip_paper_ledger
             ):
-                _paper_ledger_on_open(float(buy_price), int(position), float(open_fee or 0.0))
+                _paper_ledger_on_open(float(buy_price), float(position), float(open_fee or 0.0))
         except Exception as e:
             log(f"⚠️ paper ledger after open: {e}")
 
@@ -6409,9 +6445,9 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
     if buy_price is not None and position is not None:
         # psycopg2 returns NUMERIC columns as Decimal; normalize before float math.
         bp_f = float(buy_price)
-        pos_i = int(position)
-        buy_value = bp_f * pos_i
-        sell_value = float(sell_price) * pos_i
+        pos_f = float(position)
+        buy_value = bp_f * pos_f
+        sell_value = float(sell_price) * pos_f
         pnl = round(sell_value - buy_value - existing_fees_f, 2)
         if bankroll is not None and float(bankroll) > 0 and pnl is not None:
             ret_pct = round((pnl / (float(bankroll) / 100.0)) * 100, 5)

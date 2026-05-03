@@ -32,8 +32,8 @@ def normalize_paper_trade_side(side: Any) -> Optional[str]:
     return None
 
 
-def lot_premium_cents(qty: int, buy_price: float) -> int:
-    return int(round(float(buy_price) * int(qty) * 100.0))
+def lot_premium_cents(qty, buy_price: float) -> int:
+    return int(round(float(buy_price) * float(qty) * 100.0))
 
 
 def netted_open_premium_cents_from_rows(rows: Sequence[PaperCollateralRow]) -> int:
@@ -42,13 +42,13 @@ def netted_open_premium_cents_from_rows(rows: Sequence[PaperCollateralRow]) -> i
 
     ``rows`` must be ordered by trade id ascending for deterministic pairing (oldest first).
     """
-    by_ticker: dict[str, List[Tuple[int, str, int, float]]] = defaultdict(list)
+    by_ticker: dict[str, List[Tuple[int, str, float, float]]] = defaultdict(list)
     orphan_premium = 0
 
     for rid, ticker, side, bp, pos in rows:
         ns = normalize_paper_trade_side(side)
         try:
-            q = int(pos)
+            q = round(float(pos), 2)
             p = float(bp)
         except (TypeError, ValueError):
             continue
@@ -69,8 +69,8 @@ def netted_open_premium_cents_from_rows(rows: Sequence[PaperCollateralRow]) -> i
 
     for _t, lst in by_ticker.items():
         lst.sort(key=lambda x: x[0])
-        yes = [[q, p] for _, ns, q, p in lst if ns == "yes"]
-        no = [[q, p] for _, ns, q, p in lst if ns == "no"]
+        yes = [[float(q), float(p)] for _, ns, q, p in lst if ns == "yes"]
+        no = [[float(q), float(p)] for _, ns, q, p in lst if ns == "no"]
         i, j = 0, 0
         while i < len(yes) and j < len(no):
             if yes[i][0] <= 0:
@@ -145,12 +145,12 @@ def paper_open_passes_collateral_cap(
         )
         return True, ""
     try:
-        pos_i = int(position)
+        pos_f = round(float(position), 2)
         bp = float(buy_price)
     except (TypeError, ValueError):
         return False, "invalid position or buy_price"
 
-    if pos_i <= 0 or bp <= 0 or bp >= 1:
+    if pos_f <= 0 or bp <= 0 or bp >= 1:
         return False, "position or buy_price out of range for paper open"
 
     if normalize_paper_trade_side(side) is None:
@@ -175,7 +175,7 @@ def paper_open_passes_collateral_cap(
         except (TypeError, ValueError):
             continue
     hyp_id += 1
-    rows_with_hyp = list(rows) + [(hyp_id, ticker, side, bp, pos_i)]
+    rows_with_hyp = list(rows) + [(hyp_id, ticker, side, bp, pos_f)]
     pos_new = netted_open_premium_cents_from_rows(rows_with_hyp)
 
     if pos_new <= cap:

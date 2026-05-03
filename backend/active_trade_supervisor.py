@@ -123,7 +123,7 @@ def create_unified_15m_active_trades_pool_table():
                     strike VARCHAR(50),
                     side VARCHAR(10),
                     buy_price DECIMAL(10,4),
-                    position INTEGER,
+                    position NUMERIC(12,2),
                     contract VARCHAR(50),
                     ticker VARCHAR(50),
                     symbol VARCHAR(10),
@@ -181,7 +181,7 @@ def create_unified_hourly_active_trades_pool_table():
                     strike VARCHAR(50),
                     side VARCHAR(10),
                     buy_price DECIMAL(10,4),
-                    position INTEGER,
+                    position NUMERIC(12,2),
                     contract VARCHAR(50),
                     ticker VARCHAR(50),
                     symbol VARCHAR(10),
@@ -247,7 +247,7 @@ def create_monitor_active_trades_table():
                     strike VARCHAR(50),
                     side VARCHAR(10),
                     buy_price DECIMAL(10,4),
-                    position INTEGER,
+                    position NUMERIC(12,2),
                     contract VARCHAR(50),
                     ticker VARCHAR(50),
                     symbol VARCHAR(10),
@@ -5210,17 +5210,19 @@ def trigger_auto_stop_close(
     except (TypeError, ValueError):
         trade_pk = trade.get("trade_id")
     try:
-        pos_int = int(position_val) if position_val is not None else 1
+        pos_f = round(float(position_val), 2) if position_val is not None else 1.0
     except (TypeError, ValueError):
-        pos_int = 1
+        pos_f = 1.0
+    if pos_f <= 0:
+        pos_f = 1.0
     payload = {
         "id": trade_pk,
         "ticket_id": ticket_id,
         "intent": "close",
         "ticker": trade["ticker"],
         "side": inverted_side,
-        "count": pos_int,
-        "count_fp": f"{float(pos_int):.2f}",
+        "count": pos_f,
+        "count_fp": f"{pos_f:.2f}",
         "action": "close",
         "type": "market",
         "order_type": "market",
