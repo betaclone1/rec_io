@@ -419,17 +419,16 @@ class SupervisorConfigGenerator:
                     "autostart": True,
                 }
             )
-        env_watchdog_orderbook = (
-            env_global
-            if "MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=" in env_global
-            else env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_TABLES="1"'
-        )
+        # Real-time orderbook_delta → live_data.orderbook_kalshi_* is off by default.
+        # Supervisor sets MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=1; remove it and set
+        # MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=1 to turn collection back on.
+        env_market_watchdog_ws = env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE="1"'
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi_hourly",
                 "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
                 "port": ports.get("market_watchdog_ws_kalshi_hourly", 8005),
-                "environment": env_watchdog_orderbook,
+                "environment": env_market_watchdog_ws,
                 "autostart": True,
             }
         )
@@ -438,7 +437,7 @@ class SupervisorConfigGenerator:
                 "name": "market_watchdog_ws_kalshi_15m",
                 "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
                 "port": ports.get("market_watchdog_ws_kalshi_15m", 8035),
-                "environment": env_watchdog_orderbook,
+                "environment": env_market_watchdog_ws,
                 "autostart": True,
             }
         )

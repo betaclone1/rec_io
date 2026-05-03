@@ -1,9 +1,13 @@
 """
 Kalshi orderbook sidecar for market_watchdog_ws.
 
-When MARKET_WATCHDOG_WS_ORDERBOOK_TABLES is enabled, maintains per-market_ticker
+When MARKET_WATCHDOG_WS_ORDERBOOK_TABLES is enabled and
+MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE is not set, maintains per-market_ticker
 orderbook tables under live_data (same row shape as the experimental testing tables).
 Does not import market_watchdog_ws (avoid cycles); callers pass DB borrow/return hooks.
+
+Real-time orderbook collection is off by default in generated supervisor config
+(DISABLE=1). Remove DISABLE and set MARKET_WATCHDOG_WS_ORDERBOOK_TABLES to re-enable.
 """
 
 from __future__ import annotations
@@ -29,6 +33,9 @@ _ORDERBOOK_DB_LOCK = threading.Lock()
 
 
 def orderbook_sidecar_enabled() -> bool:
+    off = os.getenv("MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE", "").strip().lower()
+    if off in ("1", "true", "yes", "on"):
+        return False
     v = os.getenv("MARKET_WATCHDOG_WS_ORDERBOOK_TABLES", "").strip().lower()
     return v in ("1", "true", "yes", "on")
 

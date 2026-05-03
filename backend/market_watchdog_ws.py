@@ -12,7 +12,8 @@ Each successful ``SubState.replace()`` bumps ``subscription_epoch`` so the WS lo
 ``ticker`` / ``orderbook_delta`` subscriptions on the **next** loop head without waiting for an
 inbound frame (otherwise ``recv`` could block up to ``MARKET_WATCHDOG_WS_RECV_POLL_SEC`` seconds).
 
-When ``MARKET_WATCHDOG_WS_ORDERBOOK_TABLES`` is set, also subscribes to ``orderbook_delta`` on the
+When ``orderbook_sidecar_enabled()`` is true (``MARKET_WATCHDOG_WS_ORDERBOOK_TABLES`` and not
+``MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE``), also subscribes to ``orderbook_delta`` on the
 same WebSocket as ``ticker``. The orderbook ``market_tickers`` list is **only** the current-event
 ``cycle_tickers`` (the same Kalshi markets as the ``live_data.market_kalshi_*`` seed rows). ``ticker``
 still uses the broader ``ws_tickers`` union for lifecycle; we do **not** subscribe orderbook for
