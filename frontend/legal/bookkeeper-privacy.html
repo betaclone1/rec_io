@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Rec IO — QuickBooks integration (privacy)</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/styles/global.css">
+  <style>
+    .legal-wrap { max-width: 720px; margin: 0 auto; padding: 24px 16px 48px; line-height: 1.55; }
+    .legal-wrap h1 { font-size: 1.35rem; margin-bottom: 0.5rem; }
+    .legal-wrap h2 { font-size: 1.05rem; margin-top: 1.5rem; margin-bottom: 0.5rem; }
+    .legal-wrap p, .legal-wrap li { font-size: 0.95rem; color: rgba(255,255,255,0.9); }
+    .legal-wrap ul { padding-left: 1.25rem; }
+    .muted { font-size: 0.85rem; color: rgba(255,255,255,0.55); margin-top: 2rem; }
+    a { color: #8ab4ff; }
+  </style>
+</head>
+<body>
+  <div class="legal-wrap">
+    <h1>Privacy policy — Rec IO QuickBooks integration</h1>
+    <p class="muted">Effective date: May 4, 2026 · https://rec-io.com/legal/bookkeeper-privacy.html</p>
+
+    <p>
+      This policy describes how the optional Rec IO (rec-io.com) integration with Intuit QuickBooks Online handles information
+      in connection with that integration. It supplements (and does not replace) any broader privacy disclosures that apply to Rec IO generally.
+    </p>
+
+    <h2>1. What the integration does</h2>
+    <p>
+      The integration may read and write accounting-related data in QuickBooks Online that you authorize through Intuit’s OAuth consent flow,
+      and may combine that with operational data from Rec IO (for example trading or cash-movement records) solely to support bookkeeping workflows you configure.
+    </p>
+
+    <h2>2. Categories of information</h2>
+    <ul>
+      <li><strong>Credentials and tokens</strong> required to call Intuit APIs (for example OAuth refresh tokens) are stored according to your deployment configuration and should be treated as highly sensitive.</li>
+      <li><strong>QuickBooks Online content</strong> that you authorize (such as company profile, accounts, transactions, or attachments depending on scopes granted) may be accessed by the integration.</li>
+      <li><strong>Operational metadata</strong> from Rec IO (such as identifiers, timestamps, and amounts) may be processed to prepare journal entries or reconciliations.</li>
+    </ul>
+
+    <h2>3. How information is used</h2>
+    <p>
+      Information is used only to operate the integration for your organization: authentication, synchronization, reconciliation, auditing, and support of errors you report.
+    </p>
+
+    <h2>4. Sharing</h2>
+    <p>
+      The integration communicates with Intuit’s services as required for QuickBooks Online API access. Rec IO does not sell your QuickBooks data.
+      Other subprocessors depend on how your Rec IO environment is hosted (for example hosting provider or database vendor) and should be listed in your general privacy disclosures where applicable.
+    </p>
+
+    <h2>5. Retention</h2>
+    <p>
+      Retention periods follow your organization’s policies and technical configuration (for example database backups and logs). OAuth tokens should be revoked or rotated when no longer needed.
+    </p>
+
+    <h2>6. Security</h2>
+    <p>
+      You are responsible for securing production credentials, restricting access to administrative interfaces, and applying updates to your deployment.
+    </p>
+
+    <h2>7. Your choices</h2>
+    <p>
+      You may disconnect the integration by revoking app access in Intuit’s account settings and removing stored tokens from your environment.
+    </p>
+
+    <h2>8. Contact</h2>
+    <p>
+      For privacy questions related to this integration, contact the administrator of your rec-io.com organization,
+      or use the contact channel published on <a href="https://rec-io.com">rec-io.com</a>.
+    </p>
+
+    <p class="muted">
+      This document is provided to satisfy developer-platform disclosure requirements. It is not a substitute for advice from qualified counsel
+      for your specific situation.
+    </p>
+  </div>
+</body>
+</html>
