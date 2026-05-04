@@ -17,10 +17,11 @@ _log = logging.getLogger(__name__)
 
 EST = ZoneInfo("America/New_York")
 
-# Trade rows store calendar day in ``date`` (TEXT) and close clock in ``closed_at`` (often time-only).
-# ``date`` can lag (still yesterday while the row was finalized on the next ET day). In that case use
-# the **ET calendar date of ``updated_at``** with the same ``closed_at`` / ``time`` — the anchor stays
-# the trade's close wall time in New York, not the moment a script touched ``updated_at``.
+# ``symbol_wide_cooldown_start_time`` should match the **actual close instant** of the qualifying loss.
+# Tenant ``closed_at`` is TEXT: usually full ISO from ``est_now.isoformat()`` on close; some rows are
+# time-only (HH:MM:SS). When the stored value begins with YYYY-MM-DD, cast it to ``timestamptz``.
+# Otherwise combine ``trades.date`` with the time string in US/Eastern, with the same ``date`` vs
+# ``updated_at`` lag fix as before.
 _SQL_T_CLOSE_TIME = """COALESCE(
         NULLIF(TRIM(BOTH FROM t.closed_at::text), ''),
         NULLIF(TRIM(BOTH FROM t.time::text), ''),
@@ -29,7 +30,11 @@ _SQL_T_CLOSE_TIME = """COALESCE(
 
 _SQL_T_CLOSE_ANCHOR = f"""(
     CASE
+        WHEN NULLIF(TRIM(BOTH FROM t.closed_at::text), '') IS NOT NULL
+         AND TRIM(BOTH FROM t.closed_at::text) ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
+        THEN TRIM(BOTH FROM t.closed_at::text)::timestamptz
         WHEN t.updated_at IS NOT NULL
+         AND (NULLIF(TRIM(BOTH FROM t.date::text), ''))::date IS NOT NULL
          AND (NULLIF(TRIM(BOTH FROM t.date::text), ''))::date
              < ((t.updated_at AT TIME ZONE 'America/New_York')::date)
         THEN (
