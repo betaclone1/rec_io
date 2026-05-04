@@ -2663,16 +2663,8 @@
       let h12 = hh % 12;
       if (h12 === 0) h12 = 12;
       const timePart = `${h12}:${String(mm).padStart(2, '0')} ${ap}`;
-      const dtfDay = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
-      const endDay = dtfDay.format(end);
-      const todayDay = dtfDay.format(new Date());
-      if (endDay === todayDay) return timePart;
-      return `${endDay}, ${timePart}`;
+      // Badge: ET time only; full date + time on tooltip (symbolWideCooldownTooltipEt).
+      return timePart;
     }
 
     function symbolWideCooldownTooltipEt(monitor) {

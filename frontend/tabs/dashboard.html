@@ -614,6 +614,11 @@
       padding: 10px 0;
     }
 
+    /* Tile view: monitor cards ~10% wider than base min-width (280px → 308px). */
+    .monitors-grid.tile-view .monitor-tile {
+      min-width: 308px;
+    }
+
     /* Monitor Tile Base */
     .monitor-tile {
       background-color: #1f2530;
@@ -2961,16 +2966,9 @@
       let h12 = hh % 12;
       if (h12 === 0) h12 = 12;
       const timePart = `${h12}:${String(mm).padStart(2, '0')} ${ap}`;
-      const dtfDay = new Intl.DateTimeFormat('en-US', {
-        timeZone: 'America/New_York',
-        year: 'numeric',
-        month: 'short',
-        day: 'numeric',
-      });
-      const endDay = dtfDay.format(end);
-      const todayDay = dtfDay.format(new Date());
-      if (endDay === todayDay) return timePart;
-      return `${endDay}, ${timePart}`;
+      // Badge: time only (end may be next calendar day in ET after a late start + duration).
+      // Full date + time remains on the tooltip via symbolWideCooldownTooltipEt.
+      return timePart;
     }
 
     function symbolWideCooldownTooltipEt(monitor) {
