@@ -1,0 +1,5 @@
+# Copy to: backend/data/users/user_NNNN/credentials/mercury/.env
+
+# Mercury API — https://docs.mercury.com/reference/welcome
+# Exact variable names TBD when wiring the client.
+# MERCURY_API_KEY=

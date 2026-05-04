@@ -58,11 +58,37 @@ def get_logs_dir():
     """Get the logs directory path."""
     return os.path.join(get_project_root(), "logs")
 
-def get_kalshi_credentials_dir():
-    """Get the Kalshi credentials directory path."""
-    u = _tenant_user_no_for_paths()
+def get_kalshi_credentials_dir(user_no: str | None = None):
+    """Get the Kalshi credentials directory path (…/kalshi-credentials; keys under prod/)."""
+    if user_no is not None:
+        u = str(user_no).strip()
+        if not _USER_NO_ENV_RE.match(u):
+            raise ValueError(f"Invalid user_no for Kalshi credentials path: {user_no!r}")
+    else:
+        u = _tenant_user_no_for_paths()
     return os.path.join(
         get_data_dir(), "users", f"user_{u}", "credentials", "kalshi-credentials"
+    )
+
+
+def get_quickbooks_credentials_dir(user_no: str | None = None):
+    """Per-tenant QuickBooks Online OAuth and realm credentials (bookkeeper integration)."""
+    if user_no is not None:
+        u = str(user_no).strip()
+        if not _USER_NO_ENV_RE.match(u):
+            raise ValueError(f"Invalid user_no for QuickBooks credentials path: {user_no!r}")
+    else:
+        u = _tenant_user_no_for_paths()
+    return os.path.join(
+        get_data_dir(), "users", f"user_{u}", "credentials", "quickbooks"
+    )
+
+
+def get_mercury_credentials_dir():
+    """Per-tenant Mercury Bank API credentials (bookkeeper integration)."""
+    u = _tenant_user_no_for_paths()
+    return os.path.join(
+        get_data_dir(), "users", f"user_{u}", "credentials", "mercury"
     )
 
 def get_supervisor_config_path():
@@ -120,6 +146,20 @@ def ensure_data_dirs():
             "prod",
         ),
         os.path.join(get_data_dir(), "users", "user_0001", "credentials", "kalshi-credentials", "demo"),
+        os.path.join(
+            get_data_dir(),
+            "users",
+            f"user_{_tenant_user_no_for_paths()}",
+            "credentials",
+            "quickbooks",
+        ),
+        os.path.join(
+            get_data_dir(),
+            "users",
+            f"user_{_tenant_user_no_for_paths()}",
+            "credentials",
+            "mercury",
+        ),
     ]
     for dir_path in dirs:
         os.makedirs(dir_path, exist_ok=True)

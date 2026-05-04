@@ -183,3 +183,21 @@ scripts/db/output/
 # Runtime port configuration (environment-specific)
 backend/core/config/MASTER_PORT_MANIFEST.json
 backend/core/config/MASTER_PORT_MANIFEST.json.corrupted_*
+
+# Bookkeeper: track env.example only under default user (re-ignore siblings; .env still matches *.env).
+!backend/data/users/
+!backend/data/users/user_0001/
+!backend/data/users/user_0001/credentials/
+!backend/data/users/user_0001/credentials/quickbooks/
+!backend/data/users/user_0001/credentials/mercury/
+backend/data/users/*
+!backend/data/users/user_0001/
+backend/data/users/user_0001/*
+!backend/data/users/user_0001/credentials/
+backend/data/users/user_0001/credentials/*
+!backend/data/users/user_0001/credentials/quickbooks/
+!backend/data/users/user_0001/credentials/mercury/
+backend/data/users/user_0001/credentials/quickbooks/*
+!backend/data/users/user_0001/credentials/quickbooks/env.example
+backend/data/users/user_0001/credentials/mercury/*
+!backend/data/users/user_0001/credentials/mercury/env.example

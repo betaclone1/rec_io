@@ -17,3 +17,4 @@ Subfolders:
 | **[diagnostics/](diagnostics/)** | `check_kalshi_account_endpoints.py`, `view_installation_logs.py`, `remove_legacy_credentials.sh` |
 | **[install_deploy/](install_deploy/)** | Install and deploy: collaborator_setup, first_boot_sanitize, simple_deploy, git_update_system, install_auto_startup_service, etc. |
 | **[migrations/](migrations/)** | Reversible migration SQL (`.up.sql` / `.down.sql`). Runner: `db/run_migration.py`. |
+| **[cron/](cron/)** | Scheduled wrappers (e.g. `bookkeeper_kalshi_reconcile.sh` for nightly QBO/Kalshi journal reconcile). |

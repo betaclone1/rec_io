@@ -22,6 +22,59 @@ export REC_PROD_DB_HOST=165.22.13.146   # when a script needs DB_HOST pointed at
 - **Wrapper (recommended):** `scripts/prod/rec_prod_ssh.sh 'remote command'` and `scripts/prod/simple_git_pull_on_prod.sh` resolve `REC_PROD_SSH_HOST` inside the script (defaulting to the table above if unset). Run them from the repo root.
 - **Bash pitfall:** A single line like `REC_PROD_SSH_HOST=165.22.13.146 ssh root@$REC_PROD_SSH_HOST '…'` often breaks: the destination is expanded **before** the assignment applies to the current shell, so you get `root@` with an empty host. **Export first**, then `ssh root@$REC_PROD_SSH_HOST '…'`, or use the wrapper script.
 
+## Cron: bookkeeper Kalshi reconcile
+
+**What it does:** Once per day, compares Kalshi portfolio total (API) to QuickBooks **Kalshi Trading Account** balance and, if the gap exceeds the CLI `--min-diff`, posts a two-line journal entry to **Kalshi Trading Account** and **Trading Income**. Implemented as a **one-shot** process (starts, exits). It does **not** run under Supervisor; schedule it with **cron** only.
+
+**When to install:** After the deploy that includes `scripts/cron/bookkeeper_kalshi_reconcile.sh` (and the bookkeeper reconcile code) is on production.
+
+**Prerequisites on the server**
+
+- Project at **`/opt/rec_io_server`** (or set paths below to match your checkout).
+- **`venv`** present and dependencies installed (`venv/bin/python` used by the wrapper).
+- Credentials for the bookkeeper user, same layout as local:
+  - `backend/data/users/user_NNNN/credentials/quickbooks/.env` (Intuit / QBO tokens).
+  - `backend/data/users/user_NNNN/credentials/kalshi-credentials/prod/` (Kalshi API).
+
+**Verify before enabling cron**
+
+```bash
+cd /opt/rec_io_server
+chmod +x scripts/cron/bookkeeper_kalshi_reconcile.sh   # if not already executable
+REC_USER_NO=0001 ./scripts/cron/bookkeeper_kalshi_reconcile.sh
+tail -30 logs/bookkeeper_kalshi_reconcile.log
+```
+
+Use **`REC_USER_NO`** to match the credentials directory (`user_0001` → `0001`).
+
+**Install crontab (12:30 AM US Eastern wall clock)**
+
+Edit the crontab for the **same Linux user** that can read the repo and credential files (often **`root`** on this host):
+
+```bash
+crontab -e
+```
+
+Add (two lines: timezone for the job + schedule):
+
+```cron
+CRON_TZ=America/New_York
+30 0 * * * /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
+```
+
+To pin a different bookkeeper user:
+
+```cron
+CRON_TZ=America/New_York
+30 0 * * * REC_USER_NO=0002 /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
+```
+
+**Logs:** append-only **`/opt/rec_io_server/logs/bookkeeper_kalshi_reconcile.log`**.
+
+**Note:** Production droplets use **Linux** `cron`; **`CRON_TZ`** is honored (same pattern as [ARCHITECTURE.md](ARCHITECTURE.md)). This differs from macOS `cron`, which often ignores `CRON_TZ`.
+
+---
+
 ## Notes
 
 - Prefer these variables in docs and automation instead of scattering the raw IP. When copy-paste clarity matters, this file is the single place that records the **current** production IPv4.

@@ -853,6 +853,10 @@ app.add_middleware(
 
 app.include_router(trading_mode_router, prefix="/api")
 
+from backend.bookkeeper.intuit_oauth_routes import router as intuit_oauth_router
+
+app.include_router(intuit_oauth_router)
+
 # Mount static files with cache busting
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse

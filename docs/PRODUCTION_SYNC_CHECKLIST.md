@@ -72,6 +72,8 @@ cd /opt/rec_io_server
 ./scripts/install_deploy/git_update_system.sh update
 ```
 
+**Nightly bookkeeper cron (first deploy only):** After the release that adds `scripts/cron/bookkeeper_kalshi_reconcile.sh`, install the production crontab entry once so Kalshi vs QuickBooks reconcile runs daily at 12:30 AM Eastern. Full steps: [PRODUCTION_HOST.md — Cron: bookkeeper Kalshi reconcile](PRODUCTION_HOST.md#cron-bookkeeper-kalshi-reconcile).
+
 ---
 
 ## 3. Common “nightmare” cases

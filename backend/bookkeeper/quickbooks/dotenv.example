@@ -1,0 +1,17 @@
+# Copy to: backend/data/users/user_NNNN/credentials/quickbooks/.env
+# Default tenant template (tracked as env.example): backend/data/users/user_0001/credentials/quickbooks/env.example
+
+# Intuit Developer app — https://developer.intuit.com/
+INTUIT_CLIENT_ID=
+INTUIT_CLIENT_SECRET=
+
+# After running scripts/diagnostics/quickbooks_oauth_authorize.py:
+INTUIT_REFRESH_TOKEN=
+QBO_REALM_ID=
+# sandbox | production
+QBO_ENVIRONMENT=sandbox
+
+# Optional: browser OAuth via main app (HTTPS redirect — see backend/bookkeeper/intuit_oauth_routes.py)
+# REC_INTUIT_OAUTH_STATE_SECRET=
+# REC_INTUIT_OAUTH_ADMIN_SECRET=
+# REC_INTUIT_OAUTH_REDIRECT_URI=
