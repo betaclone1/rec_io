@@ -17,35 +17,10 @@ _log = logging.getLogger(__name__)
 
 EST = ZoneInfo("America/New_York")
 
-# ``symbol_wide_cooldown_start_time`` should match the **actual close instant** of the qualifying loss.
-# Tenant ``closed_at`` is TEXT: usually full ISO from ``est_now.isoformat()`` on close; some rows are
-# time-only (HH:MM:SS). When the stored value begins with YYYY-MM-DD, cast it to ``timestamptz``.
-# Otherwise combine ``trades.date`` with the time string in US/Eastern, with the same ``date`` vs
-# ``updated_at`` lag fix as before.
-_SQL_T_CLOSE_TIME = """COALESCE(
-        NULLIF(TRIM(BOTH FROM t.closed_at::text), ''),
-        NULLIF(TRIM(BOTH FROM t.time::text), ''),
-        '00:00:00'
-    )"""
-
-_SQL_T_CLOSE_ANCHOR = f"""(
-    CASE
-        WHEN NULLIF(TRIM(BOTH FROM t.closed_at::text), '') IS NOT NULL
-         AND TRIM(BOTH FROM t.closed_at::text) ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}'
-        THEN TRIM(BOTH FROM t.closed_at::text)::timestamptz
-        WHEN t.updated_at IS NOT NULL
-         AND (NULLIF(TRIM(BOTH FROM t.date::text), ''))::date IS NOT NULL
-         AND (NULLIF(TRIM(BOTH FROM t.date::text), ''))::date
-             < ((t.updated_at AT TIME ZONE 'America/New_York')::date)
-        THEN (
-            ((t.updated_at AT TIME ZONE 'America/New_York')::date)::text
-            || ' ' || {_SQL_T_CLOSE_TIME}
-        )::timestamp AT TIME ZONE 'America/New_York'
-        ELSE (
-            (t.date::text || ' ' || {_SQL_T_CLOSE_TIME})
-        )::timestamp AT TIME ZONE 'America/New_York'
-    END
-)"""
+# Last loss instant for cooldown: ``date`` + ``closed_at`` as America/New_York.
+_SQL_T_CLOSE_ANCHOR = """(
+    TRIM(BOTH FROM t.date::text) || ' ' || TRIM(BOTH FROM t.closed_at::text)
+)::timestamp AT TIME ZONE 'America/New_York'"""
 
 
 def _parse_ts(value: Any) -> Optional[datetime]:
