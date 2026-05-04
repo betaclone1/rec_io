@@ -5181,9 +5181,18 @@ def trigger_auto_stop_close(
 
     # Generate unique ticket ID (single braces: random/time must run)
     ticket_id = f"TICKET-{random.getrandbits(32):08x}-{int(time.time() * 1000)}"
-    # Invert side
-    side = trade['side']
-    inverted_side = 'N' if side.upper() in ['Y', 'YES'] else 'Y' if side.upper() in ['N', 'NO'] else side
+    # Position leg (YES/NO) as stored on the trade — same convention as manual opens and trade_executor:
+    # all orders are "buys"; trade_executor maps intent=close to buying the *opposite* leg.
+    # Do NOT send inverted side here; that doubled exposure (e.g. NO position + close with YES legacy → buy more NO / ask again).
+    position_side = trade["side"]
+    su = str(position_side).strip().upper()
+    inverted_side = (
+        "N"
+        if su in ("Y", "YES")
+        else "Y"
+        if su in ("N", "NO")
+        else position_side
+    )
     # Get current_close_price (opposite side's ask) and convert to actual sell_price
     # current_close_price is the opposite side's ask, so sell_price = 1 - current_close_price
     current_close_price = trade.get('current_close_price')
@@ -5215,12 +5224,16 @@ def trigger_auto_stop_close(
         pos_f = 1.0
     if pos_f <= 0:
         pos_f = 1.0
+    try:
+        pos_int = max(1, int(round(pos_f)))
+    except (TypeError, ValueError):
+        pos_int = 1
     payload = {
         "id": trade_pk,
         "ticket_id": ticket_id,
         "intent": "close",
         "ticker": trade["ticker"],
-        "side": inverted_side,
+        "side": position_side,
         "count": pos_f,
         "count_fp": f"{pos_f:.2f}",
         "action": "close",

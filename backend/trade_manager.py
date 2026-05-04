@@ -5533,7 +5533,8 @@ async def add_trade(request: Request):
                         close_payload = {
                             "id": trade_id,  # Include trade_id for close orders
                             "ticker": verified_ticker,  # Use verified ticker from database
-                            "side": data.get("side") or trade_side,
+                            # Always use canonical position leg from DB; trade_executor flips on intent=close.
+                            "side": trade_side,
                             "count_fp": _format_count_fp(data, for_close=True),
                             "action": "close",
                             "order_type": "market",
