@@ -886,6 +886,9 @@ app.mount("/js", CacheBustingStaticFiles(directory=f"{frontend_dir}/js"), name="
 app.mount("/images", CacheBustingStaticFiles(directory=f"{frontend_dir}/images"), name="images")
 app.mount("/styles", CacheBustingStaticFiles(directory=f"{frontend_dir}/styles"), name="styles")
 app.mount("/data", CacheBustingStaticFiles(directory=f"{frontend_dir}/data"), name="data")
+_legal_static = os.path.join(frontend_dir, "legal")
+if os.path.isdir(_legal_static):
+    app.mount("/legal", CacheBustingStaticFiles(directory=_legal_static), name="legal")
 
 # Health check endpoint
 @app.get("/health")
