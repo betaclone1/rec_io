@@ -346,7 +346,23 @@ class SupervisorConfigGenerator:
                                    system_host: str, ports: dict) -> str:
         """Generate supervisor configuration content"""
         
-        db_config = get_database_config()
+        # Use layered unified DB settings (config.local + env overrides), not process-only env
+        # from backend.core.config.database.get_database_config() — bare regenerations default DB_HOST to localhost.
+        udb = self.config.get_database_config() or {}
+        db_name = udb.get("name") or udb.get("database") or "rec_io_db"
+        try:
+            db_port = int(udb.get("port", 5432))
+        except (TypeError, ValueError):
+            db_port = 5432
+        db_config = {
+            "host": udb.get("host", "localhost"),
+            "database": db_name,
+            "name": db_name,
+            "user": udb.get("user", "rec_io_user"),
+            "password": udb.get("password", "rec_io_password"),
+            "port": db_port,
+            "sslmode": udb.get("sslmode", "disable"),
+        }
         log_dir = self.path_manager.get_log_directory()
         trading_users = self._discover_trading_user_nos()
         if trading_users:
@@ -754,6 +770,34 @@ environment={env_vars}
             )
             for key in _rec_alerts_smtp_keys:
                 val = os.getenv(key)
+                if val is None or str(val).strip() == "":
+                    continue
+                esc = str(val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{key}="{esc}"')
+
+            # Intuit / QuickBooks OAuth (main_app): supervisord does not inherit shell env.
+            # Prefer env at generation time; else read gitignored one-line files (same pattern as alerts).
+            def _intuit_oauth_secret_from_file(rel_name: str) -> str:
+                p = Path(self.config.project_root) / "backend" / "data" / "secrets" / rel_name
+                try:
+                    if p.is_file():
+                        return p.read_text().strip()
+                except OSError:
+                    pass
+                return ""
+
+            _intuit_keys = (
+                "REC_INTUIT_OAUTH_STATE_SECRET",
+                "REC_INTUIT_OAUTH_ADMIN_SECRET",
+                "REC_INTUIT_OAUTH_REDIRECT_URI",
+            )
+            for key in _intuit_keys:
+                val = os.getenv(key)
+                if val is None or str(val).strip() == "":
+                    if key == "REC_INTUIT_OAUTH_STATE_SECRET":
+                        val = _intuit_oauth_secret_from_file("rec_intuit_oauth_state_secret.txt")
+                    elif key == "REC_INTUIT_OAUTH_ADMIN_SECRET":
+                        val = _intuit_oauth_secret_from_file("rec_intuit_oauth_admin_secret.txt")
                 if val is None or str(val).strip() == "":
                     continue
                 esc = str(val).replace("\\", "\\\\").replace('"', '\\"')
