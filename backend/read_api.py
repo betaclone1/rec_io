@@ -367,8 +367,7 @@ def _monitor_auto_stop_accuracy_bucket(
         FROM ("""
         + union_sql
         + """) AS t
-        WHERE (t.test_filter IS NULL OR t.test_filter = FALSE)
-          AND t.status = 'closed'
+        WHERE t.status = 'closed'
           AND t.win_loss = 'L'
           AND LOWER(TRIM(COALESCE(t.close_method, ''))) = %s
           AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
