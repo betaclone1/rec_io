@@ -107,13 +107,21 @@ class SystemThreadedConnectionPool(psycopg2.pool.ThreadedConnectionPool):
 
 def get_database_config():
     """Get database configuration from environment variables. Prefer DB_*; fall back to REC_DB_*.
-    In production (REC_ENVIRONMENT=production), DB_PASSWORD or REC_DB_PASS is required; no default.
+    ``REC_DB_PASSWORD`` is also accepted (same as ``load_unified_config.sh`` / :mod:`unified_config` export).
+
+    In production (REC_ENVIRONMENT=production), a non-empty password is required; no default.
 
     Includes ``options`` so PostgreSQL session ``TimeZone`` is America/New_York (naive TIMESTAMP
     columns and naive datetime adapters match project conventions)."""
-    pw = os.getenv('DB_PASSWORD') or os.getenv('REC_DB_PASS')
-    if os.getenv('REC_ENVIRONMENT') == 'production' and not pw:
-        raise ValueError("DB_PASSWORD or REC_DB_PASS required in production")
+    pw = (
+        os.getenv("DB_PASSWORD")
+        or os.getenv("REC_DB_PASS")
+        or os.getenv("REC_DB_PASSWORD")
+    )
+    if os.getenv("REC_ENVIRONMENT") == "production" and not (pw and str(pw).strip()):
+        raise ValueError(
+            "DB_PASSWORD, REC_DB_PASS, or REC_DB_PASSWORD required in production"
+        )
     base = {
         'host': os.getenv('DB_HOST') or os.getenv('REC_DB_HOST') or 'localhost',
         'database': os.getenv('DB_NAME') or os.getenv('REC_DB_NAME') or 'rec_io_db',

@@ -244,7 +244,14 @@ regenerate_supervisor_config() {
         print_error "scripts/config/generate_unified_supervisor_config.py not found"
         return 1
     fi
-    "$REC_PYTHON_EXECUTABLE" "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py"
+    # Mirror unified loader export so get_database_config() sees the same password as unified_config.
+    if [ -n "${REC_DB_PASSWORD:-}" ] && [ -z "${REC_DB_PASS:-}" ]; then
+        export REC_DB_PASS="$REC_DB_PASSWORD"
+    fi
+    if ! "$REC_PYTHON_EXECUTABLE" "$REC_PROJECT_ROOT/scripts/config/generate_unified_supervisor_config.py"; then
+        print_error "Supervisor configuration generation failed (see Python errors above); not starting with stale config."
+        return 1
+    fi
     print_success "Supervisor configuration written: $SUPERVISOR_CONFIG"
 }
 
