@@ -5161,7 +5161,9 @@
 
     async function loadPerformanceData() {
       try {
-        tryApplyPerformanceStripFromWsCache();
+        if (!tryApplyPerformanceStripFromWsCache()) {
+          reapplyPerformanceStripFromCachedSnapshot();
+        }
       } catch (error) {
         console.error('Error loading performance data:', error);
       }

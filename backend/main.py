@@ -1268,13 +1268,14 @@ async def serve_mobile_trade_monitor(request: Request):
 # Serve mobile dashboard with cache busting
 @app.get("/mobile/dashboard", response_class=HTMLResponse)
 async def serve_mobile_dashboard(request: Request):
-    """Serve mobile dashboard with cache busting headers."""
+    """Serve mobile dashboard (Phase C NEW: rollup strip + TD/PREV) with cache busting headers."""
     # Check if user is authenticated
     if AUTH_ENABLED:
         if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
     
-    file_path = f"{frontend_dir}/mobile/dashboard_mobile.html"
+    # Phase C: rollup strip, TD/PREV, Redis snapshot tiles (was dashboard_mobile.html).
+    file_path = f"{frontend_dir}/mobile/dashboard_mobile_NEW.html"
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             content = f.read()
