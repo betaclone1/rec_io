@@ -2152,6 +2152,17 @@ try:
     stats_result = monitor_manager.update_monitor_statistics_from_trades()
     monitor_manager.log_event("STARTUP", f"Monitor statistics initialization completed: {stats_result}")
 
+    try:
+        monitor_manager.log_event("STARTUP", "Recomputing performance rollup tables (totals + per-monitor)")
+        from backend.core.performance_rollups import recompute_performance_rollups_for_slot
+
+        rollup_result = recompute_performance_rollups_for_slot(_mm_worker_slot())
+        monitor_manager.log_event("STARTUP", f"Performance rollups startup recompute: {rollup_result}")
+    except Exception as rollup_err:
+        monitor_manager.log_event(
+            "STARTUP_ERROR", f"Performance rollups startup recompute failed: {rollup_err}"
+        )
+
     # Align LIVE/PAPER with rolling performance for monitors that have regime monitoring enabled.
     # force_immediate=True: first evaluation after process start should not sit behind cooldown.
     try:

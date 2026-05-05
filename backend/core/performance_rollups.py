@@ -92,6 +92,19 @@ def _parse_close_ts(closed_at: Any, trade_date: Optional[Date], eastern: ZoneInf
             return dt.astimezone(eastern)
         except ValueError:
             pass
+    if closed_at and isinstance(closed_at, str) and trade_date:
+        s = closed_at.strip()
+        # Legacy: trade_manager stored ``strftime("%H:%M:%S")`` only. Rolling PREV used
+        # trade-date midnight and matched calendar TD; combine session date + wall time.
+        if re.match(r"^\d{1,2}:\d{2}:\d{2}$", s):
+            try:
+                hh, mm, ss = (int(x) for x in s.split(":"))
+                tt = datetime.min.time().replace(
+                    hour=min(hh, 23), minute=min(mm, 59), second=min(ss, 59)
+                )
+                return datetime.combine(trade_date, tt, tzinfo=eastern)
+            except ValueError:
+                pass
     if trade_date:
         return datetime.combine(trade_date, datetime.min.time(), tzinfo=eastern)
     return None
