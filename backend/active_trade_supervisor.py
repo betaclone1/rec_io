@@ -5400,6 +5400,12 @@ def trigger_auto_stop_close(
                         f"[AUTO STOP] ⚠️ Request timeout trigger={trigger_reason} trade_id={tid}, "
                         f"but trade status is '{result[0]}' - treating as success"
                     )
+                    _ats_after_successful_auto_stop_close_enqueue_flip(
+                        trade,
+                        trigger_reason=trigger_reason,
+                        pos_int=pos_int,
+                        inverted_side=inverted_side,
+                    )
                     return True
             except Exception as db_check_error:
                 log(f"[AUTO STOP] ⚠️ Timeout for trade {trade['trade_id']}, but could not verify status: {db_check_error}")
