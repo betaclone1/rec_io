@@ -19,17 +19,17 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** **`redis-platform-initiative`** (in progress; backbone + snapshot alignment), **`mtb-account-dashboard`** (`Status: done`; dashboard data surfaces).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply pending migrations (applies all **`20260505_*`** rollup chain not yet in **`system.schema_migrations`**):  
+- [x] Apply pending migrations (applies all **`20260505_*`** rollup chain not yet in **`system.schema_migrations`**):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check (non-blocking if clean):  
+- [x] Schema drift check (non-blocking if clean):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Optional — backfill rollup rows from existing closed trades (repeat slot args as needed):  
-  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_performance_rollups.py 0001`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
-- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
-- [ ] Record release in DB on **production** (must match git/changelog):  
+- [x] Optional — backfill rollup rows from existing closed trades (repeat slot args as needed; set **`REC_DEFAULT_USER_SCHEMA`** e.g. **`users_0001`** if the script errors without worker tenant context):  
+  `REC_DEFAULT_USER_SCHEMA=users_0001 PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_performance_rollups.py 0001`
+- [x] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [x] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf status`; tail key `logs/*.out.log` / `*.err.log` for current errors after restart.
+- [x] Record release in DB on **production** (must match git/changelog):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.8`
 
 ---
