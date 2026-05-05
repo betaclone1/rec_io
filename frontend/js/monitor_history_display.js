@@ -21,6 +21,8 @@ class MonitorHistoryDisplay {
         this._serverRefreshTimer = null;
         this._serverRefreshLastCompletedMs = 0;
         this._serverRefreshMinIntervalMs = 5000;
+        /** Bumps on rollup tile reload paths; stale async completions skip ``updateMonitorTiles`` (avoids interleaved ``clear``/paint races). */
+        this._rollupTilesReloadGen = 0;
         
         // Bind methods
         this.init = this.init.bind(this);
@@ -31,6 +33,7 @@ class MonitorHistoryDisplay {
         this.refreshFromServer = this.refreshFromServer.bind(this);
         this.fetchMonitorTilesFromRollups = this.fetchMonitorTilesFromRollups.bind(this);
         this.applyTilesFromHydratedMatrix = this.applyTilesFromHydratedMatrix.bind(this);
+        this.applyRollupTilesFromCacheSync = this.applyRollupTilesFromCacheSync.bind(this);
     }
 
     /** Match dashboard TD/PREV toggle (``window.__dashboardPerformanceRollupView``). */
@@ -44,6 +47,26 @@ class MonitorHistoryDisplay {
     /** False on dashboard_NEW / mobile_NEW: never call ``/api/performance/monitor-tiles``. */
     _monitorTilesHttpFallbackAllowed() {
         return !(typeof window !== 'undefined' && window.__dashboardPerformanceRedisRequired === true);
+    }
+
+    /**
+     * Synchronously repopulate ``monitorStats`` from in-memory ``tiles_matrix`` and paint tiles.
+     * Use when TD/PREV or chart window changes so tiles do not wait on portfolio HTTP or race async ``refresh``.
+     * @returns {boolean} true if the matrix had data for this period (paint may be skipped if superseded by a newer gen).
+     */
+    applyRollupTilesFromCacheSync(timeFilter) {
+        if (!this.isInitialized || !timeFilter) {
+            return false;
+        }
+        const gen = ++this._rollupTilesReloadGen;
+        if (!this.applyTilesFromHydratedMatrix(timeFilter)) {
+            return false;
+        }
+        if (gen !== this._rollupTilesReloadGen) {
+            return true;
+        }
+        this.updateMonitorTiles();
+        return true;
     }
 
     /**
@@ -750,14 +773,21 @@ class MonitorHistoryDisplay {
     }
 
     async _reloadTilesFromRollupsAsync(timeFilter) {
+        const gen = ++this._rollupTilesReloadGen;
         try {
             if (this.applyTilesFromHydratedMatrix(timeFilter)) {
+                if (gen !== this._rollupTilesReloadGen) {
+                    return;
+                }
                 this.updateMonitorTiles();
                 console.log('[MONITOR_HISTORY] Tile stats updated from tiles_matrix');
                 return;
             }
             if (this._monitorTilesHttpFallbackAllowed()) {
                 await this.fetchMonitorTilesFromRollups(timeFilter);
+                if (gen !== this._rollupTilesReloadGen) {
+                    return;
+                }
                 this.updateMonitorTiles();
                 console.log('[MONITOR_HISTORY] Tile stats updated from rollups');
             } else {
@@ -765,6 +795,9 @@ class MonitorHistoryDisplay {
                     '[MONITOR_HISTORY] tiles_matrix required but missing; skipping HTTP monitor-tiles (Redis-only dashboard)',
                 );
                 this.monitorStats.clear();
+                if (gen !== this._rollupTilesReloadGen) {
+                    return;
+                }
                 this.updateMonitorTiles();
             }
         } catch (e) {
@@ -806,6 +839,7 @@ class MonitorHistoryDisplay {
         }
         this._serverRefreshInFlight = true;
         const gen = ++this._refreshSerial;
+        const rg = ++this._rollupTilesReloadGen;
         console.log(`[MONITOR_HISTORY] Server refresh with time filter: ${timeFilter}...`);
         try {
             let updated = false;
@@ -823,6 +857,10 @@ class MonitorHistoryDisplay {
             }
             if (gen !== this._refreshSerial) {
                 console.log('[MONITOR_HISTORY] Server refresh superseded; skipping tile update');
+                return;
+            }
+            if (rg !== this._rollupTilesReloadGen) {
+                console.log('[MONITOR_HISTORY] Server refresh stale vs rollup tile gen; skipping tile update');
                 return;
             }
             if (updated) {

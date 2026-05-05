@@ -2035,6 +2035,15 @@
 
     async function refreshDashboardRollupDependentUi() {
       window.__dashboardPerformanceRollupView = dashboardPerformanceRollupView;
+      reapplyPerformanceStripFromCachedSnapshot();
+      let tilesFromMatrix = false;
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        try {
+          tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView);
+        } catch (err) {
+          console.error(err);
+        }
+      }
       try {
         await Promise.all([
           loadPortfolioHistory(),
@@ -2046,7 +2055,7 @@
         console.error('refreshDashboardRollupDependentUi:', e);
       }
       syncPortfolioPanelTopLineAndDeltaFromState();
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized && !tilesFromMatrix) {
         try {
           window.monitorHistoryDisplay.refresh(currentView);
         } catch (err) {
@@ -4318,6 +4327,7 @@
           }
 
           syncDashboardPerformanceRollupToggleUi();
+          reapplyPerformanceStripFromCachedSnapshot();
         }
         
       } catch (error) {
@@ -4373,6 +4383,7 @@
       td.addEventListener('click', function() {
         if (dashboardPerformanceRollupView === 'td') return;
         dashboardPerformanceRollupView = 'td';
+        window.__dashboardPerformanceRollupView = 'td';
         syncDashboardPerformanceRollupToggleUi();
         void saveDashboardPreferences();
         void refreshDashboardRollupDependentUi();
@@ -4380,6 +4391,7 @@
       pv.addEventListener('click', function() {
         if (dashboardPerformanceRollupView === 'prev') return;
         dashboardPerformanceRollupView = 'prev';
+        window.__dashboardPerformanceRollupView = 'prev';
         syncDashboardPerformanceRollupToggleUi();
         void saveDashboardPreferences();
         void refreshDashboardRollupDependentUi();
@@ -4684,6 +4696,15 @@
 
       saveDashboardPreferences();
 
+      let tilesFromMatrix = false;
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+        try {
+          tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(view);
+        } catch (e) {
+          console.error('applyRollupTilesFromCacheSync (setChartView) failed:', e);
+        }
+      }
+
       // Time window + rollup_view are applied server-side; refetch so portfolio/bankroll/pnl
       // match the same TD vs PREV semantics as monitor tiles.
       try {
@@ -4698,7 +4719,7 @@
 
       syncPortfolioPanelTopLineAndDeltaFromState();
 
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized && !tilesFromMatrix) {
         try {
           window.monitorHistoryDisplay.refresh(view);
         } catch (e) {
@@ -5034,9 +5055,11 @@
       const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
       const slice = msg.strip && msg.strip[modeKey] && msg.strip[modeKey][rv];
       if (slice && slice.periods) applyPerformancePeriodsToDashboardStrip(slice.periods);
-      // Tiles use ``performance_monitors`` for the active chart window (not WS ``all_td`` only).
+      // Tiles use ``tiles_matrix`` for the active chart window × td/prev; sync first to avoid racing async refresh.
       if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        void window.monitorHistoryDisplay.refresh(currentView);
+        if (!window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView)) {
+          void window.monitorHistoryDisplay.refresh(currentView);
+        }
       }
     }
 
@@ -5081,6 +5104,19 @@
       const strip = window.__perfRollupsSnapshotStrip;
       if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
       if (Date.now() - dashboardPerfRollupsSnapshotAt > DASHBOARD_PERF_ROLLUPS_SNAPSHOT_MAX_AGE_MS) return false;
+      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
+      const modeKey = tm === 'paper' ? 'paper' : 'live';
+      const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
+      const slice = strip[modeKey] && strip[modeKey][rv];
+      if (!slice || slice.status !== 'ok' || !slice.periods) return false;
+      applyPerformancePeriodsToDashboardStrip(slice.periods);
+      return true;
+    }
+
+    /** Re-slice ``strip[live|paper][td|prev]`` from the last snapshot without max-age (TD/PREV is a view change, not new data). */
+    function reapplyPerformanceStripFromCachedSnapshot() {
+      const strip = window.__perfRollupsSnapshotStrip;
+      if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
       const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
       const modeKey = tm === 'paper' ? 'paper' : 'live';
       const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
