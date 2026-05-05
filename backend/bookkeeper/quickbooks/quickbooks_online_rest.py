@@ -337,6 +337,189 @@ def run_report_query(
     return body
 
 
+def run_transaction_list_report(
+    cfg: QboConfig,
+    access_token: str,
+    *,
+    account_id: str,
+    start_date: str,
+    end_date: str,
+    cleared: Literal["Uncleared", "Cleared", "Reconciled"] | None = None,
+    timeout_sec: float = 120.0,
+) -> dict[str, Any]:
+    """
+    Run the **TransactionList** report for a single chart account.
+
+    ``start_date`` / ``end_date`` must be ``YYYY-MM-DD``.
+
+    ``cleared`` maps to QBO's ``cleared`` query parameter (e.g. ``Uncleared`` for
+    items not yet cleared/reconciled on the bank register). Omit for all lines
+    QBO includes in the default report window.
+
+    Note: This is **not** the Banking tab "downloaded / for review" pipeline;
+    that feed is largely outside the v3 Accounting REST surface we use here.
+    """
+    base = api_base_url(cfg.environment)
+    url = f"{base}/v3/company/{cfg.realm_id}/reports/TransactionList"
+    params: dict[str, str] = {
+        "account": str(account_id),
+        "start_date": start_date,
+        "end_date": end_date,
+        "minorversion": str(DEFAULT_MINOR_VERSION),
+    }
+    if cleared is not None:
+        params["cleared"] = cleared
+    resp = requests.get(
+        url,
+        headers={
+            "Authorization": f"Bearer {access_token}",
+            "Accept": "application/json",
+        },
+        params=params,
+        timeout=timeout_sec,
+    )
+    try:
+        body = resp.json()
+    except json.JSONDecodeError:
+        body = {"raw": resp.text}
+    if resp.status_code >= 400:
+        _fail_json_http("TransactionList report", resp, body)
+    _log_intuit_response(resp, "qbo_report_transactionlist")
+    return body
+
+
+def transaction_list_report_column_meta(
+    report: dict[str, Any],
+) -> tuple[list[str], list[str | None]]:
+    """
+    Column titles and ``ColType`` from a TransactionList (or other report) ``Columns`` block.
+
+    ``ColType`` is e.g. ``is_no_post`` for the **Posting** column; see QBO report JSON.
+    """
+    cols = report.get("Columns") or {}
+    raw = cols.get("Column") or []
+    if isinstance(raw, dict):
+        raw = [raw]
+    titles: list[str] = []
+    types: list[str | None] = []
+    for c in raw:
+        if not isinstance(c, dict):
+            titles.append("")
+            types.append(None)
+            continue
+        titles.append(str(c.get("ColTitle") or ""))
+        ct = c.get("ColType")
+        types.append(str(ct) if ct is not None else None)
+    return titles, types
+
+
+def transaction_list_report_headers(report: dict[str, Any]) -> list[str]:
+    """Column titles from a TransactionList report JSON."""
+    titles, _ = transaction_list_report_column_meta(report)
+    return titles
+
+
+def iter_transaction_list_data_rows(rows: Any) -> list[dict[str, Any]]:
+    """Flatten nested ``Rows`` / ``Row`` / ``Section`` structure into ``type=Data`` rows."""
+    out: list[dict[str, Any]] = []
+
+    def walk(node: Any) -> None:
+        if node is None:
+            return
+        if isinstance(node, dict):
+            if node.get("type") == "Data" and "ColData" in node:
+                out.append(node)
+                return
+            inner = node.get("Rows")
+            if inner is not None:
+                walk(inner)
+            row = node.get("Row")
+            if row is not None:
+                walk(row)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    if isinstance(rows, dict):
+        walk(rows.get("Row"))
+    return out
+
+
+def _transaction_list_parse_cell(cell: Any) -> dict[str, Any]:
+    """One ``ColData`` cell: string ``value`` and optional ``is_no_post`` (QBO report flag)."""
+    if not isinstance(cell, dict):
+        return {"value": "", "is_no_post": None}
+    out: dict[str, Any] = {"value": str(cell.get("value") or "")}
+    if "is_no_post" in cell:
+        out["is_no_post"] = bool(cell["is_no_post"])
+    else:
+        out["is_no_post"] = None
+    return out
+
+
+def transaction_list_report_enriched(
+    report: dict[str, Any],
+) -> tuple[list[str], list[str | None], list[list[dict[str, Any]]]]:
+    """
+    Parse TransactionList report rows with per-cell metadata.
+
+    Returns ``(headers, col_types, rows)`` where each row is a list of cell dicts
+    ``{"value": str, "is_no_post": bool | None}`` aligned with ``headers``.
+    """
+    headers, col_types = transaction_list_report_column_meta(report)
+    data_rows = iter_transaction_list_data_rows(report.get("Rows"))
+    lines: list[list[dict[str, Any]]] = []
+    for dr in data_rows:
+        cd = dr.get("ColData") or []
+        row = [_transaction_list_parse_cell(cell) for cell in cd]
+        lines.append(row)
+    return headers, col_types, lines
+
+
+def _transaction_list_posting_column_index(
+    headers: list[str], col_types: list[str | None]
+) -> int | None:
+    for i, ct in enumerate(col_types):
+        if ct == "is_no_post":
+            return i
+    for i, h in enumerate(headers):
+        if h.strip().casefold() == "posting":
+            return i
+    return None
+
+
+def transaction_list_report_to_row_dicts(
+    report: dict[str, Any],
+) -> tuple[list[str], list[str | None], list[dict[str, Any]]]:
+    """
+    Flatten a TransactionList report to one dict per line.
+
+    Each dict maps ``ColTitle`` to the cell string. If the report has a Posting column
+    (``ColType`` ``is_no_post`` or title **Posting**), adds ``posting_is_no_post``:
+    the API boolean when present, else ``None``.
+    """
+    headers, col_types, enriched = transaction_list_report_enriched(report)
+    posting_idx = _transaction_list_posting_column_index(headers, col_types)
+    rows_out: list[dict[str, Any]] = []
+    for row_cells in enriched:
+        pad_n = max(0, len(headers) - len(row_cells))
+        padded = row_cells + [{"value": "", "is_no_post": None}] * pad_n
+        row_dict: dict[str, Any] = {}
+        for hi, h in enumerate(headers):
+            row_dict[h] = str(padded[hi].get("value") or "")
+        if posting_idx is not None and posting_idx < len(padded):
+            row_dict["posting_is_no_post"] = padded[posting_idx].get("is_no_post")
+        rows_out.append(row_dict)
+    return headers, col_types, rows_out
+
+
+def transaction_list_report_to_cell_rows(report: dict[str, Any]) -> tuple[list[str], list[list[str]]]:
+    """Return ``(headers, rows)`` where each row is a list of string cell values."""
+    headers, _, enriched = transaction_list_report_enriched(report)
+    lines = [[c["value"] for c in row] for row in enriched]
+    return headers, lines
+
+
 def get_chart_of_accounts(
     cfg: QboConfig,
     access_token: str,

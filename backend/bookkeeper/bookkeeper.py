@@ -13,6 +13,9 @@ Run from repo root:
   ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --transfer-from Checking \\
     --transfer-to "Kalshi Trading Account" --amount 1000
   ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --reconcile-kalshi --reconcile-dry-run
+  ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --list-bank-uncleared --bank-days 90
+  ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --transaction-list "Revenue Checking" \\
+    --bank-days 90 --json --pretty-json
 """
 from __future__ import annotations
 
@@ -20,7 +23,7 @@ import argparse
 import json
 import logging
 import sys
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from backend.bookkeeper.kalshi_portfolio_balance import fetch_total_portfolio_cents
@@ -31,6 +34,8 @@ from backend.bookkeeper.quickbooks import (
     get_chart_of_accounts,
     load_qbo_config,
     refresh_access_token,
+    run_transaction_list_report,
+    transaction_list_report_to_row_dicts,
 )
 from backend.core.tenant_script_args import add_user_no_argument, resolve_user_no
 from backend.util.paths import get_quickbooks_credentials_dir
@@ -96,6 +101,33 @@ def account_id_by_exact_name(accounts: list[dict[str, Any]], label: str) -> str 
     return None
 
 
+def resolve_account_id(accounts: list[dict[str, Any]], label: str) -> str | None:
+    """Chart account by numeric ``Id`` or by Name / FullyQualifiedName (see ``account_id_by_exact_name``)."""
+    s = label.strip()
+    if s.isdigit():
+        for a in accounts:
+            if str(a.get("Id") or "") == s:
+                return s
+        return None
+    return account_id_by_exact_name(accounts, label)
+
+
+def _format_transaction_list_line(rd: dict[str, Any]) -> str:
+    txn_type = rd.get("Transaction Type", "")
+    dt = rd.get("Date", "")
+    amt = rd.get("Amount", "")
+    memo = rd.get("Memo/Description", "")
+    split = rd.get("Split", "")
+    base = f"  {dt}  {txn_type}  amt={amt}  split={split}  memo={memo}"
+    if "posting_is_no_post" in rd:
+        posting = rd.get("Posting", "")
+        pinp = rd.get("posting_is_no_post")
+        base += f"  Posting={posting!r}"
+        if pinp is not None:
+            base += f"  is_no_post={pinp!r}"
+    return base
+
+
 def _current_balance_float(account_row: dict[str, Any] | None) -> float:
     if not account_row:
         return 0.0
@@ -119,7 +151,10 @@ def _account_row_by_id(
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
-        description="Rec IO bookkeeper: QuickBooks Online (chart, transfers, Kalshi reconcile).",
+        description=(
+            "Rec IO bookkeeper: QuickBooks Online (chart, transfers, Kalshi reconcile, "
+            "bank uncleared lines)."
+        ),
     )
     add_user_no_argument(parser)
     parser.add_argument(
@@ -131,7 +166,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--json",
         action="store_true",
-        help="Print JSON {meta, accounts} to stdout (chart mode only).",
+        help="Print JSON to stdout (chart mode, --transaction-list, or --list-bank-uncleared).",
     )
     parser.add_argument(
         "--pretty-json",
@@ -195,6 +230,53 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Transaction date for transfer or journal (default: today local date).",
     )
+    parser.add_argument(
+        "--list-bank-uncleared",
+        action="store_true",
+        help=(
+            "List uncleared register lines on Bank and Credit Card accounts (QBO "
+            "TransactionList report, cleared=Uncleared). Not the Banking tab "
+            "'for review' downloaded feed (not on this v3 Accounting API)."
+        ),
+    )
+    parser.add_argument(
+        "--bank-days",
+        type=int,
+        default=90,
+        metavar="N",
+        help="With --list-bank-uncleared or --transaction-list (no explicit dates), "
+        "start date is today minus N days (default 90).",
+    )
+    parser.add_argument(
+        "--transaction-list",
+        metavar="ACCOUNT",
+        default=None,
+        help=(
+            "Run QBO TransactionList for one chart account (Name, FullyQualifiedName, or numeric Id). "
+            "Date range: use --report-start-date and --report-end-date together, or else --bank-days "
+            "ending today. Default cleared filter is all lines; set --cleared-filter to narrow."
+        ),
+    )
+    parser.add_argument(
+        "--cleared-filter",
+        choices=("all", "uncleared", "cleared", "reconciled"),
+        default="all",
+        help="With --transaction-list, QBO cleared= filter (default: all).",
+    )
+    parser.add_argument(
+        "--report-start-date",
+        dest="report_start_date",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="With --transaction-list, range start (requires --report-end-date).",
+    )
+    parser.add_argument(
+        "--report-end-date",
+        dest="report_end_date",
+        metavar="YYYY-MM-DD",
+        default=None,
+        help="With --transaction-list, range end (requires --report-start-date).",
+    )
     args = parser.parse_args(argv)
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,
@@ -211,6 +293,197 @@ def main(argv: list[str] | None = None) -> int:
     )
     if args.reconcile_kalshi and transfer_requested:
         parser.error("Use either --reconcile-kalshi or transfer options, not both.")
+
+    if args.transaction_list:
+        if args.reconcile_kalshi or transfer_requested or args.list_bank_uncleared:
+            parser.error(
+                "--transaction-list cannot be used with --reconcile-kalshi, "
+                "--list-bank-uncleared, or transfer options."
+            )
+        if args.cleared_filter == "all":
+            cleared_param = None
+        elif args.cleared_filter == "uncleared":
+            cleared_param = "Uncleared"
+        elif args.cleared_filter == "cleared":
+            cleared_param = "Cleared"
+        else:
+            cleared_param = "Reconciled"
+        if args.report_start_date and args.report_end_date:
+            start_s, end_s = args.report_start_date, args.report_end_date
+        elif args.report_start_date or args.report_end_date:
+            parser.error(
+                "Use both --report-start-date and --report-end-date, or neither "
+                "(then --bank-days applies)."
+            )
+        else:
+            days = max(1, min(int(args.bank_days), 3650))
+            end_d = date.today()
+            start_d = end_d - timedelta(days=days)
+            start_s, end_s = start_d.isoformat(), end_d.isoformat()
+        try:
+            cfg, access, meta = qbo_connect(user_no)
+            accounts = get_chart_of_accounts(cfg, access)
+            aid = resolve_account_id(accounts, args.transaction_list)
+            if not aid:
+                logger.error("Unknown QBO account: %r", args.transaction_list)
+                return 1
+            acct_row = _account_row_by_id(accounts, aid)
+            label = (
+                (acct_row or {}).get("FullyQualifiedName")
+                or (acct_row or {}).get("Name")
+                or aid
+            )
+            rep = run_transaction_list_report(
+                cfg,
+                access,
+                account_id=aid,
+                start_date=start_s,
+                end_date=end_s,
+                cleared=cleared_param,
+            )
+            hdrs, col_types, row_dicts = transaction_list_report_to_row_dicts(rep)
+            payload_tl: dict[str, Any] = {
+                "meta": {
+                    **meta,
+                    "bank_report": "TransactionList",
+                    "cleared_filter": args.cleared_filter,
+                    "start_date": start_s,
+                    "end_date": end_s,
+                },
+                "account": {
+                    "account_id": aid,
+                    "account_name": str(label).strip(),
+                    "account_type": (acct_row or {}).get("AccountType"),
+                    "headers": hdrs,
+                    "column_types": col_types,
+                    "rows": row_dicts,
+                },
+            }
+        except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
+            logger.error("%s", e)
+            return 1
+
+        if args.json:
+            print(
+                json.dumps(
+                    payload_tl,
+                    indent=2 if args.pretty_json else None,
+                )
+            )
+            return 0
+
+        print(
+            f"QuickBooks TransactionList — user {user_no} | {meta['environment']} | "
+            f"realm {meta['realm_id']} | {start_s} .. {end_s} | cleared={args.cleared_filter}"
+        )
+        print(
+            "\n(TransactionList is register/report data; Banking 'for review' is a separate pipeline.)"
+        )
+        fq_label = str(label).strip()
+        print(
+            f"\n## [{aid}] {fq_label}  ({(acct_row or {}).get('AccountType')})  lines={len(row_dicts)}"
+        )
+        for rd in row_dicts:
+            print(_format_transaction_list_line(rd))
+        return 0
+
+    if args.list_bank_uncleared:
+        if args.reconcile_kalshi or transfer_requested:
+            parser.error(
+                "--list-bank-uncleared cannot be used with --reconcile-kalshi or transfer options."
+            )
+        days = max(1, min(int(args.bank_days), 3650))
+        end_d = date.today()
+        start_d = end_d - timedelta(days=days)
+        start_s, end_s = start_d.isoformat(), end_d.isoformat()
+        bank_types = frozenset({"Bank", "Credit Card"})
+        try:
+            cfg, access, meta = qbo_connect(user_no)
+            accounts = get_chart_of_accounts(cfg, access)
+            bank_accounts = [
+                a
+                for a in accounts
+                if (a.get("AccountType") or "").strip() in bank_types
+            ]
+            sections: list[dict[str, Any]] = []
+            for acct in bank_accounts:
+                aid = str(acct.get("Id") or "")
+                if not aid:
+                    continue
+                label = (acct.get("FullyQualifiedName") or acct.get("Name") or aid).strip()
+                try:
+                    rep = run_transaction_list_report(
+                        cfg,
+                        access,
+                        account_id=aid,
+                        start_date=start_s,
+                        end_date=end_s,
+                        cleared="Uncleared",
+                    )
+                except (RuntimeError, OSError) as e:
+                    logger.error("TransactionList failed for %s (%s): %s", label, aid, e)
+                    sections.append(
+                        {
+                            "account_id": aid,
+                            "account_name": label,
+                            "account_type": acct.get("AccountType"),
+                            "error": str(e),
+                            "rows": [],
+                        }
+                    )
+                    continue
+                hdrs, col_types, row_dicts = transaction_list_report_to_row_dicts(rep)
+                sections.append(
+                    {
+                        "account_id": aid,
+                        "account_name": label,
+                        "account_type": acct.get("AccountType"),
+                        "headers": hdrs,
+                        "column_types": col_types,
+                        "rows": row_dicts,
+                    }
+                )
+            payload: dict[str, Any] = {
+                "meta": {
+                    **meta,
+                    "bank_report": "TransactionList",
+                    "cleared_filter": "Uncleared",
+                    "start_date": start_s,
+                    "end_date": end_s,
+                },
+                "accounts": sections,
+            }
+        except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
+            logger.error("%s", e)
+            return 1
+
+        if args.json:
+            print(
+                json.dumps(
+                    payload,
+                    indent=2 if args.pretty_json else None,
+                )
+            )
+            return 0
+
+        print(
+            f"QuickBooks uncleared bank/CC register lines — user {user_no} | "
+            f"{meta['environment']} | realm {meta['realm_id']} | {start_s} .. {end_s}"
+        )
+        print(
+            "(QBO TransactionList, cleared=Uncleared — not Banking 'for review' downloads.)"
+        )
+        for sec in sections:
+            label = sec.get("account_name")
+            aid = sec.get("account_id")
+            if sec.get("error"):
+                print(f"\n## [{aid}] {label}  ERROR: {sec['error']}")
+                continue
+            rows = sec.get("rows") or []
+            print(f"\n## [{aid}] {label}  ({sec.get('account_type')})  lines={len(rows)}")
+            for rd in rows:
+                print(_format_transaction_list_line(rd))
+        return 0
 
     if args.reconcile_kalshi:
         try:

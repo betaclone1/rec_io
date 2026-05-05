@@ -19,6 +19,9 @@ from backend.bookkeeper.quickbooks.quickbooks_online_rest import (
     refresh_access_token,
     reset_intuit_oauth_endpoints_cache,
     run_report_query,
+    run_transaction_list_report,
+    transaction_list_report_to_cell_rows,
+    transaction_list_report_to_row_dicts,
 )
 
 __all__ = [
@@ -40,4 +43,7 @@ __all__ = [
     "refresh_access_token",
     "reset_intuit_oauth_endpoints_cache",
     "run_report_query",
+    "run_transaction_list_report",
+    "transaction_list_report_to_cell_rows",
+    "transaction_list_report_to_row_dicts",
 ]
