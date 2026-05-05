@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Archived legacy dashboard. Canonical UI: tabs/dashboard.html -->
 <html lang="en">
 <head>
   <script src="/js/rec_session.js"></script>
@@ -463,31 +464,6 @@
       margin-right: 6px;
     }
 
-    .performance-panel-header-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-    .perf-rollup-toggle {
-      display: inline-flex;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 6px;
-      overflow: hidden;
-    }
-    .perf-rollup-btn {
-      background: transparent;
-      color: #a0aec0;
-      border: none;
-      padding: 4px 10px;
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .perf-rollup-btn.active {
-      background: rgba(99, 179, 237, 0.25);
-      color: #e2e8f0;
-    }
     .performance-cash-value {
       color: #ffffff;
     }
@@ -1424,13 +1400,6 @@
       margin-bottom: 0px;
     }
 
-    .portfolio-controls-right {
-      display: flex;
-      align-items: flex-end;
-      gap: 8px;
-      flex-shrink: 0;
-    }
-
     .portfolio-info {
       display: flex;
       align-items: center;
@@ -1778,18 +1747,12 @@
                 <div class="change-element" id="portfolio-change"></div>
               </div>
             </div>
-            <div class="portfolio-controls-right">
-              <div class="perf-rollup-toggle" role="group" aria-label="Calendar TD vs rolling PREV (entire dashboard)">
-                <button type="button" class="perf-rollup-btn" data-rollup="td" id="perfRollupBtnTd">TD</button>
-                <button type="button" class="perf-rollup-btn" data-rollup="prev" id="perfRollupBtnPrev">PREV</button>
-              </div>
-              <div class="view-buttons">
-                <button data-view="1d" class="view-btn active">1d</button>
-                <button data-view="1w" class="view-btn">1w</button>
-                <button data-view="1m" class="view-btn">1m</button>
-                <button data-view="1y" class="view-btn">1y</button>
-                <button data-view="all" class="view-btn">All</button>
-              </div>
+            <div class="view-buttons">
+              <button data-view="1d" class="view-btn active">1d</button>
+              <button data-view="1w" class="view-btn">1w</button>
+              <button data-view="1m" class="view-btn">1m</button>
+              <button data-view="1y" class="view-btn">1y</button>
+              <button data-view="all" class="view-btn">All</button>
             </div>
           </div>
         </div>
@@ -1812,7 +1775,7 @@
         </div>
       </div>
 
-      <!-- Performance Panel: rollup-backed (Phase C NEW); TD/PREV toggle lives in portfolio panel -->
+      <!-- Performance Panel: realized PnL to-date (Day / Week / Month / Year) -->
       <div class="panel-container new-panel">
         <div class="panel-header">
           <span>Performance</span>
@@ -2002,21 +1965,6 @@
     let allBankrollHistoryData = []; // Store bankroll history for Bankroll tab
     let allPnlHistoryData = []; // Store cumulative PnL series for PNL tab
     let currentView = 'all'; // Current view
-    /** Calendar (td) vs rolling (prev) performance strip; persisted in dashboard_preferences. */
-    let dashboardPerformanceRollupView = 'td';
-    /** Last ``performance_rollups_snapshot`` frame time (WS); strip prefers cache while fresh. */
-    let dashboardPerfRollupsSnapshotAt = 0;
-    const DASHBOARD_PERF_ROLLUPS_SNAPSHOT_MAX_AGE_MS = 90000;
-    /** When true: monitor tiles use only ``tiles_matrix`` (no ``/api/performance/monitor-tiles``). */
-    window.__dashboardPerformanceRedisRequired = true;
-    window.__dashboardPerformanceRollupView = 'td';
-    /** Strip/chart suffix and snapshot slice: prefer ``window.__dashboardPerformanceRollupView`` (set before rollup refresh). */
-    function dashboardEffectiveRollupView() {
-      if (typeof window !== 'undefined' && window.__dashboardPerformanceRollupView === 'prev') {
-        return 'prev';
-      }
-      return 'td';
-    }
     let portfolioPanelActiveTab = 'portfolio'; // 'portfolio' | 'bankroll' | 'pnl'
     let currentViewMode = 'tile'; // Current view mode (tile/list)
     let currentSortBy = 'name'; // Current sort criteria
@@ -2034,47 +1982,6 @@
     let dbChangesBankrollQueuedStreams = null;
     const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
     let monitorHistoryRefreshDebounceTimer = null;
-
-    function dashboardRollupQuerySuffix() {
-      const rv = dashboardEffectiveRollupView();
-      return '&rollup_view=' + encodeURIComponent(rv);
-    }
-
-    async function refreshDashboardRollupDependentUi() {
-      window.__dashboardPerformanceRollupView = dashboardPerformanceRollupView;
-      let tilesFromMatrix = false;
-      const snapshotOk = await fetchDashboardPerformanceSnapshotApplySoft();
-      if (snapshotOk) {
-        tilesFromMatrix = true;
-      } else {
-        reapplyPerformanceStripFromCachedSnapshot();
-        if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-          try {
-            tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView);
-          } catch (err) {
-            console.error(err);
-          }
-        }
-      }
-      try {
-        await Promise.all([
-          loadPortfolioHistory(),
-          loadBankrollHistory(),
-          loadPnlHistory(),
-          refreshDashboardPerformanceStripAggregated(),
-        ]);
-      } catch (e) {
-        console.error('refreshDashboardRollupDependentUi:', e);
-      }
-      syncPortfolioPanelTopLineAndDeltaFromState();
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized && !tilesFromMatrix) {
-        try {
-          window.monitorHistoryDisplay.refresh(currentView);
-        } catch (err) {
-          console.error(err);
-        }
-      }
-    }
     /** When true, shell hid this iframe — WebSockets and periodic polls are torn down to reduce main.py load. */
     let dashboardTabPaused = false;
     let dashboardPerfPanelIntervalId = null;
@@ -2622,7 +2529,6 @@
 
       // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
-      wireDashboardPerformanceRollupToggle();
 
       await fetchTradingModeFromServer();
 
@@ -2640,8 +2546,6 @@
         preloadPortfolioPanelTabs(),
         fetchAccountBalanceSnapshot(),
       ]);
-
-      await hydrateDashboardPerformanceFromRedis();
 
       // STEP 3: Load monitors data
       await loadMonitors();
@@ -2671,7 +2575,7 @@
       document.querySelectorAll('.view-btn[data-view]').forEach(button => {
         button.addEventListener('click', function() {
           const view = this.getAttribute('data-view');
-          void setChartView(view);
+          setChartView(view);
         });
       });
 
@@ -3840,7 +3744,9 @@
 
     // Toggle rebalance mode
     function toggleRebalanceMode() {
+      console.log('toggleRebalanceMode called, current mode:', isRebalanceMode);
       isRebalanceMode = !isRebalanceMode;
+      console.log('New rebalance mode:', isRebalanceMode);
       if (isRebalanceMode) {
         enableRebalanceMode();
       } else {
@@ -3851,7 +3757,9 @@
 
     // Enable rebalance mode - make allocation values editable
     function enableRebalanceMode() {
+      console.log('enableRebalanceMode called');
       const listContainer = document.querySelector('.allocation-list');
+      console.log('listContainer found:', listContainer);
       if (!listContainer) {
         console.error('No allocation list container found');
         return;
@@ -3867,6 +3775,11 @@
         const directChildren = Array.from(item.children).filter(child => child.tagName === 'DIV');
         const rightSide = directChildren[1]; // Second direct child div should be the right side
         
+        // Debug: Check if elements exist
+        console.log('Item:', allocationId, 'rightSide:', rightSide);
+        console.log('rightSide HTML:', rightSide ? rightSide.innerHTML : 'null');
+        console.log('rightSide children:', rightSide ? rightSide.children : 'null');
+        
         if (!rightSide) {
           console.error('Missing rightSide for allocation:', allocationId);
           return;
@@ -3874,6 +3787,7 @@
         
         // Get the divs within rightSide - they should be the percentage and dollar divs
         const rightSideDivs = rightSide.querySelectorAll('div');
+        console.log('rightSideDivs:', rightSideDivs);
         
         if (rightSideDivs.length < 2) {
           console.error('Not enough divs in rightSide for allocation:', allocationId);
@@ -3882,6 +3796,8 @@
         
         const percentageDiv = rightSideDivs[0]; // First div is percentage
         const dollarDiv = rightSideDivs[1];     // Second div is dollar amount
+        
+        console.log('percentageDiv:', percentageDiv, 'dollarDiv:', dollarDiv);
         
         // Store original values
         const originalPercentage = percentageDiv.textContent.replace('%', '');
@@ -3893,6 +3809,9 @@
           dollar: parseFloat(originalDollar)
         });
 
+        // Replace percentage with input field
+        console.log('Creating input field for allocation:', allocationId, 'with value:', originalPercentage);
+        
         const percentageInput = document.createElement('input');
         percentageInput.type = 'number';
         percentageInput.value = originalPercentage;
@@ -3917,9 +3836,11 @@
                    updateDollarAmount(allocationId, this.value);
                  });
         
+        console.log('Replacing percentageDiv content for:', allocationId);
         percentageDiv.innerHTML = '';
         percentageDiv.appendChild(percentageInput);
         percentageDiv.appendChild(document.createTextNode('%'));
+        console.log('Input field created and appended for:', allocationId);
 
         // Make dollar amount read-only but styled as editable
         dollarDiv.style.cssText = `
@@ -3965,6 +3886,8 @@
           const percentageDiv = rightSideDivs[0]; // First div is percentage
           const dollarDiv = rightSideDivs[1];     // Second div is dollar amount
           
+          console.log('Restoring item:', alloc.id, 'percentageDiv:', percentageDiv, 'dollarDiv:', dollarDiv);
+          
           // Restore percentage display
           percentageDiv.innerHTML = `${alloc.percentage}%`;
           
@@ -3980,22 +3903,37 @@
 
     // Update dollar amount based on percentage change
     function updateDollarAmount(allocationId, newPercentage) {
-      const portfolioValue = window.totalBankroll || getCurrentPortfolioValue();
-      const newDollarAmount = (portfolioValue * parseFloat(newPercentage) / 100);
+      console.log('updateDollarAmount called for:', allocationId, 'with percentage:', newPercentage);
       
+      const portfolioValue = window.totalBankroll || getCurrentPortfolioValue();
+      console.log('Portfolio value:', portfolioValue);
+      
+      const newDollarAmount = (portfolioValue * parseFloat(newPercentage) / 100);
+      console.log('New dollar amount:', newDollarAmount);
+      
+      // Find the allocation list item, not the chart path
       const listContainer = document.querySelector('.allocation-list');
       const item = listContainer ? listContainer.querySelector(`[data-allocation-id="${allocationId}"]`) : null;
+      console.log('List container found:', listContainer);
+      console.log('Item found:', item);
       
       if (item) {
+        // Find the right side div - it should be the second direct child div
         const directChildren = Array.from(item.children).filter(child => child.tagName === 'DIV');
-        const rightSide = directChildren[1];
+        const rightSide = directChildren[1]; // Second direct child div should be the right side
+        console.log('Right side found:', rightSide);
         
         if (rightSide) {
           const rightSideDivs = rightSide.querySelectorAll('div');
+          console.log('Right side divs:', rightSideDivs);
           
           if (rightSideDivs.length >= 2) {
-            const dollarDiv = rightSideDivs[1];
+            const dollarDiv = rightSideDivs[1]; // Second div is dollar amount
+            console.log('Dollar div found:', dollarDiv);
+            console.log('Updating dollar div from:', dollarDiv.textContent, 'to:', `$${newDollarAmount.toLocaleString()}`);
+            
             dollarDiv.textContent = `$${newDollarAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+            console.log('Dollar div updated successfully');
           }
         }
       }
@@ -4126,19 +4064,23 @@
           return;
         }
 
+        console.log('Saving rebalance changes:', updatedAllocations);
+        
+        // Send updates to backend
         const response = await fetch('/api/monitors/allocation/update', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            updates: updatedAllocations,
-            trading_mode: recEffectiveTradingModeQueryValue(),
-          })
+          body: JSON.stringify({ updates: updatedAllocations })
         });
+        
+        console.log('Response status:', response.status);
+        console.log('Response ok:', response.ok);
 
         if (response.ok) {
-          await response.json();
+          const result = await response.json();
+          console.log('Save result:', result);
           
           // Exit rebalance mode
           toggleRebalanceMode();
@@ -4269,11 +4211,6 @@
           currentViewMode = data.monitor_view_mode || 'tile';
           currentSortBy = data.monitor_sort_by || 'name';
           currentChartType = data.allocation_view || 'pie';
-          const rvPref = data.performance_rollup_view;
-          if (rvPref === 'prev' || rvPref === 'td') {
-            dashboardPerformanceRollupView = rvPref;
-          }
-          window.__dashboardPerformanceRollupView = dashboardPerformanceRollupView;
           const savedPortfolioView = data.portfolio_view || 'portfolio';
           if (['bankroll', 'portfolio', 'pnl'].includes(savedPortfolioView)) {
             portfolioPanelActiveTab = savedPortfolioView;
@@ -4337,9 +4274,6 @@
             }
             sortPicker.value = currentSortBy;
           }
-
-          syncDashboardPerformanceRollupToggleUi();
-          reapplyPerformanceStripFromCachedSnapshot();
         }
         
       } catch (error) {
@@ -4360,8 +4294,7 @@
             monitor_view_mode: currentViewMode,
             monitor_sort_by: currentSortBy,
             allocation_view: currentChartType,
-            portfolio_view: portfolioPanelActiveTab,
-            performance_rollup_view: dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td',
+            portfolio_view: portfolioPanelActiveTab
           })
         });
         
@@ -4379,45 +4312,21 @@
       }
     }
 
-    function syncDashboardPerformanceRollupToggleUi() {
-      const td = document.getElementById('perfRollupBtnTd');
-      const pv = document.getElementById('perfRollupBtnPrev');
-      if (!td || !pv) return;
-      const v = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
-      td.classList.toggle('active', v === 'td');
-      pv.classList.toggle('active', v === 'prev');
-    }
-
-    function wireDashboardPerformanceRollupToggle() {
-      const td = document.getElementById('perfRollupBtnTd');
-      const pv = document.getElementById('perfRollupBtnPrev');
-      if (!td || !pv) return;
-      td.addEventListener('click', function() {
-        if (dashboardPerformanceRollupView === 'td') return;
-        dashboardPerformanceRollupView = 'td';
-        window.__dashboardPerformanceRollupView = 'td';
-        syncDashboardPerformanceRollupToggleUi();
-        void saveDashboardPreferences();
-        void refreshDashboardRollupDependentUi();
-      });
-      pv.addEventListener('click', function() {
-        if (dashboardPerformanceRollupView === 'prev') return;
-        dashboardPerformanceRollupView = 'prev';
-        window.__dashboardPerformanceRollupView = 'prev';
-        syncDashboardPerformanceRollupToggleUi();
-        void saveDashboardPreferences();
-        void refreshDashboardRollupDependentUi();
-      });
-    }
-
     function updatePortfolioChange() {
       if (allHistoryData.length < 2) {
         document.getElementById('portfolio-change').textContent = '';
         return;
       }
 
-      const firstValue = allHistoryData[0].portfolio || 0;
-      const lastValue = allHistoryData[allHistoryData.length - 1].portfolio || 0;
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      if (filteredData.length < 2) {
+        document.getElementById('portfolio-change').textContent = '';
+        return;
+      }
+
+      // Get first and last values in the filtered data
+      const firstValue = filteredData[0].portfolio || 0; // Portfolio values are already in dollars
+      const lastValue = filteredData[filteredData.length - 1].portfolio || 0; // Portfolio values are already in dollars
       
       const change = lastValue - firstValue;
       const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
@@ -4440,8 +4349,9 @@
 
       if (portfolioPanelActiveTab === 'pnl') {
         const history = allPnlHistoryData || [];
+        const filteredData = filterDataByView(history, currentView);
 
-        if (!history.length) {
+        if (!filteredData.length) {
           portfolioElement.textContent = new Intl.NumberFormat('en-US', {
             style: 'currency',
             currency: 'USD',
@@ -4455,7 +4365,7 @@
           return;
         }
 
-        const lastPnl = history[history.length - 1].pnl || 0;
+        const lastPnl = filteredData[filteredData.length - 1].pnl || 0;
         const formattedValue = new Intl.NumberFormat('en-US', {
           style: 'currency',
           currency: 'USD',
@@ -4483,8 +4393,9 @@
           updatePortfolioChange();
           return;
         }
-        const lastVal = allHistoryData.length
-          ? (allHistoryData[allHistoryData.length - 1].portfolio || 0)
+        const filteredData = filterDataByView(allHistoryData, currentView);
+        const lastVal = filteredData.length
+          ? (filteredData[filteredData.length - 1].portfolio || 0)
           : 0;
         portfolioElement.textContent = new Intl.NumberFormat('en-US', {
           style: 'currency',
@@ -4513,14 +4424,15 @@
           return;
         }
         const history = allBankrollHistoryData || [];
-        if (!history.length) {
+        const filteredData = filterDataByView(history, currentView);
+        if (!filteredData.length) {
           portfolioElement.textContent = '—';
           portfolioElement.style.color = '';
           const changeEl = document.getElementById('portfolio-change');
           if (changeEl) changeEl.textContent = '';
           return;
         }
-        const lastValue = history[history.length - 1].bankroll || 0;
+        const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
         portfolioElement.textContent = new Intl.NumberFormat('en-US', {
           style: 'currency',
           currency: 'USD',
@@ -4554,9 +4466,9 @@
         const origin = window.location.origin;
 
         const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`))
+          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=1y`))
         ]);
 
         if (portfolioRes.ok) {
@@ -4624,9 +4536,9 @@
 
       try {
         const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`))
+          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=1y`))
         ]);
 
         if (portfolioRes.ok) {
@@ -4708,30 +4620,27 @@
 
       saveDashboardPreferences();
 
-      let tilesFromMatrix = false;
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        try {
-          tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(view);
-        } catch (e) {
-          console.error('applyRollupTilesFromCacheSync (setChartView) failed:', e);
-        }
-      }
-
-      // Time window + rollup_view are applied server-side; refetch so portfolio/bankroll/pnl
-      // match the same TD vs PREV semantics as monitor tiles.
+      // Re-render all three charts from already-fetched state so tab switching
+      // stays glitch-free even if a given view wasn't active during updates.
       try {
-        await Promise.all([
-          loadPortfolioHistory(),
-          loadBankrollHistory(),
-          loadPnlHistory(),
-        ]);
+        renderPortfolioChart(allHistoryData);
       } catch (e) {
-        console.error('setChartView history refetch failed:', e);
+        console.error('Error rendering portfolio chart for new view:', e);
+      }
+      try {
+        renderBankrollChartFromState();
+      } catch (e) {
+        console.error('Error rendering bankroll chart for new view:', e);
+      }
+      try {
+        renderPnlChartFromState();
+      } catch (e) {
+        console.error('Error rendering pnl chart for new view:', e);
       }
 
       syncPortfolioPanelTopLineAndDeltaFromState();
 
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized && !tilesFromMatrix) {
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         try {
           window.monitorHistoryDisplay.refresh(view);
         } catch (e) {
@@ -4763,7 +4672,7 @@
 
     async function loadPortfolioHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=1y`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
@@ -4782,7 +4691,7 @@
 
     async function loadBankrollHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
@@ -4806,12 +4715,13 @@
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      if (allBankrollHistoryData.length < 2) {
+      const filteredData = filterDataByView(allBankrollHistoryData, currentView);
+      if (filteredData.length < 2) {
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      const firstValue = allBankrollHistoryData[0].bankroll || 0;
-      const lastValue = allBankrollHistoryData[allBankrollHistoryData.length - 1].bankroll || 0;
+      const firstValue = filteredData[0].bankroll || 0;
+      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
       const change = lastValue - firstValue;
       const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
       const isPositive = change >= 0;
@@ -4828,12 +4738,12 @@
         bankrollChart.destroy();
         bankrollChart = null;
       }
-      const chartData = history && history.length ? history : [];
-      const labels = chartData.map(item => {
+      const filteredData = filterDataByView(history, currentView);
+      const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
         return formatLabel(date, currentView);
       });
-      const bankrollData = chartData.map(item => item.bankroll || 0);
+      const bankrollData = filteredData.map(item => item.bankroll || 0);
       const smoothingWindow = currentView === '1d' ? 4 : 60;
       const smoothedData = applyMovingAverage(bankrollData, smoothingWindow);
       if (smoothedData.length > 0 && bankrollData.length > 0) {
@@ -5011,159 +4921,53 @@
       setTimeout(() => { if (bankrollChart) bankrollChart.resize(); }, 100);
     }
 
-    function applyPerformancePeriodsToDashboardStrip(periods) {
-      if (!periods || typeof periods !== 'object') return;
-      ['day', 'week', 'month', 'year'].forEach(key => {
-        const p = periods[key];
-        if (!p) return;
-        const pnlEl = document.getElementById(`perf-pnl-${key}`);
-        const retEl = document.getElementById(`perf-ret-${key}`);
-        const compareEl = document.getElementById(`perf-compare-${key}`);
-        const pnl = Number(p.pnl) || 0;
-        const prevPnl = Number(p.prev_pnl) || 0;
-        const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
-        if (pnlEl) {
-          pnlEl.textContent = pnlStr;
-          pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
-        }
-        if (retEl) {
-          const rawRet = p.ret_pct;
-          const retPct = rawRet != null ? rawRet : (pnl === 0 ? 0 : null);
-          if (retPct != null) {
-            retEl.textContent = retPct.toFixed(2) + '%';
-            retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
-          } else {
-            retEl.textContent = '—';
-            retEl.className = 'performance-ret neutral';
-          }
-        }
-        if (compareEl) {
-          const delta = pnl - prevPnl;
-          const isPositive = delta > 0;
-          const isNegative = delta < 0;
-          const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
-          let pctStr = '—';
-          if (prevPnl !== 0) {
-            const rawPct = (delta / prevPnl) * 100;
-            const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
-            pctStr = Math.round(pctSignMatchesDelta) + '%';
-          }
-          compareEl.textContent = deltaStr + ' (' + pctStr + ')';
-          compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
-        }
-      });
-    }
-
-    async function fetchDashboardPerformanceSnapshotApplySoft() {
-      try {
-        const url = recApiUrlWithTradingMode(`${window.location.origin}/api/dashboard/performance-snapshot`);
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: { 'Cache-Control': 'no-cache' },
-          cache: 'no-store',
-        });
-        if (!res.ok) return false;
-        const data = await res.json();
-        if (data && data.type === 'performance_rollups_snapshot') {
-          if (!recTenantMatchesMessageTenant(data.tenant_user_no)) return false;
-          handlePerformanceRollupsDbSnapshot(data);
-          return true;
-        }
-      } catch (e) {
-        console.warn('[Dashboard] performance-snapshot soft fetch failed:', e);
-      }
-      return false;
-    }
-
-    function handlePerformanceRollupsDbSnapshot(msg) {
-      if (!msg || msg.type !== 'performance_rollups_snapshot') return;
-      if (!recTenantMatchesMessageTenant(msg.tenant_user_no)) return;
-      window.__perfRollupsSnapshotStrip = msg.strip;
-      window.__perfRollupsTilesMatrix = (msg.tiles_matrix && typeof msg.tiles_matrix === 'object')
-        ? msg.tiles_matrix
-        : null;
-      dashboardPerfRollupsSnapshotAt = Date.now();
-      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
-      const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardEffectiveRollupView();
-      const slice = msg.strip && msg.strip[modeKey] && msg.strip[modeKey][rv];
-      if (slice && slice.periods) applyPerformancePeriodsToDashboardStrip(slice.periods);
-      // Tiles use ``tiles_matrix`` for the active chart window × td/prev; sync first to avoid racing async refresh.
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        if (!window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView)) {
-          void window.monitorHistoryDisplay.refresh(currentView);
-        }
-      }
-    }
-
-    async function hydrateDashboardPerformanceFromRedis() {
-      try {
-        const url = recApiUrlWithTradingMode(`${window.location.origin}/api/dashboard/performance-snapshot`);
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: { 'Cache-Control': 'no-cache' },
-          cache: 'no-store',
-        });
-        if (!res.ok) {
-          window.__dashboardPerformanceSnapshotFailed = true;
-          window.__perfRollupsSnapshotStrip = null;
-          window.__perfRollupsTilesMatrix = null;
-          dashboardPerfRollupsSnapshotAt = 0;
-          let detail = res.status;
-          try {
-            const errBody = await res.json();
-            if (errBody && errBody.detail != null) {
-              detail = typeof errBody.detail === 'object' ? JSON.stringify(errBody.detail) : String(errBody.detail);
-            }
-          } catch (_) { /* ignore */ }
-          console.error('[Dashboard] performance-snapshot unavailable:', detail);
-          return;
-        }
-        window.__dashboardPerformanceSnapshotFailed = false;
-        const data = await res.json();
-        if (data && data.type === 'performance_rollups_snapshot') {
-          handlePerformanceRollupsDbSnapshot(data);
-        }
-      } catch (e) {
-        window.__dashboardPerformanceSnapshotFailed = true;
-        window.__perfRollupsSnapshotStrip = null;
-        window.__perfRollupsTilesMatrix = null;
-        dashboardPerfRollupsSnapshotAt = 0;
-        console.error('[Dashboard] performance snapshot hydrate failed:', e);
-      }
-    }
-
-    function tryApplyPerformanceStripFromWsCache() {
-      const strip = window.__perfRollupsSnapshotStrip;
-      if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
-      if (Date.now() - dashboardPerfRollupsSnapshotAt > DASHBOARD_PERF_ROLLUPS_SNAPSHOT_MAX_AGE_MS) return false;
-      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
-      const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardEffectiveRollupView();
-      const slice = strip[modeKey] && strip[modeKey][rv];
-      if (!slice || slice.status !== 'ok' || !slice.periods) return false;
-      applyPerformancePeriodsToDashboardStrip(slice.periods);
-      return true;
-    }
-
-    /** Re-slice ``strip[live|paper][td|prev]`` from the last snapshot without max-age (TD/PREV is a view change, not new data). */
-    function reapplyPerformanceStripFromCachedSnapshot() {
-      const strip = window.__perfRollupsSnapshotStrip;
-      if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
-      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
-      const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardEffectiveRollupView();
-      const slice = strip[modeKey] && strip[modeKey][rv];
-      if (!slice || slice.status !== 'ok' || !slice.periods) return false;
-      applyPerformancePeriodsToDashboardStrip(slice.periods);
-      return true;
-    }
-
     async function loadPerformanceData() {
       try {
-        if (!tryApplyPerformanceStripFromWsCache()) {
-          reapplyPerformanceStripFromCachedSnapshot();
-        }
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/performance/realized`));
+        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
+        const data = await response.json();
+        if (data.status !== 'ok' || !data.periods) return;
+        const periods = data.periods;
+        ['day', 'week', 'month', 'year'].forEach(key => {
+          const p = periods[key];
+          if (!p) return;
+          const pnlEl = document.getElementById(`perf-pnl-${key}`);
+          const retEl = document.getElementById(`perf-ret-${key}`);
+          const compareEl = document.getElementById(`perf-compare-${key}`);
+          const pnl = Number(p.pnl) || 0;
+          const prevPnl = Number(p.prev_pnl) || 0;
+          const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
+          if (pnlEl) {
+            pnlEl.textContent = pnlStr;
+            pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
+          }
+          if (retEl) {
+            // Always sum-of-trade ret_pct (matches trade_history footer); not ret_pct_base (MTB column).
+            const rawRet = p.ret_pct;
+            const retPct = rawRet != null ? rawRet : (pnl === 0 ? 0 : null);
+            if (retPct != null) {
+              retEl.textContent = retPct.toFixed(2) + '%';
+              retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
+            } else {
+              retEl.textContent = '—';
+              retEl.className = 'performance-ret neutral';
+            }
+          }
+          if (compareEl) {
+            const delta = pnl - prevPnl;
+            const isPositive = delta > 0;
+            const isNegative = delta < 0;
+            const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
+            let pctStr = '—';
+            if (prevPnl !== 0) {
+              const rawPct = (delta / prevPnl) * 100;
+              const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
+              pctStr = Math.round(pctSignMatchesDelta) + '%';
+            }
+            compareEl.textContent = deltaStr + ' (' + pctStr + ')';
+            compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
+          }
+        });
       } catch (error) {
         console.error('Error loading performance data:', error);
       }
@@ -5214,7 +5018,7 @@
 
     async function loadPnlData() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
@@ -5239,7 +5043,7 @@
 
     async function loadPnlHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
@@ -5254,8 +5058,6 @@
     }
 
     function applyPnlView(totalPnlOverride) {
-      renderPnlChartFromState();
-      if (portfolioPanelActiveTab !== 'pnl') return;
       const portfolioElement = document.getElementById('portfolio-value');
       const totalPnl = (typeof totalPnlOverride === 'number') ? totalPnlOverride :
         (allPnlHistoryData.length ? allPnlHistoryData[allPnlHistoryData.length - 1].pnl || 0 : 0);
@@ -5271,6 +5073,7 @@
         portfolioElement.style.color = '';
       }
       updatePnlChange();
+      renderPnlChartFromState();
     }
 
     function updatePnlChange() {
@@ -5279,8 +5082,13 @@
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      const firstPnl = allPnlHistoryData[0].pnl != null ? allPnlHistoryData[0].pnl : 0;
-      const lastPnl = allPnlHistoryData[allPnlHistoryData.length - 1].pnl != null ? allPnlHistoryData[allPnlHistoryData.length - 1].pnl : 0;
+      const filteredData = filterDataByView(allPnlHistoryData, currentView);
+      if (filteredData.length < 2) {
+        if (changeEl) changeEl.textContent = '';
+        return;
+      }
+      const firstPnl = filteredData[0].pnl != null ? filteredData[0].pnl : 0;
+      const lastPnl = filteredData[filteredData.length - 1].pnl != null ? filteredData[filteredData.length - 1].pnl : 0;
       const change = lastPnl - firstPnl;
       const percentChange = firstPnl !== 0 ? (change / Math.abs(firstPnl)) * 100 : (lastPnl !== 0 ? 100 : 0);
       const isPositive = change >= 0;
@@ -5508,16 +5316,16 @@
         portfolioChart = null;
       }
 
-      const chartData = history && history.length ? history : [];
-      if (chartData.length === 0) return;
+      const filteredData = filterDataByView(history, currentView);
+      if (filteredData.length === 0) return;
 
       // Prepare data for chart with appropriate labels
-      const labels = chartData.map(item => {
+      const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
         return formatLabel(date, currentView);
       });
       
-      const portfolioData = chartData.map(item => item.portfolio || 0); // Portfolio values are already in dollars
+      const portfolioData = filteredData.map(item => item.portfolio || 0); // Portfolio values are already in dollars
       
       // Apply moving average for smoothing
       const smoothingWindow = currentView === '1d' ? 4 : 60; // Less smoothing for 1d view
@@ -5782,6 +5590,77 @@
       setTimeout(() => { if (portfolioChart) portfolioChart.resize(); }, 100);
     }
 
+    function filterDataByView(data, view) {
+      if (!data || data.length === 0) {
+        return [];
+      }
+      
+      const now = new Date();
+      let startDate;
+      
+      switch (view) {
+        case '1d': {
+          // Rolling last 24 hours at 15-minute steps (matches /api/pnl/history period=1d).
+          // The old "06:00 → now" loop returned [] when local time was before 06:00, so the chart stayed blank.
+          if (!data.length) return [];
+          const end = new Date(now);
+          const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          const valid = data.filter(item => {
+            const d = new Date(item.timestamp);
+            return !isNaN(d.getTime()) && d <= end;
+          });
+          if (!valid.length) return [];
+          const out = [];
+          for (let t = new Date(start); t <= end; t = new Date(t.getTime() + 15 * 60 * 1000)) {
+            const latest = valid.filter(item => new Date(item.timestamp) <= t).pop();
+            if (latest) out.push({ ...latest, timestamp: new Date(t).toISOString() });
+          }
+          if (out.length === 0) {
+            const last = valid[valid.length - 1];
+            return [
+              { ...last, timestamp: start.toISOString() },
+              { ...last, timestamp: end.toISOString() },
+            ];
+          }
+          return out;
+        }
+        case '1w':
+          // Previous 7 days from current time
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case '1m':
+          // Previous 30 days from current time
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 30);
+          break;
+        case '1y':
+          // Previous 365 days from current time
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 365);
+          break;
+        case 'all':
+        default:
+          return data; // Return all data
+      }
+      
+      // Filter data based on startDate for all cases except 'all'
+      if (startDate) {
+        console.log(`Filtering data for view: ${view}, startDate: ${startDate.toISOString()}, current time: ${now.toISOString()}, total data points: ${data.length}`);
+        const filtered = data.filter(item => {
+          const itemDate = new Date(item.timestamp);
+          return itemDate >= startDate;
+        });
+        console.log(`Filtered data points: ${filtered.length}`);
+        if (filtered.length > 0) {
+          console.log(`First filtered point: ${filtered[0].timestamp}, Last filtered point: ${filtered[filtered.length - 1].timestamp}`);
+        }
+        return filtered;
+      }
+      
+      return data; // Fallback
+    }
+
     function formatLabel(date, view) {
       switch (view) {
         case '1d':
@@ -5874,12 +5753,17 @@
 
     // Load allocation data and create pie chart
     async function loadAllocationData() {
+      console.log('loadAllocationData called');
+      
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/monitors/allocation`));
+        // Fetch real allocation data from API
+        const response = await fetch('/api/monitors/allocation');
         const data = await response.json();
         
         if (data.status === 'ok') {
           const allocations = data.allocations;
+          console.log('Fetched allocation data:', allocations);
+          console.log('Total bankroll:', data.total_bankroll);
           
           // Store total bankroll for display
           window.totalBankroll = data.total_bankroll;
@@ -5910,7 +5794,10 @@
 
     // Render allocation pie chart with D3.js
     function renderAllocationChart(allocations) {
+      console.log('renderAllocationChart called with:', allocations);
+      
       const container = document.getElementById('allocation-chart');
+      console.log('Container found:', container);
       if (!container) {
         console.error('allocation-chart container not found');
         return;
@@ -5928,6 +5815,7 @@
       
       // Filter out monitors with 0% allocation
       const activeAllocations = allocations.filter(alloc => alloc.bankroll_pct > 0);
+      console.log('Active allocations:', activeAllocations);
       
       // Calculate total allocated percentage
       const totalAllocated = activeAllocations.reduce((sum, alloc) => sum + alloc.bankroll_pct, 0);
@@ -5947,6 +5835,8 @@
       
       // Sort by allocation percentage (highest to lowest)
       chartData.sort((a, b) => b.bankroll_pct - a.bankroll_pct);
+      
+      console.log('Chart data with unallocated:', chartData);
       
       if (chartData.length === 0) {
         container.innerHTML = '<div style="color: #a0aec0; font-size: 14px; text-align: center; padding-top: 150px;">No active allocations</div>';
@@ -5988,6 +5878,8 @@
         
         const g = svg.append('g')
           .attr('transform', `translate(${width/2},${height/2})`);
+        
+        console.log('SVG created successfully');
       
       // Colors
       const colors = [
@@ -6061,6 +5953,9 @@
         .attr('filter', 'url(#glow)')
         .style('cursor', 'pointer')
         .on('mouseover', function(event, d) {
+          console.log('Pie chart mouseover triggered for:', d.data.id);
+          const monitorNumber = d.data.id === 'unallocated' ? 'UNALLOCATED' : d.data.id.slice(-5);
+          
           // Highlight the corresponding monitor tile (only for actual monitors, not unallocated)
           if (d.data.id !== 'unallocated') {
             const monitorTile = document.querySelector(`[data-monitor-id="${d.data.id}"]`);
@@ -6071,11 +5966,20 @@
             }
           }
           
+          // Highlight the corresponding allocation list item (only div elements, not path elements)
           const listItem = document.querySelector(`div[data-allocation-id="${d.data.id}"]`);
+          console.log('Pie chart mouseover - looking for list item with id:', d.data.id, 'found:', listItem);
           if (listItem) {
+            console.log('SUCCESS: Highlighting list item for:', d.data.id);
             listItem.style.background = 'rgba(74, 158, 255, 0.2)';
             listItem.style.transition = 'background-color 0.2s ease';
             listItem.style.boxShadow = '0 0 8px rgba(74, 158, 255, 0.01)';
+          } else {
+            console.log('ERROR: List item NOT found for:', d.data.id);
+            // Let's see what list items actually exist
+            const allListItems = document.querySelectorAll('div[data-allocation-id]');
+            console.log('All existing list items:', Array.from(allListItems).map(item => item.getAttribute('data-allocation-id')));
+            console.log('Searching for:', d.data.id);
           }
           
           d3.select(this)
@@ -6103,6 +6007,7 @@
           
           // Remove highlighting from the corresponding allocation list item (only div elements, not path elements)
           const listItem = document.querySelector(`div[data-allocation-id="${d.data.id}"]`);
+          console.log('Pie chart mouseout - looking for list item with id:', d.data.id, 'found:', listItem);
           if (listItem) {
             listItem.style.background = '';
             listItem.style.boxShadow = '';
@@ -6115,6 +6020,8 @@
             .attr('fill-opacity', 0.1);
         });
         
+        console.log('Chart rendered successfully');
+        
         // Add allocation list below the chart
         renderAllocationList(chartData);
       } catch (error) {
@@ -6125,7 +6032,10 @@
 
     // Render allocation bar chart with D3.js
     function renderAllocationBarChart(allocations) {
+      console.log('renderAllocationBarChart called with:', allocations);
+      
       const container = document.getElementById('allocation-chart');
+      console.log('Container found:', container);
       if (!container) {
         console.error('allocation-chart container not found');
         return;
@@ -6143,6 +6053,7 @@
       
       // Filter out monitors with 0% allocation
       const activeAllocations = allocations.filter(alloc => alloc.bankroll_pct > 0);
+      console.log('Active allocations:', activeAllocations);
       
       // Calculate total allocated percentage
       const totalAllocated = activeAllocations.reduce((sum, alloc) => sum + alloc.bankroll_pct, 0);
@@ -6162,6 +6073,8 @@
       
       // Sort by allocation percentage (highest to lowest)
       chartData.sort((a, b) => b.bankroll_pct - a.bankroll_pct);
+      
+      console.log('Chart data with unallocated:', chartData);
       
       if (chartData.length === 0) {
         container.innerHTML = '<div style="color: #a0aec0; font-size: 14px; text-align: center; padding-top: 150px;">No active allocations</div>';
@@ -6203,6 +6116,8 @@
         const g = svg.append('g')
           .attr('transform', `translate(${margin.left},${margin.top})`);
         
+        console.log('SVG created successfully');
+        
         // Colors
         const colors = [
           '#4a9eff', '#48bb78', '#f56565', '#ed8936', '#9f7aea', 
@@ -6237,6 +6152,8 @@
           .attr('filter', 'url(#barGlow)')
           .style('cursor', 'pointer')
           .on('mouseover', function(event, d) {
+            console.log('Bar chart mouseover triggered for:', d.id);
+            
             // Highlight the corresponding monitor tile (only for actual monitors, not unallocated)
             if (d.id !== 'unallocated') {
               const monitorTile = document.querySelector(`[data-monitor-id="${d.id}"]`);
@@ -6249,7 +6166,9 @@
             
             // Highlight the corresponding allocation list item
             const listItem = document.querySelector(`div[data-allocation-id="${d.id}"]`);
+            console.log('Bar chart mouseover - looking for list item with id:', d.id, 'found:', listItem);
             if (listItem) {
+              console.log('SUCCESS: Highlighting list item for:', d.id);
               listItem.style.background = 'rgba(74, 158, 255, 0.2)';
               listItem.style.transition = 'background-color 0.2s ease';
               listItem.style.boxShadow = '0 0 8px rgba(74, 158, 255, 0.01)';
@@ -6273,6 +6192,7 @@
             
             // Remove highlighting from the corresponding allocation list item
             const listItem = document.querySelector(`div[data-allocation-id="${d.id}"]`);
+            console.log('Bar chart mouseout - looking for list item with id:', d.id, 'found:', listItem);
             if (listItem) {
               listItem.style.background = '';
               listItem.style.boxShadow = '';
@@ -6285,6 +6205,9 @@
               .attr('fill-opacity', 0.1);
           });
         
+        
+        console.log('Bar chart rendered successfully');
+        
         // Add allocation list below the chart
         renderAllocationList(chartData);
       } catch (error) {
@@ -6295,7 +6218,11 @@
 
     // Render allocation list below the pie chart
     function renderAllocationList(allocations) {
+      console.log('renderAllocationList called with:', allocations);
+      console.log('Total bankroll in renderAllocationList:', window.totalBankroll);
+      
       const container = document.getElementById('allocation-chart');
+      console.log('Container found:', container);
       if (!container) {
         console.error('allocation-chart container not found');
         return;
@@ -6309,6 +6236,7 @@
       
       // Get current bankroll value from API data or fallback to portfolio data
       const portfolioValue = window.totalBankroll || getCurrentPortfolioValue();
+      console.log('Portfolio value:', portfolioValue);
 
       const legacyRebalance = container.querySelector('.rebalance-icon-container');
       if (legacyRebalance) legacyRebalance.remove();
@@ -6331,7 +6259,9 @@
           box-sizing: border-box;
         `;
         container.appendChild(listContainer);
+        console.log('Created new list container:', listContainer);
       } else {
+        console.log('Found existing list container:', listContainer);
         // Reset the list container styling to ensure consistent width
         listContainer.style.cssText = `
           margin-top: 10px;
@@ -6362,10 +6292,13 @@
       // header.textContent = 'Allocation Breakdown';
       // listContainer.appendChild(header);
       
+      // Add each monitor allocation
+      console.log('Adding', allocations.length, 'allocation items');
       allocations.forEach((alloc, index) => {
         // Use dollar_amount from API if available, otherwise calculate it
         const dollarAmount = alloc.dollar_amount ? alloc.dollar_amount.toFixed(2) : (portfolioValue * alloc.bankroll_pct / 100).toFixed(2);
         const monitorNumber = alloc.id === 'unallocated' ? 'UNALLOCATED' : alloc.id.slice(-5);
+        console.log(`Adding item ${index}: ${alloc.id === 'unallocated' ? 'Unallocated' : 'Monitor ' + monitorNumber}, ${alloc.bankroll_pct}%, $${dollarAmount}`);
         
         const item = document.createElement('div');
         item.setAttribute('data-allocation-id', alloc.id);
@@ -6466,6 +6399,8 @@
       editFooter.appendChild(editBtn);
       listContainer.appendChild(editFooter);
       syncAllocationListEditButton();
+      
+      console.log('Allocation list rendered successfully');
     }
 
     // Get current portfolio value from the portfolio display
@@ -6485,7 +6420,8 @@
     // Refresh Performance panel (realized PnL + cash balance) at same rate as Portfolio panel;
     // started via startDashboardPeriodicIntervals() (also pauses when shell hides this tab).
     
-    // Allocation refreshes on monitor_list soft refresh, trading_mode WS, and after rebalance save.
+    // TODO: Re-enable allocation data refresh when ready
+    // setInterval(loadAllocationData, 30000);
     
     function scheduleMonitorHistoryDisplayAfterDbChange() {
       if (!window.monitorHistoryDisplay || !window.monitorHistoryDisplay.isInitialized) return;
@@ -6546,8 +6482,6 @@
           updateMonitorStatValues(oldMonitors, monitors);
           console.log('Dashboard: Monitor stat values refreshed');
         }
-
-        await loadAllocationData();
       } catch (e) {
         console.error('Error refreshing monitor data:', e);
       }
@@ -7476,7 +7410,6 @@
      *
      * /ws/db_changes (msg.database):
      * - trades | fills | positions | settlements | account_balance | account_balance_paper | subaccounts
-     *   | performance_rollups
      *   → debounced batch (queueDashboardBankrollRefreshForStream): balance snapshot (if applicable),
      *     refreshPortfolioPanelAllTabsData, refreshDashboardPerformanceStripAggregated; trades/fills/settlements
      *     also schedule monitor history strip refresh.
@@ -7488,10 +7421,8 @@
      * - monitor_list_updated → trading halt UI + scheduleMonitorsSoftRefresh.
      * - auto_trade_toggled | paper_trade_toggled | cooldown_timer_change | auto_trade_status_change → per-tile DOM.
      *
-     * - performance_rollups → same debounced batch (rollup NOTIFY after trade close). Strip + ``tiles_matrix``
-     *   hydrate from ``GET /api/dashboard/performance-snapshot`` (Redis key only; 503 if Redis or key missing),
-     *   then ``performance_rollups_snapshot`` on /ws/db_changes. No ``/api/performance/rollups``; no monitor-tiles
-     *   HTTP on this page.
+     * Optional Phase C — historical performance rollup tables: separate migrations + ETL + read_api when read cost,
+     * immutable reporting series, or cross-tenant ops dashboards require pre-aggregates; not part of this UI slice.
      */
     function handleDashboardPreferencesWebSocketMessage(event) {
       try {
@@ -7517,7 +7448,6 @@
               await loadMonitors();
               applyCurrentSort();
               initializeMonitors();
-              void loadAllocationData();
             } catch (err) {
               console.error(err);
             }
@@ -7698,9 +7628,6 @@
         } catch (e) {
           console.error('Error refreshing portfolio panel after db_change:', e);
         }
-        if (isAccountBalance) {
-          void loadAllocationData();
-        }
         try {
           await refreshDashboardPerformanceStripAggregated();
         } catch (e) {
@@ -7741,17 +7668,6 @@
     function handleDashboardDbChangesWebSocketMessage(event) {
       try {
         const raw = event.data;
-        if (typeof raw === 'string' && raw.indexOf('performance_rollups_snapshot') !== -1) {
-          try {
-            const snapMsg = JSON.parse(raw);
-            if (snapMsg.type === 'performance_rollups_snapshot') {
-              handlePerformanceRollupsDbSnapshot(snapMsg);
-              return;
-            }
-          } catch (e) {
-            /* fall through */
-          }
-        }
         const bankrollNames = [
           'trades', 'fills', 'positions', 'settlements', 'account_balance',
           'account_balance_paper', 'subaccounts', 'performance_rollups',

@@ -3467,7 +3467,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         log(f"CLOSE ORDER COMPLETELY FILLED: {expected_ticker}")
                     
                         now_est = datetime.now(ZoneInfo("America/New_York"))
-                        closed_at = now_est.isoformat()
+                        closed_at = now_est.strftime("%H:%M:%S")
                     
                         # SIMPLE: Get opening fees already recorded + add closing fees from this order
                         pg_conn_trade = get_postgresql_connection()
@@ -5432,7 +5432,7 @@ async def add_trade(request: Request):
                     # Immediately finalize the trade
                     try:
                         now_est = datetime.now(ZoneInfo("America/New_York"))
-                        closed_at = now_est.isoformat()
+                        closed_at = now_est.strftime("%H:%M:%S")
                         
                         # Get trade data for calculations (include existing open fee)
                         pg_conn_trade = get_postgresql_connection()
@@ -6530,7 +6530,7 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
             roi_pct = round((pnl / buy_value) * 100.0, 5)
 
     now_est = datetime.now(ZoneInfo("America/New_York"))
-    use_closed_at = closed_at if closed_at else now_est.isoformat()
+    use_closed_at = closed_at if closed_at else now_est.strftime("%H:%M:%S")
 
     update_trade_status_with_ret_pct(
         trade_id=trade_id,
@@ -6689,7 +6689,7 @@ def check_expired_simulated_trades():
         if not active:
             return
         now_est = datetime.now(ZoneInfo("America/New_York"))
-        closed_at = now_est.isoformat()
+        closed_at = now_est.strftime("%H:%M:%S")
         symbol_prices = {}
         cycles_closed = set()  # (monitor, date, weekly_cycle) for cycle_win_loss update
         for row in active:
@@ -6794,7 +6794,7 @@ def check_expired_trades():
         # Paper trades can be stuck ``expired`` if symbol_close failed during sweep (e.g. text vs timestamp bug).
         _settle_stuck_expired_paper_trades(now_est)
 
-        closed_at = now_est.isoformat()
+        closed_at = now_est.strftime("%H:%M:%S")
         current_minute = now_est.minute
 
         if current_minute % 15 != 0:

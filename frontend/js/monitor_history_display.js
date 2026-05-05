@@ -4,7 +4,7 @@
  * Preferred path: ``performance_rollups_snapshot.tiles_matrix`` (``GET /api/dashboard/performance-snapshot``
  * on load, then /ws/db_changes). Live + paper + test are combined server-side; independent of the LIVE/PAPER
  * strip toggle. Legacy dashboards without ``window.__dashboardPerformanceRedisRequired`` may fall back to
- * ``GET /api/performance/monitor-tiles``. When Redis is required (dashboard_NEW), there is no HTTP fallback.
+ * ``GET /api/performance/monitor-tiles``. When Redis is required (main dashboard + mobile), there is no HTTP fallback.
  */
 
 class MonitorHistoryDisplay {
@@ -44,7 +44,7 @@ class MonitorHistoryDisplay {
         return 'td';
     }
 
-    /** False on dashboard_NEW / mobile_NEW: never call ``/api/performance/monitor-tiles``. */
+    /** False on main dashboard / mobile shell: never call ``/api/performance/monitor-tiles``. */
     _monitorTilesHttpFallbackAllowed() {
         return !(typeof window !== 'undefined' && window.__dashboardPerformanceRedisRequired === true);
     }

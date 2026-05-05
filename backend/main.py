@@ -1268,14 +1268,13 @@ async def serve_mobile_trade_monitor(request: Request):
 # Serve mobile dashboard with cache busting
 @app.get("/mobile/dashboard", response_class=HTMLResponse)
 async def serve_mobile_dashboard(request: Request):
-    """Serve mobile dashboard (Phase C NEW: rollup strip + TD/PREV) with cache busting headers."""
+    """Serve mobile dashboard (rollup strip + TD/PREV) with cache busting headers."""
     # Check if user is authenticated
     if AUTH_ENABLED:
         if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
-    
-    # Phase C: rollup strip, TD/PREV, Redis snapshot tiles (was dashboard_mobile.html).
-    file_path = f"{frontend_dir}/mobile/dashboard_mobile_NEW.html"
+
+    file_path = f"{frontend_dir}/mobile/dashboard_mobile.html"
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             content = f.read()
@@ -1293,12 +1292,12 @@ async def serve_mobile_dashboard(request: Request):
 
 @app.get("/mobile/dashboard_new", response_class=HTMLResponse)
 async def serve_mobile_dashboard_new(request: Request):
-    """Serve Phase C dashboard shell (rollup strip + TD/PREV); cache-busted like /mobile/dashboard."""
+    """Alias for /mobile/dashboard (legacy URL); same shell."""
     if AUTH_ENABLED:
         if not _query_token_auth_ok(request):
             return RedirectResponse(url="/login")
 
-    file_path = f"{frontend_dir}/mobile/dashboard_mobile_NEW.html"
+    file_path = f"{frontend_dir}/mobile/dashboard_mobile.html"
     if os.path.exists(file_path):
         with open(file_path, "r") as f:
             content = f.read()
@@ -1310,7 +1309,7 @@ async def serve_mobile_dashboard_new(request: Request):
                     "Expires": "0",
                 },
             )
-    return HTMLResponse(content="Mobile dashboard NEW not found", status_code=404)
+    return HTMLResponse(content="Mobile dashboard not found", status_code=404)
 
 
 # Serve mobile account manager with cache busting

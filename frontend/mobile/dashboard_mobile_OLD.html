@@ -1,4 +1,5 @@
 <!DOCTYPE html>
+<!-- Archived legacy mobile dashboard. Canonical UI: mobile/dashboard_mobile.html -->
 <html lang="en">
 <head>
   <script src="/js/rec_session.js"></script>
@@ -65,32 +66,6 @@
     .performance-compare.neutral::before { display: none; }
     .performance-cash-balance { margin-top: 12px; padding-top: 10px; border-top: 1px solid #3d4552; font-size: 15.6px; font-weight: 600; color: #ffffff; text-align: center; width: fit-content; align-self: center; }
     .performance-cash-value { color: #ffffff; }
-    .performance-panel-header-row {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 8px;
-      flex-wrap: wrap;
-      width: 100%;
-    }
-    .perf-rollup-toggle {
-      display: inline-flex;
-      border: 1px solid rgba(255, 255, 255, 0.15);
-      border-radius: 6px;
-      overflow: hidden;
-    }
-    .perf-rollup-btn {
-      background: transparent;
-      color: #a0aec0;
-      border: none;
-      padding: 4px 10px;
-      font-size: 11px;
-      cursor: pointer;
-    }
-    .perf-rollup-btn.active {
-      background: rgba(99, 179, 237, 0.25);
-      color: #e2e8f0;
-    }
 
     /* Portfolio panel tabs - Mobile */
     .portfolio-panel .panel-header { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
@@ -1346,14 +1321,6 @@
       margin-bottom: 0px;
     }
 
-    .portfolio-controls-right {
-      display: flex;
-      align-items: flex-end;
-      gap: 6px;
-      margin-left: auto;
-      flex-shrink: 0;
-    }
-
     .portfolio-info {
       display: flex;
       align-items: center;
@@ -1402,6 +1369,7 @@
     .view-buttons {
       display: flex;
       gap: 5px;
+      margin-left: auto;
     }
 
     .view-btn {
@@ -1751,18 +1719,12 @@
                 <div class="change-element" id="portfolio-change"></div>
               </div>
             </div>
-            <div class="portfolio-controls-right">
-              <div class="perf-rollup-toggle" role="group" aria-label="Calendar TD vs rolling PREV (entire dashboard)">
-                <button type="button" class="perf-rollup-btn" data-rollup="td" id="perfRollupBtnTd">TD</button>
-                <button type="button" class="perf-rollup-btn" data-rollup="prev" id="perfRollupBtnPrev">PREV</button>
-              </div>
-              <div class="view-buttons">
-                <button data-view="1d" class="view-btn active">1d</button>
-                <button data-view="1w" class="view-btn">1w</button>
-                <button data-view="1m" class="view-btn">1m</button>
-                <button data-view="1y" class="view-btn">1y</button>
-                <button data-view="all" class="view-btn">All</button>
-              </div>
+            <div class="view-buttons">
+              <button data-view="1d" class="view-btn active">1d</button>
+              <button data-view="1w" class="view-btn">1w</button>
+              <button data-view="1m" class="view-btn">1m</button>
+              <button data-view="1y" class="view-btn">1y</button>
+              <button data-view="all" class="view-btn">All</button>
             </div>
           </div>
         </div>
@@ -1842,18 +1804,6 @@
     let portfolioChart = null;
     let allHistoryData = []; // Store all data
     let currentView = 'all'; // Current view
-    let dashboardPerformanceRollupView = 'td';
-    let dashboardPerfRollupsSnapshotAt = 0;
-    const DASHBOARD_PERF_ROLLUPS_SNAPSHOT_MAX_AGE_MS = 90000;
-    /** When true: monitor tiles use only ``tiles_matrix`` (no ``/api/performance/monitor-tiles``). */
-    window.__dashboardPerformanceRedisRequired = true;
-    window.__dashboardPerformanceRollupView = 'td';
-    function dashboardEffectiveRollupView() {
-      if (typeof window !== 'undefined' && window.__dashboardPerformanceRollupView === 'prev') {
-        return 'prev';
-      }
-      return 'td';
-    }
     let currentViewMode = 'tile'; // Current view mode (tile/list)
     let compactTiles = localStorage.getItem('rec_mobile_compact_tiles') === 'true'; // Hide trades count, wl, ret, pnl on tiles
     let currentSortBy = 'name'; // Current sort criteria
@@ -1874,7 +1824,7 @@
     let dbChangesBankrollQueuedStreams = null;
     const DB_CHANGES_BANKROLL_DEBOUNCE_MS = 500;
     let monitorHistoryRefreshDebounceTimer = null;
-    /** Shell hid this iframe — tear down WS + polling to reduce main.py load (same contract as desktop `tabs/dashboard.html`). */
+    /** Archived mobile shell — see canonical `dashboard_mobile.html`. Was aligned with desktop `tabs/dashboard_OLD.html`. */
     let dashboardMobileTabPaused = false;
     const DASHBOARD_MOBILE_PERF_STRIP_POLL_MS = 60000;
     const DASHBOARD_MOBILE_MONITORS_SOFT_POLL_MS = 40000;
@@ -2346,7 +2296,6 @@
 
       // STEP 1: Load dashboard preferences FIRST - this sets currentView and portfolioPanelActiveTab
       await loadDashboardPreferences();
-      wireDashboardPerformanceRollupToggle();
       console.log('Dashboard: Preferences loaded, currentView is:', currentView);
 
       await mobileFetchTradingModeFromServer();
@@ -2356,8 +2305,6 @@
         preloadPortfolioPanelTabs(),
         fetchAccountBalanceSnapshot(),
       ]);
-
-      await hydrateDashboardPerformanceFromRedis();
       
       void refreshDashboardMobilePerformanceStripAggregated();
       
@@ -2387,7 +2334,7 @@
       document.querySelectorAll('.view-btn[data-view]').forEach(button => {
         button.addEventListener('click', function() {
           const view = this.getAttribute('data-view');
-          void setChartView(view);
+          setChartView(view);
         });
       });
       
@@ -3727,19 +3674,23 @@
           return;
         }
 
+        console.log('Saving rebalance changes:', updatedAllocations);
+        
+        // Send updates to backend
         const response = await fetch('/api/monitors/allocation/update', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            updates: updatedAllocations,
-            trading_mode: recEffectiveTradingModeQueryValue(),
-          })
+          body: JSON.stringify({ updates: updatedAllocations })
         });
+        
+        console.log('Response status:', response.status);
+        console.log('Response ok:', response.ok);
 
         if (response.ok) {
-          await response.json();
+          const result = await response.json();
+          console.log('Save result:', result);
           
           // Exit rebalance mode
           toggleRebalanceMode();
@@ -4063,11 +4014,6 @@
           currentViewMode = data.monitor_view_mode || 'tile';
           currentSortBy = data.monitor_sort_by || 'name';
           currentChartType = data.allocation_view || 'pie';
-          const rvPref = data.performance_rollup_view;
-          if (rvPref === 'prev' || rvPref === 'td') {
-            dashboardPerformanceRollupView = rvPref;
-          }
-          window.__dashboardPerformanceRollupView = dashboardPerformanceRollupView;
           const savedPortfolioView = data.portfolio_view || 'portfolio';
           if (['bankroll', 'portfolio', 'pnl'].includes(savedPortfolioView)) {
             portfolioPanelActiveTab = savedPortfolioView;
@@ -4131,9 +4077,6 @@
             }
             sortPicker.value = currentSortBy;
           }
-
-          syncDashboardPerformanceRollupToggleUi();
-          reapplyPerformanceStripFromCachedSnapshot();
         }
         
       } catch (error) {
@@ -4154,8 +4097,7 @@
             monitor_view_mode: currentViewMode,
             monitor_sort_by: currentSortBy,
             allocation_view: currentChartType,
-            portfolio_view: portfolioPanelActiveTab,
-            performance_rollup_view: dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td',
+            portfolio_view: portfolioPanelActiveTab
           })
         });
         
@@ -4171,78 +4113,6 @@
       } catch (error) {
         console.error('Error saving dashboard preferences:', error);
       }
-    }
-
-    function syncDashboardPerformanceRollupToggleUi() {
-      const td = document.getElementById('perfRollupBtnTd');
-      const pv = document.getElementById('perfRollupBtnPrev');
-      if (!td || !pv) return;
-      const v = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
-      td.classList.toggle('active', v === 'td');
-      pv.classList.toggle('active', v === 'prev');
-    }
-
-    function dashboardRollupQuerySuffix() {
-      const rv = dashboardEffectiveRollupView();
-      return '&rollup_view=' + encodeURIComponent(rv);
-    }
-
-    async function refreshDashboardRollupDependentUi() {
-      window.__dashboardPerformanceRollupView = dashboardPerformanceRollupView;
-      let tilesFromMatrix = false;
-      const snapshotOk = await fetchDashboardPerformanceSnapshotApplySoft();
-      if (snapshotOk) {
-        tilesFromMatrix = true;
-      } else {
-        reapplyPerformanceStripFromCachedSnapshot();
-        if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-          try {
-            tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView);
-          } catch (err) {
-            console.error(err);
-          }
-        }
-      }
-      try {
-        await Promise.all([
-          loadPortfolioHistory(),
-          loadBankrollHistory(),
-          loadPnlHistory(),
-        ]);
-      } catch (e) {
-        console.error('refreshDashboardRollupDependentUi (mobile):', e);
-      }
-      syncPortfolioPanelTopLineAndDeltaFromState();
-      await refreshDashboardMobilePerformanceStripAggregated();
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized && !tilesFromMatrix) {
-        try {
-          window.monitorHistoryDisplay.refresh(currentView);
-        } catch (err) {
-          console.error(err);
-        }
-      }
-    }
-
-    function wireDashboardPerformanceRollupToggle() {
-      const td = document.getElementById('perfRollupBtnTd');
-      const pv = document.getElementById('perfRollupBtnPrev');
-      if (!td || !pv) return;
-      td.addEventListener('click', function() {
-        if (dashboardPerformanceRollupView === 'td') return;
-        dashboardPerformanceRollupView = 'td';
-        window.__dashboardPerformanceRollupView = 'td';
-        syncDashboardPerformanceRollupToggleUi();
-        void saveDashboardPreferences();
-        void refreshDashboardRollupDependentUi();
-      });
-      pv.addEventListener('click', function() {
-        if (dashboardPerformanceRollupView === 'prev') return;
-        dashboardPerformanceRollupView = 'prev';
-        window.__dashboardPerformanceRollupView = 'prev';
-        syncDashboardPerformanceRollupToggleUi();
-        void saveDashboardPreferences();
-        void refreshDashboardRollupDependentUi();
-      });
     }
 
     function initializePortfolioPanelTabs() {
@@ -4300,8 +4170,15 @@
         return;
       }
 
-      const firstValue = allHistoryData[0].portfolio || 0;
-      const lastValue = allHistoryData[allHistoryData.length - 1].portfolio || 0;
+      const filteredData = filterDataByView(allHistoryData, currentView);
+      if (filteredData.length < 2) {
+        document.getElementById('portfolio-change').textContent = '';
+        return;
+      }
+
+      // Get first and last values in the filtered data
+      const firstValue = filteredData[0].portfolio || 0; // Portfolio values are already in dollars
+      const lastValue = filteredData[filteredData.length - 1].portfolio || 0; // Portfolio values are already in dollars
       
       const change = (lastValue != null && firstValue != null) ? (lastValue - firstValue) : 0;
       const percentChange = (firstValue != null && firstValue !== 0) ? (change / firstValue) * 100 : 0;
@@ -4327,9 +4204,9 @@
       if (!portfolioElement) return;
 
       if (portfolioPanelActiveTab === 'pnl') {
-        const history = allPnlHistoryData || [];
-        const lastPnl = history.length
-          ? (history[history.length - 1].pnl || 0)
+        const filteredData = filterDataByView(allPnlHistoryData || [], currentView);
+        const lastPnl = filteredData.length
+          ? (filteredData[filteredData.length - 1].pnl || 0)
           : 0;
 
         portfolioElement.textContent = new Intl.NumberFormat('en-US', {
@@ -4358,8 +4235,9 @@
           updatePortfolioChange();
           return;
         }
-        const lastVal = allHistoryData.length
-          ? (allHistoryData[allHistoryData.length - 1].portfolio || 0)
+        const filteredData = filterDataByView(allHistoryData, currentView);
+        const lastVal = filteredData.length
+          ? (filteredData[filteredData.length - 1].portfolio || 0)
           : 0;
         portfolioElement.textContent = new Intl.NumberFormat('en-US', {
           style: 'currency',
@@ -4387,15 +4265,15 @@
           updateBankrollChange();
           return;
         }
-        const history = allBankrollHistoryData || [];
-        if (!history.length) {
+        const filteredData = filterDataByView(allBankrollHistoryData || [], currentView);
+        if (!filteredData.length) {
           portfolioElement.textContent = '—';
           portfolioElement.style.color = '';
           const changeEl = document.getElementById('portfolio-change');
           if (changeEl) changeEl.textContent = '';
           return;
         }
-        const lastValue = history[history.length - 1].bankroll || 0;
+        const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
         portfolioElement.textContent = new Intl.NumberFormat('en-US', {
           style: 'currency',
           currency: 'USD',
@@ -4429,9 +4307,9 @@
         const origin = window.location.origin;
 
         const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`))
+          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=1y`))
         ]);
 
         if (portfolioRes.ok) {
@@ -4496,9 +4374,9 @@
 
       try {
         const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`))
+          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=1y`)),
+          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=1y`))
         ]);
 
         if (portfolioRes.ok) {
@@ -4576,27 +4454,14 @@
       
       saveDashboardPreferences();
 
-      let tilesFromMatrix = false;
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        try {
-          tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(view);
-        } catch (e) {
-          console.error('applyRollupTilesFromCacheSync (setChartView mobile) failed:', e);
-        }
-      }
-
-      try {
-        await Promise.all([
-          loadPortfolioHistory(),
-          loadBankrollHistory(),
-          loadPnlHistory(),
-        ]);
-      } catch (e) {
-        console.error('setChartView history refetch failed (mobile):', e);
-      }
+      // Time-window only: rerender all portfolio charts from already-fetched in-memory state.
+      // This keeps tab switching glitch-free and avoids extra fetch latency.
+      try { renderPortfolioChart(allHistoryData); } catch (e) { console.error('Error rendering portfolio chart (mobile):', e); }
+      try { renderBankrollChart(allBankrollHistoryData); } catch (e) { console.error('Error rendering bankroll chart (mobile):', e); }
+      try { renderPnlChart(allPnlHistoryData); } catch (e) { console.error('Error rendering pnl chart (mobile):', e); }
       syncPortfolioPanelTopLineAndDeltaFromState();
 
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized && !tilesFromMatrix) {
+      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         console.log(`Dashboard: Refreshing monitor statistics for time view: ${view}`);
         try {
           window.monitorHistoryDisplay.refresh(view);
@@ -4612,7 +4477,7 @@
 
     async function loadPortfolioHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=1y`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
@@ -4625,157 +4490,52 @@
       }
     }
 
-    function applyPerformancePeriodsToDashboardStrip(periods) {
-      if (!periods || typeof periods !== 'object') return;
-      ['day', 'week', 'month', 'year'].forEach(key => {
-        const p = periods[key];
-        if (!p) return;
-        const pnlEl = document.getElementById(`perf-pnl-${key}`);
-        const retEl = document.getElementById(`perf-ret-${key}`);
-        const compareEl = document.getElementById(`perf-compare-${key}`);
-        const pnl = Number(p.pnl) || 0;
-        const prevPnl = Number(p.prev_pnl) || 0;
-        const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
-        if (pnlEl) {
-          pnlEl.textContent = pnlStr;
-          pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
-        }
-        if (retEl) {
-          const rawRet = p.ret_pct;
-          const retPct = rawRet != null ? rawRet : (pnl === 0 ? 0 : null);
-          if (retPct != null) {
-            retEl.textContent = retPct.toFixed(2) + '%';
-            retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
-          } else {
-            retEl.textContent = '—';
-            retEl.className = 'performance-ret neutral';
-          }
-        }
-        if (compareEl) {
-          const delta = pnl - prevPnl;
-          const isPositive = delta > 0;
-          const isNegative = delta < 0;
-          const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
-          let pctStr = '—';
-          if (prevPnl !== 0) {
-            const rawPct = (delta / prevPnl) * 100;
-            const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
-            pctStr = Math.round(pctSignMatchesDelta) + '%';
-          }
-          compareEl.textContent = deltaStr + ' (' + pctStr + ')';
-          compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
-        }
-      });
-    }
-
-    async function fetchDashboardPerformanceSnapshotApplySoft() {
-      try {
-        const url = recApiUrlWithTradingMode(`${window.location.origin}/api/dashboard/performance-snapshot`);
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: { 'Cache-Control': 'no-cache' },
-          cache: 'no-store',
-        });
-        if (!res.ok) return false;
-        const data = await res.json();
-        if (data && data.type === 'performance_rollups_snapshot') {
-          if (!recTenantMatchesMessageTenant(data.tenant_user_no)) return false;
-          handlePerformanceRollupsDbSnapshot(data);
-          return true;
-        }
-      } catch (e) {
-        console.warn('[Dashboard mobile] performance-snapshot soft fetch failed:', e);
-      }
-      return false;
-    }
-
-    function handlePerformanceRollupsDbSnapshot(msg) {
-      if (!msg || msg.type !== 'performance_rollups_snapshot') return;
-      if (!recTenantMatchesMessageTenant(msg.tenant_user_no)) return;
-      window.__perfRollupsSnapshotStrip = msg.strip;
-      window.__perfRollupsTilesMatrix = (msg.tiles_matrix && typeof msg.tiles_matrix === 'object')
-        ? msg.tiles_matrix
-        : null;
-      dashboardPerfRollupsSnapshotAt = Date.now();
-      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
-      const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardEffectiveRollupView();
-      const slice = msg.strip && msg.strip[modeKey] && msg.strip[modeKey][rv];
-      if (slice && slice.periods) applyPerformancePeriodsToDashboardStrip(slice.periods);
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        if (!window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView)) {
-          void window.monitorHistoryDisplay.refresh(currentView);
-        }
-      }
-    }
-
-    async function hydrateDashboardPerformanceFromRedis() {
-      try {
-        const url = recApiUrlWithTradingMode(`${window.location.origin}/api/dashboard/performance-snapshot`);
-        const res = await fetch(url, {
-          method: 'GET',
-          headers: { 'Cache-Control': 'no-cache' },
-          cache: 'no-store',
-        });
-        if (!res.ok) {
-          window.__dashboardPerformanceSnapshotFailed = true;
-          window.__perfRollupsSnapshotStrip = null;
-          window.__perfRollupsTilesMatrix = null;
-          dashboardPerfRollupsSnapshotAt = 0;
-          let detail = res.status;
-          try {
-            const errBody = await res.json();
-            if (errBody && errBody.detail != null) {
-              detail = typeof errBody.detail === 'object' ? JSON.stringify(errBody.detail) : String(errBody.detail);
-            }
-          } catch (_) { /* ignore */ }
-          console.error('[Dashboard mobile] performance-snapshot unavailable:', detail);
-          return;
-        }
-        window.__dashboardPerformanceSnapshotFailed = false;
-        const data = await res.json();
-        if (data && data.type === 'performance_rollups_snapshot') {
-          handlePerformanceRollupsDbSnapshot(data);
-        }
-      } catch (e) {
-        window.__dashboardPerformanceSnapshotFailed = true;
-        window.__perfRollupsSnapshotStrip = null;
-        window.__perfRollupsTilesMatrix = null;
-        dashboardPerfRollupsSnapshotAt = 0;
-        console.error('[Dashboard mobile] performance snapshot hydrate failed:', e);
-      }
-    }
-
-    function tryApplyPerformanceStripFromWsCache() {
-      const strip = window.__perfRollupsSnapshotStrip;
-      if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
-      if (Date.now() - dashboardPerfRollupsSnapshotAt > DASHBOARD_PERF_ROLLUPS_SNAPSHOT_MAX_AGE_MS) return false;
-      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
-      const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardEffectiveRollupView();
-      const slice = strip[modeKey] && strip[modeKey][rv];
-      if (!slice || slice.status !== 'ok' || !slice.periods) return false;
-      applyPerformancePeriodsToDashboardStrip(slice.periods);
-      return true;
-    }
-
-    function reapplyPerformanceStripFromCachedSnapshot() {
-      const strip = window.__perfRollupsSnapshotStrip;
-      if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
-      const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
-      const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardEffectiveRollupView();
-      const slice = strip[modeKey] && strip[modeKey][rv];
-      if (!slice || slice.status !== 'ok' || !slice.periods) return false;
-      applyPerformancePeriodsToDashboardStrip(slice.periods);
-      return true;
-    }
-
     async function loadPerformanceData() {
       try {
-        if (!tryApplyPerformanceStripFromWsCache()) {
-          reapplyPerformanceStripFromCachedSnapshot();
-        }
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/performance/realized`));
+        if (!response.ok) return;
+        const data = await response.json();
+        if (data.status !== 'ok' || !data.periods) return;
+        const periods = data.periods;
+        ['day', 'week', 'month', 'year'].forEach(key => {
+          const p = periods[key];
+          if (!p) return;
+          const pnlEl = document.getElementById(`perf-pnl-${key}`);
+          const retEl = document.getElementById(`perf-ret-${key}`);
+          const compareEl = document.getElementById(`perf-compare-${key}`);
+          const pnl = Number(p.pnl) || 0;
+          const prevPnl = Number(p.prev_pnl) || 0;
+          const pnlStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(pnl);
+          if (pnlEl) {
+            pnlEl.textContent = pnlStr;
+            pnlEl.className = 'performance-pnl' + (pnl > 0 ? ' positive' : pnl < 0 ? ' negative' : '');
+          }
+          if (retEl) {
+            const rawRet = p.ret_pct;
+            const retPct = rawRet != null ? rawRet : (pnl === 0 ? 0 : null);
+            if (retPct != null) {
+              retEl.textContent = retPct.toFixed(2) + '%';
+              retEl.className = 'performance-ret' + (retPct > 0 ? ' positive' : retPct < 0 ? ' negative' : ' neutral');
+            } else {
+              retEl.textContent = '—';
+              retEl.className = 'performance-ret neutral';
+            }
+          }
+          if (compareEl) {
+            const delta = pnl - prevPnl;
+            const isPositive = delta > 0;
+            const isNegative = delta < 0;
+            const deltaStr = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(delta);
+            let pctStr = '—';
+            if (prevPnl !== 0) {
+              const rawPct = (delta / prevPnl) * 100;
+              const pctSignMatchesDelta = delta >= 0 ? Math.abs(rawPct) : -Math.abs(rawPct);
+              pctStr = Math.round(pctSignMatchesDelta) + '%';
+            }
+            compareEl.textContent = deltaStr + ' (' + pctStr + ')';
+            compareEl.className = 'performance-compare' + (isPositive ? ' positive' : isNegative ? ' negative' : ' neutral');
+          }
+        });
       } catch (error) {
         console.error('Error loading performance data:', error);
       }
@@ -4829,7 +4589,7 @@
 
     async function loadBankrollHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
@@ -4847,12 +4607,13 @@
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      if (allBankrollHistoryData.length < 2) {
+      const filteredData = filterDataByView(allBankrollHistoryData, currentView);
+      if (filteredData.length < 2) {
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      const firstValue = allBankrollHistoryData[0].bankroll || 0;
-      const lastValue = allBankrollHistoryData[allBankrollHistoryData.length - 1].bankroll || 0;
+      const firstValue = filteredData[0].bankroll || 0;
+      const lastValue = filteredData[filteredData.length - 1].bankroll || 0;
       const change = lastValue - firstValue;
       const percentChange = firstValue !== 0 ? (change / firstValue) * 100 : 0;
       const isPositive = change >= 0;
@@ -4863,7 +4624,7 @@
 
     async function loadPnlData() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
@@ -4882,21 +4643,21 @@
 
     async function loadPnlHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}`));
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
+        const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(totalPnl);
+        const portfolioElement = document.getElementById('portfolio-value');
+        if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
         if (history.length > 0) {
           allPnlHistoryData = history;
+          renderPnlChart(history);
+          updatePnlChange();
         } else {
           allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
-        }
-        renderPnlChart(allPnlHistoryData);
-        if (portfolioPanelActiveTab === 'pnl') {
-          const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(totalPnl);
-          const portfolioElement = document.getElementById('portfolio-value');
-          if (portfolioElement) { portfolioElement.textContent = formattedValue; portfolioElement.style.color = ''; }
+          renderPnlChart(allPnlHistoryData);
           updatePnlChange();
         }
       } catch (error) {
@@ -4910,12 +4671,13 @@
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      if (allPnlHistoryData.length < 2) {
+      const filteredData = filterDataByView(allPnlHistoryData, currentView);
+      if (filteredData.length < 2) {
         if (changeEl) changeEl.textContent = '';
         return;
       }
-      const firstPnl = allPnlHistoryData[0].pnl != null ? allPnlHistoryData[0].pnl : 0;
-      const lastPnl = allPnlHistoryData[allPnlHistoryData.length - 1].pnl != null ? allPnlHistoryData[allPnlHistoryData.length - 1].pnl : 0;
+      const firstPnl = filteredData[0].pnl != null ? filteredData[0].pnl : 0;
+      const lastPnl = filteredData[filteredData.length - 1].pnl != null ? filteredData[filteredData.length - 1].pnl : 0;
       const change = lastPnl - firstPnl;
       const percentChange = firstPnl !== 0 ? (change / Math.abs(firstPnl)) * 100 : (lastPnl !== 0 ? 100 : 0);
       const isPositive = change >= 0;
@@ -4931,12 +4693,12 @@
         bankrollChart.destroy();
         bankrollChart = null;
       }
-      const chartData = history && history.length ? history : [];
-      const labels = chartData.map(item => {
+      const filteredData = filterDataByView(history, currentView);
+      const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
         return formatLabel(date, currentView);
       });
-      const bankrollData = chartData.map(item => item.bankroll || 0);
+      const bankrollData = filteredData.map(item => item.bankroll || 0);
       const smoothingWindow = currentView === '1d' ? 4 : 60;
       const smoothedData = applyMovingAverage(bankrollData, smoothingWindow);
       if (smoothedData.length > 0 && bankrollData.length > 0) {
@@ -5099,16 +4861,17 @@
         portfolioChart = null;
       }
 
-      const chartData = history && history.length ? history : [];
-      if (chartData.length === 0) return;
+      // Filter data based on current view
+      const filteredData = filterDataByView(history, currentView);
+      if (filteredData.length === 0) return;
 
       // Prepare data for chart with appropriate labels
-      const labels = chartData.map(item => {
+      const labels = filteredData.map(item => {
         const date = new Date(item.timestamp);
         return formatLabel(date, currentView);
       });
       
-      const portfolioData = chartData.map(item => item.portfolio || 0); // Portfolio values are already in dollars
+      const portfolioData = filteredData.map(item => item.portfolio || 0); // Portfolio values are already in dollars
       
       // Apply moving average for smoothing
       const smoothingWindow = currentView === '1d' ? 4 : 60; // Less smoothing for 1d view
@@ -5373,6 +5136,63 @@
       setTimeout(() => { if (portfolioChart) portfolioChart.resize(); }, 100);
     }
 
+    function filterDataByView(data, view) {
+      if (!data || data.length === 0) {
+        return [];
+      }
+      const now = new Date();
+      let startDate;
+      
+      switch (view) {
+        case '1d': {
+          if (!data.length) return [];
+          const end = new Date(now);
+          const start = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+          const valid = data.filter(item => {
+            const d = new Date(item.timestamp);
+            return !isNaN(d.getTime()) && d <= end;
+          });
+          if (!valid.length) return [];
+          const out = [];
+          for (let t = new Date(start); t <= end; t = new Date(t.getTime() + 15 * 60 * 1000)) {
+            const latest = valid.filter(item => new Date(item.timestamp) <= t).pop();
+            if (latest) out.push({ ...latest, timestamp: new Date(t).toISOString() });
+          }
+          if (out.length === 0) {
+            const last = valid[valid.length - 1];
+            return [
+              { ...last, timestamp: start.toISOString() },
+              { ...last, timestamp: end.toISOString() },
+            ];
+          }
+          return out;
+        }
+        case '1w':
+          // Previous 7 days
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 7);
+          break;
+        case '1m':
+          // Previous 30 days
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 30);
+          break;
+        case '1y':
+          // Previous 365 days
+          startDate = new Date(now);
+          startDate.setDate(startDate.getDate() - 365);
+          break;
+        case 'all':
+        default:
+          return data; // Return all data
+      }
+      
+      return data.filter(item => {
+        const itemDate = new Date(item.timestamp);
+        return itemDate >= startDate;
+      });
+    }
+
     function formatLabel(date, view) {
       switch (view) {
         case '1d':
@@ -5465,12 +5285,17 @@
 
     // Load allocation data and create pie chart
     async function loadAllocationData() {
+      console.log('loadAllocationData called');
+      
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/monitors/allocation`));
+        // Fetch real allocation data from API
+        const response = await fetch('/api/monitors/allocation');
         const data = await response.json();
         
         if (data.status === 'ok') {
           const allocations = data.allocations;
+          console.log('Fetched allocation data:', allocations);
+          console.log('Total bankroll:', data.total_bankroll);
           
           // Store total bankroll for display
           window.totalBankroll = data.total_bankroll;
@@ -6178,8 +6003,6 @@
         } else {
           updateMonitorStatValues(oldMonitors, monitors);
         }
-
-        await loadAllocationData();
       } catch (e) {
         console.error('Dashboard mobile: error refreshing monitor data:', e);
       }
@@ -7096,8 +6919,7 @@
     }
 
     /**
-     * Stream → panel refresh (mobile dashboard_NEW). Strip + tiles follow Redis bootstrap + WS
-     * ``performance_rollups_snapshot`` (see desktop dashboard_NEW stream matrix).
+     * Stream → panel refresh (mobile dashboard). Same routing as desktop `tabs/dashboard.html`; see that file for full matrix + optional Phase C note.
      */
     function handleDashboardMobilePreferencesWebSocketMessage(event) {
       try {
@@ -7123,7 +6945,6 @@
               await loadMonitors();
               applyCurrentSort();
               initializeMonitors();
-              void loadAllocationData();
             } catch (err) {
               console.error(err);
             }
@@ -7355,9 +7176,6 @@
         } catch (e) {
           console.error('Dashboard mobile: error refreshing portfolio panel after db_change:', e);
         }
-        if (isAccountBalance) {
-          void loadAllocationData();
-        }
         try {
           await refreshDashboardMobilePerformanceStripAggregated();
         } catch (e) {
@@ -7398,17 +7216,6 @@
     function handleDashboardMobileDbChangesWebSocketMessage(event) {
       try {
         const raw = event.data;
-        if (typeof raw === 'string' && raw.indexOf('performance_rollups_snapshot') !== -1) {
-          try {
-            const snapMsg = JSON.parse(raw);
-            if (snapMsg.type === 'performance_rollups_snapshot') {
-              handlePerformanceRollupsDbSnapshot(snapMsg);
-              return;
-            }
-          } catch (e) {
-            /* fall through */
-          }
-        }
         const bankrollNames = [
           'trades', 'fills', 'positions', 'settlements', 'account_balance',
           'account_balance_paper', 'subaccounts', 'performance_rollups',

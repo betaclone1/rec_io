@@ -6,6 +6,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-06 — Dashboard filenames: NEW → canonical `dashboard.html`, legacy → `*_OLD.html`
+
+**Summary:** The former **`dashboard_NEW.html`** is now **`frontend/tabs/dashboard.html`**; the previous legacy dashboard is **`frontend/tabs/dashboard_OLD.html`**. Same pattern for mobile: **`dashboard_mobile.html`** (canonical) and **`dashboard_mobile_OLD.html`**. **`frontend/index.html`** loads **`/tabs/dashboard.html`**. **`backend/main.py`** **`/mobile/dashboard`** and **`/mobile/dashboard_new`** serve **`dashboard_mobile.html`**.
+
+---
+
 ## 2026-05-05 — Release v3.4.8: Performance rollups schema, Redis performance snapshot, dashboard_NEW and realtime WS coordinator
 
 **Summary**
@@ -13,7 +19,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Database:** Reversible migration chain **`20260505_1200_performance_rollup_tables`** through **`20260505_1450_performance_rollups_updated_at_last`** adds per-tenant **`performance_total_*`** / **`performance_monitors_*`**, dashboard prefs column for rollup view, NOTIFY/stream wiring for **`performance_rollups`**, and follow-up PK/column renames. **`docs/MASTER_DB_SCHEMA_REFERENCE.md`** and **`database.py`** aligned in this batch.
 - **Backend:** **`performance_rollups`** compute/publish path; **`monitor_manager`** closes hook; **`GET /api/dashboard/performance-snapshot`** serves the WS-shaped snapshot **from Redis only** (no DB cold-fill when Redis or the snapshot key is missing). Snapshot written to Redis on rollup publish; trading Redis comms key documented.
 - **read_api / main / stream_registry:** Rollup-related reads and proxies; stream registry entries for rollup NOTIFY payloads.
-- **Frontend:** **`dashboard_NEW.html`** and **`dashboard_mobile_NEW.html`** — Redis-first performance hydrate, shared **`realtime-ws-coordinator`**, stricter monitor-tiles behavior when **`__dashboardPerformanceRedisRequired`**. **`monitor_history_display.js`** skips **`/api/performance/monitor-tiles`** when that flag is set. Legacy **`dashboard.html`** / **`index`** unchanged for independent testing of NEW surfaces. Trade monitor / orderbook / strike-table / portfolio query touch-ups as staged.
+- **Frontend (v3.4.8 shipping layout):** Introduced Redis-first dashboard surfaces as **`dashboard_NEW`** / **`dashboard_mobile_NEW`**; filenames were later unified (see **2026-05-06** entry). Rollup hydrate, **`realtime-ws-coordinator`**, **`__dashboardPerformanceRedisRequired`**, and **`monitor_history_display.js`** (no HTTP monitor-tiles when Redis required). Trade monitor / orderbook / strike-table / portfolio query touch-ups as staged.
 - **Tooling:** **`scripts/db/backfill_performance_rollups.py`** — optional one-shot recompute from closed trades per slot.
 - **Migration note:** **`20260505_1200_performance_rollup_tables`** is a **no-op**; the first applied DDL is **`20260505_1400`** (`quote_ident` for `1d_*` / `1w_*` / … column names). An earlier revision of `1200` used unquoted names starting with a digit (invalid in PostgreSQL).
 - **Plans:** **`redis-platform-initiative`** (in progress; backbone + snapshot alignment), **`mtb-account-dashboard`** (`Status: done`; dashboard data surfaces).
