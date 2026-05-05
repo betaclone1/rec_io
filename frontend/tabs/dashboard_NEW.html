@@ -2010,6 +2010,13 @@
     /** When true: monitor tiles use only ``tiles_matrix`` (no ``/api/performance/monitor-tiles``). */
     window.__dashboardPerformanceRedisRequired = true;
     window.__dashboardPerformanceRollupView = 'td';
+    /** Strip/chart suffix and snapshot slice: prefer ``window.__dashboardPerformanceRollupView`` (set before rollup refresh). */
+    function dashboardEffectiveRollupView() {
+      if (typeof window !== 'undefined' && window.__dashboardPerformanceRollupView === 'prev') {
+        return 'prev';
+      }
+      return 'td';
+    }
     let portfolioPanelActiveTab = 'portfolio'; // 'portfolio' | 'bankroll' | 'pnl'
     let currentViewMode = 'tile'; // Current view mode (tile/list)
     let currentSortBy = 'name'; // Current sort criteria
@@ -2029,19 +2036,24 @@
     let monitorHistoryRefreshDebounceTimer = null;
 
     function dashboardRollupQuerySuffix() {
-      const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
+      const rv = dashboardEffectiveRollupView();
       return '&rollup_view=' + encodeURIComponent(rv);
     }
 
     async function refreshDashboardRollupDependentUi() {
       window.__dashboardPerformanceRollupView = dashboardPerformanceRollupView;
-      reapplyPerformanceStripFromCachedSnapshot();
       let tilesFromMatrix = false;
-      if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
-        try {
-          tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView);
-        } catch (err) {
-          console.error(err);
+      const snapshotOk = await fetchDashboardPerformanceSnapshotApplySoft();
+      if (snapshotOk) {
+        tilesFromMatrix = true;
+      } else {
+        reapplyPerformanceStripFromCachedSnapshot();
+        if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
+          try {
+            tilesFromMatrix = window.monitorHistoryDisplay.applyRollupTilesFromCacheSync(currentView);
+          } catch (err) {
+            console.error(err);
+          }
         }
       }
       try {
@@ -5042,6 +5054,27 @@
       });
     }
 
+    async function fetchDashboardPerformanceSnapshotApplySoft() {
+      try {
+        const url = recApiUrlWithTradingMode(`${window.location.origin}/api/dashboard/performance-snapshot`);
+        const res = await fetch(url, {
+          method: 'GET',
+          headers: { 'Cache-Control': 'no-cache' },
+          cache: 'no-store',
+        });
+        if (!res.ok) return false;
+        const data = await res.json();
+        if (data && data.type === 'performance_rollups_snapshot') {
+          if (!recTenantMatchesMessageTenant(data.tenant_user_no)) return false;
+          handlePerformanceRollupsDbSnapshot(data);
+          return true;
+        }
+      } catch (e) {
+        console.warn('[Dashboard] performance-snapshot soft fetch failed:', e);
+      }
+      return false;
+    }
+
     function handlePerformanceRollupsDbSnapshot(msg) {
       if (!msg || msg.type !== 'performance_rollups_snapshot') return;
       if (!recTenantMatchesMessageTenant(msg.tenant_user_no)) return;
@@ -5052,7 +5085,7 @@
       dashboardPerfRollupsSnapshotAt = Date.now();
       const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
       const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
+      const rv = dashboardEffectiveRollupView();
       const slice = msg.strip && msg.strip[modeKey] && msg.strip[modeKey][rv];
       if (slice && slice.periods) applyPerformancePeriodsToDashboardStrip(slice.periods);
       // Tiles use ``tiles_matrix`` for the active chart window × td/prev; sync first to avoid racing async refresh.
@@ -5106,7 +5139,7 @@
       if (Date.now() - dashboardPerfRollupsSnapshotAt > DASHBOARD_PERF_ROLLUPS_SNAPSHOT_MAX_AGE_MS) return false;
       const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
       const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
+      const rv = dashboardEffectiveRollupView();
       const slice = strip[modeKey] && strip[modeKey][rv];
       if (!slice || slice.status !== 'ok' || !slice.periods) return false;
       applyPerformancePeriodsToDashboardStrip(slice.periods);
@@ -5119,7 +5152,7 @@
       if (!strip || !dashboardPerfRollupsSnapshotAt) return false;
       const tm = (window.__recTradingMode || localStorage.getItem('rec_trading_mode') || 'live').toLowerCase();
       const modeKey = tm === 'paper' ? 'paper' : 'live';
-      const rv = dashboardPerformanceRollupView === 'prev' ? 'prev' : 'td';
+      const rv = dashboardEffectiveRollupView();
       const slice = strip[modeKey] && strip[modeKey][rv];
       if (!slice || slice.status !== 'ok' || !slice.periods) return false;
       applyPerformancePeriodsToDashboardStrip(slice.periods);

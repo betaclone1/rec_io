@@ -81,7 +81,7 @@ class MonitorHistoryDisplay {
         const bucket = m[p];
         if (!bucket || typeof bucket !== 'object') return false;
         const rv = this._dashboardRollupViewParam();
-        const tiles = bucket[rv] || bucket.td;
+        const tiles = bucket[rv];
         if (!Array.isArray(tiles)) return false;
         this.monitorStats.clear();
         for (const t of tiles) {
