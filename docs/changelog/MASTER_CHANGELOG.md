@@ -15,6 +15,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **read_api / main / stream_registry:** Rollup-related reads and proxies; stream registry entries for rollup NOTIFY payloads.
 - **Frontend:** **`dashboard_NEW.html`** and **`dashboard_mobile_NEW.html`** — Redis-first performance hydrate, shared **`realtime-ws-coordinator`**, stricter monitor-tiles behavior when **`__dashboardPerformanceRedisRequired`**. **`monitor_history_display.js`** skips **`/api/performance/monitor-tiles`** when that flag is set. Legacy **`dashboard.html`** / **`index`** unchanged for independent testing of NEW surfaces. Trade monitor / orderbook / strike-table / portfolio query touch-ups as staged.
 - **Tooling:** **`scripts/db/backfill_performance_rollups.py`** — optional one-shot recompute from closed trades per slot.
+- **Migration note:** **`20260505_1200_performance_rollup_tables`** is a **no-op**; the first applied DDL is **`20260505_1400`** (`quote_ident` for `1d_*` / `1w_*` / … column names). An earlier revision of `1200` used unquoted names starting with a digit (invalid in PostgreSQL).
 - **Plans:** **`redis-platform-initiative`** (in progress; backbone + snapshot alignment), **`mtb-account-dashboard`** (`Status: done`; dashboard data surfaces).
 
 **Production checklist**
