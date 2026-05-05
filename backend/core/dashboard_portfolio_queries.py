@@ -35,14 +35,6 @@ def _format_currency_cents(value_cents: Any) -> float:
         return 0.0
 
 
-def _paper_trade_sql_clause(trading_mode: Optional[str]) -> str:
-    return (
-        "AND paper_trade IS TRUE"
-        if use_paper_for_request(trading_mode)
-        else "AND (paper_trade IS NULL OR paper_trade = FALSE)"
-    )
-
-
 def _trading_mode_label(trading_mode: Optional[str]) -> str:
     return "paper" if use_paper_for_request(trading_mode) else "live"
 
@@ -57,7 +49,82 @@ def _performance_panel_trade_mode_clause(trading_mode: Optional[str]) -> str:
     return "AND (COALESCE(trades_all.paper_trade, FALSE) = FALSE)\n"
 
 
-def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str, Any]:
+def _rollup_view_norm(rollup_view: Optional[str]) -> str:
+    return "prev" if (rollup_view or "").lower() == "prev" else "td"
+
+
+def _chart_history_window_start(
+    *,
+    period: str,
+    rollup_view: Optional[str],
+    eastern: Any,
+    now: datetime,
+) -> datetime:
+    """
+    Start of account_balance / bankroll chart window in America/New_York.
+    ``td`` = calendar-aligned (week/month/year); ``prev`` = rolling lookback from ``now``.
+    """
+    today: Date = now.date()
+    rv = _rollup_view_norm(rollup_view)
+
+    if period == "1d":
+        if rv == "prev":
+            return now - timedelta(hours=24)
+        return now.replace(hour=5, minute=0, second=0, microsecond=0)
+
+    if rv == "prev":
+        if period == "1w":
+            return now - timedelta(weeks=1)
+        if period == "1m":
+            return now - timedelta(days=30)
+        if period == "1y":
+            return now - timedelta(days=365)
+        return datetime(2020, 1, 1, tzinfo=eastern)
+
+    if period == "1w":
+        days_since_sunday = (today.weekday() + 1) % 7
+        sunday_d = today - timedelta(days=days_since_sunday)
+        return datetime.combine(sunday_d, datetime.min.time(), tzinfo=eastern)
+    if period == "1m":
+        month_first = today.replace(day=1)
+        return datetime.combine(month_first, datetime.min.time(), tzinfo=eastern)
+    if period == "1y":
+        year_first = Date(today.year, 1, 1)
+        return datetime.combine(year_first, datetime.min.time(), tzinfo=eastern)
+    return datetime(2020, 1, 1, tzinfo=eastern)
+
+
+def _pnl_td_calendar_date_bounds(period: str, now: datetime) -> Tuple[Date, Date]:
+    """Inclusive trade ``date`` bounds (Eastern calendar) for TD mode."""
+    today: Date = now.date()
+    if period == "1d":
+        return (today, today)
+    if period == "1w":
+        days_since_sunday = (today.weekday() + 1) % 7
+        sunday_d = today - timedelta(days=days_since_sunday)
+        return (sunday_d, today)
+    if period == "1m":
+        return (today.replace(day=1), today)
+    if period == "1y":
+        return (Date(today.year, 1, 1), today)
+    return (Date(2020, 1, 1), today)
+
+
+def _pnl_prev_window_start(period: str, now: datetime) -> datetime:
+    if period == "1d":
+        return now - timedelta(hours=24)
+    if period == "1w":
+        return now - timedelta(weeks=1)
+    if period == "1m":
+        return now - timedelta(days=30)
+    if period == "1y":
+        return now - timedelta(days=365)
+    return datetime(2020, 1, 1, tzinfo=now.tzinfo)
+
+
+def portfolio_history_payload(
+    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+) -> Dict[str, Any]:
     conn = None
     try:
         slot = resolved_tenant_user_no_for_app()
@@ -76,48 +143,77 @@ def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Di
         results: List[Any] = []
 
         if period == "1d":
-            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
+            if _rollup_view_norm(rollup_view) == "prev":
+                window_start = now - timedelta(hours=24)
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
                     SELECT updated_at, portfolio
                     FROM {}
                     WHERE updated_at < %s
                     ORDER BY updated_at DESC, id DESC
                     LIMIT 1
                 """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                last_before_5am = cursor.fetchone()
+                        ).format(ab_ident),
+                        (window_start,),
+                    )
+                    last_before = cursor.fetchone()
 
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
                     SELECT updated_at, portfolio
                     FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
                 """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                results = cursor.fetchall()
+                        ).format(ab_ident),
+                        (window_start,),
+                    )
+                    results = cursor.fetchall()
 
-            if last_before_5am:
-                results = [last_before_5am] + list(results)
+                if last_before:
+                    results = [last_before] + list(results)
+            else:
+                today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
+                    SELECT updated_at, portfolio
+                    FROM {}
+                    WHERE updated_at < %s
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                """
+                        ).format(ab_ident),
+                        (today_5am,),
+                    )
+                    last_before_5am = cursor.fetchone()
+
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
+                    SELECT updated_at, portfolio
+                    FROM {}
+                    WHERE updated_at >= %s
+                    ORDER BY updated_at ASC, id ASC
+                """
+                        ).format(ab_ident),
+                        (today_5am,),
+                    )
+                    results = cursor.fetchall()
+
+                if last_before_5am:
+                    results = [last_before_5am] + list(results)
 
         else:
-            if period == "1w":
-                start_time = now - timedelta(weeks=1)
-            elif period == "1m":
-                start_time = now - timedelta(days=30)
-            elif period == "1y":
-                start_time = now - timedelta(days=365)
-            else:
-                start_time = datetime(2020, 1, 1, tzinfo=eastern)
+            start_time = _chart_history_window_start(
+                period=period, rollup_view=rollup_view, eastern=eastern, now=now
+            )
 
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -146,6 +242,7 @@ def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Di
         return {
             "status": "ok",
             "period": period,
+            "rollup_view": _rollup_view_norm(rollup_view),
             "count": len(data),
             "data": data,
             "trading_mode": _trading_mode_label(trading_mode),
@@ -160,7 +257,9 @@ def portfolio_history_payload(*, period: str, trading_mode: Optional[str]) -> Di
                 pass
 
 
-def bankroll_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str, Any]:
+def bankroll_history_payload(
+    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+) -> Dict[str, Any]:
     conn = None
     try:
         conn = get_postgresql_connection()
@@ -178,48 +277,77 @@ def bankroll_history_payload(*, period: str, trading_mode: Optional[str]) -> Dic
         results: List[Any] = []
 
         if period == "1d":
-            today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
+            if _rollup_view_norm(rollup_view) == "prev":
+                window_start = now - timedelta(hours=24)
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
                     SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
                     FROM {}
                     WHERE updated_at < %s
                     ORDER BY updated_at DESC, id DESC
                     LIMIT 1
                 """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                last_before_5am = cursor.fetchone()
+                        ).format(ab_ident),
+                        (window_start,),
+                    )
+                    last_before = cursor.fetchone()
 
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    psql.SQL(
-                        """
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
                     SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
                     FROM {}
                     WHERE updated_at >= %s
                     ORDER BY updated_at ASC, id ASC
                 """
-                    ).format(ab_ident),
-                    (today_5am,),
-                )
-                results = cursor.fetchall()
+                        ).format(ab_ident),
+                        (window_start,),
+                    )
+                    results = cursor.fetchall()
 
-            if last_before_5am:
-                results = [last_before_5am] + list(results)
+                if last_before:
+                    results = [last_before] + list(results)
+            else:
+                today_5am = now.replace(hour=5, minute=0, second=0, microsecond=0)
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
+                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
+                    FROM {}
+                    WHERE updated_at < %s
+                    ORDER BY updated_at DESC, id DESC
+                    LIMIT 1
+                """
+                        ).format(ab_ident),
+                        (today_5am,),
+                    )
+                    last_before_5am = cursor.fetchone()
+
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        psql.SQL(
+                            """
+                    SELECT updated_at, COALESCE(master_trading_bankroll, bankroll_current)
+                    FROM {}
+                    WHERE updated_at >= %s
+                    ORDER BY updated_at ASC, id ASC
+                """
+                        ).format(ab_ident),
+                        (today_5am,),
+                    )
+                    results = cursor.fetchall()
+
+                if last_before_5am:
+                    results = [last_before_5am] + list(results)
 
         else:
-            if period == "1w":
-                start_time = now - timedelta(weeks=1)
-            elif period == "1m":
-                start_time = now - timedelta(days=30)
-            elif period == "1y":
-                start_time = now - timedelta(days=365)
-            else:
-                start_time = datetime(2020, 1, 1, tzinfo=eastern)
+            start_time = _chart_history_window_start(
+                period=period, rollup_view=rollup_view, eastern=eastern, now=now
+            )
 
             with conn.cursor() as cursor:
                 cursor.execute(
@@ -248,6 +376,7 @@ def bankroll_history_payload(*, period: str, trading_mode: Optional[str]) -> Dic
         return {
             "status": "ok",
             "period": period,
+            "rollup_view": _rollup_view_norm(rollup_view),
             "count": len(data),
             "data": data,
             "trading_mode": _trading_mode_label(trading_mode),
@@ -262,7 +391,11 @@ def bankroll_history_payload(*, period: str, trading_mode: Optional[str]) -> Dic
                 pass
 
 
-def pnl_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str, Any]:
+def pnl_history_payload(
+    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+) -> Dict[str, Any]:
+    from zoneinfo import ZoneInfo
+
     conn = None
     try:
         slot = resolved_tenant_user_no_for_app()
@@ -270,52 +403,76 @@ def pnl_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
-        now = datetime.now()
-        if period == "1d":
-            start_time = now - timedelta(hours=24)
-        elif period == "1w":
-            start_time = now - timedelta(days=7)
-        elif period == "1m":
-            start_time = now - timedelta(days=30)
-        elif period == "1y":
-            start_time = now - timedelta(days=365)
-        else:
-            start_time = datetime(2020, 1, 1)
-
-        start_date_sql = start_time.strftime("%Y-%m-%d")
-
-        paper_clause = _paper_trade_sql_clause(trading_mode)
+        eastern = ZoneInfo("America/New_York")
+        now_e = datetime.now(eastern)
+        trade_mode_clause = _performance_panel_trade_mode_clause(trading_mode)
+        rv = _rollup_view_norm(rollup_view)
 
         with conn.cursor() as cursor:
+            cursor.execute("SET TIME ZONE 'America/New_York'")
             if not fetch_master_trades_column_names(cursor, slot):
                 rows = []
             else:
                 union_sql, _ = union_trades_with_archives_select(cursor, slot)
-                cursor.execute(
-                    """
+                if rv == "td":
+                    lo, hi = _pnl_td_calendar_date_bounds(period, now_e)
+                    q = (
+                        """
                     SELECT COALESCE(
                         CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
                         created_at
                     ) AS ts, pnl
                     FROM ("""
-                    + union_sql
-                    + """) AS trades_all
-                    WHERE (test_filter IS NULL OR test_filter = FALSE)
+                        + union_sql
+                        + """) AS trades_all
+                    WHERE (trades_all.test_filter IS NULL OR trades_all.test_filter = FALSE)
                     """
-                    + paper_clause
-                    + """
+                        + trade_mode_clause
+                        + """
                       AND LOWER(TRIM(status)) IN ('closed', 'settled')
                       AND pnl IS NOT NULL
-                      AND (CASE WHEN closed_at IS NOT NULL AND closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN (closed_at::timestamptz)::date ELSE created_at::date END) >= %s::date
+                      AND (trades_all."date"::date) >= %s::date
+                      AND (trades_all."date"::date) <= %s::date
                     ORDER BY ts ASC
-                """,
-                    (start_date_sql,),
-                )
+                """
+                    )
+                    cursor.execute(q, (lo, hi))
+                else:
+                    start_dt = _pnl_prev_window_start(period, now_e)
+                    q = (
+                        """
+                    SELECT COALESCE(
+                        CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
+                        created_at
+                    ) AS ts, pnl
+                    FROM ("""
+                        + union_sql
+                        + """) AS trades_all
+                    WHERE (trades_all.test_filter IS NULL OR trades_all.test_filter = FALSE)
+                    """
+                        + trade_mode_clause
+                        + """
+                      AND LOWER(TRIM(status)) IN ('closed', 'settled')
+                      AND pnl IS NOT NULL
+                      AND COALESCE(
+                        CASE WHEN closed_at ~ '^\\d{4}-\\d{2}-\\d{2}' THEN closed_at::timestamptz ELSE NULL END,
+                        created_at::timestamptz
+                      ) >= %s
+                    ORDER BY ts ASC
+                """
+                    )
+                    cursor.execute(q, (start_dt,))
                 rows = cursor.fetchall()
+
+        if rv == "td":
+            lo, _hi = _pnl_td_calendar_date_bounds(period, now_e)
+            anchor_ts = datetime.combine(lo, datetime.min.time(), tzinfo=eastern).isoformat()
+        else:
+            anchor_ts = _pnl_prev_window_start(period, now_e).isoformat()
 
         data: List[Dict[str, Any]] = []
         cumulative = 0.0
-        data.append({"timestamp": start_date_sql + "T00:00:00", "pnl": 0.0})
+        data.append({"timestamp": anchor_ts, "pnl": 0.0})
         for ts, pnl in rows:
             pnl_val = float(pnl) if pnl is not None else 0.0
             cumulative += pnl_val
@@ -325,6 +482,7 @@ def pnl_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str
         return {
             "status": "ok",
             "period": period,
+            "rollup_view": rv,
             "count": len(data),
             "data": data,
             "total_pnl": round(cumulative, 2),
@@ -338,6 +496,80 @@ def pnl_history_payload(*, period: str, trading_mode: Optional[str]) -> Dict[str
                 conn.close()
             except Exception:
                 pass
+
+
+def performance_previous_period_pnls(
+    *,
+    cursor: Any,
+    slot: str,
+    trading_mode: Optional[str],
+) -> Dict[str, float]:
+    """
+    Calendar **previous** period realized PnL only (``day`` / ``week`` / ``month`` / ``year`` keys).
+    Same date bounds and filters as :func:`performance_realized_payload` ``prev_pnl``.
+    """
+    from zoneinfo import ZoneInfo
+
+    cursor.execute("SET TIME ZONE 'America/New_York'")
+    eastern = ZoneInfo("America/New_York")
+    now = datetime.now(eastern)
+    today = now.date()
+
+    days_since_sunday = (today.weekday() + 1) % 7
+    sunday_d = today - timedelta(days=days_since_sunday)
+    month_first_d = today.replace(day=1)
+    year_first_d = Date(today.year, 1, 1)
+    yesterday = today - timedelta(days=1)
+    prev_week_end = sunday_d - timedelta(days=1)
+    prev_week_start = prev_week_end - timedelta(days=6)
+    last_prev_month = month_first_d - timedelta(days=1)
+    first_prev_month = last_prev_month.replace(day=1)
+    first_prev_year = Date(today.year - 1, 1, 1)
+    last_prev_year = Date(today.year - 1, 12, 31)
+
+    periods_spec: List[Tuple[str, Date, Date, Date, Date]] = [
+        ("day", today, today, yesterday, yesterday),
+        ("week", sunday_d, today, prev_week_start, prev_week_end),
+        ("month", month_first_d, today, first_prev_month, last_prev_month),
+        ("year", year_first_d, today, first_prev_year, last_prev_year),
+    ]
+
+    mode_clause = _performance_panel_trade_mode_clause(trading_mode)
+    prev_sql = (
+        """
+                SELECT COALESCE(SUM(trades_all.pnl), 0)
+                FROM ("""
+        + "{union}"
+        + """) AS trades_all
+                WHERE (trades_all.test_filter IS NULL OR trades_all.test_filter = FALSE)
+                """
+        + mode_clause
+        + """
+                  AND LOWER(TRIM(trades_all.status)) IN ('closed', 'settled')
+                  AND trades_all.pnl IS NOT NULL
+                  AND trades_all."date" IS NOT NULL
+                  AND (trades_all."date"::date) >= %s::date
+                  AND (trades_all."date"::date) <= %s::date
+            """
+    )
+
+    out: Dict[str, float] = {}
+    has_trades = bool(fetch_master_trades_column_names(cursor, slot))
+    union_sql = None
+    if has_trades:
+        union_sql, _ = union_trades_with_archives_select(cursor, slot)
+    for key, _d_lo, _d_hi, prev_lo, prev_hi in periods_spec:
+        if not union_sql:
+            out[key] = 0.0
+            continue
+        q_prev = prev_sql.replace("{union}", union_sql)
+        cursor.execute(
+            q_prev,
+            (prev_lo.isoformat(), prev_hi.isoformat()),
+        )
+        prev_row = cursor.fetchone()
+        out[key] = float(prev_row[0]) if prev_row and prev_row[0] is not None else 0.0
+    return out
 
 
 def performance_realized_payload(*, trading_mode: Optional[str]) -> Dict[str, Any]:

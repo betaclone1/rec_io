@@ -1,10 +1,10 @@
 /**
  * MONITOR HISTORY DISPLAY
- * 
- * Calculates monitor statistics dynamically from raw trade data
- * Aligns with monitor_manager.py for live stats; when ``window.globalPaperMode`` is true,
- * ``test_filter`` trades are included so dashboard tiles match global paper semantics.
- * Populates monitor tiles with calculated values instead of reading from DB
+ *
+ * Preferred path: ``performance_rollups_snapshot.tiles_matrix`` (``GET /api/dashboard/performance-snapshot``
+ * on load, then /ws/db_changes). Live + paper + test are combined server-side; independent of the LIVE/PAPER
+ * strip toggle. Legacy dashboards without ``window.__dashboardPerformanceRedisRequired`` may fall back to
+ * ``GET /api/performance/monitor-tiles``. When Redis is required (dashboard_NEW), there is no HTTP fallback.
  */
 
 class MonitorHistoryDisplay {
@@ -29,6 +29,86 @@ class MonitorHistoryDisplay {
         this.fetchTradesData = this.fetchTradesData.bind(this);
         this.fetchMonitorsData = this.fetchMonitorsData.bind(this);
         this.refreshFromServer = this.refreshFromServer.bind(this);
+        this.fetchMonitorTilesFromRollups = this.fetchMonitorTilesFromRollups.bind(this);
+        this.applyTilesFromHydratedMatrix = this.applyTilesFromHydratedMatrix.bind(this);
+    }
+
+    /** Match dashboard TD/PREV toggle (``window.__dashboardPerformanceRollupView``). */
+    _dashboardRollupViewParam() {
+        if (typeof window !== 'undefined' && window.__dashboardPerformanceRollupView === 'prev') {
+            return 'prev';
+        }
+        return 'td';
+    }
+
+    /** False on dashboard_NEW / mobile_NEW: never call ``/api/performance/monitor-tiles``. */
+    _monitorTilesHttpFallbackAllowed() {
+        return !(typeof window !== 'undefined' && window.__dashboardPerformanceRedisRequired === true);
+    }
+
+    /**
+     * Apply tile metrics from ``window.__perfRollupsTilesMatrix`` (period × td/prev), if present.
+     * @param {string} period
+     * @returns {boolean} true if matrix had data for this period
+     */
+    applyTilesFromHydratedMatrix(period) {
+        const m = typeof window !== 'undefined' ? window.__perfRollupsTilesMatrix : null;
+        if (!m || typeof m !== 'object') return false;
+        const p = String(period || 'all').toLowerCase();
+        const bucket = m[p];
+        if (!bucket || typeof bucket !== 'object') return false;
+        const rv = this._dashboardRollupViewParam();
+        const tiles = bucket[rv] || bucket.td;
+        if (!Array.isArray(tiles)) return false;
+        this.monitorStats.clear();
+        for (const t of tiles) {
+            if (!t || !t.id) continue;
+            this.monitorStats.set(t.id, {
+                trades: t.trades,
+                win_streak: 0,
+                win_loss: t.win_loss,
+                ret_pct: t.ret_pct,
+                pnl: t.pnl,
+            });
+        }
+        console.log(`[MONITOR_HISTORY] tiles_matrix (${p}, ${rv}): ${tiles.length} monitors`);
+        return true;
+    }
+
+    /**
+     * Load per-monitor tile metrics from PostgreSQL rollups (``performance_monitors``).
+     * @param {string} period - '1d' | '1w' | '1m' | '1y' | 'all'
+     */
+    async fetchMonitorTilesFromRollups(period) {
+        const p = period || 'all';
+        const rv = this._dashboardRollupViewParam();
+        const u = new URL('/api/performance/monitor-tiles', window.location.origin);
+        u.searchParams.set('period', p);
+        u.searchParams.set('rollup_view', rv);
+        const res = await fetch(u.pathname + u.search, {
+            method: 'GET',
+            headers: { 'Cache-Control': 'no-cache' },
+            cache: 'no-store',
+        });
+        if (!res.ok) {
+            throw new Error(`monitor-tiles HTTP ${res.status}`);
+        }
+        const data = await res.json();
+        if (!data || data.status !== 'ok' || !Array.isArray(data.tiles)) {
+            throw new Error((data && data.message) ? data.message : 'monitor-tiles invalid payload');
+        }
+        this.monitorStats.clear();
+        for (const t of data.tiles) {
+            if (!t || !t.id) continue;
+            this.monitorStats.set(t.id, {
+                trades: t.trades,
+                win_streak: 0,
+                win_loss: t.win_loss,
+                ret_pct: t.ret_pct,
+                pnl: t.pnl,
+            });
+        }
+        console.log(`[MONITOR_HISTORY] Rollup tiles (${p}, ${rv}): ${data.tiles.length} monitors`);
     }
 
     /** True when trade row is a test/UAT trade (same truthiness patterns as dashboard). */
@@ -43,9 +123,9 @@ class MonitorHistoryDisplay {
         );
     }
 
-    /** Global paper mode: tile aggregates should count test_filter rows too. */
+    /** Monitor tiles always include test_filter (UAT) rows alongside live and paper. */
     _includeTestFilterTradesForMonitorTiles() {
-        return typeof window !== 'undefined' && window.globalPaperMode === true;
+        return true;
     }
 
     _tradeIsWin(trade) {
@@ -106,15 +186,17 @@ class MonitorHistoryDisplay {
         
         try {
             console.log(`[MONITOR_HISTORY] Initializing monitor history display with time filter: ${timeFilter}...`);
-            
-            // Fetch raw data
-            await this.fetchTradesData();
-            await this.fetchMonitorsData();
-            
-            // Calculate stats for all monitors with the specified time filter
-            this.calculateAllMonitorStats(timeFilter);
-            
-            // Update monitor tiles with calculated values
+
+            if (!this.applyTilesFromHydratedMatrix(timeFilter)) {
+                if (this._monitorTilesHttpFallbackAllowed()) {
+                    await this.fetchMonitorTilesFromRollups(timeFilter);
+                } else {
+                    console.error(
+                        '[MONITOR_HISTORY] tiles_matrix required but missing; skipping HTTP monitor-tiles (Redis-only dashboard)',
+                    );
+                    this.monitorStats.clear();
+                }
+            }
             this.updateMonitorTiles();
             
             this.isInitialized = true;
@@ -215,49 +297,151 @@ class MonitorHistoryDisplay {
         console.log(`[MONITOR_HISTORY] Calculated stats for ${this.monitorStats.size} monitors`);
     }
 
+    /** Eastern calendar YYYY-MM-DD for "now" in America/New_York (matches backend chart windows). */
+    _easternYmdNow() {
+        return new Date().toLocaleString('sv-SE', { timeZone: 'America/New_York' }).slice(0, 10);
+    }
+
+    _ymdAddDays(ymd, deltaDays) {
+        const parts = ymd.split('-').map(Number);
+        const ms = Date.UTC(parts[0], parts[1] - 1, parts[2]) + deltaDays * 86400000;
+        const nd = new Date(ms);
+        const y = nd.getUTCFullYear();
+        const mo = String(nd.getUTCMonth() + 1).padStart(2, '0');
+        const d = String(nd.getUTCDate()).padStart(2, '0');
+        return `${y}-${mo}-${d}`;
+    }
+
+    _easternSundayYmd() {
+        const ymd = this._easternYmdNow();
+        const short = new Intl.DateTimeFormat('en-US', { timeZone: 'America/New_York', weekday: 'short' }).format(new Date());
+        const idx = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 }[short];
+        if (idx === undefined) return ymd;
+        return this._ymdAddDays(ymd, -idx);
+    }
+
+    _easternMonthFirstYmd() {
+        const ymd = this._easternYmdNow();
+        const y = ymd.slice(0, 4);
+        const mo = ymd.slice(5, 7);
+        return `${y}-${mo}-01`;
+    }
+
+    _easternYearFirstYmd() {
+        return this._easternYmdNow().slice(0, 4) + '-01-01';
+    }
+
+    _tradeDateYmd(trade) {
+        if (!trade || trade.date == null) return '';
+        return String(trade.date).trim().slice(0, 10);
+    }
+
+    _tradeCloseMs(trade) {
+        if (!trade) return NaN;
+        if (trade.closed_at) {
+            const t = Date.parse(trade.closed_at);
+            if (!Number.isNaN(t)) return t;
+        }
+        if (trade.timestamp) {
+            const t = Date.parse(trade.timestamp);
+            if (!Number.isNaN(t)) return t;
+        }
+        if (trade.date && trade.time) {
+            const ds = String(trade.date).slice(0, 10);
+            const tpart = String(trade.time).split('.')[0];
+            const t = Date.parse(`${ds}T${tpart}`);
+            if (!Number.isNaN(t)) return t;
+        }
+        const ds = this._tradeDateYmd(trade);
+        if (ds) {
+            const t = Date.parse(`${ds}T12:00:00`);
+            if (!Number.isNaN(t)) return t;
+        }
+        return NaN;
+    }
+
+    _rollupViewMode() {
+        if (typeof window !== 'undefined' && window.__dashboardPerformanceRollupView === 'prev') {
+            return 'prev';
+        }
+        return 'td';
+    }
+
     /**
-     * Filter trades by time period (same logic as portfolio chart)
+     * Filter trades by time period (aligned with portfolio / PnL chart rollup_view).
      * @param {Array} trades - Array of trade objects
      * @param {string} timeFilter - Time filter ('1d', '1w', '1m', '1y', 'all')
      * @returns {Array} Filtered trades array
      */
     filterTradesByTime(trades, timeFilter) {
+        const rv = this._rollupViewMode();
         if (timeFilter === 'all') {
-            return trades;
+            const today = this._easternYmdNow();
+            const lo = '2020-01-01';
+            if (rv === 'td') {
+                return trades.filter(trade => {
+                    const ymd = this._tradeDateYmd(trade);
+                    return ymd && ymd >= lo && ymd <= today;
+                });
+            }
+            const startMs = Date.UTC(2020, 0, 1);
+            return trades.filter(trade => {
+                const t = this._tradeCloseMs(trade);
+                return !Number.isNaN(t) && t >= startMs;
+            });
         }
 
-        const now = new Date();
-        let startDate;
+        if (rv === 'td') {
+            const today = this._easternYmdNow();
+            let lo = today;
+            let hi = today;
+            switch (timeFilter) {
+                case '1d':
+                    lo = hi = today;
+                    break;
+                case '1w':
+                    lo = this._easternSundayYmd();
+                    hi = today;
+                    break;
+                case '1m':
+                    lo = this._easternMonthFirstYmd();
+                    hi = today;
+                    break;
+                case '1y':
+                    lo = this._easternYearFirstYmd();
+                    hi = today;
+                    break;
+                default:
+                    return trades;
+            }
+            return trades.filter(trade => {
+                const ymd = this._tradeDateYmd(trade);
+                return ymd && ymd >= lo && ymd <= hi;
+            });
+        }
 
+        const nowMs = Date.now();
+        let startMs;
         switch (timeFilter) {
             case '1d':
-                // Current day starting at 06:00
-                startDate = new Date(now);
-                startDate.setHours(6, 0, 0, 0);
+                startMs = nowMs - 24 * 3600000;
                 break;
             case '1w':
-                // Previous 7 days
-                startDate = new Date(now);
-                startDate.setDate(startDate.getDate() - 7);
+                startMs = nowMs - 7 * 24 * 3600000;
                 break;
             case '1m':
-                // Previous 30 days
-                startDate = new Date(now);
-                startDate.setDate(startDate.getDate() - 30);
+                startMs = nowMs - 30 * 24 * 3600000;
                 break;
             case '1y':
-                // Previous 365 days
-                startDate = new Date(now);
-                startDate.setDate(startDate.getDate() - 365);
+                startMs = nowMs - 365 * 24 * 3600000;
                 break;
             default:
                 return trades;
         }
 
         return trades.filter(trade => {
-            if (!trade.timestamp) return false;
-            const tradeDate = new Date(trade.timestamp);
-            return tradeDate >= startDate;
+            const t = this._tradeCloseMs(trade);
+            return !Number.isNaN(t) && t >= startMs;
         });
     }
 
@@ -399,7 +583,7 @@ class MonitorHistoryDisplay {
      * Overrides the database values with calculated values
      */
     updateMonitorTiles() {
-        console.log('[MONITOR_HISTORY] Updating monitor tiles with calculated statistics...');
+        console.log('[MONITOR_HISTORY] Updating monitor tiles from rollup stats...');
         
         // Find all monitor tiles on the page
         const monitorTiles = document.querySelectorAll('.monitor-tile, .monitor-card, [data-monitor-id]');
@@ -550,8 +734,7 @@ class MonitorHistoryDisplay {
     }
 
     /**
-     * Re-slice cached trades for the portfolio chart time window (no network).
-     * Call from chart interval buttons (1d / 1w / all, etc.). Keeps tiles in sync with the chart view instantly.
+     * Refetch rollup tile stats for the portfolio chart time window (1d / 1w / …).
      */
     refresh(timeFilter) {
         if (!timeFilter) {
@@ -562,15 +745,35 @@ class MonitorHistoryDisplay {
             console.error('[MONITOR_HISTORY] ERROR: Cannot refresh - not initialized');
             return;
         }
-        console.log(`[MONITOR_HISTORY] Recalculating tile stats for time filter: ${timeFilter} (cached trades)...`);
-        this.calculateAllMonitorStats(timeFilter);
-        this.updateMonitorTiles();
-        console.log('[MONITOR_HISTORY] Tile stats updated for view');
+        console.log(`[MONITOR_HISTORY] Reloading rollup tiles for time filter: ${timeFilter}...`);
+        void this._reloadTilesFromRollupsAsync(timeFilter);
+    }
+
+    async _reloadTilesFromRollupsAsync(timeFilter) {
+        try {
+            if (this.applyTilesFromHydratedMatrix(timeFilter)) {
+                this.updateMonitorTiles();
+                console.log('[MONITOR_HISTORY] Tile stats updated from tiles_matrix');
+                return;
+            }
+            if (this._monitorTilesHttpFallbackAllowed()) {
+                await this.fetchMonitorTilesFromRollups(timeFilter);
+                this.updateMonitorTiles();
+                console.log('[MONITOR_HISTORY] Tile stats updated from rollups');
+            } else {
+                console.error(
+                    '[MONITOR_HISTORY] tiles_matrix required but missing; skipping HTTP monitor-tiles (Redis-only dashboard)',
+                );
+                this.monitorStats.clear();
+                this.updateMonitorTiles();
+            }
+        } catch (e) {
+            console.error('[MONITOR_HISTORY] Rollup tile refresh failed:', e);
+        }
     }
 
     /**
-     * Refetch trades + monitor config from the server, then recalculate for timeFilter.
-     * Use for db_changes, periodic soft refresh, trading mode switch — not for chart-interval-only changes.
+     * Refetch rollup tile stats from the server (debounced). Use after db_changes, soft poll, mode switch.
      */
     async refreshFromServer(timeFilter) {
         if (!timeFilter) {
@@ -605,15 +808,27 @@ class MonitorHistoryDisplay {
         const gen = ++this._refreshSerial;
         console.log(`[MONITOR_HISTORY] Server refresh with time filter: ${timeFilter}...`);
         try {
-            await this.fetchTradesData();
-            await this.fetchMonitorsData();
+            let updated = false;
+            if (this.applyTilesFromHydratedMatrix(timeFilter)) {
+                updated = true;
+            } else if (this._monitorTilesHttpFallbackAllowed()) {
+                await this.fetchMonitorTilesFromRollups(timeFilter);
+                updated = true;
+            } else {
+                console.error(
+                    '[MONITOR_HISTORY] tiles_matrix required but missing; skipping HTTP monitor-tiles (Redis-only dashboard)',
+                );
+                this.monitorStats.clear();
+                updated = true;
+            }
             if (gen !== this._refreshSerial) {
-                console.log('[MONITOR_HISTORY] Server refresh superseded; skipping calculate/update');
+                console.log('[MONITOR_HISTORY] Server refresh superseded; skipping tile update');
                 return;
             }
-            this.calculateAllMonitorStats(timeFilter);
-            this.updateMonitorTiles();
-            console.log('[MONITOR_HISTORY] Server refresh complete');
+            if (updated) {
+                this.updateMonitorTiles();
+                console.log('[MONITOR_HISTORY] Server refresh complete');
+            }
         } finally {
             this._serverRefreshInFlight = false;
             this._serverRefreshLastCompletedMs = Date.now();
@@ -626,10 +841,8 @@ class MonitorHistoryDisplay {
     }
 
     /**
-     * Get calculated statistics for a specific monitor.
-     * Returns undefined when this monitor has no entry (e.g. no closed trades in the fetched
-     * trade list, or key mismatch). Callers must fall back to /api/monitors aggregates — do not
-     * return a synthetic zero object or dashboard tiles show 0 even when the API has real stats.
+     * Get tile stats for a monitor id (e.g. ``mon_0001_10002``) from the last rollup load.
+     * Undefined if the monitor has no row in ``performance_monitors`` yet — callers fall back to /api/monitors.
      */
     getMonitorStats(monitorName) {
         if (monitorName == null || monitorName === '') {

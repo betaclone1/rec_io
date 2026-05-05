@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-05 — Release v3.4.8: Performance rollups schema, Redis performance snapshot, dashboard_NEW and realtime WS coordinator
+
+**Summary**
+- **Release: v3.4.8**
+- **Database:** Reversible migration chain **`20260505_1200_performance_rollup_tables`** through **`20260505_1450_performance_rollups_updated_at_last`** adds per-tenant **`performance_total_*`** / **`performance_monitors_*`**, dashboard prefs column for rollup view, NOTIFY/stream wiring for **`performance_rollups`**, and follow-up PK/column renames. **`docs/MASTER_DB_SCHEMA_REFERENCE.md`** and **`database.py`** aligned in this batch.
+- **Backend:** **`performance_rollups`** compute/publish path; **`monitor_manager`** closes hook; **`GET /api/dashboard/performance-snapshot`** serves the WS-shaped snapshot **from Redis only** (no DB cold-fill when Redis or the snapshot key is missing). Snapshot written to Redis on rollup publish; trading Redis comms key documented.
+- **read_api / main / stream_registry:** Rollup-related reads and proxies; stream registry entries for rollup NOTIFY payloads.
+- **Frontend:** **`dashboard_NEW.html`** and **`dashboard_mobile_NEW.html`** — Redis-first performance hydrate, shared **`realtime-ws-coordinator`**, stricter monitor-tiles behavior when **`__dashboardPerformanceRedisRequired`**. **`monitor_history_display.js`** skips **`/api/performance/monitor-tiles`** when that flag is set. Legacy **`dashboard.html`** / **`index`** unchanged for independent testing of NEW surfaces. Trade monitor / orderbook / strike-table / portfolio query touch-ups as staged.
+- **Tooling:** **`scripts/db/backfill_performance_rollups.py`** — optional one-shot recompute from closed trades per slot.
+- **Plans:** **`redis-platform-initiative`** (in progress; backbone + snapshot alignment), **`mtb-account-dashboard`** (`Status: done`; dashboard data surfaces).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply pending migrations (applies all **`20260505_*`** rollup chain not yet in **`system.schema_migrations`**):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check (non-blocking if clean):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Optional — backfill rollup rows from existing closed trades (repeat slot args as needed):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/backfill_performance_rollups.py 0001`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server).
+- [ ] Verify: `curl -sSf http://localhost:3000/health` and `curl -sSf http://localhost:8001/health`; `supervisorctl -c backend/supervisord.conf status`; tail `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for current errors.
+- [ ] Record release in DB on **production** (must match git/changelog):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.4.8`
+
+---
+
 ## 2026-05-03 — Release v3.4.7: Trades PnL NUMERIC(12,6), dashboard monitor PnL whole dollars
 
 **Summary**

@@ -1702,6 +1702,13 @@ environment={env_vars}
                 except Exception as e:
                     self.log_event("ERROR", f"Regime evaluation hook failed: {e}")
 
+                try:
+                    from backend.core.performance_rollups import recompute_performance_rollups_for_slot
+
+                    recompute_performance_rollups_for_slot(_mm_worker_slot())
+                except Exception as e:
+                    self.log_event("ERROR", f"Performance rollup recompute failed: {e}")
+
                 return result
             else:
                 return {"status": "skipped", "message": f"Trade status {status} does not require statistics update"}

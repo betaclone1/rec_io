@@ -46,6 +46,10 @@ from backend.core.dashboard_portfolio_queries import (
     pnl_history_payload,
     portfolio_history_payload,
 )
+from backend.core.performance_rollups import (
+    performance_monitor_tiles_read_payload,
+    performance_rollups_read_payload,
+)
 from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_list_query
 from backend.util.trade_log_archivist import (
     canonical_monitor_key,
@@ -275,6 +279,47 @@ async def get_trade_monitor_orderbook(
             pass
 
 
+@app.get("/api/trade-monitor/orderbook/liquidity")
+async def get_trade_monitor_orderbook_liquidity(
+    market_tickers: str = Query(
+        "",
+        description="Comma-separated Kalshi market_ticker values",
+    ),
+) -> JSONResponse:
+    """Batch liquidity probe for trade-monitor strike rows."""
+    from backend.core.trade_monitor_live_orderbook_payload import (
+        build_trade_monitor_orderbook_liquidity_map,
+    )
+
+    tickers = []
+    for tok in str(market_tickers or "").split(","):
+        mt = tok.strip()
+        if mt:
+            tickers.append(mt)
+    if not tickers:
+        return JSONResponse({"liquidity_by_ticker": {}})
+    # Keep request bounded to avoid accidental oversized probes.
+    tickers = tickers[:200]
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return JSONResponse({"error": "database_unavailable"}, status_code=503)
+    try:
+        with conn.cursor() as cursor:
+            payload = build_trade_monitor_orderbook_liquidity_map(
+                cursor,
+                market_tickers=tickers,
+            )
+        return JSONResponse({"liquidity_by_ticker": payload})
+    except Exception:
+        return JSONResponse({"error": "orderbook_liquidity_failed"}, status_code=503)
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.get("/api/live_symbol_spot_bootstrap")
 async def live_symbol_spot_bootstrap() -> JSONResponse:
     """
@@ -314,9 +359,15 @@ async def get_portfolio_history(
     trading_mode: Optional[str] = Query(
         None, description="paper|live — match UI toggle; omit to use server global mode file"
     ),
+    rollup_view: Optional[str] = Query(
+        None,
+        description="td|prev — calendar vs rolling window (matches performance rollups / dashboard toggle)",
+    ),
 ) -> Dict[str, Any]:
     """Same implementation as main_app (shared module)."""
-    return portfolio_history_payload(period=period, trading_mode=trading_mode)
+    return portfolio_history_payload(
+        period=period, trading_mode=trading_mode, rollup_view=rollup_view
+    )
 
 
 @app.get("/api/bankroll/history")
@@ -325,8 +376,14 @@ async def get_bankroll_history(
     trading_mode: Optional[str] = Query(
         None, description="paper|live — match UI toggle; omit to use server global mode file"
     ),
+    rollup_view: Optional[str] = Query(
+        None,
+        description="td|prev — calendar vs rolling window (matches performance rollups / dashboard toggle)",
+    ),
 ) -> Dict[str, Any]:
-    return bankroll_history_payload(period=period, trading_mode=trading_mode)
+    return bankroll_history_payload(
+        period=period, trading_mode=trading_mode, rollup_view=rollup_view
+    )
 
 
 @app.get("/api/pnl/history")
@@ -335,8 +392,12 @@ async def get_pnl_history(
     trading_mode: Optional[str] = Query(
         None, description="paper|live — match UI toggle; omit to use server global mode file"
     ),
+    rollup_view: Optional[str] = Query(
+        None,
+        description="td|prev — calendar vs rolling window (matches performance rollups / dashboard toggle)",
+    ),
 ) -> Dict[str, Any]:
-    return pnl_history_payload(period=period, trading_mode=trading_mode)
+    return pnl_history_payload(period=period, trading_mode=trading_mode, rollup_view=rollup_view)
 
 
 @app.get("/api/performance/realized")
@@ -346,6 +407,33 @@ async def get_performance_realized(
     ),
 ) -> Dict[str, Any]:
     return performance_realized_payload(trading_mode=trading_mode)
+
+
+@app.get("/api/performance/rollups")
+async def get_performance_rollups(
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — match UI toggle; omit to use server global mode file"
+    ),
+    rollup_view: str = Query(
+        "td",
+        description="td = calendar-to-date (trade date); prev = rolling windows from closed_at",
+    ),
+) -> Dict[str, Any]:
+    return performance_rollups_read_payload(trading_mode=trading_mode, rollup_view=rollup_view)
+
+
+@app.get("/api/performance/monitor-tiles")
+async def get_performance_monitor_tiles(
+    period: str = Query(
+        "all",
+        description="1d | 1w | 1m | 1y | all — dashboard portfolio chart window",
+    ),
+    rollup_view: str = Query(
+        "td",
+        description="td = calendar (trade date); prev = rolling (closed_at)",
+    ),
+) -> Dict[str, Any]:
+    return performance_monitor_tiles_read_payload(period=period, rollup_view=rollup_view)
 
 
 def _monitor_auto_stop_accuracy_bucket(

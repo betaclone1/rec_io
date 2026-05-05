@@ -435,3 +435,41 @@ def build_trade_monitor_orderbook_payload(
             "orderbook_table_ready": orderbook_table_ready,
         },
     }
+
+
+def build_trade_monitor_orderbook_liquidity_map(
+    cur,
+    *,
+    market_tickers: list[str],
+) -> dict[str, bool]:
+    """
+    Batch liquidity probe for trade-monitor rows.
+
+    A ticker is considered liquid only when both YES and NO books have
+    at least one ask and one bid (same rule as frontend hasAsksAndBids checks).
+    """
+    out: dict[str, bool] = {}
+    if not market_tickers:
+        return out
+    for raw in market_tickers:
+        mt = str(raw or "").strip()
+        if not mt:
+            continue
+        if mt in out:
+            continue
+        try:
+            yes_levels, no_levels = _load_yes_no_levels(cur, mt)
+        except pg_errors.UndefinedTable:
+            _rollback_connection_safe(cur)
+            out[mt] = False
+            continue
+        except psycopg2.Error:
+            _rollback_connection_safe(cur)
+            out[mt] = False
+            continue
+        yes_bids = _book_rows_near_touch(yes_levels, is_ask=False, limit=1)
+        yes_asks = _book_rows_near_touch(_transform_complement_levels(no_levels), is_ask=True, limit=1)
+        no_bids = _book_rows_near_touch(no_levels, is_ask=False, limit=1)
+        no_asks = _book_rows_near_touch(_transform_complement_levels(yes_levels), is_ask=True, limit=1)
+        out[mt] = bool(yes_bids and yes_asks and no_bids and no_asks)
+    return out

@@ -1128,12 +1128,13 @@ function loadDiffModeFromPreferences() {
 // Interval IDs for pause-when-hidden (Trade Monitor tab)
 let middleColumnIntervalId = null;
 let strikeTableIntervalId = null;
+const STRIKE_TABLE_FALLBACK_POLL_MS = 2500;
 
 function startStrikeTablePolling() {
   if (middleColumnIntervalId != null) clearInterval(middleColumnIntervalId);
   if (strikeTableIntervalId != null) clearInterval(strikeTableIntervalId);
-  middleColumnIntervalId = setInterval(updateMiddleColumnData, 1000);
-  strikeTableIntervalId = setInterval(updateStrikeTable, 1000);
+  middleColumnIntervalId = setInterval(updateMiddleColumnData, STRIKE_TABLE_FALLBACK_POLL_MS);
+  strikeTableIntervalId = setInterval(updateStrikeTable, STRIKE_TABLE_FALLBACK_POLL_MS);
 }
 
 function stopStrikeTablePolling() {
@@ -1166,71 +1167,47 @@ if (typeof window !== 'undefined') {
 
 // === STRIKE TABLE WEBSOCKET UPDATES ===
 // WebSocket connection for real-time database change notifications
-let dbChangeWebSocket = null;
+let dbChangeWebSocketUnsub = null;
 let strikeTableTabPaused = false;
 let strikeTableTradesWsDebounceTimer = null;
 const STRIKE_TABLE_TRADES_WS_DEBOUNCE_MS = 500;
 
 function connectDbChangeWebSocket() {
   if (strikeTableTabPaused) return;
-  if (dbChangeWebSocket && dbChangeWebSocket.readyState === WebSocket.OPEN) {
-
-    return; // Already connected
-  }
+  if (dbChangeWebSocketUnsub) return;
+  if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') return;
 
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
-  
-  
-  dbChangeWebSocket = new WebSocket(wsUrl);
-  
-  dbChangeWebSocket.onopen = function() {
-    
-  };
-  
-  dbChangeWebSocket.onmessage = function(event) {
-    try {
-      const raw = event.data;
-      if (typeof recDbChangeRawMentionsStream === 'function' && !recDbChangeRawMentionsStream(raw, 'trades')) {
-        return;
+  dbChangeWebSocketUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+    onMessage: function(event) {
+      try {
+        const raw = event.data;
+        if (typeof recDbChangeRawMentionsStream === 'function' && !recDbChangeRawMentionsStream(raw, 'trades')) {
+          return;
+        }
+        const data = JSON.parse(raw);
+        if (data.type === 'db_change' && data.database === 'trades') {
+          if (strikeTableTradesWsDebounceTimer) clearTimeout(strikeTableTradesWsDebounceTimer);
+          strikeTableTradesWsDebounceTimer = setTimeout(function() {
+            strikeTableTradesWsDebounceTimer = null;
+            fetchAndRenderStrikeTable();
+            if (typeof window.fetchAndRenderTrades === 'function') {
+              window.fetchAndRenderTrades();
+            }
+          }, STRIKE_TABLE_TRADES_WS_DEBOUNCE_MS);
+        }
+      } catch (error) {
+        console.error("[WEBSOCKET] Error processing message:", error);
       }
-      const data = JSON.parse(raw);
-      if (data.type === 'db_change' && data.database === 'trades') {
-        if (strikeTableTradesWsDebounceTimer) clearTimeout(strikeTableTradesWsDebounceTimer);
-        strikeTableTradesWsDebounceTimer = setTimeout(function() {
-          strikeTableTradesWsDebounceTimer = null;
-          fetchAndRenderStrikeTable();
-          if (typeof window.fetchAndRenderTrades === 'function') {
-            window.fetchAndRenderTrades();
-          }
-        }, STRIKE_TABLE_TRADES_WS_DEBOUNCE_MS);
-      }
-    } catch (error) {
-      console.error("[WEBSOCKET] Error processing message:", error);
     }
-  };
-  
-  dbChangeWebSocket.onclose = function(event) {
-    
-    // Reconnect after 5 seconds only if tab is not paused
-    if (!strikeTableTabPaused) {
-      setTimeout(() => {
-
-        connectDbChangeWebSocket();
-      }, 5000);
-    }
-  };
-  
-  dbChangeWebSocket.onerror = function(error) {
-    console.error("[WEBSOCKET] ❌ Connection error:", error);
-  };
+  });
 }
 
 function disconnectDbChangeWebSocket() {
-  if (dbChangeWebSocket) {
-    try { dbChangeWebSocket.close(); } catch (e) {}
-    dbChangeWebSocket = null;
-  }
+  if (!dbChangeWebSocketUnsub) return;
+  try { dbChangeWebSocketUnsub(); } catch (e) {}
+  dbChangeWebSocketUnsub = null;
 }
 
 // Function to fetch and render strike table (called by WebSocket)

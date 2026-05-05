@@ -321,6 +321,22 @@ def redis_key_system_release_version() -> str:
     return os.getenv("REDIS_KEY_SYSTEM_RELEASE_VERSION", "rec_io:system_release_version")
 
 
+def redis_key_dashboard_performance_snapshot(slot: str) -> str:
+    """
+    JSON blob: same object as ``performance_rollups_snapshot`` on ``REDIS_CHANNEL_DB_CHANGES``.
+    Written by :func:`backend.core.performance_rollups.publish_performance_rollups_ws_snapshot` (and the same
+    helper used there). ``GET /api/dashboard/performance-snapshot`` reads this key only (no DB cold-fill).
+    """
+    from backend.trading_mode import _norm_slot
+
+    u = _norm_slot(slot or "")
+    tpl = os.getenv(
+        "REDIS_KEY_DASHBOARD_PERFORMANCE_SNAPSHOT",
+        "rec_io:dashboard:performance_snapshot:{slot}",
+    )
+    return tpl.format(slot=u)
+
+
 def channel_db_changes() -> str:
     return os.getenv("REDIS_CHANNEL_DB_CHANGES", "rec_io:db_changes")
 

@@ -25,7 +25,7 @@
   let marketExpireSourceKey = '';
   let ttcTimer = null;
   let hourlyHeaderLastFetchSymbol = '';
-  let hourlyStrikeTableDbWs = null;
+  let hourlyStrikeTableDbWsUnsub = null;
   /** Last `live_symbol_spot` frame (Redis → main `/ws/db_changes`); used when symbol/monitor changes. */
   let lastLiveSymbolSpotMsg = null;
 
@@ -726,23 +726,29 @@
     return row.ok;
   }
 
-  async function fetchTickerLiquidityOk(ticker) {
-    const cached = cachedLiquidityFresh(ticker);
-    if (cached != null) return cached;
-    try {
-      const res = await fetch(orderbookUrlForTicker(ticker), { cache: 'no-store' });
-      const d = await res.json();
-      if (!res.ok || !d || d.error) {
-        cacheLiquidity(ticker, false);
-        return false;
+  async function fetchHourlyLiquidityBatch(tickers) {
+    const out = {};
+    const unique = Array.from(new Set((tickers || []).map((t) => String(t || '').trim()).filter(Boolean)));
+    if (!unique.length) return out;
+    const chunkSize = 120;
+    for (let i = 0; i < unique.length; i += chunkSize) {
+      const chunk = unique.slice(i, i + chunkSize);
+      try {
+        const u = new URL(readApiOriginForTradeMonitor() + '/api/trade-monitor/orderbook/liquidity');
+        u.searchParams.set('market_tickers', chunk.join(','));
+        const res = await fetch(u.toString(), { credentials: 'include', cache: 'no-store' });
+        const data = await res.json();
+        const map = data && data.liquidity_by_ticker ? data.liquidity_by_ticker : {};
+        chunk.forEach((t) => {
+          out[t] = map[t] === true;
+        });
+      } catch (e) {
+        chunk.forEach((t) => {
+          out[t] = false;
+        });
       }
-      const ok = hasAsksAndBids(d.trade_yes) && hasAsksAndBids(d.trade_no);
-      cacheLiquidity(ticker, ok);
-      return ok;
-    } catch (e) {
-      cacheLiquidity(ticker, false);
-      return false;
     }
+    return out;
   }
 
   async function filterHourlyRowsByLiquidity(rows, spotPrice) {
@@ -750,12 +756,20 @@
     const spot =
       spotPrice != null && Number.isFinite(Number(spotPrice)) ? Number(spotPrice) : null;
     const mustTicker = spot != null ? closestStrikeTicker(rows, spot) : '';
-    const checks = await Promise.all(
-      rows.map(async (row) => {
-        if (!rowHasLiquidityFromStrikeRow(row)) return false;
-        return await fetchTickerLiquidityOk(row.ticker);
-      })
-    );
+    const candidates = rows
+      .filter((row) => rowHasLiquidityFromStrikeRow(row))
+      .map((row) => String(row.ticker));
+    const missing = candidates.filter((t) => cachedLiquidityFresh(t) == null);
+    if (missing.length) {
+      const batch = await fetchHourlyLiquidityBatch(missing);
+      Object.keys(batch).forEach((ticker) => {
+        cacheLiquidity(ticker, batch[ticker] === true);
+      });
+    }
+    const checks = rows.map((row) => {
+      if (!rowHasLiquidityFromStrikeRow(row)) return false;
+      return cachedLiquidityFresh(row.ticker) === true;
+    });
 
     const out = [];
     const outTickers = new Set();
@@ -1300,60 +1314,50 @@
   }
 
   function disconnectStrikeTableDbWs() {
-    if (!hourlyStrikeTableDbWs) return;
+    if (!hourlyStrikeTableDbWsUnsub) return;
     try {
-      hourlyStrikeTableDbWs.close();
+      hourlyStrikeTableDbWsUnsub();
     } catch (e) {}
-    hourlyStrikeTableDbWs = null;
+    hourlyStrikeTableDbWsUnsub = null;
   }
 
   function connectStrikeTableDbWs() {
-    if (typeof WebSocket === 'undefined') return;
-    if (hourlyStrikeTableDbWs && hourlyStrikeTableDbWs.readyState === WebSocket.OPEN) return;
-    disconnectStrikeTableDbWs();
-    const wsUrl = dbChangesWebSocketUrl();
-    try {
-      hourlyStrikeTableDbWs = new WebSocket(wsUrl);
-    } catch (e) {
-      hourlyStrikeTableDbWs = null;
+    if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
       return;
     }
-    hourlyStrikeTableDbWs.onopen = function () {
-      void fetchLiveSymbolSpotBootstrap();
-    };
-    hourlyStrikeTableDbWs.onmessage = function (event) {
-      try {
-        const msg = JSON.parse(event.data);
-        if (msg && msg.type === 'live_symbol_spot') {
-          applyLiveSymbolSpotMessage(msg);
-          return;
-        }
-        if (msg && msg.type === 'db_change') {
-          if (
-            msg.database === 'strike_table_hourly' ||
-            msg.database === 'strike_table_15m' ||
-            msg.database === 'market_kalshi_hourly' ||
-            msg.database === 'market_kalshi_15m' ||
-            msg.database === 'orderbook_kalshi'
-          ) {
-            requestDataRefresh();
+    if (hourlyStrikeTableDbWsUnsub) return;
+    disconnectStrikeTableDbWs();
+    const wsUrl = dbChangesWebSocketUrl();
+    hourlyStrikeTableDbWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+      onOpen: function () {
+        void fetchLiveSymbolSpotBootstrap();
+      },
+      onMessage: function (event) {
+        try {
+          const msg = JSON.parse(event.data);
+          if (msg && msg.type === 'live_symbol_spot') {
+            applyLiveSymbolSpotMessage(msg);
+            return;
           }
-          if (msg.database === 'monitor_list') {
-            try {
-              window.dispatchEvent(new CustomEvent('rec:tm-db-monitor-list'));
-            } catch (e3) {}
+          if (msg && msg.type === 'db_change') {
+            if (
+              msg.database === 'strike_table_hourly' ||
+              msg.database === 'strike_table_15m' ||
+              msg.database === 'market_kalshi_hourly' ||
+              msg.database === 'market_kalshi_15m' ||
+              msg.database === 'orderbook_kalshi'
+            ) {
+              requestDataRefresh();
+            }
+            if (msg.database === 'monitor_list') {
+              try {
+                window.dispatchEvent(new CustomEvent('rec:tm-db-monitor-list'));
+              } catch (e3) {}
+            }
           }
-        }
-      } catch (e2) {}
-    };
-    hourlyStrikeTableDbWs.onclose = function () {
-      hourlyStrikeTableDbWs = null;
-      const cm = currentMarket();
-      const tmNew = document.body && document.body.classList.contains('trade-monitor-new-page');
-      if (tmNew || cm === 'hourly' || cm === '15m') {
-        setTimeout(connectStrikeTableDbWs, 2500);
-      }
-    };
+        } catch (e2) {}
+      },
+    });
   }
 
   /** 15m and hourly: same DOM — embedded books only; legacy quote row + split panel stay hidden. */

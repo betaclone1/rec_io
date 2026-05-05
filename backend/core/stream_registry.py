@@ -26,6 +26,9 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("users", "transfers_paper_0001"): "transfers_paper",
     # Trade log (GET /trades via read_api / main proxy, trade_history UIs); NOTIFY → stream "trades"
     ("users", "trades_0001"): "trades",
+    # Pre-aggregated dashboard performance rollups (users_<slot>.performance_{total|monitors}_<slot>)
+    ("users", "performance_total_0001"): "performance_rollups",
+    ("users", "performance_monitors_0001"): "performance_rollups",
     # Per-tenant monitor rows (lifecycle, counts); NOTIFY → stream "monitor_list" (Admin Tools refetch, etc.)
     ("users", "monitor_list_0001"): "monitor_list",
     # Live price feed snapshot table (used by the standalone live UI)

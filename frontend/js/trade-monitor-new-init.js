@@ -18,7 +18,7 @@
     bankroll_allotment_total: null,
     auto_trade: false,
   };
-  let tmNewPrefsWs = null;
+  let tmNewPrefsWsUnsub = null;
   let tmNewMonitorListRefreshTimer = null;
 
   function tmNewPreferencesWsUrl() {
@@ -480,82 +480,62 @@
   }
 
   function tmNewConnectPreferencesWs() {
-    if (typeof WebSocket === 'undefined') return;
-    if (
-      tmNewPrefsWs &&
-      (tmNewPrefsWs.readyState === WebSocket.OPEN || tmNewPrefsWs.readyState === WebSocket.CONNECTING)
-    ) {
+    if (tmNewPrefsWsUnsub) return;
+    if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
       return;
     }
-    try {
-      if (tmNewPrefsWs) tmNewPrefsWs.close();
-    } catch (e) {}
-    tmNewPrefsWs = null;
     var url = tmNewPreferencesWsUrl();
-    try {
-      tmNewPrefsWs = new WebSocket(url);
-    } catch (e) {
-      tmNewPrefsWs = null;
-      return;
-    }
-    tmNewPrefsWs.onmessage = function (event) {
-      try {
-        var data = tmNewNormalizePreferencesWsMessage(JSON.parse(event.data));
-        if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
-          window.__recTradingMode = data.trading_mode;
-          window.globalPaperMode =
-            data.global_paper_mode === true || data.trading_mode === 'paper';
-          localStorage.setItem('rec_trading_mode', data.trading_mode);
-          void tmNewFetchTradingModeFromServer();
-          return;
-        }
-        if (data.type === 'paper_trade_toggled') {
-          if (!recTenantMatchesMessageTenant(data.tenant_user_no) && !recMonitorIdBelongsToSession(data.monitor_id)) {
+    tmNewPrefsWsUnsub = window.recRealtimeWsCoordinator.subscribe(url, {
+      onMessage: function (event) {
+        try {
+          var data = tmNewNormalizePreferencesWsMessage(JSON.parse(event.data));
+          if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
+            window.__recTradingMode = data.trading_mode;
+            window.globalPaperMode =
+              data.global_paper_mode === true || data.trading_mode === 'paper';
+            localStorage.setItem('rec_trading_mode', data.trading_mode);
+            void tmNewFetchTradingModeFromServer();
             return;
           }
-          var num = tmNewNumericFromBackendMonitorId(data.monitor_id);
-          if (num && String(window.currentMonitorId) === String(num)) {
-            tmNewMonitorDetailCache.paper_trade = !!data.paper_trade;
-            tmNewSyncPaperToggleUi();
-          }
-          return;
-        }
-        if (data.type === 'auto_trade_toggled') {
-          if (!recTenantMatchesMessageTenant(data.tenant_user_no) && !recMonitorIdBelongsToSession(data.monitor_id)) {
+          if (data.type === 'paper_trade_toggled') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no) && !recMonitorIdBelongsToSession(data.monitor_id)) {
+              return;
+            }
+            var num = tmNewNumericFromBackendMonitorId(data.monitor_id);
+            if (num && String(window.currentMonitorId) === String(num)) {
+              tmNewMonitorDetailCache.paper_trade = !!data.paper_trade;
+              tmNewSyncPaperToggleUi();
+            }
             return;
           }
-          var numAt = tmNewNumericFromBackendMonitorId(data.monitor_id);
-          if (numAt && String(window.currentMonitorId) === String(numAt)) {
-            tmNewMonitorDetailCache.auto_trade = !!data.auto_trade;
-            tmNewApplyAutoTradeFanoutFieldsMonitorNum(String(numAt), data);
-            tmNewSyncAutoTradeToggleUi();
-          }
-          return;
-        }
-        if (data.type === 'auto_trade_status_change') {
-          if (!recMonitorIdBelongsToSession(data.monitor_id)) {
+          if (data.type === 'auto_trade_toggled') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no) && !recMonitorIdBelongsToSession(data.monitor_id)) {
+              return;
+            }
+            var numAt = tmNewNumericFromBackendMonitorId(data.monitor_id);
+            if (numAt && String(window.currentMonitorId) === String(numAt)) {
+              tmNewMonitorDetailCache.auto_trade = !!data.auto_trade;
+              tmNewApplyAutoTradeFanoutFieldsMonitorNum(String(numAt), data);
+              tmNewSyncAutoTradeToggleUi();
+            }
             return;
           }
-          var numCh = tmNewNumericFromBackendMonitorId(data.monitor_id);
-          if (!numCh) return;
-          tmNewApplyAutoTradeFanoutFieldsMonitorNum(String(numCh), data);
-          return;
-        }
-        if (data.type === 'monitor_list_updated') {
-          if (!recTenantMatchesMessageTenant(data.tenant_user_no)) return;
-          tmNewScheduleMonitorRefreshFromDb();
-        }
-      } catch (e2) {}
-    };
-    tmNewPrefsWs.onclose = function () {
-      tmNewPrefsWs = null;
-      setTimeout(tmNewConnectPreferencesWs, 5000);
-    };
-    tmNewPrefsWs.onerror = function () {
-      try {
-        if (tmNewPrefsWs) tmNewPrefsWs.close();
-      } catch (e) {}
-    };
+          if (data.type === 'auto_trade_status_change') {
+            if (!recMonitorIdBelongsToSession(data.monitor_id)) {
+              return;
+            }
+            var numCh = tmNewNumericFromBackendMonitorId(data.monitor_id);
+            if (!numCh) return;
+            tmNewApplyAutoTradeFanoutFieldsMonitorNum(String(numCh), data);
+            return;
+          }
+          if (data.type === 'monitor_list_updated') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no)) return;
+            tmNewScheduleMonitorRefreshFromDb();
+          }
+        } catch (e2) {}
+      },
+    });
   }
 
   function tmNewMainApiBase() {

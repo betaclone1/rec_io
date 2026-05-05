@@ -9935,6 +9935,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `monitor_sort_by` | `character varying(20)` | YES | 'name'::character varying | |
 | `allocation_view` | `character varying(10)` | YES | 'pie'::character varying | |
 | `portfolio_view` | `text` | YES | 'portfolio' | Which portfolio panel tab is active: `bankroll`, `portfolio`, or `pnl`. Persisted when user changes the tab. |
+| `performance_rollup_view` | `character varying(8)` | NO | 'td'::character varying | Dashboard NEW performance strip: `td` = calendar-to-date (trade date), `prev` = rolling windows from `closed_at`. Migration **`20260505_1410_dashboard_preferences_performance_rollup_view`**. |
 
 #### Constraints
 
@@ -9951,6 +9952,12 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
   ```sql
   CREATE UNIQUE INDEX dashboard_preferences_0001_user_id_key ON users.dashboard_preferences_0001 USING btree (user_id)
   ```
+
+---
+
+### Table: `users_0001.performance_total_0001` (and `performance_monitors_0001`)
+
+**Scope:** Migrations **`20260505_1400_performance_rollup_tables`**, **`20260505_1420_performance_monitors_rename_monitor_key_to_monitor`** (legacy PK name only), **`20260505_1430_performance_rollup_column_naming_v2`**, and **`20260505_1440_performance_total_user_id_pk`** (`singleton` → **`user_id`**, same convention as `dashboard_preferences`). For each tenant schema that has `trades_<slot>`, creates **`performance_total_<slot>`** (one row, **`user_id = 1`**, PK + `CHECK (user_id = 1)`) and **`performance_monitors_<slot>`** (PK **`monitor`**, same logical field as `trades.monitor`). Same **150 numeric metric columns** on both. **Column names (v2):** `{1d|1w|1m|1y|all}_{td|prev}_{pnl|ret_pct|fees|trades_n|win_rate}_{live|paper|test}` — e.g. **`1d_prev_pnl_paper`**. **`updated_at`** is `timestamptz` and is the **last** column (after all metrics); migration **`20260505_1450_performance_rollups_updated_at_last`** moves it on existing tables. NOTIFY triggers publish stream **`performance_rollups`**. Substitute **`users_<NNNN>`** / suffix **`_<NNNN>`** per [tenant slot naming](#tenant-slot-naming).
 
 ---
 

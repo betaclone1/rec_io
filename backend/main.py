@@ -1289,6 +1289,29 @@ async def serve_mobile_dashboard(request: Request):
     else:
         return HTMLResponse(content="Mobile dashboard not found", status_code=404)
 
+
+@app.get("/mobile/dashboard_new", response_class=HTMLResponse)
+async def serve_mobile_dashboard_new(request: Request):
+    """Serve Phase C dashboard shell (rollup strip + TD/PREV); cache-busted like /mobile/dashboard."""
+    if AUTH_ENABLED:
+        if not _query_token_auth_ok(request):
+            return RedirectResponse(url="/login")
+
+    file_path = f"{frontend_dir}/mobile/dashboard_mobile_NEW.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            content = f.read()
+            return HTMLResponse(
+                content=content,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+    return HTMLResponse(content="Mobile dashboard NEW not found", status_code=404)
+
+
 # Serve mobile account manager with cache busting
 @app.get("/mobile/account_manager", response_class=HTMLResponse)
 async def serve_mobile_account_manager(request: Request):
@@ -4920,50 +4943,247 @@ async def get_current_portfolio(trading_mode: Optional[str] = None):
 
 @app.get("/api/portfolio/history")
 async def get_portfolio_history(
+    request: Request,
     period: str = "1m",
     trading_mode: Optional[str] = Query(
         None, description="paper|live — same as UI toggle; session selects tenant"
     ),
+    rollup_view: Optional[str] = Query(
+        None, description="td|prev — calendar vs rolling (dashboard rollup toggle)"
+    ),
 ):
-    """Portfolio chart series — same DB/session tenant as monitors (no read_api hop)."""
-    from backend.core.dashboard_portfolio_queries import portfolio_history_payload
-
-    return portfolio_history_payload(period=period, trading_mode=trading_mode)
+    """Proxy portfolio history reads to read_api."""
+    try:
+        params: Dict[str, Any] = {"period": period}
+        if trading_mode:
+            params["trading_mode"] = trading_mode
+        if rollup_view:
+            params["rollup_view"] = rollup_view
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/portfolio/history",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(f"[read_api proxy] Error getting /api/portfolio/history from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/portfolio/history"}
 
 
 @app.get("/api/bankroll/history")
 async def get_bankroll_history(
+    request: Request,
     period: str = "1m",
     trading_mode: Optional[str] = Query(
         None, description="paper|live — same as UI toggle; session selects tenant"
     ),
+    rollup_view: Optional[str] = Query(
+        None, description="td|prev — calendar vs rolling (dashboard rollup toggle)"
+    ),
 ):
-    from backend.core.dashboard_portfolio_queries import bankroll_history_payload
-
-    return bankroll_history_payload(period=period, trading_mode=trading_mode)
+    try:
+        params: Dict[str, Any] = {"period": period}
+        if trading_mode:
+            params["trading_mode"] = trading_mode
+        if rollup_view:
+            params["rollup_view"] = rollup_view
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/bankroll/history",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(f"[read_api proxy] Error getting /api/bankroll/history from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/bankroll/history"}
 
 
 @app.get("/api/pnl/history")
 async def get_pnl_history(
+    request: Request,
     period: str = "1m",
     trading_mode: Optional[str] = Query(
         None, description="paper|live — same as UI toggle; session selects tenant"
     ),
+    rollup_view: Optional[str] = Query(
+        None, description="td|prev — calendar vs rolling (dashboard rollup toggle)"
+    ),
 ):
-    from backend.core.dashboard_portfolio_queries import pnl_history_payload
-
-    return pnl_history_payload(period=period, trading_mode=trading_mode)
+    try:
+        params: Dict[str, Any] = {"period": period}
+        if trading_mode:
+            params["trading_mode"] = trading_mode
+        if rollup_view:
+            params["rollup_view"] = rollup_view
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/pnl/history",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(f"[read_api proxy] Error getting /api/pnl/history from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/pnl/history"}
 
 
 @app.get("/api/performance/realized")
 async def get_performance_realized(
+    request: Request,
     trading_mode: Optional[str] = Query(
         None, description="paper|live — same as UI toggle; session selects tenant"
     ),
 ):
-    from backend.core.dashboard_portfolio_queries import performance_realized_payload
+    try:
+        params: Dict[str, Any] = {}
+        if trading_mode:
+            params["trading_mode"] = trading_mode
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/performance/realized",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(f"[read_api proxy] Error getting /api/performance/realized from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/performance/realized"}
 
-    return performance_realized_payload(trading_mode=trading_mode)
+
+@app.get("/api/performance/rollups")
+async def get_performance_rollups(
+    request: Request,
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — same as UI toggle; session selects tenant"
+    ),
+    rollup_view: str = Query(
+        "td",
+        description="td = calendar-to-date; prev = rolling windows",
+    ),
+):
+    try:
+        params: Dict[str, Any] = {}
+        if trading_mode:
+            params["trading_mode"] = trading_mode
+        if rollup_view:
+            params["rollup_view"] = rollup_view
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/performance/rollups",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(f"[read_api proxy] Error getting /api/performance/rollups from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/performance/rollups"}
+
+
+@app.get("/api/performance/monitor-tiles")
+async def get_performance_monitor_tiles_proxy(
+    request: Request,
+    period: str = Query(
+        "all",
+        description="1d | 1w | 1m | 1y | all — dashboard chart window",
+    ),
+    rollup_view: str = Query("td", description="td | prev"),
+):
+    try:
+        params: Dict[str, Any] = {"period": period, "rollup_view": rollup_view}
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/performance/monitor-tiles",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=5,
+        )
+        resp.raise_for_status()
+        return resp.json()
+    except Exception as e:
+        _main_logger.warning(
+            f"[read_api proxy] Error getting /api/performance/monitor-tiles from read_api: {e}"
+        )
+        return {"status": "error", "message": "read_api proxy failed for /api/performance/monitor-tiles"}
+
+
+@app.get("/api/dashboard/performance-snapshot")
+async def get_dashboard_performance_snapshot():
+    """
+    Bootstrap: same JSON as ``performance_rollups_snapshot`` on ``/ws/db_changes``.
+
+    **Redis-only:** no PostgreSQL cold-fill and no degraded path. If Redis is down, the key is missing,
+    or the value is corrupt, respond with ``503`` so callers treat the realtime plane as unavailable.
+    """
+    slot = resolved_tenant_user_no_for_app()
+    if not slot:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "missing_tenant"},
+        )
+
+    from backend.core.trading_redis_comms import (
+        redis_client_optional,
+        redis_key_dashboard_performance_snapshot,
+    )
+
+    r = redis_client_optional()
+    if not r:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "redis_unavailable"},
+        )
+    try:
+        r.ping()
+    except Exception as e:
+        _main_logger.warning("[dashboard performance-snapshot] redis ping failed: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "redis_unavailable"},
+        )
+
+    try:
+        raw = r.get(redis_key_dashboard_performance_snapshot(slot))
+    except Exception as e:
+        _main_logger.warning("[dashboard performance-snapshot] redis get failed: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "redis_read_failed"},
+        )
+
+    if not raw:
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "no_snapshot"},
+        )
+    try:
+        if isinstance(raw, (bytes, bytearray)):
+            raw = raw.decode("utf-8", errors="replace")
+        data = json.loads(raw)
+    except Exception as e:
+        _main_logger.warning("[dashboard performance-snapshot] parse failed: %s", e)
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "invalid_snapshot"},
+        )
+    if not isinstance(data, dict) or data.get("type") != "performance_rollups_snapshot":
+        raise HTTPException(
+            status_code=503,
+            detail={"status": "error", "message": "invalid_snapshot"},
+        )
+    return data
+
 
 @app.get("/api/dashboard/preferences")
 async def get_dashboard_preferences(mode: str = "prod"):
@@ -4978,7 +5198,8 @@ async def get_dashboard_preferences(mode: str = "prod"):
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view
+                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view,
+                       performance_rollup_view
                 FROM {pref_table}
                 WHERE user_id = 1
                 """
@@ -4988,6 +5209,9 @@ async def get_dashboard_preferences(mode: str = "prod"):
         conn.close()
 
         if result:
+            rv = result[5] if len(result) > 5 else None
+            if rv not in ("td", "prev"):
+                rv = "td"
             return {
                 "status": "ok",
                 "portfolio_chart_view": result[0],
@@ -4995,6 +5219,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
                 "monitor_sort_by": result[2] if result[2] else "name",
                 "allocation_view": result[3] if result[3] else "pie",
                 "portfolio_view": result[4] if result[4] else "portfolio",
+                "performance_rollup_view": rv,
             }
         return {
             "status": "ok",
@@ -5003,6 +5228,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
             "monitor_sort_by": "name",
             "allocation_view": "pie",
             "portfolio_view": "portfolio",
+            "performance_rollup_view": "td",
         }
 
     except psycopg2.Error as e:
@@ -5014,6 +5240,7 @@ async def get_dashboard_preferences(mode: str = "prod"):
             "monitor_sort_by": "name",
             "allocation_view": "pie",
             "portfolio_view": "portfolio",
+            "performance_rollup_view": "td",
         }
     except Exception as e:
         _main_logger.warning(f"Error getting dashboard preferences: {e}")
@@ -5038,14 +5265,30 @@ async def save_dashboard_preferences(request: Request):
         portfolio_view = data.get("portfolio_view", "portfolio")
         if portfolio_view not in ("bankroll", "portfolio", "pnl"):
             portfolio_view = "portfolio"
+        pref_table = f"users.dashboard_preferences_{slot}"
+        performance_rollup_view = "td"
+        if "performance_rollup_view" in data:
+            v = data.get("performance_rollup_view")
+            if v in ("td", "prev"):
+                performance_rollup_view = v
+        else:
+            try:
+                with conn.cursor() as cur0:
+                    cur0.execute(
+                        f"SELECT performance_rollup_view FROM {pref_table} WHERE user_id = 1"
+                    )
+                    row_prv = cur0.fetchone()
+                    if row_prv and row_prv[0] in ("td", "prev"):
+                        performance_rollup_view = row_prv[0]
+            except Exception:
+                pass
         _main_logger.debug(f"[DASHBOARD PREFERENCES] Extracted values: portfolio_chart_view={portfolio_chart_view}, monitor_view_mode={monitor_view_mode}, monitor_sort_by={monitor_sort_by}, allocation_view={allocation_view}, portfolio_view={portfolio_view}")
 
-        pref_table = f"users.dashboard_preferences_{slot}"
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                INSERT INTO {pref_table} (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view, updated_at)
-                VALUES (1, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                INSERT INTO {pref_table} (user_id, portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view, performance_rollup_view, updated_at)
+                VALUES (1, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
                 ON CONFLICT (user_id)
                 DO UPDATE SET
                     portfolio_chart_view = EXCLUDED.portfolio_chart_view,
@@ -5053,9 +5296,17 @@ async def save_dashboard_preferences(request: Request):
                     monitor_sort_by = EXCLUDED.monitor_sort_by,
                     allocation_view = EXCLUDED.allocation_view,
                     portfolio_view = EXCLUDED.portfolio_view,
+                    performance_rollup_view = EXCLUDED.performance_rollup_view,
                     updated_at = CURRENT_TIMESTAMP
                 """,
-                (portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view),
+                (
+                    portfolio_chart_view,
+                    monitor_view_mode,
+                    monitor_sort_by,
+                    allocation_view,
+                    portfolio_view,
+                    performance_rollup_view,
+                ),
             )
 
         conn.commit()
@@ -5464,7 +5715,13 @@ async def get_monitor_names(user_id: Optional[str] = None):
         }
 
 @app.get("/api/monitors/allocation")
-async def get_monitors_allocation(user_id: Optional[str] = None):
+async def get_monitors_allocation(
+    user_id: Optional[str] = None,
+    trading_mode: Optional[str] = Query(
+        None,
+        description="paper|live — which account_balance table backs dollar amounts (matches UI toggle)",
+    ),
+):
     """Get bankroll allocation data for active monitors"""
     try:
         from backend.core.config.database import get_postgresql_connection
@@ -5499,7 +5756,11 @@ async def get_monitors_allocation(user_id: Optional[str] = None):
             monitor_results = cursor.fetchall()
             
             # Get total bankroll from account_balance (stored in cents)
-            ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
+            ab_ident = sql_ident_qualified_table(
+                account_balance_table_for_user(
+                    user_number, client_trading_mode=trading_mode
+                )
+            )
             cursor.execute(
                 sql.SQL(
                     """
@@ -5572,6 +5833,7 @@ async def update_monitors_allocation(request: dict):
             return {"status": "error", "message": "No updates provided"}
         
         user_number = _session_user_number_from_optional_user_id(request.get("user_id"))
+        tm = request.get("trading_mode")
         
         conn = get_postgresql_connection()
         if not conn:
@@ -5582,7 +5844,11 @@ async def update_monitors_allocation(request: dict):
         
         with conn.cursor() as cursor:
             # Get current total bankroll to calculate new dollar amounts
-            ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
+            ab_ident = sql_ident_qualified_table(
+                account_balance_table_for_user(
+                    user_number, client_trading_mode=tm
+                )
+            )
             cursor.execute(
                 sql.SQL(
                     """
