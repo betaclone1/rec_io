@@ -2124,11 +2124,17 @@
   }
 
   /**
-   * Keep a single TradingView iframe: create once, then setSymbol only when the asset changes.
-   * Full reload on every monitor refresh (e.g. rec:tm-db-monitor-list) was reloading the widget for minutes.
+   * After applying monitor state: full TradingView reload when the **monitor** changes (dropdown / picker),
+   * including when the symbol string is unchanged (two monitors on the same underlying). For the same monitor
+   * id (e.g. debounced refresh after DB/WS), only touch the widget if the symbol changed — avoids reloading
+   * the iframe on every meta refresh.
    */
-  function tmNewSyncTradingViewAfterMonitorApply(sym, prevSym) {
+  function tmNewSyncTradingViewAfterMonitorApply(sym, prevSym, monitorChanged) {
     if (typeof TradingView === 'undefined' || !TradingView.widget) return;
+    if (monitorChanged) {
+      forceReloadTradingViewWidget(sym);
+      return;
+    }
     if (!window.tvWidget) {
       forceReloadTradingViewWidget(sym);
       return;
@@ -2359,6 +2365,12 @@
 
   async function applyMonitorPayload(monitor) {
     if (!monitor) return;
+    const prevMonitorId =
+      window.currentMonitorId != null && String(window.currentMonitorId).trim() !== ''
+        ? String(window.currentMonitorId).trim()
+        : '';
+    const thisMonitorId = monitor.id != null ? String(monitor.id).trim() : '';
+    const monitorChanged = prevMonitorId !== thisMonitorId;
     const prevSym = (document.body.dataset.currentSymbol || '').toString().trim().toUpperCase();
     const sym = (monitor.symbol || '').toString().trim().toUpperCase() || 'BTC';
     let mkt = monitor.market;
@@ -2409,7 +2421,7 @@
     } catch (e) {}
 
     setTimeout(function () {
-      tmNewSyncTradingViewAfterMonitorApply(sym, prevSym);
+      tmNewSyncTradingViewAfterMonitorApply(sym, prevSym, monitorChanged);
     }, 100);
     if (typeof window.tmNewRefreshLiveSpotPanel === 'function') {
       window.tmNewRefreshLiveSpotPanel();
