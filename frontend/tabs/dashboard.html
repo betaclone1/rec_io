@@ -5161,9 +5161,10 @@
 
     async function loadPerformanceData() {
       try {
-        if (!tryApplyPerformanceStripFromWsCache()) {
-          reapplyPerformanceStripFromCachedSnapshot();
-        }
+        if (tryApplyPerformanceStripFromWsCache()) return;
+        // WS snapshot may be missed or cache expired; same payload as WS lives in Redis (GET performance-snapshot).
+        if (await fetchDashboardPerformanceSnapshotApplySoft()) return;
+        reapplyPerformanceStripFromCachedSnapshot();
       } catch (error) {
         console.error('Error loading performance data:', error);
       }
