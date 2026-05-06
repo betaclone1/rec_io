@@ -1,7 +1,8 @@
 """
 Pre-aggregated performance rollups in users_<slot>.performance_{total,monitors}_<slot>.
 
-Recomputed from closed/settled trades (union with archives) on trade close via monitor_manager.
+Recomputed from closed/settled trades (union with archives). Trade-close path schedules a
+debounced full recompute via monitor_manager; startup and backfills call recompute directly.
 Calendar buckets (TD) use trade ``date`` in America/New_York; rolling (PREV) uses parsed ``closed_at``.
 """
 
@@ -11,6 +12,8 @@ import json
 import logging
 import os
 import re
+import threading
+import time
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date as Date
@@ -30,6 +33,10 @@ from backend.util.trade_log_archivist import (
 _log = logging.getLogger(__name__)
 _EASTERN = ZoneInfo("America/New_York")
 _CLOSE_AT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}")
+
+# Hot path (trade close): coalesce many closes into one recompute + one snapshot publish.
+_rollup_debounce_lock = threading.Lock()
+_rollup_debounce_state: Dict[str, Dict[str, Any]] = {}
 
 # Rollup column names: ``{window}_{td|prev}_{metric}_{live|paper|test}`` (e.g. ``1d_prev_pnl_paper``).
 WINDOWS = ("1d", "1w", "1m", "1y", "all")
@@ -189,10 +196,61 @@ def _performance_table_names(slot: str) -> Tuple[str, str, str]:
     return sch, f"performance_total_{u}", f"performance_monitors_{u}"
 
 
+def schedule_performance_rollup_recompute(slot: Optional[str] = None) -> None:
+    """
+    Debounced full recompute for a tenant (trailing edge + max-wait cap).
+
+    Use from monitor_manager on trade close so bursts become a single DB scan + snapshot.
+    Startup / backfills should call :func:`recompute_performance_rollups_for_slot` directly.
+    """
+    u = _norm_slot(slot or "")
+    if not u:
+        return
+
+    debounce = float(os.getenv("PERFORMANCE_ROLLUP_RECOMPUTE_DEBOUNCE_SEC", "0.35"))
+    debounce = max(0.05, min(debounce, 30.0))
+    max_wait = float(os.getenv("PERFORMANCE_ROLLUP_RECOMPUTE_MAX_WAIT_SEC", "3.0"))
+    max_wait = max(debounce, min(max_wait, 120.0))
+
+    def fire() -> None:
+        with _rollup_debounce_lock:
+            st = _rollup_debounce_state.get(u)
+            if st is not None:
+                st["timer"] = None
+                st["pending_since"] = None
+        try:
+            recompute_performance_rollups_for_slot(u)
+        except Exception as e:
+            _log.warning("debounced performance rollup recompute failed slot=%s: %s", u, e)
+
+    now = time.monotonic()
+    with _rollup_debounce_lock:
+        st = _rollup_debounce_state.setdefault(
+            u, {"timer": None, "pending_since": None}
+        )
+        if st["pending_since"] is None:
+            st["pending_since"] = now
+        elapsed = now - st["pending_since"]
+        wait = debounce
+        if elapsed + wait > max_wait:
+            wait = max(0.05, max_wait - elapsed)
+        old = st.get("timer")
+        if old is not None:
+            try:
+                old.cancel()
+            except Exception:
+                pass
+        t = threading.Timer(wait, fire)
+        t.daemon = True
+        st["timer"] = t
+        t.start()
+
+
 def recompute_performance_rollups_for_slot(slot: Optional[str] = None) -> Dict[str, Any]:
     """
     Full recompute for one tenant slot; UPSERT totals row (user_id = 1) and per-monitor rows.
-    Safe to call on every closed trade (monitor_manager hook).
+
+    From the trade-close hot path, prefer :func:`schedule_performance_rollup_recompute` so work is debounced.
     """
     u = _norm_slot(slot or "")
     if not u:

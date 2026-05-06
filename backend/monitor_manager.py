@@ -1703,11 +1703,11 @@ environment={env_vars}
                     self.log_event("ERROR", f"Regime evaluation hook failed: {e}")
 
                 try:
-                    from backend.core.performance_rollups import recompute_performance_rollups_for_slot
+                    from backend.core.performance_rollups import schedule_performance_rollup_recompute
 
-                    recompute_performance_rollups_for_slot(_mm_worker_slot())
+                    schedule_performance_rollup_recompute(_mm_worker_slot())
                 except Exception as e:
-                    self.log_event("ERROR", f"Performance rollup recompute failed: {e}")
+                    self.log_event("ERROR", f"Performance rollup recompute schedule failed: {e}")
 
                 return result
             else:
