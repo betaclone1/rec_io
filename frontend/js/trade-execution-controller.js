@@ -44,6 +44,14 @@ function _serverErrorMessage(result) {
   return null;
 }
 
+/** Optional hook (e.g. trade-monitor-new ``tmNewApiFetch``) for same auth/CORS as the rest of the tab. */
+function _recTradesTransportFetch(url, init) {
+  if (typeof window.__recTradesFetch === 'function') {
+    return window.__recTradesFetch(url, init);
+  }
+  return fetch(url, init);
+}
+
 // === CENTRALIZED CLOSE TRADE FUNCTION ===
 // This is the ONLY function that should close trades
 window.closeTrade = async function(tradeId, sellPrice, event) {
@@ -68,10 +76,10 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
 
   try {
     // Fetch open trades only (same rows the UI lists for Close)
-    const trades = await recFetchTradesMerged(
-      window.location.origin + '/trades?status=open',
-      { cache: 'no-store' }
-    );
+    const trades = await recFetchTradesMerged(window.location.origin + '/trades?status=open', {
+      cache: 'no-store',
+      customFetch: _recTradesTransportFetch,
+    });
     
     // Find the specific trade by ID
     const trade = trades.find(t => t.id == tradeId);
@@ -117,7 +125,7 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
         const currentMonitorName = window.currentMonitorName;
         if (currentMonitorName) {
           const activeTradesUrl = window.location.origin + `/api/active_trades/${currentMonitorName}`;
-          const activeTradesRes = await fetch(activeTradesUrl, { cache: 'no-store' });
+          const activeTradesRes = await _recTradesTransportFetch(activeTradesUrl, { cache: 'no-store' });
           if (activeTradesRes.ok) {
             const activeTradesData = await activeTradesRes.json();
             if (activeTradesData.active_trades && Array.isArray(activeTradesData.active_trades)) {
@@ -165,10 +173,10 @@ window.closeTrade = async function(tradeId, sellPrice, event) {
     };
 
     // Execute the actual close trade
-    const response = await fetch(window.location.origin + '/trades', {
+    const response = await _recTradesTransportFetch(window.location.origin + '/trades', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload)
+      body: JSON.stringify(payload),
     });
 
     const rawText = await response.text();

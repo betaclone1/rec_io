@@ -178,26 +178,12 @@
     return fetch(target.toString(), init);
   }
 
-  function readApiOriginForTradeMonitor() {
-    try {
-      if (typeof window.__ORDERBOOK_API__ === 'string' && window.__ORDERBOOK_API__.trim()) {
-        return new URL(window.__ORDERBOOK_API__.trim()).origin;
-      }
-    } catch (e) {}
-    var readPort = window.__READ_API_PORT__;
-    if (readPort === undefined || readPort === null || readPort === '') readPort = 3050;
-    var proto = window.location.protocol || 'http:';
-    var host = window.location.hostname || 'localhost';
-    return proto + '//' + host + ':' + String(readPort);
-  }
-
   async function fetchLiveSymbolSpotBootstrap() {
     if (!document.body || !document.body.classList.contains('trade-monitor-new-page')) {
       return;
     }
     try {
-      var url = readApiOriginForTradeMonitor() + '/api/live_symbol_spot_bootstrap';
-      const res = await fetch(url, { credentials: 'include', cache: 'no-store' });
+      const res = await tmMainApiFetch('/api/live_symbol_spot_bootstrap', { cache: 'no-store' });
       if (!res.ok) return;
       const msg = await res.json();
       if (msg && msg.type === 'live_symbol_spot') {
@@ -283,22 +269,13 @@
   }
 
   function defaultTradeMonitorDbOrderbookUrl() {
-    var readPort = window.__READ_API_PORT__;
-    if (readPort === undefined || readPort === null || readPort === '') {
-      readPort = 3050;
-    }
-    var proto = window.location.protocol || 'http:';
-    var host = window.location.hostname || 'localhost';
+    var base = tmMainApiBase();
     var params = new URLSearchParams(window.location.search || '');
     var sym = (params.get('symbol') || 'BTC').toString().trim().toUpperCase() || 'BTC';
     var mktRaw = (params.get('market') || '15m').toString().trim().toLowerCase();
     var mkt = mktRaw === 'hourly' ? 'hourly' : '15m';
     return (
-      proto +
-      '//' +
-      host +
-      ':' +
-      String(readPort) +
+      base +
       '/api/trade-monitor/orderbook?symbol=' +
       encodeURIComponent(sym) +
       '&market=' +
@@ -607,6 +584,9 @@
     if (typeof window.tmNewApplyMarketHeaderIcon === 'function') {
       window.tmNewApplyMarketHeaderIcon(sym);
     }
+    try {
+      window.__recTmStrikeMarketTitle = mt ? String(mt).trim() : '';
+    } catch (eMt) {}
   }
 
   function currentSymbol() {
@@ -644,7 +624,12 @@
         encodeURIComponent(mktParam),
       { cache: 'no-store' }
     );
-    const data = await res.json();
+    let data = null;
+    try {
+      data = await res.json();
+    } catch (e) {
+      return empty;
+    }
     if (!res.ok || !data || data.error) {
       return empty;
     }
@@ -734,9 +719,9 @@
     for (let i = 0; i < unique.length; i += chunkSize) {
       const chunk = unique.slice(i, i + chunkSize);
       try {
-        const u = new URL(readApiOriginForTradeMonitor() + '/api/trade-monitor/orderbook/liquidity');
+        const u = new URL(tmMainApiBase() + '/api/trade-monitor/orderbook/liquidity');
         u.searchParams.set('market_tickers', chunk.join(','));
-        const res = await fetch(u.toString(), { credentials: 'include', cache: 'no-store' });
+        const res = await tmMainApiFetch(u.pathname + u.search, { cache: 'no-store' });
         const data = await res.json();
         const map = data && data.liquidity_by_ticker ? data.liquidity_by_ticker : {};
         chunk.forEach((t) => {
@@ -899,6 +884,24 @@
       };
       requestAnimationFrame(() => tryCenter(0));
     }
+    try {
+      if (document.body && document.body.classList.contains('trade-monitor-new-page')) {
+        const atmRow =
+          closest && hourlyStrikeRows.length
+            ? hourlyStrikeRows.find((r) => String(r.ticker) === String(closest))
+            : null;
+        window.dispatchEvent(
+          new CustomEvent('rec:tm-strike-atm-synced', {
+            detail: { atmTicker: closest ? String(closest) : '', atmRow: atmRow || null },
+          })
+        );
+      }
+    } catch (eSync) {}
+    if (typeof window.recTmOrderBuilderRefreshQuotes === 'function') {
+      try {
+        window.recTmOrderBuilderRefreshQuotes();
+      } catch (eOb) {}
+    }
   }
 
   function hourlyQuotesSignature(rows) {
@@ -1022,6 +1025,40 @@
       .join('||');
   }
 
+  /** Match order panel strike + side; re-run after row render/patch (className resets pills). */
+  function recTmApplyStrikeTableOrderSelection(ticker, side) {
+    if (!document.body || !document.body.classList.contains('trade-monitor-new-page')) return;
+    const root = document.getElementById('hourlyStrikeList');
+    if (!root) return;
+    root.querySelectorAll('.hourly-ask-pill--order-selected').forEach((el) => {
+      el.classList.remove('hourly-ask-pill--order-selected');
+    });
+    const t = ticker != null && String(ticker).trim() !== '' ? String(ticker).trim() : '';
+    if (!t) return;
+    const s = side === 'no' ? 'no' : 'yes';
+    let trMatch = null;
+    root.querySelectorAll('tr.hourly-strike-data-row').forEach((row) => {
+      if (String(row.getAttribute('data-hourly-ticker') || '') === t) {
+        trMatch = row;
+      }
+    });
+    if (!trMatch) return;
+    const pill =
+      s === 'no'
+        ? trMatch.querySelector('.hourly-ask-pill-no')
+        : trMatch.querySelector('.hourly-ask-pill-yes');
+    if (pill) pill.classList.add('hourly-ask-pill--order-selected');
+  }
+  window.recTmApplyStrikeTableOrderSelection = recTmApplyStrikeTableOrderSelection;
+
+  function recTmSyncStrikeTablePillsFromOrderBuilder() {
+    if (typeof window.tmNewGetOrderBuilderStrikeSelection !== 'function') return;
+    try {
+      const sel = window.tmNewGetOrderBuilderStrikeSelection();
+      recTmApplyStrikeTableOrderSelection(sel && sel.ticker, sel && sel.side);
+    } catch (eSync) {}
+  }
+
   function renderHourlyRows() {
     const root = document.getElementById('hourlyStrikeList');
     if (!root) return;
@@ -1140,14 +1177,19 @@
         }
         renderHourlyRows();
         requestDataRefresh();
-      });
-    });
-    root.querySelectorAll('.hourly-col-yes, .hourly-col-no').forEach((td) => {
-      td.addEventListener('click', (ev) => {
-        ev.stopPropagation();
+        try {
+          if (document.body && document.body.classList.contains('trade-monitor-new-page')) {
+            window.dispatchEvent(
+              new CustomEvent('rec:tm-order-builder-pick', {
+                detail: { ticker: t, side: null },
+              })
+            );
+          }
+        } catch (ePick) {}
       });
     });
     syncStrikeTableAtmMarker();
+    recTmSyncStrikeTablePillsFromOrderBuilder();
   }
 
   function patchHourlyRowQuotesInPlace() {
@@ -1198,6 +1240,12 @@
       }
     }
     syncStrikeTableAtmMarker();
+    recTmSyncStrikeTablePillsFromOrderBuilder();
+    if (typeof window.recTmOrderBuilderRefreshQuotes === 'function') {
+      try {
+        window.recTmOrderBuilderRefreshQuotes();
+      } catch (eOb2) {}
+    }
   }
 
   /** If spot moved and the true closest strike was liquidity-filtered out, add it from raw rows. */
@@ -1506,6 +1554,27 @@
         requestDataRefresh();
       });
     }
+    (function installTmNewObStrikeListDelegation() {
+      const root = document.getElementById('hourlyStrikeList');
+      if (!root || root.dataset.tmNewObStrikePickBound) return;
+      root.dataset.tmNewObStrikePickBound = '1';
+      root.addEventListener('click', function (ev) {
+        const yesPill = ev.target.closest && ev.target.closest('.hourly-ask-pill-yes');
+        const noPill = ev.target.closest && ev.target.closest('.hourly-ask-pill-no');
+        if (!yesPill && !noPill) return;
+        const tr = ev.target.closest && ev.target.closest('tr.hourly-strike-data-row');
+        if (!tr) return;
+        const ticker = tr.getAttribute('data-hourly-ticker');
+        if (!ticker) return;
+        try {
+          window.dispatchEvent(
+            new CustomEvent('rec:tm-order-builder-pick', {
+              detail: { ticker: String(ticker), side: yesPill ? 'yes' : 'no' },
+            })
+          );
+        } catch (ePill) {}
+      });
+    })();
     window.addEventListener('rec:tm-monitor-changed', function () {
       hourlyHeaderLastFetchSymbol = '';
       lastHourlyRowsSignature = '';
@@ -1523,6 +1592,13 @@
       connectStrikeTableDbWs();
     }
   }
+
+  window.recTmGetHourlyStrikeRow = function (ticker) {
+    const t = String(ticker || '');
+    return hourlyStrikeRows.find((r) => String(r.ticker) === t) || null;
+  };
+  window.recTmFmtStrike = fmtStrike;
+  window.recTmFmtAsk = fmtAsk;
 
   ensureInitialVisibility();
   centerAtmStrikeOnNextRender = true;

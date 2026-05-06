@@ -201,10 +201,12 @@
           if (j.monitor.total_position != null) {
             modal._uatLastTotalPosition = j.monitor.total_position;
           }
+          window.UatUnifiedModalPositionSize.setModalBankrollAllotmentCents(modal, j.monitor.bankroll_allotment_total);
           window.UatUnifiedModalPositionSize.applyMonitorToEls(els, j.monitor);
           if (j.monitor.total_position != null) {
             window.UatUnifiedModalPositionSize.refreshAllPositionDisplays(j.monitor.total_position);
           }
+          window.UatUnifiedModalPositionSize.syncModalPositionPreview(modal);
           window.UatUnifiedModalPositionSize.captureOpenSnapshot(modal);
         })
         .catch(function () {});

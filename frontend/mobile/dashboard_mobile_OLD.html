@@ -7377,11 +7377,13 @@
           if (!j || j.status !== 'ok' || !j.monitor) return;
           var modal = document.getElementById('mobileUnifiedAutoTradeModal');
           var els = window.UatUnifiedModalPositionSize.getElsFromModal(modal);
+          window.UatUnifiedModalPositionSize.setModalBankrollAllotmentCents(modal, j.monitor.bankroll_allotment_total);
           window.UatUnifiedModalPositionSize.applyMonitorToEls(els, j.monitor);
           if (j.monitor.total_position != null) {
             modal._uatLastTotalPosition = j.monitor.total_position;
             window.UatUnifiedModalPositionSize.refreshAllPositionDisplays(j.monitor.total_position);
           }
+          window.UatUnifiedModalPositionSize.syncModalPositionPreview(modal);
           window.UatUnifiedModalPositionSize.captureOpenSnapshot(modal);
         })
         .catch(function () {});

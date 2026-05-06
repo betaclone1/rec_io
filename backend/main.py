@@ -1836,6 +1836,41 @@ async def trade_history_insights_proxy(request: Request):
     return await _as_starlette_response(r)
 
 
+@app.get("/api/live_symbol_spot_bootstrap")
+async def live_symbol_spot_bootstrap_proxy(request: Request):
+    """Proxy to read_api: same-origin so browsers send session Cookie (cross-port :read_api + credentials is unreliable)."""
+    q = request.url.query
+    path = (
+        f"/api/live_symbol_spot_bootstrap?{q}"
+        if q
+        else "/api/live_symbol_spot_bootstrap"
+    )
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
+
+
+@app.get("/api/trade-monitor/orderbook")
+async def trade_monitor_orderbook_proxy(request: Request):
+    """Proxy to read_api: trade-monitor orderbook JSON (same-origin for tm-new UIs on main_app)."""
+    q = request.url.query
+    path = f"/api/trade-monitor/orderbook?{q}" if q else "/api/trade-monitor/orderbook"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
+
+
+@app.get("/api/trade-monitor/orderbook/liquidity")
+async def trade_monitor_orderbook_liquidity_proxy(request: Request):
+    """Proxy to read_api: batch liquidity probe for strike rows."""
+    q = request.url.query
+    path = (
+        f"/api/trade-monitor/orderbook/liquidity?{q}"
+        if q
+        else "/api/trade-monitor/orderbook/liquidity"
+    )
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
+
+
 @app.get("/api/get_trade_history_preferences")
 async def get_trade_history_preferences_route():
     """Trade history UI prefs: same process/session as the tab (no read_api hop)."""

@@ -49,6 +49,59 @@
     return bg === 'rgb(0, 123, 255)' || bg === BLUE_BG;
   }
 
+  /**
+   * Preview-only: mirror monitor_manager total_position when bankroll_allotment_total (cents) is known.
+   * Does not apply current_max_pct_exposure cap (not exposed on GET /api/monitor today).
+   */
+  function computePreviewTotalContracts(read, bankrollAllotmentCents) {
+    if (!read) return null;
+    var mult = parseFloat(read.multiplier);
+    if (Number.isNaN(mult)) mult = 1;
+    if (mult === 0) return 1;
+    if (read.position_type === 'percent') {
+      var cents = parseInt(bankrollAllotmentCents, 10);
+      if (Number.isNaN(cents)) cents = 0;
+      var allotmentDollars = cents / 100.0;
+      var basePct = (read.position_size || 0) / 100.0;
+      var effectivePct = basePct * mult;
+      var n = Math.round(allotmentDollars * effectivePct);
+      if (n < 1) n = 1;
+      return n;
+    }
+    var c = Math.trunc((read.position_size || 0) * mult);
+    if (c < 1) c = 1;
+    return c;
+  }
+
+  function setModalBankrollAllotmentCents(modalEl, cents) {
+    if (!modalEl) return;
+    if (cents === undefined || cents === null || cents === '') {
+      delete modalEl._uatBankrollAllotmentCents;
+      return;
+    }
+    var n = typeof cents === 'number' ? cents : parseInt(cents, 10);
+    modalEl._uatBankrollAllotmentCents = Number.isNaN(n) ? 0 : n;
+  }
+
+  function refreshModalPositionPreviewOnly(modalEl, totalContracts) {
+    if (!modalEl || totalContracts == null || totalContracts === '') return;
+    var n = typeof totalContracts === 'number' ? totalContracts : parseInt(totalContracts, 10);
+    if (Number.isNaN(n)) return;
+    var disp = modalEl.querySelector('.uat-pos-display');
+    if (!disp) return;
+    disp.textContent = n + ' ' + (n === 1 ? 'contract' : 'contracts');
+  }
+
+  function syncModalPositionPreview(modalEl) {
+    if (!modalEl) return;
+    var els = getElsFromModal(modalEl);
+    var read = readFromEls(els);
+    if (!read) return;
+    var cents = modalEl._uatBankrollAllotmentCents;
+    var n = computePreviewTotalContracts(read, cents);
+    if (n != null) refreshModalPositionPreviewOnly(modalEl, n);
+  }
+
   function readFromEls(els) {
     if (!els || !els.input) return null;
     var positionSize = parseInt(els.input.value, 10) || 1;
@@ -86,6 +139,19 @@
       .then(function (r) {
         if (!r.ok) throw new Error(String(r.status));
         return r.json();
+      })
+      .then(function (body) {
+        if (
+          body &&
+          body.total_position != null &&
+          body.total_position !== '' &&
+          !isNaN(Number(body.total_position))
+        ) {
+          var ob = document.getElementById('tmNewObContracts');
+          if (ob) delete ob.dataset.tmNewDirty;
+          refreshAllPositionDisplays(Number(body.total_position));
+        }
+        return body;
       })
       .catch(function (e) {
         console.error('uat_unified_modal_position_size sendUpdate', e);
@@ -236,6 +302,11 @@
     });
     var legacy = document.getElementById('position-display');
     if (legacy) legacy.textContent = text;
+    if (typeof window.tmNewOnResolvedContracts === 'function') {
+      try {
+        window.tmNewOnResolvedContracts(n);
+      } catch (eTm) {}
+    }
     var u1 = document.getElementById('unifiedAutoTradeModal');
     if (u1) u1._uatLastTotalPosition = n;
     var u2 = document.getElementById('mobileUnifiedAutoTradeModal');
@@ -278,6 +349,7 @@
       elsModal.percentBtn.addEventListener('click', function () {
         if (ignoreWs()) return;
         setPositionType(elsModal, 'percent', { applyPercentDefault: true });
+        if (persist === 'deferred') syncModalPositionPreview(modalEl);
         sendFromModal();
       });
     }
@@ -285,6 +357,7 @@
       elsModal.contractsBtn.addEventListener('click', function () {
         if (ignoreWs()) return;
         setPositionType(elsModal, 'contracts', {});
+        if (persist === 'deferred') syncModalPositionPreview(modalEl);
         sendFromModal();
       });
     }
@@ -299,6 +372,7 @@
           if (v < 1) v = 1;
         }
         elsModal.input.value = v;
+        if (persist === 'deferred') syncModalPositionPreview(modalEl);
         sendFromModal();
       });
     }
@@ -313,6 +387,7 @@
           var m = parseFloat(btn.getAttribute('data-multiplier'));
           if (!Number.isNaN(m) && global.currentMultiplier !== undefined) global.currentMultiplier = m;
         }
+        if (persist === 'deferred') syncModalPositionPreview(modalEl);
         sendFromModal();
       });
     });
@@ -333,6 +408,9 @@
     sendUpdate: sendUpdate,
     readFromEls: readFromEls,
     setPositionType: setPositionType,
+    setModalBankrollAllotmentCents: setModalBankrollAllotmentCents,
+    syncModalPositionPreview: syncModalPositionPreview,
+    computePreviewTotalContracts: computePreviewTotalContracts,
     refreshAllPositionDisplays: refreshAllPositionDisplays,
     captureOpenSnapshot: captureOpenSnapshot,
     restoreOpenSnapshot: restoreOpenSnapshot,

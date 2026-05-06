@@ -20,6 +20,8 @@
   };
   let tmNewPrefsWsUnsub = null;
   let tmNewMonitorListRefreshTimer = null;
+  /** Latest active-trade rows by `trade_id` for PnL button clicks (cleared each render). */
+  let tmNewLastActiveTradesById = new Map();
 
   function tmNewPreferencesWsUrl() {
     var base = tmNewMainApiBase();
@@ -228,6 +230,1133 @@
       tmNewScheduleMonitorRefreshFromDb();
     };
   }
+
+  function tmNewApplyPositionControlsFromMonitor(monitor) {
+    if (!monitor) return;
+    var positionInput = document.getElementById('position-size');
+    if (positionInput && monitor.position_size !== undefined) {
+      positionInput.value = monitor.position_size;
+    }
+    if (typeof window.applyMultiplierSelection === 'function') {
+      window.applyMultiplierSelection(monitor.multiplier);
+    } else {
+      document.querySelectorAll('#positionSizeSelector .multiplier-btn').forEach(function (btn) {
+        btn.classList.remove('active');
+        if (parseFloat(btn.getAttribute('data-multiplier')) === monitor.multiplier) {
+          btn.classList.add('active');
+        }
+      });
+      window.currentMultiplier = monitor.multiplier;
+    }
+    var percentBtn = document.getElementById('toggle-percent');
+    var contractsBtn = document.getElementById('toggle-contracts');
+    if (monitor.position_type === 'percent') {
+      if (percentBtn) {
+        percentBtn.style.backgroundColor = '#007bff';
+        percentBtn.style.borderColor = '#0056b3';
+        percentBtn.classList.remove('tm-new-pos-mode-btn--inactive');
+        percentBtn.classList.add('tm-new-pos-mode-btn--active');
+      }
+      if (contractsBtn) {
+        contractsBtn.style.backgroundColor = 'transparent';
+        contractsBtn.style.borderColor = '#ccc';
+        contractsBtn.classList.remove('tm-new-pos-mode-btn--active');
+        contractsBtn.classList.add('tm-new-pos-mode-btn--inactive');
+      }
+      if (positionInput) {
+        positionInput.min = 1;
+        positionInput.max = 100;
+      }
+    } else if (monitor.position_type === 'contracts') {
+      if (contractsBtn) {
+        contractsBtn.style.backgroundColor = '#007bff';
+        contractsBtn.style.borderColor = '#0056b3';
+        contractsBtn.classList.remove('tm-new-pos-mode-btn--inactive');
+        contractsBtn.classList.add('tm-new-pos-mode-btn--active');
+      }
+      if (percentBtn) {
+        percentBtn.style.backgroundColor = 'transparent';
+        percentBtn.style.borderColor = '#ccc';
+        percentBtn.classList.remove('tm-new-pos-mode-btn--active');
+        percentBtn.classList.add('tm-new-pos-mode-btn--inactive');
+      }
+      if (positionInput) {
+        positionInput.min = 1;
+        positionInput.max = '';
+      }
+    }
+    if (monitor.total_position != null && monitor.total_position !== '') {
+      var tp = Number(monitor.total_position);
+      if (!isNaN(tp)) {
+        var obEl = document.getElementById('tmNewObContracts');
+        if (obEl) delete obEl.dataset.tmNewDirty;
+        if (typeof window.updatePositionDisplay === 'function') {
+          window.updatePositionDisplay(tp);
+        }
+      }
+    } else if (typeof window.tmNewSyncOrderBuilderContractsFromPicker === 'function') {
+      window.tmNewSyncOrderBuilderContractsFromPicker();
+    }
+  }
+
+  function tmNewWirePositionSizeControls() {
+    if (!document.getElementById('positionSizeSelector')) return;
+    if (typeof window.ignoreWsUpdates === 'undefined') {
+      window.ignoreWsUpdates = false;
+    }
+
+    function applyMultiplierSelection(multiplierValue) {
+      var parsed =
+        multiplierValue !== undefined && multiplierValue !== null ? parseFloat(multiplierValue) : NaN;
+      document.querySelectorAll('#positionSizeSelector .multiplier-btn').forEach(function (btn) {
+        btn.classList.remove('active');
+        if (!isNaN(parsed) && parseFloat(btn.getAttribute('data-multiplier')) === parsed) {
+          btn.classList.add('active');
+        }
+      });
+      if (!isNaN(parsed)) {
+        window.currentMultiplier = parsed;
+      }
+    }
+    window.applyMultiplierSelection = applyMultiplierSelection;
+
+    function updatePositionDisplay(totalPosition) {
+      if (totalPosition !== undefined && window.UatUnifiedModalPositionSize) {
+        window.UatUnifiedModalPositionSize.refreshAllPositionDisplays(totalPosition);
+        return;
+      }
+      var positionDisplay = document.getElementById('position-display');
+      if (positionDisplay && totalPosition !== undefined) {
+        var label = totalPosition === 1 ? 'contract' : 'contracts';
+        positionDisplay.textContent = totalPosition + ' ' + label;
+        if (typeof window.tmNewOnResolvedContracts === 'function') {
+          try {
+            window.tmNewOnResolvedContracts(totalPosition);
+          } catch (eTot) {}
+        }
+      }
+    }
+    window.updatePositionDisplay = updatePositionDisplay;
+
+    function sendPositionUpdateToMonitorManager() {
+      var mid = window.currentMonitorId;
+      if (mid == null || mid === '') return;
+      var els = window.UatUnifiedModalPositionSize && window.UatUnifiedModalPositionSize.elsFromTmSidebar();
+      if (window.UatUnifiedModalPositionSize && els) {
+        window.UatUnifiedModalPositionSize.sendUpdate(mid, els);
+      }
+    }
+    window.sendPositionUpdateToMonitorManager = sendPositionUpdateToMonitorManager;
+
+    function tmNewPositionSizeIsPercentMode() {
+      var pctBtn = document.getElementById('toggle-percent');
+      return !!(pctBtn && pctBtn.style.backgroundColor === 'rgb(0, 123, 255)');
+    }
+
+    function tmNewStepPositionSize(delta) {
+      var inp = document.getElementById('position-size');
+      if (!inp || window.ignoreWsUpdates) return;
+      var value = parseInt(inp.value, 10) || 1;
+      value += delta;
+      if (tmNewPositionSizeIsPercentMode()) {
+        if (value < 1) value = 1;
+        if (value > 100) value = 100;
+      } else {
+        if (value < 1) value = 1;
+      }
+      inp.value = value;
+      inp.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+
+    var positionInput = document.getElementById('position-size');
+    if (positionInput) {
+      positionInput.addEventListener('input', function () {
+        if (window.ignoreWsUpdates) return;
+        var value = parseInt(positionInput.value, 10) || 1;
+        var isPercentMode = tmNewPositionSizeIsPercentMode();
+        if (isPercentMode) {
+          if (value < 1) value = 1;
+          if (value > 100) value = 100;
+          positionInput.value = value;
+        } else {
+          if (value < 1) value = 1;
+          positionInput.value = value;
+        }
+        sendPositionUpdateToMonitorManager();
+      });
+    }
+
+    var posUp = document.getElementById('tmNewPositionSizeUp');
+    var posDown = document.getElementById('tmNewPositionSizeDown');
+    if (posUp) {
+      posUp.addEventListener('click', function () {
+        tmNewStepPositionSize(1);
+      });
+    }
+    if (posDown) {
+      posDown.addEventListener('click', function () {
+        tmNewStepPositionSize(-1);
+      });
+    }
+
+    document.querySelectorAll('#positionSizeSelector .multiplier-btn').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (window.ignoreWsUpdates) return;
+        document.querySelectorAll('#positionSizeSelector .multiplier-btn').forEach(function (b) {
+          b.classList.remove('active');
+        });
+        btn.classList.add('active');
+        window.currentMultiplier = parseFloat(btn.getAttribute('data-multiplier'));
+        sendPositionUpdateToMonitorManager();
+      });
+    });
+
+    window.togglePositionType = function (type) {
+      var percentBtn = document.getElementById('toggle-percent');
+      var contractsBtn = document.getElementById('toggle-contracts');
+      var inp = document.getElementById('position-size');
+      if (!percentBtn || !contractsBtn || !inp) return;
+      if (type === 'percent') {
+        percentBtn.style.backgroundColor = '#007bff';
+        percentBtn.style.borderColor = '#0056b3';
+        contractsBtn.style.backgroundColor = 'transparent';
+        contractsBtn.style.borderColor = '#ccc';
+        percentBtn.classList.remove('tm-new-pos-mode-btn--inactive');
+        percentBtn.classList.add('tm-new-pos-mode-btn--active');
+        contractsBtn.classList.remove('tm-new-pos-mode-btn--active');
+        contractsBtn.classList.add('tm-new-pos-mode-btn--inactive');
+        inp.min = 1;
+        inp.max = 100;
+        inp.value = 10;
+      } else {
+        contractsBtn.style.backgroundColor = '#007bff';
+        contractsBtn.style.borderColor = '#0056b3';
+        percentBtn.style.backgroundColor = 'transparent';
+        percentBtn.style.borderColor = '#ccc';
+        contractsBtn.classList.remove('tm-new-pos-mode-btn--inactive');
+        contractsBtn.classList.add('tm-new-pos-mode-btn--active');
+        percentBtn.classList.remove('tm-new-pos-mode-btn--active');
+        percentBtn.classList.add('tm-new-pos-mode-btn--inactive');
+        inp.min = 1;
+        inp.max = '';
+      }
+      sendPositionUpdateToMonitorManager();
+    };
+  }
+
+  var tmNewObState = {
+    userPickedStrike: false,
+    /** After user taps Yes/No on the order panel (or a strike-table pill), do not re-derive side from quotes. */
+    userLockedSide: false,
+    ticker: '',
+    side: 'yes',
+    /** ``open`` = buy the selected side; ``close`` = UI shows position side, quotes use opposite leg to flatten. */
+    orderKind: 'open',
+    closeTradeId: null,
+    /** Position entry price (0–1) when ``orderKind === 'close'``. */
+    closeEntryBuyPrice: null,
+  };
+
+  function tmNewOrderBuilderClearCloseMode() {
+    if (tmNewObState.orderKind !== 'close') return;
+    tmNewObState.orderKind = 'open';
+    tmNewObState.closeTradeId = null;
+    tmNewObState.closeEntryBuyPrice = null;
+  }
+
+  /** Side whose ask/fees we use for cost (opposite of position when closing). */
+  function tmNewOrderBuilderQuoteSideForExecution() {
+    if (tmNewObState.orderKind === 'close') {
+      return tmNewObState.side === 'no' ? 'yes' : 'no';
+    }
+    return tmNewObState.side;
+  }
+
+  function tmNewActiveTradeSideToYesNo(trade) {
+    var s = (trade && trade.side != null ? String(trade.side) : '').trim().toUpperCase();
+    if (s === 'N' || s === 'NO') return 'no';
+    return 'yes';
+  }
+
+  var tmNewObSubmitPollTimer = null;
+  var tmNewObSubmitPollAttempts = 0;
+  var tmNewObSubmitAborted = false;
+  /** When true, quote refresh must not overwrite review rows (pending / success / failure). */
+  var tmNewObReviewPopulateLocked = false;
+  /** Monitor id active when submit flow locked; same-monitor `rec:tm-monitor-changed` must not reset the review phase. */
+  var tmNewObLockedMonitorId = '';
+
+  function tmNewOrderBuilderSymbolOpen() {
+    var sym = (document.body.dataset.currentSymbol || 'BTC').toString().trim().toUpperCase();
+    try {
+      var bag = window.__liveSpotBySymbol;
+      if (bag && bag[sym] != null && Number.isFinite(Number(bag[sym]))) {
+        return Number(bag[sym]);
+      }
+    } catch (eSo) {}
+    var el = document.getElementById('symbol-price-value');
+    if (el) {
+      var t = (el.textContent || '').replace(/[$,\s]/g, '');
+      var n = parseFloat(t);
+      if (Number.isFinite(n)) return n;
+    }
+    return null;
+  }
+
+  function tmNewOrderBuilderAbortSubmitPoll() {
+    tmNewObSubmitAborted = true;
+    if (tmNewObSubmitPollTimer != null) {
+      clearInterval(tmNewObSubmitPollTimer);
+      tmNewObSubmitPollTimer = null;
+    }
+    tmNewObSubmitPollAttempts = 0;
+  }
+
+  function tmNewOrderBuilderResetSubmitWorkflow() {
+    tmNewOrderBuilderAbortSubmitPoll();
+    tmNewObSubmitAborted = false;
+    tmNewObReviewPopulateLocked = false;
+    tmNewObLockedMonitorId = '';
+    var title = document.getElementById('tmNewObReviewTitle');
+    if (title) title.textContent = 'Review order';
+    var sub = document.getElementById('tmNewObSubmitBtn');
+    if (sub) {
+      sub.disabled = false;
+      sub.removeAttribute('aria-disabled');
+    }
+  }
+
+  function tmNewOrderBuilderSetReviewCostLabelEstimated() {
+    var lab = document.getElementById('tmNewObReviewCostLabel');
+    if (lab) lab.textContent = 'Estimated cost';
+  }
+
+  function tmNewOrderBuilderSetReviewRowsPendingDash() {
+    var cEl = document.getElementById('tmNewObReviewContracts');
+    var avgEl = document.getElementById('tmNewObReviewAvgPrice');
+    var costEl = document.getElementById('tmNewObReviewEstCost');
+    var payoutLabel = document.getElementById('tmNewObReviewPayoutLabel');
+    var payoutEl = document.getElementById('tmNewObReviewPayout');
+    tmNewOrderBuilderSetReviewCostLabelEstimated();
+    if (cEl) cEl.textContent = '—';
+    if (avgEl) avgEl.textContent = '—';
+    if (costEl) costEl.textContent = '—';
+    tmNewOrderBuilderApplyPayoutDisplay(payoutLabel, payoutEl, null);
+  }
+
+  function tmNewOrderBuilderApplyFilledReview(tr) {
+    var cEl = document.getElementById('tmNewObReviewContracts');
+    var avgEl = document.getElementById('tmNewObReviewAvgPrice');
+    var costEl = document.getElementById('tmNewObReviewEstCost');
+    var costLab = document.getElementById('tmNewObReviewCostLabel');
+    var payoutLabel = document.getElementById('tmNewObReviewPayoutLabel');
+    var payoutEl = document.getElementById('tmNewObReviewPayout');
+    var pos = Number(tr.position);
+    if (!Number.isFinite(pos)) pos = 0;
+    var buyPx = Number(tr.buy_price);
+    var fees = Number(tr.fees);
+    if (!Number.isFinite(fees)) fees = 0;
+    if (!Number.isFinite(buyPx)) buyPx = NaN;
+    if (cEl) cEl.textContent = String(Math.round(pos * 100) / 100);
+    var fmtA = typeof window.recTmFmtAsk === 'function' ? window.recTmFmtAsk : null;
+    if (avgEl) avgEl.textContent = fmtA && Number.isFinite(buyPx) ? fmtA(buyPx) : '—';
+    var costD = Number.isFinite(buyPx) && Number.isFinite(pos) ? pos * buyPx + fees : NaN;
+    if (costLab) costLab.textContent = 'Cost';
+    if (costEl) costEl.textContent = tmNewOrderBuilderFormatEstimatedCostUsd(costD);
+    var sideU = (tr.side || '').toString().toUpperCase();
+    var isNo = sideU === 'N' || sideU === 'NO';
+    var estPayout = {
+      maxPayout: pos,
+      profitIfWin: Number.isFinite(costD) ? pos - costD : NaN,
+      side: isNo ? 'no' : 'yes',
+    };
+    tmNewOrderBuilderApplyPayoutDisplay(payoutLabel, payoutEl, estPayout);
+  }
+
+  async function tmNewOrderBuilderBuildTriggerPayload() {
+    var row =
+      tmNewObState.ticker && typeof window.recTmGetHourlyStrikeRow === 'function'
+        ? window.recTmGetHourlyStrikeRow(tmNewObState.ticker)
+        : null;
+    if (!row || !tmNewObState.ticker) {
+      return { error: 'Select a strike contract from the table.' };
+    }
+    if (!window.currentMonitorName || window.currentMonitorId == null || window.currentMonitorId === '') {
+      return { error: 'Select a monitor first.' };
+    }
+    var est = tmNewOrderBuilderReadEstimates();
+    if (!est) {
+      return { error: 'Quotes unavailable for this side. Wait for live prices.' };
+    }
+    var contracts = est.contracts;
+    if (!Number.isFinite(contracts) || contracts < 1) {
+      return { error: 'Enter at least one contract.' };
+    }
+    var strikeNum = Number(row.strike);
+    if (!Number.isFinite(strikeNum)) {
+      return { error: 'Invalid strike for this contract.' };
+    }
+    var strikeStr = '$' + strikeNum.toLocaleString(undefined, { maximumFractionDigits: 0 });
+    var sym = (document.body.dataset.currentSymbol || 'BTC').toString().trim().toUpperCase();
+    var strat = (document.body.dataset.currentMonitorStrategy || '').toString().trim();
+    if (!strat || strat === '—') strat = 'Hourly HTC';
+    var probRaw = row.probActive;
+    var prob =
+      probRaw != null && probRaw !== '' && Number.isFinite(Number(probRaw)) ? String(probRaw) : '0';
+    var execSide = tmNewOrderBuilderQuoteSideForExecution();
+    var diffRaw = execSide === 'no' ? row.noDiff : row.yesDiff;
+    var diffVal =
+      diffRaw != null && Number.isFinite(Number(diffRaw)) ? Number(diffRaw) : null;
+    var symbolOpen = tmNewOrderBuilderSymbolOpen();
+    var momentum = null;
+    try {
+      var mr = await tmNewApiFetch('/api/momentum?symbol=' + encodeURIComponent(sym), {
+        cache: 'no-store',
+      });
+      if (mr.ok) {
+        var mj = await mr.json();
+        if (mj.momentum_score != null) momentum = mj.momentum_score;
+      }
+    } catch (eM) {}
+    var contractTitle = (window.__recTmStrikeMarketTitle || '').trim();
+    return {
+      payload: {
+        strike: strikeStr,
+        side: execSide,
+        ticker: String(tmNewObState.ticker),
+        buy_price: est.ask,
+        prob: prob,
+        diff: diffVal,
+        symbol_open: symbolOpen,
+        momentum: momentum,
+        contract: contractTitle,
+        symbol: sym,
+        position: contracts,
+        trade_strategy: strat,
+        monitor: String(window.currentMonitorName),
+        entry_method: tmNewObState.orderKind === 'close' ? 'close' : 'manual',
+        closing_trade_id:
+          tmNewObState.orderKind === 'close' && tmNewObState.closeTradeId != null
+            ? tmNewObState.closeTradeId
+            : null,
+        paper_trade: !!tmNewMonitorDetailCache.paper_trade,
+        exchange: 'kalshi',
+      },
+    };
+  }
+
+  async function tmNewOrderBuilderFetchTradeAndMaybeComplete(tradeId, titleEl, submitBtn) {
+    try {
+      var r = await tmNewApiFetch('/trades/' + encodeURIComponent(String(tradeId)), {
+        cache: 'no-store',
+      });
+      var tr = await r.json();
+      if (!r.ok || !tr || tr.error) return;
+      var st = (tr.status || '').toLowerCase();
+      if (st === 'open' || st === 'partial') {
+        if (tmNewObSubmitPollTimer != null) {
+          clearInterval(tmNewObSubmitPollTimer);
+          tmNewObSubmitPollTimer = null;
+        }
+        if (titleEl) {
+          var rid = tr.id != null ? String(tr.id) : String(tradeId);
+          titleEl.textContent = 'Successful Order #' + rid;
+        }
+        tmNewOrderBuilderApplyFilledReview(tr);
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.setAttribute('aria-disabled', 'true');
+        }
+        return;
+      }
+      if (
+        st === 'failed' ||
+        st === 'rejected' ||
+        st === 'cancelled' ||
+        st === 'canceled' ||
+        st === 'closed'
+      ) {
+        if (tmNewObSubmitPollTimer != null) {
+          clearInterval(tmNewObSubmitPollTimer);
+          tmNewObSubmitPollTimer = null;
+        }
+        if (titleEl) titleEl.textContent = 'Order did not complete';
+        if (submitBtn) {
+          submitBtn.disabled = true;
+          submitBtn.setAttribute('aria-disabled', 'true');
+        }
+      }
+    } catch (ePoll) {}
+  }
+
+  async function tmNewOrderBuilderOnSubmitClose() {
+    var submitBtn = document.getElementById('tmNewObSubmitBtn');
+    var title = document.getElementById('tmNewObReviewTitle');
+    if (!submitBtn || submitBtn.disabled) return;
+    if (typeof window.closeTrade !== 'function') {
+      alert('Close trade is unavailable (trade execution script not loaded).');
+      return;
+    }
+    var tid = tmNewObState.closeTradeId;
+    if (tid == null || tid === '') {
+      alert('Missing trade to close.');
+      return;
+    }
+    var est = tmNewOrderBuilderReadEstimates();
+    if (!est || !Number.isFinite(est.ask)) {
+      alert('Quotes unavailable for this close. Wait for live prices.');
+      return;
+    }
+    var sellPrice = 1 - Number(est.ask);
+    if (!Number.isFinite(sellPrice) || sellPrice <= 0 || sellPrice >= 1) {
+      alert('Invalid close price from the current quote.');
+      return;
+    }
+    submitBtn.disabled = true;
+    submitBtn.setAttribute('aria-disabled', 'true');
+    try {
+      var mockEvent = {
+        target: document.createElement('button'),
+        preventDefault: function () {},
+        stopPropagation: function () {},
+      };
+      var result = await window.closeTrade(tid, sellPrice, mockEvent);
+      if (!result || !result.success) {
+        alert((result && result.error) || 'Close failed');
+        return;
+      }
+      tmNewOrderBuilderResetSubmitWorkflow();
+      tmNewOrderBuilderClearCloseMode();
+      if (title) title.textContent = 'Review order';
+      tmNewOrderBuilderSetPhase(false);
+      tmNewOrderBuilderUpdateUi();
+      if (typeof window.tmNewRefreshActiveTradesPanel === 'function') {
+        void window.tmNewRefreshActiveTradesPanel();
+      }
+    } catch (e) {
+      alert(e && e.message ? e.message : 'Close failed');
+    } finally {
+      submitBtn.disabled = false;
+      submitBtn.removeAttribute('aria-disabled');
+    }
+  }
+
+  async function tmNewOrderBuilderOnSubmit() {
+    var submitBtn = document.getElementById('tmNewObSubmitBtn');
+    if (!submitBtn || submitBtn.disabled) return;
+    if (tmNewObState.orderKind === 'close') {
+      await tmNewOrderBuilderOnSubmitClose();
+      return;
+    }
+    var title = document.getElementById('tmNewObReviewTitle');
+    var built = await tmNewOrderBuilderBuildTriggerPayload();
+    if (built.error) {
+      alert(built.error);
+      return;
+    }
+    submitBtn.disabled = true;
+    try {
+      var res = await tmNewApiFetch('/api/trigger_open_trade', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(built.payload),
+      });
+      var data = await res.json().catch(function () {
+        return {};
+      });
+      if (!res.ok || !data || data.status !== 'success' || !data.trade_data || data.trade_data.id == null) {
+        var msg = (data && (data.message || data.detail)) || 'HTTP ' + res.status;
+        alert(msg || 'Order failed');
+        submitBtn.disabled = false;
+        submitBtn.removeAttribute('aria-disabled');
+        return;
+      }
+      if (title) title.textContent = 'Order Pending...';
+      tmNewObReviewPopulateLocked = true;
+      tmNewObLockedMonitorId =
+        window.currentMonitorId != null && window.currentMonitorId !== ''
+          ? String(window.currentMonitorId)
+          : '';
+      tmNewOrderBuilderSetPhase(true);
+      tmNewOrderBuilderSetReviewRowsPendingDash();
+      submitBtn.disabled = true;
+      submitBtn.setAttribute('aria-disabled', 'true');
+      tmNewObSubmitAborted = false;
+      tmNewObSubmitPollAttempts = 0;
+      if (tmNewObSubmitPollTimer != null) {
+        clearInterval(tmNewObSubmitPollTimer);
+        tmNewObSubmitPollTimer = null;
+      }
+      var tid = Number(data.trade_data.id);
+      void tmNewOrderBuilderFetchTradeAndMaybeComplete(tid, title, submitBtn);
+      tmNewObSubmitPollTimer = setInterval(function () {
+        if (tmNewObSubmitAborted) return;
+        tmNewObSubmitPollAttempts++;
+        if (tmNewObSubmitPollAttempts > 100) {
+          clearInterval(tmNewObSubmitPollTimer);
+          tmNewObSubmitPollTimer = null;
+          if (title) title.textContent = 'Order still pending';
+          return;
+        }
+        void tmNewOrderBuilderFetchTradeAndMaybeComplete(tid, title, submitBtn);
+      }, 750);
+    } catch (e) {
+      alert(e && e.message ? e.message : 'Order failed');
+      submitBtn.disabled = false;
+      submitBtn.removeAttribute('aria-disabled');
+    }
+  }
+
+  function tmNewDeriveSideFromRow(row) {
+    if (!row) return 'yes';
+    var y = Number(row.yesAsk);
+    var n = Number(row.noAsk);
+    if (Number.isFinite(y) && Number.isFinite(n)) {
+      if (y > n) return 'yes';
+      if (n > y) return 'no';
+    }
+    return 'yes';
+  }
+
+  function tmNewOrderBuilderStrikeSuffix() {
+    var mt = (window.__recTmStrikeMarketTitle || '').toLowerCase();
+    if (mt.indexOf('below') !== -1) return ' or below';
+    if (mt.indexOf('above') !== -1) return ' or above';
+    return ' or above';
+  }
+
+  /** Asset the monitor is tracking (e.g. BTC, ETH), from the same source as the header market strip. */
+  function tmNewOrderBuilderMonitorAssetSymbol() {
+    var s = (document.body.dataset.currentSymbol || 'BTC').toString().trim().toUpperCase();
+    return s || 'BTC';
+  }
+
+  function tmNewParseResolvedContractsFromUi() {
+    var el = document.getElementById('position-display');
+    if (el) {
+      var m = /(\d+)\s+contracts?/i.exec(el.textContent || '');
+      if (m) return Math.max(1, parseInt(m[1], 10) || 1);
+    }
+    var inp = document.getElementById('position-size');
+    var pct = document.getElementById('toggle-percent');
+    var isPct = pct && pct.style.backgroundColor === 'rgb(0, 123, 255)';
+    if (inp && !isPct) {
+      return Math.max(1, parseInt(inp.value, 10) || 1);
+    }
+    return 1;
+  }
+
+  function tmNewSyncOrderBuilderContractsFromPicker() {
+    var inp = document.getElementById('tmNewObContracts');
+    if (!inp || inp.dataset.tmNewDirty === '1') return;
+    var v = tmNewParseResolvedContractsFromUi();
+    inp.value = String(v);
+    tmNewOrderBuilderUpdateEstimatedCost();
+  }
+  window.tmNewSyncOrderBuilderContractsFromPicker = tmNewSyncOrderBuilderContractsFromPicker;
+
+  function tmNewOrderBuilderResetForMonitor() {
+    tmNewOrderBuilderResetSubmitWorkflow();
+    tmNewOrderBuilderSetPhase(false);
+    tmNewObState.userPickedStrike = false;
+    tmNewObState.userLockedSide = false;
+    tmNewObState.ticker = '';
+    tmNewObState.side = 'yes';
+    tmNewObState.orderKind = 'open';
+    tmNewObState.closeTradeId = null;
+    tmNewObState.closeEntryBuyPrice = null;
+    var inp = document.getElementById('tmNewObContracts');
+    if (inp) delete inp.dataset.tmNewDirty;
+    tmNewOrderBuilderUpdateUi();
+  }
+
+  function tmNewOrderBuilderApplyCloseTrade(trade) {
+    if (!trade || trade.trade_id == null) return;
+    if ((trade.status || '').toLowerCase() === 'pending') return;
+    tmNewOrderBuilderResetSubmitWorkflow();
+    tmNewOrderBuilderSetPhase(false);
+    var ticker = trade.ticker != null ? String(trade.ticker).trim() : '';
+    if (!ticker) return;
+    tmNewObState.orderKind = 'close';
+    tmNewObState.closeTradeId = trade.trade_id;
+    var bp = Number(trade.buy_price);
+    tmNewObState.closeEntryBuyPrice = Number.isFinite(bp) ? bp : null;
+    tmNewObState.ticker = ticker;
+    tmNewObState.side = tmNewActiveTradeSideToYesNo(trade);
+    tmNewObState.userPickedStrike = true;
+    tmNewObState.userLockedSide = true;
+    var pos = Number(trade.position);
+    if (!Number.isFinite(pos) || pos < 1) pos = 1;
+    var inp = document.getElementById('tmNewObContracts');
+    if (inp) {
+      inp.value = String(Math.max(1, Math.floor(pos)));
+      inp.dataset.tmNewDirty = '1';
+    }
+    try {
+      window.dispatchEvent(
+        new CustomEvent('rec:tm-order-builder-pick', {
+          detail: {
+            ticker: ticker,
+            side: tmNewObState.side,
+            fromActiveTradeClose: true,
+          },
+        })
+      );
+    } catch (ePick) {}
+    tmNewOrderBuilderUpdateUi();
+  }
+
+  function tmNewOrderBuilderAskDollarsForSide(row, side) {
+    if (!row) return NaN;
+    var raw = side === 'no' ? row.noAsk : row.yesAsk;
+    var n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : NaN;
+  }
+
+  /**
+   * Mirrors ``backend/trade_manager.estimate_kalshi_taker_fee`` (paper IOC projection):
+   * taker fee one leg = 0.07 * C * P * (1 - P), rounded up to the next cent.
+   */
+  function tmNewEstimateKalshiTakerFee(position, price) {
+    var pos = Number(position);
+    var p = Number(price);
+    if (!Number.isFinite(pos) || pos <= 0) return 0;
+    if (!Number.isFinite(p) || p <= 0 || p >= 1) return 0;
+    var raw = 0.07 * pos * p * (1 - p);
+    return Math.ceil(raw * 100) / 100;
+  }
+
+  function tmNewOrderBuilderFormatEstimatedCostUsd(dollars) {
+    if (!Number.isFinite(dollars) || dollars < 0) return '—';
+    return (
+      '$' +
+      dollars.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })
+    );
+  }
+
+  /**
+   * @returns {null|{contracts:number,ask:number,avgDisplay:string,notional:number,fee:number,totalCost:number,maxPayout:number,profitIfWin:number,side:string}}
+   */
+  function tmNewOrderBuilderReadEstimates() {
+    var contractsEl = document.getElementById('tmNewObContracts');
+    var contracts = contractsEl ? parseInt(contractsEl.value, 10) : NaN;
+    if (!Number.isFinite(contracts) || contracts < 0) contracts = 0;
+    var row =
+      tmNewObState.ticker && typeof window.recTmGetHourlyStrikeRow === 'function'
+        ? window.recTmGetHourlyStrikeRow(tmNewObState.ticker)
+        : null;
+    var quoteSide = tmNewOrderBuilderQuoteSideForExecution();
+    var ask = tmNewOrderBuilderAskDollarsForSide(row, quoteSide);
+    if (!Number.isFinite(ask)) return null;
+    var fmtA = typeof window.recTmFmtAsk === 'function' ? window.recTmFmtAsk : null;
+    var avgDisplay =
+      row && fmtA ? fmtA(quoteSide === 'no' ? row.noAsk : row.yesAsk) : '—';
+    var notional = contracts * ask;
+    var fee = tmNewEstimateKalshiTakerFee(contracts, ask);
+    var totalCost = notional + fee;
+    var maxPayout = contracts;
+    var profitIfWin = maxPayout - totalCost;
+    var est = {
+      contracts: contracts,
+      ask: ask,
+      avgDisplay: avgDisplay,
+      notional: notional,
+      fee: fee,
+      totalCost: totalCost,
+      maxPayout: maxPayout,
+      profitIfWin: profitIfWin,
+      side: tmNewObState.side,
+      quoteSide: quoteSide,
+      orderKind: tmNewObState.orderKind,
+    };
+    if (tmNewObState.orderKind === 'close') {
+      var entry = Number(tmNewObState.closeEntryBuyPrice);
+      if (Number.isFinite(entry) && Number.isFinite(contracts) && contracts > 0 && Number.isFinite(ask)) {
+        var gross = contracts * (1 - entry - ask);
+        est.estimatedClosePnl = gross - fee;
+      } else {
+        est.estimatedClosePnl = NaN;
+      }
+    }
+    return est;
+  }
+
+  function tmNewOrderBuilderApplyPayoutDisplay(labelEl, valueEl, est) {
+    if (labelEl) {
+      if (est && est.orderKind === 'close') {
+        labelEl.textContent = 'Estimated PnL';
+      } else {
+        labelEl.textContent =
+          !est || !est.side ? 'Payout if Yes' : est.side === 'no' ? 'Payout if No' : 'Payout if Yes';
+      }
+    }
+    if (!valueEl) return;
+    if (!est) {
+      valueEl.textContent = '—';
+      return;
+    }
+    if (est.orderKind === 'close') {
+      valueEl.replaceChildren();
+      var pnl = est.estimatedClosePnl;
+      if (!Number.isFinite(pnl)) {
+        valueEl.textContent = '—';
+        return;
+      }
+      var pnlSpan = document.createElement('span');
+      pnlSpan.className =
+        pnl >= 0 ? 'tm-new-ob-review-payout-profit-pos' : 'tm-new-ob-review-payout-profit-neg';
+      var absStr = Math.abs(pnl).toLocaleString(undefined, {
+        minimumFractionDigits: 2,
+        maximumFractionDigits: 2,
+      });
+      pnlSpan.textContent = (pnl >= 0 ? '+$' : '−$') + absStr;
+      valueEl.appendChild(pnlSpan);
+      return;
+    }
+    valueEl.textContent = '';
+    var mainSpan = document.createElement('span');
+    mainSpan.className = 'tm-new-ob-review-payout-main';
+    mainSpan.textContent = tmNewOrderBuilderFormatEstimatedCostUsd(Number(est.maxPayout));
+    if (!Number.isFinite(est.profitIfWin)) {
+      valueEl.appendChild(mainSpan);
+      return;
+    }
+    var profitSpan = document.createElement('span');
+    profitSpan.className =
+      est.profitIfWin >= 0
+        ? 'tm-new-ob-review-payout-profit-pos'
+        : 'tm-new-ob-review-payout-profit-neg';
+    var p = est.profitIfWin;
+    var profitStr =
+      p >= 0
+        ? '(+$' +
+          Math.abs(p).toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }) +
+          ')'
+        : '(-$' +
+          Math.abs(p).toLocaleString(undefined, {
+            minimumFractionDigits: 2,
+            maximumFractionDigits: 2,
+          }) +
+          ')';
+    profitSpan.textContent = profitStr;
+    valueEl.appendChild(mainSpan);
+    valueEl.appendChild(profitSpan);
+  }
+
+  function tmNewOrderBuilderSetPhase(review) {
+    var edit = document.getElementById('tmNewObPhaseEdit');
+    var rev = document.getElementById('tmNewObPhaseReview');
+    if (!edit || !rev) return;
+    if (review) {
+      edit.classList.add('u-hidden');
+      rev.classList.remove('u-hidden');
+      rev.setAttribute('aria-hidden', 'false');
+    } else {
+      rev.classList.add('u-hidden');
+      rev.setAttribute('aria-hidden', 'true');
+      edit.classList.remove('u-hidden');
+    }
+  }
+
+  function tmNewOrderBuilderPopulateReview() {
+    tmNewOrderBuilderSetReviewCostLabelEstimated();
+    var head = document.getElementById('tmNewObHeadline');
+    var proposed = document.getElementById('tmNewObReviewProposed');
+    if (proposed && head) proposed.textContent = head.textContent || '';
+    var est = tmNewOrderBuilderReadEstimates();
+    var cEl = document.getElementById('tmNewObReviewContracts');
+    var avgEl = document.getElementById('tmNewObReviewAvgPrice');
+    var costEl = document.getElementById('tmNewObReviewEstCost');
+    var payoutLabel = document.getElementById('tmNewObReviewPayoutLabel');
+    var payoutEl = document.getElementById('tmNewObReviewPayout');
+    if (!est) {
+      if (cEl) cEl.textContent = '—';
+      if (avgEl) avgEl.textContent = '—';
+      if (costEl) costEl.textContent = '—';
+      tmNewOrderBuilderApplyPayoutDisplay(payoutLabel, payoutEl, null);
+      return;
+    }
+    if (cEl) cEl.textContent = String(est.contracts);
+    if (avgEl) avgEl.textContent = est.avgDisplay;
+    if (costEl) costEl.textContent = tmNewOrderBuilderFormatEstimatedCostUsd(est.totalCost);
+    tmNewOrderBuilderApplyPayoutDisplay(payoutLabel, payoutEl, est);
+  }
+
+  function tmNewOrderBuilderUpdateEstimatedCost() {
+    var outEl = document.getElementById('tmNewObEstimatedCost');
+    var editPayoutLabel = document.getElementById('tmNewObEditPayoutLabel');
+    var editPayoutVal = document.getElementById('tmNewObEditPayout');
+    var est = tmNewOrderBuilderReadEstimates();
+    if (outEl) {
+      if (!est) outEl.textContent = '—';
+      else outEl.textContent = tmNewOrderBuilderFormatEstimatedCostUsd(est.totalCost);
+    }
+    tmNewOrderBuilderApplyPayoutDisplay(editPayoutLabel, editPayoutVal, est || null);
+  }
+
+  /**
+   * Live orderbook / strike-row quote updates only: Yes/No ask labels and cost & payout lines.
+   * Does not touch headline, lead/dim pills, or strike-table selection (those follow explicit UI events).
+   */
+  function tmNewOrderBuilderRefreshQuoteDependentUi() {
+    if (!tmNewObState.ticker) return;
+    var row =
+      typeof window.recTmGetHourlyStrikeRow === 'function'
+        ? window.recTmGetHourlyStrikeRow(tmNewObState.ticker)
+        : null;
+    var fmtA = typeof window.recTmFmtAsk === 'function' ? window.recTmFmtAsk : null;
+    var yAsk = row && fmtA ? fmtA(row.yesAsk) : '—';
+    var nAsk = row && fmtA ? fmtA(row.noAsk) : '—';
+    var yBtn = document.getElementById('tmNewObBtnYes');
+    var nBtn = document.getElementById('tmNewObBtnNo');
+    if (yBtn) yBtn.textContent = 'Yes ' + yAsk;
+    if (nBtn) nBtn.textContent = 'No ' + nAsk;
+    tmNewOrderBuilderUpdateEstimatedCost();
+    var revPh = document.getElementById('tmNewObPhaseReview');
+    if (revPh && !revPh.classList.contains('u-hidden') && !tmNewObReviewPopulateLocked) {
+      tmNewOrderBuilderPopulateReview();
+    }
+  }
+
+  /**
+   * @param {string} [postAccentRest] If set, builds: restPrefix + accent + postAccent (close-order line).
+   */
+  function tmNewOrderBuilderSetHeadlineEl(head, sideIsNo, accentText, restText, postAccentRest) {
+    if (!head) return;
+    head.classList.remove('tm-new-ob-headline--yes', 'tm-new-ob-headline--no');
+    head.classList.add(sideIsNo ? 'tm-new-ob-headline--no' : 'tm-new-ob-headline--yes');
+    while (head.firstChild) head.removeChild(head.firstChild);
+    if (postAccentRest !== undefined) {
+      var pre = document.createElement('span');
+      pre.className = 'tm-new-ob-headline-rest';
+      pre.textContent = restText;
+      var accent = document.createElement('span');
+      accent.className = 'tm-new-ob-headline-accent';
+      accent.textContent = accentText;
+      var post = document.createElement('span');
+      post.className = 'tm-new-ob-headline-rest';
+      post.textContent = postAccentRest;
+      head.appendChild(pre);
+      head.appendChild(accent);
+      head.appendChild(post);
+    } else {
+      var accent2 = document.createElement('span');
+      accent2.className = 'tm-new-ob-headline-accent';
+      accent2.textContent = accentText;
+      var rest = document.createElement('span');
+      rest.className = 'tm-new-ob-headline-rest';
+      rest.textContent = restText;
+      head.appendChild(accent2);
+      head.appendChild(rest);
+    }
+  }
+
+  function tmNewOrderBuilderUpdateUi() {
+    var row =
+      tmNewObState.ticker && typeof window.recTmGetHourlyStrikeRow === 'function'
+        ? window.recTmGetHourlyStrikeRow(tmNewObState.ticker)
+        : null;
+    var fmtS = typeof window.recTmFmtStrike === 'function' ? window.recTmFmtStrike : null;
+    var fmtA = typeof window.recTmFmtAsk === 'function' ? window.recTmFmtAsk : null;
+    var strikeTxt = row && fmtS ? fmtS(row.strike) : '—';
+    var yAsk = row && fmtA ? fmtA(row.yesAsk) : '—';
+    var nAsk = row && fmtA ? fmtA(row.noAsk) : '—';
+    var sideLabel = tmNewObState.side === 'no' ? 'No' : 'Yes';
+    var head = document.getElementById('tmNewObHeadline');
+    if (head) {
+      var sym = tmNewOrderBuilderMonitorAssetSymbol();
+      var strikePart = strikeTxt + tmNewOrderBuilderStrikeSuffix();
+      var sideIsNo = tmNewObState.side === 'no';
+      if (tmNewObState.orderKind === 'close' && tmNewObState.closeTradeId != null) {
+        tmNewOrderBuilderSetHeadlineEl(
+          head,
+          sideIsNo,
+          sideLabel,
+          'Close Order #' + String(tmNewObState.closeTradeId) + ' • ',
+          ' ' + sym + ' ' + strikePart
+        );
+      } else {
+        tmNewOrderBuilderSetHeadlineEl(
+          head,
+          sideIsNo,
+          'Buy ' + sideLabel,
+          ' • ' + sym + ' ' + strikePart
+        );
+      }
+    }
+    var yBtn = document.getElementById('tmNewObBtnYes');
+    var nBtn = document.getElementById('tmNewObBtnNo');
+    if (yBtn) {
+      yBtn.textContent = 'Yes ' + yAsk;
+      yBtn.className =
+        'hourly-ask-pill hourly-ask-pill-yes ' +
+        (tmNewObState.side === 'yes' ? 'hourly-ask-pill--lead-yes' : 'hourly-ask-pill--dim');
+    }
+    if (nBtn) {
+      nBtn.textContent = 'No ' + nAsk;
+      nBtn.className =
+        'hourly-ask-pill hourly-ask-pill-no ' +
+        (tmNewObState.side === 'no' ? 'hourly-ask-pill--lead-no' : 'hourly-ask-pill--dim');
+    }
+    if (typeof window.recTmApplyStrikeTableOrderSelection === 'function') {
+      try {
+        window.recTmApplyStrikeTableOrderSelection(tmNewObState.ticker, tmNewObState.side);
+      } catch (ePill) {}
+    }
+    tmNewOrderBuilderUpdateEstimatedCost();
+    var revPh = document.getElementById('tmNewObPhaseReview');
+    if (revPh && !revPh.classList.contains('u-hidden') && !tmNewObReviewPopulateLocked) {
+      tmNewOrderBuilderPopulateReview();
+    }
+  }
+
+  function tmNewWireOrderBuilder() {
+    if (!document.getElementById('tmNewOrderBuilder')) return;
+
+    window.tmNewGetOrderBuilderStrikeSelection = function () {
+      return { ticker: tmNewObState.ticker, side: tmNewObState.side };
+    };
+
+    window.recTmOrderBuilderRefreshQuotes = function () {
+      tmNewOrderBuilderRefreshQuoteDependentUi();
+    };
+
+    window.tmNewOnResolvedContracts = function (n) {
+      var inp = document.getElementById('tmNewObContracts');
+      if (!inp || inp.dataset.tmNewDirty === '1') return;
+      var v = typeof n === 'number' ? n : parseInt(n, 10);
+      if (isNaN(v) || v < 1) v = 1;
+      inp.value = String(Math.floor(v));
+      tmNewOrderBuilderUpdateEstimatedCost();
+    };
+
+    window.addEventListener('rec:tm-monitor-changed', function (ev) {
+      var d = ev && ev.detail;
+      var mid = d && d.monitorId != null ? String(d.monitorId) : '';
+      if (
+        tmNewObReviewPopulateLocked &&
+        tmNewObLockedMonitorId !== '' &&
+        mid === tmNewObLockedMonitorId
+      ) {
+        tmNewSyncOrderBuilderContractsFromPicker();
+        return;
+      }
+      tmNewOrderBuilderResetForMonitor();
+      tmNewSyncOrderBuilderContractsFromPicker();
+    });
+
+    window.addEventListener('rec:tm-strike-atm-synced', function (ev) {
+      var d = ev && ev.detail;
+      if (!d || !d.atmTicker) return;
+      if (tmNewObState.userPickedStrike) {
+        if (String(tmNewObState.ticker) === String(d.atmTicker)) {
+          tmNewOrderBuilderRefreshQuoteDependentUi();
+        }
+        return;
+      }
+      tmNewObState.ticker = String(d.atmTicker);
+      if (!tmNewObState.userLockedSide) {
+        tmNewObState.side = tmNewDeriveSideFromRow(d.atmRow);
+      }
+      tmNewOrderBuilderUpdateUi();
+      tmNewSyncOrderBuilderContractsFromPicker();
+    });
+
+    window.addEventListener('rec:tm-order-builder-pick', function (ev) {
+      var d = ev && ev.detail;
+      if (!d || !d.ticker) return;
+      if (!d.fromActiveTradeClose && tmNewObState.orderKind === 'close') {
+        tmNewOrderBuilderClearCloseMode();
+      }
+      tmNewObState.userPickedStrike = true;
+      tmNewObState.ticker = String(d.ticker);
+      if (d.side === 'yes' || d.side === 'no') {
+        tmNewObState.side = d.side;
+        tmNewObState.userLockedSide = true;
+      } else {
+        if (!tmNewObState.userLockedSide) {
+          var rowPick =
+            typeof window.recTmGetHourlyStrikeRow === 'function'
+              ? window.recTmGetHourlyStrikeRow(d.ticker)
+              : null;
+          tmNewObState.side = tmNewDeriveSideFromRow(rowPick);
+        }
+      }
+      tmNewOrderBuilderUpdateUi();
+    });
+
+    var yBtn = document.getElementById('tmNewObBtnYes');
+    var nBtn = document.getElementById('tmNewObBtnNo');
+    if (yBtn) {
+      yBtn.addEventListener('click', function () {
+        if (tmNewObState.orderKind === 'close' && tmNewObState.side !== 'yes') {
+          tmNewOrderBuilderClearCloseMode();
+        }
+        tmNewObState.side = 'yes';
+        tmNewObState.userLockedSide = true;
+        tmNewOrderBuilderUpdateUi();
+      });
+    }
+    if (nBtn) {
+      nBtn.addEventListener('click', function () {
+        if (tmNewObState.orderKind === 'close' && tmNewObState.side !== 'no') {
+          tmNewOrderBuilderClearCloseMode();
+        }
+        tmNewObState.side = 'no';
+        tmNewObState.userLockedSide = true;
+        tmNewOrderBuilderUpdateUi();
+      });
+    }
+
+    var obInp = document.getElementById('tmNewObContracts');
+    if (obInp) {
+      obInp.addEventListener('input', function () {
+        obInp.dataset.tmNewDirty = '1';
+        tmNewOrderBuilderUpdateEstimatedCost();
+      });
+    }
+
+    var reviewBtn = document.getElementById('tmNewObReviewBtn');
+    if (reviewBtn) {
+      reviewBtn.addEventListener('click', function () {
+        tmNewOrderBuilderResetSubmitWorkflow();
+        tmNewOrderBuilderPopulateReview();
+        tmNewOrderBuilderSetPhase(true);
+      });
+    }
+    var backBtn = document.getElementById('tmNewObReviewBack');
+    if (backBtn) {
+      backBtn.addEventListener('click', function () {
+        tmNewOrderBuilderResetSubmitWorkflow();
+        tmNewOrderBuilderSetPhase(false);
+      });
+    }
+    var submitBtn = document.getElementById('tmNewObSubmitBtn');
+    if (submitBtn) {
+      submitBtn.addEventListener('click', function () {
+        void tmNewOrderBuilderOnSubmit();
+      });
+    }
+
+    var atBody = document.getElementById('tmNewActiveTradesTableBody');
+    if (atBody && !atBody.dataset.tmNewPnlDelegation) {
+      atBody.dataset.tmNewPnlDelegation = '1';
+      atBody.addEventListener('click', function (ev) {
+        var t = ev.target;
+        var btn = t && typeof t.closest === 'function' ? t.closest('.tm-new-ats-pnl-btn') : null;
+        if (!btn) return;
+        var id = btn.dataset.tradeId;
+        if (!id) return;
+        var row = tmNewLastActiveTradesById.get(String(id));
+        if (row) tmNewOrderBuilderApplyCloseTrade(row);
+      });
+    }
+  }
+
+  tmNewWireOrderBuilder();
 
   function tmNewApplyMonitorAccountFields(monitor) {
     if (!monitor) return;
@@ -529,6 +1658,37 @@
             tmNewApplyAutoTradeFanoutFieldsMonitorNum(String(numCh), data);
             return;
           }
+          if (data.type === 'monitor_total_position_updated') {
+            var messageMonitorId = data.monitor_id != null ? data.monitor_id.toString() : null;
+            var currentIdNormalized = window.currentMonitorId
+              ? window.currentMonitorId.toString().split('_').pop()
+              : null;
+            if (messageMonitorId && currentIdNormalized && messageMonitorId === currentIdNormalized) {
+              var numericIdTp = parseInt(currentIdNormalized, 10);
+              if (!isNaN(numericIdTp)) {
+                void tmNewApiFetch('/api/monitor/' + numericIdTp, { cache: 'no-store' })
+                  .then(function (resp) {
+                    return resp.json();
+                  })
+                  .then(function (respData) {
+                    if (respData && respData.status === 'ok' && respData.monitor) {
+                      tmNewApplyPositionControlsFromMonitor(respData.monitor);
+                    }
+                  })
+                  .catch(function (err) {
+                    console.error('[tm-new] monitor refresh after total_position WS:', err);
+                  });
+              }
+            }
+            return;
+          }
+          if (data.type === 'active_trades_change') {
+            if (!recTenantMatchesMessageTenant(data.tenant_user_no)) {
+              return;
+            }
+            void tmNewRefreshActiveTradesPanel();
+            return;
+          }
           if (data.type === 'monitor_list_updated') {
             if (!recTenantMatchesMessageTenant(data.tenant_user_no)) return;
             tmNewScheduleMonitorRefreshFromDb();
@@ -574,6 +1734,219 @@
     return fetch(target.toString(), init);
   }
 
+  /** Used by ``trade-execution-controller`` ``closeTrade`` for ``/trades`` + active_trades fetches. */
+  window.__recTradesFetch = function (url, init) {
+    try {
+      var abs = new URL(String(url), window.location.href);
+      return tmNewApiFetch(abs.pathname + abs.search, init || {});
+    } catch (eUrl) {
+      return fetch(url, init || {});
+    }
+  };
+
+  function tmNewActiveTradesDisplayContractsTruncated(v) {
+    if (v === null || v === undefined || v === '') return '';
+    var n = Number(v);
+    return Number.isFinite(n) ? String(Math.trunc(n)) : String(v);
+  }
+
+  function tmNewActiveTradesStrikeSortKey(strike) {
+    if (strike == null) return NaN;
+    var s = String(strike).replace(/[\$,]/g, '');
+    return parseFloat(s);
+  }
+
+  function tmNewActiveTradesApplyRiskRowClasses(tr, prob) {
+    tr.classList.remove('ultra-safe', 'safe', 'caution', 'high-risk', 'danger-stop');
+    if (prob === null || prob === undefined) return;
+    var p = Number(prob);
+    if (!Number.isFinite(p)) return;
+    if (p >= 95) tr.classList.add('ultra-safe');
+    else if (p >= 80) tr.classList.add('safe');
+    else if (p >= 50) tr.classList.add('caution');
+    else if (p >= 25) tr.classList.add('high-risk');
+    else tr.classList.add('danger-stop');
+  }
+
+  function tmNewActiveTradesFormatPnlDisplay(pnl) {
+    var absStr = Math.abs(pnl).toLocaleString(undefined, {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    });
+    return (pnl >= 0 ? '+' : '\u2212') + absStr;
+  }
+
+  function tmNewActiveTradesFormatPnlCell(td, trade) {
+    td.classList.remove('tm-new-ats-pnl-cell');
+    td.replaceChildren();
+    if (trade.status === 'pending') {
+      td.textContent = '\u2014';
+      return;
+    }
+    var raw = trade.current_pnl;
+    if (raw === null || raw === undefined) {
+      td.textContent = '\u2014';
+      return;
+    }
+    var pnl = parseFloat(raw);
+    if (isNaN(pnl)) {
+      td.textContent = '\u2014';
+      return;
+    }
+
+    td.classList.add('tm-new-ats-pnl-cell');
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'tm-new-ats-pnl-btn';
+    if (pnl > 0) btn.classList.add('tm-new-ats-pnl-btn--pos');
+    else if (pnl < 0) btn.classList.add('tm-new-ats-pnl-btn--neg');
+    else btn.classList.add('tm-new-ats-pnl-btn--zero');
+
+    btn.textContent = tmNewActiveTradesFormatPnlDisplay(pnl);
+    if (trade.trade_id != null) btn.dataset.tradeId = String(trade.trade_id);
+    btn.setAttribute('aria-label', 'Profit and loss ' + btn.textContent);
+
+    td.appendChild(btn);
+  }
+
+  function tmNewRenderActiveTradesTableRows(tbody, trades) {
+    tmNewLastActiveTradesById.clear();
+    tbody.replaceChildren();
+    if (!trades || trades.length === 0) {
+      var er = document.createElement('tr');
+      var ec = document.createElement('td');
+      ec.colSpan = 6;
+      ec.className = 'tm-new-active-trades-empty';
+      ec.textContent = 'No active trades';
+      er.appendChild(ec);
+      tbody.appendChild(er);
+      return;
+    }
+    var sorted = trades.slice().sort(function (a, b) {
+      var ka = tmNewActiveTradesStrikeSortKey(a.strike);
+      var kb = tmNewActiveTradesStrikeSortKey(b.strike);
+      if (isNaN(ka) && isNaN(kb)) return 0;
+      if (isNaN(ka)) return 1;
+      if (isNaN(kb)) return -1;
+      return ka - kb;
+    });
+    sorted.forEach(function (trade) {
+      if (trade.trade_id != null) tmNewLastActiveTradesById.set(String(trade.trade_id), trade);
+      var tr = document.createElement('tr');
+      if (trade.trade_id != null) tr.dataset.tradeId = String(trade.trade_id);
+
+      var strikeTd = document.createElement('td');
+      strikeTd.textContent = trade.strike != null ? String(trade.strike) : '';
+      tr.appendChild(strikeTd);
+
+      var sideTd = document.createElement('td');
+      sideTd.textContent = trade.side != null ? String(trade.side) : '';
+      tr.appendChild(sideTd);
+
+      var buyTd = document.createElement('td');
+      var posTd = document.createElement('td');
+      var probTd = document.createElement('td');
+
+      if (trade.status === 'pending') {
+        buyTd.textContent = 'Pending';
+        posTd.textContent = 'Pending';
+        probTd.textContent = 'Pending';
+        tr.classList.add('pending-trade');
+      } else {
+        if (trade.buy_price !== null && trade.buy_price !== undefined) {
+          var bp = parseFloat(trade.buy_price);
+          buyTd.textContent = !isNaN(bp) ? bp.toFixed(2) : String(trade.buy_price);
+        } else buyTd.textContent = '';
+        if (trade.position !== null && trade.position !== undefined) {
+          posTd.textContent = tmNewActiveTradesDisplayContractsTruncated(trade.position);
+        } else posTd.textContent = '';
+        if (trade.current_probability !== null && trade.current_probability !== undefined) {
+          var pr = parseFloat(trade.current_probability);
+          probTd.textContent = !isNaN(pr) ? pr.toFixed(1) : 'N/A';
+        } else probTd.textContent = 'N/A';
+        tmNewActiveTradesApplyRiskRowClasses(tr, trade.current_probability);
+      }
+
+      tr.appendChild(buyTd);
+      tr.appendChild(posTd);
+      tr.appendChild(probTd);
+
+      var pnlTd = document.createElement('td');
+      tmNewActiveTradesFormatPnlCell(pnlTd, trade);
+      tr.appendChild(pnlTd);
+
+      if (trade.status === 'closing') tr.classList.add('closing-trade');
+
+      tbody.appendChild(tr);
+    });
+  }
+
+  async function tmNewRefreshActiveTradesPanel() {
+    var tbody = document.getElementById('tmNewActiveTradesTableBody');
+    if (!tbody) return;
+    var mon = window.currentMonitorName;
+    if (!mon || !String(mon).trim()) {
+      tbody.replaceChildren();
+      var tr0 = document.createElement('tr');
+      var td0 = document.createElement('td');
+      td0.colSpan = 6;
+      td0.className = 'tm-new-active-trades-empty';
+      td0.textContent = 'Select a monitor';
+      tr0.appendChild(td0);
+      tbody.appendChild(tr0);
+      return;
+    }
+
+    var res;
+    try {
+      res = await tmNewApiFetch('/api/active_trades/' + encodeURIComponent(String(mon).trim()), {
+        cache: 'no-store',
+      });
+    } catch (e) {
+      console.error('[tm-new] active_trades fetch failed', e);
+      tbody.replaceChildren();
+      var trE = document.createElement('tr');
+      var tdE = document.createElement('td');
+      tdE.colSpan = 6;
+      tdE.className = 'tm-new-active-trades-empty';
+      tdE.textContent = 'Could not load active trades';
+      trE.appendChild(tdE);
+      tbody.appendChild(trE);
+      return;
+    }
+
+    var text = await res.text();
+    var data = null;
+    try {
+      data = text ? JSON.parse(text) : null;
+    } catch (e) {
+      console.error('[tm-new] active_trades: response is not JSON', e);
+      data = null;
+    }
+
+    if (!res.ok || !data || !Array.isArray(data.active_trades)) {
+      tbody.replaceChildren();
+      var trE2 = document.createElement('tr');
+      var tdE2 = document.createElement('td');
+      tdE2.colSpan = 6;
+      tdE2.className = 'tm-new-active-trades-empty';
+      tdE2.textContent =
+        (data && (data.detail || data.message || data.error)) ||
+        (!res.ok ? 'HTTP ' + res.status : 'Invalid response');
+      trE2.appendChild(tdE2);
+      tbody.appendChild(trE2);
+      return;
+    }
+
+    tmNewRenderActiveTradesTableRows(tbody, data.active_trades);
+  }
+
+  window.tmNewRefreshActiveTradesPanel = tmNewRefreshActiveTradesPanel;
+
+  window.addEventListener('rec:tm-monitor-changed', function () {
+    void tmNewRefreshActiveTradesPanel();
+  });
+
   function selectedMonitorStorageKey() {
     var u = tmNewMonitorListUserId && String(tmNewMonitorListUserId).trim();
     if (!u) u = 'anon';
@@ -608,7 +1981,7 @@
   function tradeMonitorStandaloneHandoffHref(mainOrigin) {
     if (!mainOrigin) return '';
     try {
-      return new URL('/tabs/trade_monitor_NEW_standalone_handoff.html', mainOrigin).href;
+      return new URL('/tabs/trade_monitor_standalone_handoff.html', mainOrigin).href;
     } catch (e) {
       return '';
     }
@@ -667,7 +2040,7 @@
       } else {
         var code = document.createElement('code');
         code.textContent =
-          'open /tabs/trade_monitor_NEW_standalone_handoff.html on the same host and port as after login';
+          'open /tabs/trade_monitor_standalone_handoff.html on the same host and port as after login';
         err.appendChild(code);
       }
       err.appendChild(document.createTextNode('.'));
@@ -852,18 +2225,7 @@
       encodeURIComponent(sym) +
       '&market=' +
       encodeURIComponent(mkt);
-    var readPort = window.__READ_API_PORT__;
-    if (readPort === undefined || readPort === null || readPort === '') {
-      readPort = 3050;
-    }
-    var proto = window.location.protocol || 'http:';
-    var host = window.location.hostname || 'localhost';
-    var locPort = String(window.location.port || '');
-    if (locPort === String(readPort)) {
-      window.__ORDERBOOK_API__ = window.location.origin + qs;
-    } else {
-      window.__ORDERBOOK_API__ = proto + '//' + host + ':' + String(readPort) + qs;
-    }
+    window.__ORDERBOOK_API__ = tmNewMainApiBase() + qs;
   }
 
   function setHeaderDropdownOpen(isOpen) {
@@ -1024,6 +2386,7 @@
     tmNewApplyMonitorStateToBody(meta);
     syncHeaderDropdownActive(monitor.id);
     tmNewApplyMonitorAccountFields(monitor);
+    tmNewApplyPositionControlsFromMonitor(monitor);
     void tmNewHydrateRegimeFromMonitorsList();
 
     const hiddenSym = document.getElementById('ticker-picker');
@@ -1258,6 +2621,7 @@
 
   document.addEventListener('DOMContentLoaded', function () {
     tmNewInstallUnifiedAutoTradeHooks();
+    tmNewWirePositionSizeControls();
     wireMonitorPicker();
     wireHeaderMonitorDropdown();
     wireDiffModeToggle();
