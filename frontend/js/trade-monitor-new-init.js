@@ -821,17 +821,33 @@
     }
   }
 
+  /**
+   * Default Yes/No for order builder + strike table alignment.
+   * Strike rows highlight the "lead" side via higher ask (see hourlyStrikeAskPillClassNames);
+   * prefer that over raw active_side from DB so page load matches what the row shows.
+   */
   function tmNewDeriveSideFromRow(row) {
     if (!row) return 'yes';
-    var active = (row.activeSide != null ? String(row.activeSide) : '').trim().toLowerCase();
-    if (active === 'yes' || active === 'no') return active;
     var y = Number(row.yesAsk);
     var n = Number(row.noAsk);
     if (Number.isFinite(y) && Number.isFinite(n)) {
       if (y > n) return 'yes';
       if (n > y) return 'no';
+    } else if (Number.isFinite(y)) {
+      return 'yes';
+    } else if (Number.isFinite(n)) {
+      return 'no';
     }
+    var active = (row.activeSide != null ? String(row.activeSide) : '').trim().toLowerCase();
+    if (active === 'yes' || active === 'no') return active;
     return 'yes';
+  }
+
+  function tmNewRowHasBothAsks(row) {
+    if (!row) return false;
+    var y = Number(row.yesAsk);
+    var n = Number(row.noAsk);
+    return Number.isFinite(y) && Number.isFinite(n);
   }
 
   function tmNewOrderBuilderStrikeSuffix() {
@@ -1290,8 +1306,9 @@
             (rowForInit.activeSide != null && String(rowForInit.activeSide).trim() !== ''));
         if (hasAtmRow) {
           tmNewObState.side = tmNewDeriveSideFromRow(rowForInit);
-          // Lock only after we have a real ATM row on initial load.
-          tmNewObState.userLockedSide = true;
+          if (tmNewRowHasBothAsks(rowForInit)) {
+            tmNewObState.userLockedSide = true;
+          }
         }
       }
       tmNewOrderBuilderUpdateUi();
