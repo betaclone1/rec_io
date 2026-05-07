@@ -152,6 +152,20 @@
       toggle.classList.remove('paper-mode');
       toggle.classList.add('live-mode');
     }
+    var options = toggle.querySelectorAll('.paper-trading-toggle-option');
+    if (options.length >= 2) {
+      if (paperTrade) {
+        options[0].style.color = '#a0aec0';
+        options[0].style.fontWeight = '500';
+        options[1].style.color = '#ffffff';
+        options[1].style.fontWeight = '600';
+      } else {
+        options[0].style.color = '#ffffff';
+        options[0].style.fontWeight = '600';
+        options[1].style.color = '#a0aec0';
+        options[1].style.fontWeight = '500';
+      }
+    }
   }
 
   function tmNewSyncPaperToggleUi() {
@@ -809,6 +823,8 @@
 
   function tmNewDeriveSideFromRow(row) {
     if (!row) return 'yes';
+    var active = (row.activeSide != null ? String(row.activeSide) : '').trim().toLowerCase();
+    if (active === 'yes' || active === 'no') return active;
     var y = Number(row.yesAsk);
     var n = Number(row.noAsk);
     if (Number.isFinite(y) && Number.isFinite(n)) {
@@ -1259,7 +1275,24 @@
       }
       tmNewObState.ticker = String(d.atmTicker);
       if (!tmNewObState.userLockedSide) {
-        tmNewObState.side = tmNewDeriveSideFromRow(d.atmRow);
+        var rowForInit = d.atmRow;
+        if (
+          !rowForInit &&
+          tmNewObState.ticker &&
+          typeof window.recTmGetHourlyStrikeRow === 'function'
+        ) {
+          rowForInit = window.recTmGetHourlyStrikeRow(tmNewObState.ticker);
+        }
+        var hasAtmRow =
+          rowForInit &&
+          (Number.isFinite(Number(rowForInit.yesAsk)) ||
+            Number.isFinite(Number(rowForInit.noAsk)) ||
+            (rowForInit.activeSide != null && String(rowForInit.activeSide).trim() !== ''));
+        if (hasAtmRow) {
+          tmNewObState.side = tmNewDeriveSideFromRow(rowForInit);
+          // Lock only after we have a real ATM row on initial load.
+          tmNewObState.userLockedSide = true;
+        }
       }
       tmNewOrderBuilderUpdateUi();
       tmNewSyncOrderBuilderContractsFromPicker();

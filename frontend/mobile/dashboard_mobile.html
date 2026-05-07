@@ -3082,11 +3082,12 @@
             window.globalPaperMode = data.global_paper_mode;
           }
 
-          // Sync cooldown timers from API so badge reverts when cooldown ends (no stale map entries)
+          // Seed cooldown countdown clock from API snapshot; smooth local ticks handle in-between seconds.
           cooldownTimers.clear();
+          cooldownExpireAtMs.clear();
           monitors.forEach(monitor => {
-            if (monitor.id && monitor.id !== 'NEW_MONITOR' && monitor.cooldown_timer > 0) {
-              cooldownTimers.set(monitor.id, monitor.cooldown_timer);
+            if (monitor.id && monitor.id !== 'NEW_MONITOR' && Number(monitor.cooldown_timer) > 0) {
+              setCooldownTimerForMonitor(monitor.id, monitor, Number(monitor.cooldown_timer));
             }
           });
           
@@ -4430,35 +4431,7 @@
       const queuedRerenderAllCharts = rerenderAllCharts;
       const queuedSkipBalance = skipBalanceSnapshotFetch;
       try {
-        const origin = window.location.origin;
-
-        const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`))
-        ]);
-
-        if (portfolioRes.ok) {
-          const data = await portfolioRes.json();
-          allHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
-        } else {
-          allHistoryData = [];
-        }
-
-        if (bankrollRes.ok) {
-          const data = await bankrollRes.json();
-          allBankrollHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
-        } else {
-          allBankrollHistoryData = [];
-        }
-
-        if (pnlRes.ok) {
-          const data = await pnlRes.json();
-          const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
-          allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
-        } else {
-          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
-        }
+        await loadDashboardMobileHistoryBundle();
 
         if (rerenderAllCharts) {
           renderPortfolioChart(allHistoryData);
@@ -4496,36 +4469,8 @@
     async function preloadPortfolioPanelTabs() {
       // Preload all portfolio panel tabs on page load so the first switch
       // doesn't have to fetch/render charts and thus avoids the initial glitch.
-      const origin = window.location.origin;
-
       try {
-        const [portfolioRes, bankrollRes, pnlRes] = await Promise.all([
-          fetch(recApiUrlWithTradingMode(`${origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`)),
-          fetch(recApiUrlWithTradingMode(`${origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`))
-        ]);
-
-        if (portfolioRes.ok) {
-          const data = await portfolioRes.json();
-          allHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
-        } else {
-          allHistoryData = [];
-        }
-
-        if (bankrollRes.ok) {
-          const data = await bankrollRes.json();
-          allBankrollHistoryData = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
-        } else {
-          allBankrollHistoryData = [];
-        }
-
-        if (pnlRes.ok) {
-          const data = await pnlRes.json();
-          const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
-          allPnlHistoryData = history.length > 0 ? history : [{ timestamp: new Date().toISOString(), pnl: 0 }];
-        } else {
-          allPnlHistoryData = [{ timestamp: new Date().toISOString(), pnl: 0 }];
-        }
+        await loadDashboardMobileHistoryBundle();
       } catch (e) {
         console.error('Error preloading portfolio panel tabs (mobile):', e);
         allHistoryData = [];
@@ -4590,11 +4535,10 @@
       }
 
       try {
-        await Promise.all([
-          loadPortfolioHistory(),
-          loadBankrollHistory(),
-          loadPnlHistory(),
-        ]);
+        await loadDashboardMobileHistoryBundle();
+        applyPortfolioView();
+        renderBankrollChart(allBankrollHistoryData);
+        renderPnlChart(allPnlHistoryData);
       } catch (e) {
         console.error('setChartView history refetch failed (mobile):', e);
       }
@@ -4614,11 +4558,62 @@
       await fetchAccountBalanceSnapshot();
     }
 
-    async function loadPortfolioHistory() {
-      try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
+    const dashboardMobileHistoryInflight = new Map();
+    let dashboardMobileHistoryFailureCount = 0;
+    let dashboardMobileHistoryDegradedUntil = 0;
+
+    async function fetchDashboardMobileHistoryJson(url) {
+      const now = Date.now();
+      if (dashboardMobileHistoryDegradedUntil > now) {
+        throw new Error(`dashboard mobile history cooldown active (${Math.ceil((dashboardMobileHistoryDegradedUntil - now) / 1000)}s)`);
+      }
+      if (dashboardMobileHistoryInflight.has(url)) return dashboardMobileHistoryInflight.get(url);
+      const p = (async () => {
+        const response = await fetch(url);
         if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
         const data = await response.json();
+        dashboardMobileHistoryFailureCount = 0;
+        return data;
+      })();
+      dashboardMobileHistoryInflight.set(url, p);
+      try {
+        return await p;
+      } catch (error) {
+        dashboardMobileHistoryFailureCount += 1;
+        if (dashboardMobileHistoryFailureCount >= 3) {
+          dashboardMobileHistoryDegradedUntil = Date.now() + 15000;
+        }
+        throw error;
+      } finally {
+        dashboardMobileHistoryInflight.delete(url);
+      }
+    }
+
+    function applyDashboardMobileHistoryBundle(data) {
+      const portfolioPayload = data && data.portfolio ? data.portfolio : null;
+      const bankrollPayload = data && data.bankroll ? data.bankroll : null;
+      const pnlPayload = data && data.pnl ? data.pnl : null;
+      allHistoryData = (portfolioPayload && portfolioPayload.status === 'ok' && Array.isArray(portfolioPayload.data))
+        ? portfolioPayload.data
+        : [];
+      allBankrollHistoryData = (bankrollPayload && bankrollPayload.status === 'ok' && Array.isArray(bankrollPayload.data))
+        ? bankrollPayload.data
+        : [];
+      const pnlHistory = (pnlPayload && pnlPayload.status === 'ok' && Array.isArray(pnlPayload.data))
+        ? pnlPayload.data
+        : [];
+      allPnlHistoryData = pnlHistory.length > 0 ? pnlHistory : [{ timestamp: new Date().toISOString(), pnl: 0 }];
+    }
+
+    async function loadDashboardMobileHistoryBundle() {
+      const url = recApiUrlWithTradingMode(`${window.location.origin}/api/dashboard/history-bundle?period=${currentView}${dashboardRollupQuerySuffix()}`);
+      const data = await fetchDashboardMobileHistoryJson(url);
+      applyDashboardMobileHistoryBundle(data);
+    }
+
+    async function loadPortfolioHistory() {
+      try {
+        const data = await fetchDashboardMobileHistoryJson(recApiUrlWithTradingMode(`${window.location.origin}/api/portfolio/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         allHistoryData = history;
         applyPortfolioView();
@@ -4833,9 +4828,7 @@
 
     async function loadBankrollHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
+        const data = await fetchDashboardMobileHistoryJson(recApiUrlWithTradingMode(`${window.location.origin}/api/bankroll/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         allBankrollHistoryData = history;
         renderBankrollChart(history);
@@ -4867,9 +4860,7 @@
 
     async function loadPnlData() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
+        const data = await fetchDashboardMobileHistoryJson(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
         const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
         const formattedValue = new Intl.NumberFormat('en-US', { style: 'currency', currency: 'USD', minimumFractionDigits: 2, maximumFractionDigits: 2, signDisplay: 'auto' }).format(totalPnl);
         const portfolioElement = document.getElementById('portfolio-value');
@@ -4886,9 +4877,7 @@
 
     async function loadPnlHistory() {
       try {
-        const response = await fetch(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
-        if (!response.ok) throw new Error(`HTTP error! status: ${response.status}`);
-        const data = await response.json();
+        const data = await fetchDashboardMobileHistoryJson(recApiUrlWithTradingMode(`${window.location.origin}/api/pnl/history?period=${currentView}${dashboardRollupQuerySuffix()}`));
         const history = (data && data.status === 'ok' && Array.isArray(data.data)) ? data.data : [];
         const totalPnl = (data && data.status === 'ok' && data.total_pnl != null) ? data.total_pnl : 0;
         if (history.length > 0) {
@@ -7030,6 +7019,22 @@
 
     // Store cooldown timers for each monitor
     const cooldownTimers = new Map();
+    const cooldownExpireAtMs = new Map();
+    let cooldownClockTimer = null;
+
+    function monitorCooldownKeyCandidates(monitorId) {
+      const out = [];
+      if (monitorId != null && monitorId !== '') out.push(String(monitorId));
+      const raw = String(monitorId || '');
+      const numPart = raw ? raw.split('_').pop() : '';
+      const slot = typeof window.recSessionUserSlot === 'function' ? window.recSessionUserSlot() : '';
+      if (numPart) {
+        out.push(numPart);
+        if (slot) out.push('MON_' + slot + '_' + numPart);
+        if (slot) out.push('mon_' + slot + '_' + numPart);
+      }
+      return Array.from(new Set(out));
+    }
 
     // Helper function to get CSS class for auto trade status
     function getStatusClass(status) {
@@ -7047,26 +7052,104 @@
       if (!monitor || !monitor.strategy) return base;
       const s = (monitor.strategy || '').trim();
       if (s !== 'Hourly HTC' && s !== '15m HTC') return base;
-      const id = monitor.id;
-      const numPart = (id != null && typeof id === 'string') ? id.split('_').pop() : (id != null ? String(id) : null);
-      const fromMap = (id != null && (cooldownTimers.get(id) ?? (numPart && cooldownTimers.get('MON_' + window.recSessionUserSlot() + '_' + numPart)) ?? (numPart && cooldownTimers.get(numPart))));
-      const fromMonitor = monitor.cooldown_timer != null ? Number(monitor.cooldown_timer) : 0;
-      const timerSec = (typeof fromMap === 'number' && fromMap > 0) ? fromMap : (typeof fromMonitor === 'number' && fromMonitor > 0 ? fromMonitor : 0);
+      const timerSec = resolveCooldownSeconds(monitor && monitor.id, monitor);
       if (timerSec > 0) return 'paused';
       return base;
     }
 
     function clearCooldownTimerForMonitor(monitorId, monitor) {
-      if (monitorId != null) cooldownTimers.delete(monitorId);
+      monitorCooldownKeyCandidates(monitorId).forEach(function (k) {
+        cooldownTimers.delete(k);
+        cooldownExpireAtMs.delete(k);
+      });
       if (monitor && monitor.id != null) {
-        cooldownTimers.delete(monitor.id);
+        monitorCooldownKeyCandidates(monitor.id).forEach(function (k) {
+          cooldownTimers.delete(k);
+          cooldownExpireAtMs.delete(k);
+        });
         monitor.cooldown_timer = 0;
       }
-      const numPart = (monitorId || (monitor && monitor.id) || '').toString().replace(/^mon_?\d+_/i, '').replace(/^MON_?\d+_/i, '');
-      if (numPart) {
-        cooldownTimers.delete('MON_' + window.recSessionUserSlot() + '_' + numPart);
-        cooldownTimers.delete(numPart);
+    }
+
+    function setCooldownTimerForMonitor(monitorId, monitor, seconds) {
+      const sec = Number(seconds);
+      if (!Number.isFinite(sec) || sec <= 0) {
+        clearCooldownTimerForMonitor(monitorId, monitor);
+        return;
       }
+      const expireAt = Date.now() + sec * 1000;
+      const keys = new Set([
+        ...monitorCooldownKeyCandidates(monitorId),
+        ...(monitor && monitor.id != null ? monitorCooldownKeyCandidates(monitor.id) : []),
+      ]);
+      keys.forEach(function (k) {
+        cooldownTimers.set(k, sec);
+        cooldownExpireAtMs.set(k, expireAt);
+      });
+      if (monitor) monitor.cooldown_timer = sec;
+      ensureCooldownClockRunning();
+    }
+
+    function resolveCooldownSeconds(monitorId, monitor) {
+      const keys = new Set([
+        ...monitorCooldownKeyCandidates(monitorId),
+        ...(monitor && monitor.id != null ? monitorCooldownKeyCandidates(monitor.id) : []),
+      ]);
+      for (const k of keys) {
+        const expireAt = cooldownExpireAtMs.get(k);
+        if (typeof expireAt === 'number' && Number.isFinite(expireAt)) {
+          const rem = Math.max(0, Math.floor((expireAt - Date.now()) / 1000));
+          if (rem <= 0) {
+            clearCooldownTimerForMonitor(monitorId, monitor);
+            return 0;
+          }
+          cooldownTimers.set(k, rem);
+          return rem;
+        }
+      }
+      for (const k of keys) {
+        const t = Number(cooldownTimers.get(k));
+        if (Number.isFinite(t) && t > 0) return t;
+      }
+      const fallback = monitor && monitor.cooldown_timer != null ? Number(monitor.cooldown_timer) : 0;
+      return Number.isFinite(fallback) && fallback > 0 ? fallback : 0;
+    }
+
+    function refreshCooldownStatusDisplays() {
+      const monitorById = new Map();
+      monitors.forEach(function (m) {
+        if (m && m.id != null) monitorById.set(String(m.id), m);
+      });
+      document.querySelectorAll('.monitor-tile[data-monitor-id]').forEach(function (tile) {
+        const id = tile.getAttribute('data-monitor-id');
+        if (!id) return;
+        const monitor = monitorById.get(id);
+        if (!monitor) return;
+        const status = monitor.auto_trade_status || '';
+        tile.querySelectorAll('.monitor-status').forEach(function (statusElement) {
+          statusElement.className = `monitor-status ${getMonitorStatusClass(status, monitor)}`;
+          statusElement.textContent = getStatusText(status, id);
+        });
+      });
+    }
+
+    function ensureCooldownClockRunning() {
+      if (cooldownClockTimer) return;
+      cooldownClockTimer = setInterval(function () {
+        let hasActive = false;
+        for (const expireAt of cooldownExpireAtMs.values()) {
+          if (typeof expireAt === 'number' && expireAt > Date.now()) {
+            hasActive = true;
+            break;
+          }
+        }
+        if (!hasActive) {
+          clearInterval(cooldownClockTimer);
+          cooldownClockTimer = null;
+          return;
+        }
+        refreshCooldownStatusDisplays();
+      }, 1000);
     }
 
     // Helper function to format cooldown timer as MM:SS
@@ -7080,7 +7163,8 @@
     // Helper function to get status text with optional timer
     function getStatusText(status, monitorId) {
       const statusUpper = status.toUpperCase();
-      const timer = cooldownTimers.get(monitorId);
+      const mon = monitors.find(m => String(m.id) === String(monitorId));
+      const timer = resolveCooldownSeconds(monitorId, mon);
       
       // Show cooldown timer if available, regardless of status (for cooldown mode during ACTIVE state)
       if (timer && timer > 0) {
@@ -7257,11 +7341,7 @@
           const monitor = monitors.find(m => String(m.id) === String(monitorId) || String(m.id) === String(frontendId));
 
           if (cooldownTimer != null && Number(cooldownTimer) > 0) {
-            cooldownTimers.set(monitorId, Number(cooldownTimer));
-            if (monitor) {
-              cooldownTimers.set(monitor.id, Number(cooldownTimer));
-              monitor.cooldown_timer = Number(cooldownTimer);
-            }
+            setCooldownTimerForMonitor(monitorId, monitor, Number(cooldownTimer));
             console.log(`Stored cooldown timer for ${monitorId}: ${cooldownTimer}s`);
           } else {
             clearCooldownTimerForMonitor(monitorId, monitor);

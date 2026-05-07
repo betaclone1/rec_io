@@ -51,12 +51,12 @@
 })();
   </script>
   <script src="/js/rec_session.js"></script>
-  <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Trade Monitor</title>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Trade Monitor</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles/global.css" />
-  <style>
+<style>
 .trade-monitor-new-page,
 html,
 body.trade-monitor-new-page {
@@ -82,8 +82,8 @@ body.trade-monitor-new-page #container {
   min-height: calc(100vh - 20px);
   height: calc(100vh - 20px);
   box-sizing: border-box;
-  display: flex;
-  flex-direction: column;
+    display: flex;
+    flex-direction: column;
 }
 
 /*
@@ -93,8 +93,8 @@ body.trade-monitor-new-page #container {
  * (see global.css — no extra margin on this flex wrapper, avoids stacking buffers).
  */
 .trade-monitor-new-page .tm-new-top-row {
-  display: flex;
-  flex-direction: row;
+    display: flex;
+    flex-direction: row;
   align-items: stretch;
   gap: 10px;
   width: 100%;
@@ -124,9 +124,9 @@ body.trade-monitor-new-page #container {
   flex-direction: row;
   align-items: flex-start;
   gap: 10px;
-  width: 100%;
+    width: 100%;
   min-width: 0;
-  box-sizing: border-box;
+    box-sizing: border-box;
   flex: 0 1 auto;
 }
 
@@ -189,7 +189,7 @@ body.trade-monitor-new-page #container {
 
 .trade-monitor-new-page .tm-new-monitor-bankroll-wrap {
   flex: 0 0 auto;
-  display: flex;
+    display: flex;
   flex-direction: column;
   align-items: flex-end;
   justify-content: center;
@@ -205,7 +205,7 @@ body.trade-monitor-new-page #container {
 }
 
 .trade-monitor-new-page .tm-new-monitor-bankroll {
-  font-size: 14px;
+    font-size: 14px;
   font-weight: 600;
   color: #f8fafc;
   white-space: nowrap;
@@ -213,66 +213,66 @@ body.trade-monitor-new-page #container {
 
 /* Paper toggle (dashboard-aligned) */
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle {
-  display: flex;
-  position: relative;
-  background-color: #2d3748;
-  border-radius: 4px;
-  padding: 2px;
-  min-width: 100px;
-  height: 22px;
-  cursor: pointer;
-  flex: 0 0 auto;
-  border: 1px solid #4a5568;
-}
+    display: flex;
+    position: relative;
+    background-color: #2d3748;
+    border-radius: 4px;
+    padding: 2px;
+    min-width: 100px;
+    height: 22px;
+    cursor: pointer;
+    flex: 0 0 auto;
+    border: 1px solid #4a5568;
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle-option {
-  flex: 1;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 9px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  z-index: 2;
-  transition: color 0.3s ease;
-  position: relative;
+    flex: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 9px;
+    font-weight: 500;
+    letter-spacing: 0.5px;
+    z-index: 2;
+    transition: color 0.3s ease;
+    position: relative;
   color: #a0aec0;
-}
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle-slider {
-  position: absolute;
-  top: 2px;
-  left: 2px;
-  width: calc(50% - 2px);
-  height: calc(100% - 4px);
-  background-color: #48bb78;
-  border-radius: 3px;
-  transition: transform 0.3s ease;
-  z-index: 1;
-}
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: calc(50% - 2px);
+    height: calc(100% - 4px);
+    background-color: #48bb78;
+    border-radius: 3px;
+    transition: transform 0.3s ease;
+    z-index: 1;
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle.paper-mode .paper-trading-toggle-slider {
-  transform: translateX(calc(100% + 2px));
-  background-color: #fbbf24;
-}
+    transform: translateX(calc(100% + 2px));
+    background-color: #fbbf24;
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle.live-mode .paper-trading-toggle-option:first-child {
-  color: #ffffff !important;
-  font-weight: 600 !important;
-}
+    color: #ffffff !important;
+    font-weight: 600 !important;
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle.paper-mode .paper-trading-toggle-option:last-child {
-  color: #ffffff !important;
-  font-weight: 600 !important;
-}
+    color: #ffffff !important;
+    font-weight: 600 !important;
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle.live-mode .paper-trading-toggle-option:last-child {
-  color: #a0aec0 !important;
-}
+    color: #a0aec0 !important;
+  }
 
 .trade-monitor-new-page .tm-new-account-panel .paper-trading-toggle.paper-mode .paper-trading-toggle-option:first-child {
-  color: #a0aec0 !important;
-}
+    color: #a0aec0 !important;
+  }
 
 /*
  * Chart + strike/orderbook stack: same width as `.tm-new-mkt-head-wrap` (uses shared custom property).
@@ -315,7 +315,7 @@ body.trade-monitor-new-page #container {
   background: transparent;
   color: inherit;
   padding: 0;
-  cursor: pointer;
+    cursor: pointer;
   text-align: left;
 }
 
@@ -423,8 +423,8 @@ body.trade-monitor-new-page #container {
 
 /* Active Trades (lower right): reserve same vertical lane as former placeholder; content mounts in #tmNewActiveTradesBody. */
 .trade-monitor-new-page .tm-new-active-trades-body {
-  min-height: 309px;
-  flex: 1 1 auto;
+  max-height: 309px;
+  flex: 0 1 auto;
   min-width: 0;
   box-sizing: border-box;
   display: flex;
@@ -444,8 +444,8 @@ body.trade-monitor-new-page #container {
 }
 
 .trade-monitor-new-page .tm-new-active-trades-table {
-  width: 100%;
-  border-collapse: collapse;
+    width: 100%;
+    border-collapse: collapse;
   margin-bottom: 0;
   table-layout: fixed;
   font-size: calc(12px * 1.1);
@@ -454,9 +454,9 @@ body.trade-monitor-new-page #container {
 .trade-monitor-new-page .tm-new-active-trades-table th,
 .trade-monitor-new-page .tm-new-active-trades-table td {
   border: 1px solid #4a5568;
-  padding: 4px 6px;
-  text-align: center;
-}
+    padding: 4px 6px;
+    text-align: center;
+  }
 
 .trade-monitor-new-page #tmNewActiveTradesTable tbody td {
   color: #f8fafc;
@@ -464,14 +464,17 @@ body.trade-monitor-new-page #container {
 
 .trade-monitor-new-page .tm-new-active-trades-table thead th {
   font-weight: 700;
-  background-color: #222c3c;
+    background-color: #222c3c;
   color: #c4c4c4;
+  position: sticky;
+  top: 0;
+  z-index: 2;
 }
 
 .trade-monitor-new-page .tm-new-active-trades-table thead tr th {
-  border-top: none;
-  border-left: none;
-  border-right: none;
+    border-top: none;
+    border-left: none;
+    border-right: none;
   border-bottom: 1px solid #4a5568;
 }
 
@@ -632,26 +635,26 @@ body.trade-monitor-new-page #container {
 /* Order (top right): same overall height as placeholder era — padding 10+10 + 309px content lane */
 .trade-monitor-new-page #tmNewOrderPanelPlaceholder {
   min-height: 329px;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            box-sizing: border-box;
 }
 
 .trade-monitor-new-page .tm-new-order-pos-block {
-  display: flex;
-  flex-direction: column;
+            display: flex;
+            flex-direction: column;
   flex: 1 1 auto;
-  min-height: 0;
+            min-height: 0;
   margin-top: 2px;
 }
 
 .trade-monitor-new-page .tm-new-pos-selector-row {
-  display: flex;
+            display: flex;
   align-items: center;
-  gap: 10px;
+            gap: 10px;
   flex-wrap: wrap;
-  flex-shrink: 0;
-}
+            flex-shrink: 0;
+          }
 
 .trade-monitor-new-page .tm-new-pos-input-wrap {
   display: inline-flex;
@@ -664,8 +667,8 @@ body.trade-monitor-new-page #container {
   padding: 4px 6px;
   text-align: right;
   font-size: 1rem;
-  border-radius: 4px;
-  border: 1px solid #4a5568;
+            border-radius: 4px;
+            border: 1px solid #4a5568;
   background-color: #3c495e;
   color: #f8fafc;
   height: 28px;
@@ -677,11 +680,11 @@ body.trade-monitor-new-page #container {
 .trade-monitor-new-page .tm-new-pos-input-wrap #position-size::-webkit-outer-spin-button,
 .trade-monitor-new-page .tm-new-pos-input-wrap #position-size::-webkit-inner-spin-button {
   -webkit-appearance: none;
-  margin: 0;
-}
+            margin: 0;
+          }
 
 .trade-monitor-new-page .tm-new-pos-step-col {
-  display: flex;
+            display: flex;
   flex-direction: column;
   gap: 2px;
   height: 28px;
@@ -693,16 +696,16 @@ body.trade-monitor-new-page #container {
   min-height: 0;
   width: 22px;
   padding: 0;
-  margin: 0;
+            margin: 0;
   box-sizing: border-box;
   font-size: 9px;
   line-height: 1;
-  border: 1px solid #4a5568;
+            border: 1px solid #4a5568;
   background-color: #3c495e;
   color: #e5e7eb;
-  border-radius: 3px;
-  cursor: pointer;
-  display: flex;
+            border-radius: 3px;
+            cursor: pointer;
+            display: flex;
   align-items: center;
   justify-content: center;
 }
@@ -713,7 +716,7 @@ body.trade-monitor-new-page #container {
 }
 
 .trade-monitor-new-page .tm-new-pos-mode-col {
-  display: flex;
+            display: flex;
   flex-direction: column;
   gap: 2px;
 }
@@ -723,9 +726,9 @@ body.trade-monitor-new-page #container {
   padding: 2px 6px;
   box-sizing: border-box;
   font-size: 9px;
-  border-radius: 4px;
-  cursor: pointer;
-  color: white;
+            border-radius: 4px;
+            cursor: pointer;
+            color: white;
 }
 
 .trade-monitor-new-page .tm-new-pos-mode-btn--active {
@@ -830,29 +833,29 @@ body.trade-monitor-new-page #container {
 
 /* Order panel active side: same 50% tint as strike row --order-selected (strike table uses --lead-* for quote hint only). */
 .trade-monitor-new-page .tm-new-ob-yesno .hourly-ask-pill-yes.hourly-ask-pill--lead-yes {
-  background: rgba(16, 185, 129, 0.5);
+  background: rgba(16, 185, 129, 0.82);
   border-color: rgb(16, 185, 129);
   color: #fff;
   opacity: 1;
-  box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.55);
+  box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.62);
 }
 
 .trade-monitor-new-page .tm-new-ob-yesno .hourly-ask-pill-yes.hourly-ask-pill--lead-yes:hover {
-  background: rgba(5, 150, 105, 0.5);
+  background: rgba(16, 185, 129, 0.82);
   border-color: rgb(5, 150, 105);
 }
 
 .trade-monitor-new-page .tm-new-ob-yesno .hourly-ask-pill-no.hourly-ask-pill--lead-no {
-  background: rgba(239, 68, 68, 0.5);
-  border-color: rgb(239, 68, 68);
+  background: rgba(255, 72, 72, 0.82);
+  border-color: rgb(255, 72, 72);
   color: #fff;
   opacity: 1;
-  box-shadow: 0 0 calc(8px * 0.9) rgba(239, 68, 68, 0.45);
+  box-shadow: 0 0 calc(8px * 0.9) rgba(255, 72, 72, 0.55);
 }
 
 .trade-monitor-new-page .tm-new-ob-yesno .hourly-ask-pill-no.hourly-ask-pill--lead-no:hover {
-  background: rgba(220, 38, 38, 0.5);
-  border-color: rgb(220, 38, 38);
+  background: rgba(255, 72, 72, 0.82);
+  border-color: rgb(235, 48, 48);
 }
 
 .trade-monitor-new-page .tm-new-ob-contracts-row {
@@ -1189,7 +1192,7 @@ body.trade-monitor-new-page #container {
 
 /* Mouse-following tooltip: same chrome as dashboard `.th-monitor-trades-box::after` win streak */
 .trade-monitor-new-page .uat-monitor-settings-tooltip {
-  position: fixed;
+        position: fixed;
   z-index: 30000;
   pointer-events: none;
   background: #1a202c;
@@ -1201,7 +1204,7 @@ body.trade-monitor-new-page #container {
   font-weight: 500;
   white-space: nowrap;
   box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-  opacity: 0;
+        opacity: 0;
   transition: opacity 0.12s ease;
 }
 
@@ -1444,30 +1447,30 @@ body.trade-monitor-new-page #container {
 }
 
 .trade-monitor-new .hourly-ask-pill-yes:hover:not(.hourly-ask-pill--order-selected) {
-  background: rgba(16, 185, 129, 0.32);
+  background: rgba(16, 185, 129, 0.4);
   border-color: rgba(16, 185, 129, 0.95);
   opacity: 1;
   box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.38);
 }
 
 .trade-monitor-new .hourly-ask-pill-no:hover:not(.hourly-ask-pill--order-selected) {
-  background: rgba(239, 68, 68, 0.32);
-  border-color: rgba(239, 68, 68, 0.95);
+  background: rgba(255, 72, 72, 0.4);
+  border-color: rgba(255, 72, 72, 0.95);
   opacity: 1;
-  box-shadow: 0 0 calc(8px * 0.9) rgba(239, 68, 68, 0.38);
+  box-shadow: 0 0 calc(8px * 0.9) rgba(255, 72, 72, 0.38);
 }
 
 .trade-monitor-new .hourly-ask-pill--lead-yes {
-  background: rgba(16, 185, 129, 0.08);
+  background: rgba(16, 185, 129, 0.1);
   border-color: rgba(16, 185, 129, 0.92);
   box-shadow: 0 0 calc(6.4px * 0.9) rgba(16, 185, 129, 0.42);
   color: #f3f4f6;
 }
 
 .trade-monitor-new .hourly-ask-pill--lead-no {
-  background: rgba(239, 68, 68, 0.08);
-  border-color: rgba(239, 68, 68, 0.92);
-  box-shadow: 0 0 calc(6.4px * 0.9) rgba(239, 68, 68, 0.42);
+  background: rgba(255, 72, 72, 0.1);
+  border-color: rgba(255, 72, 72, 0.92);
+  box-shadow: 0 0 calc(6.4px * 0.9) rgba(255, 72, 72, 0.42);
   color: #f3f4f6;
 }
 
@@ -1477,27 +1480,27 @@ body.trade-monitor-new-page #container {
 
 /* Order panel / strike row: selected pill uses 50% opaque fill so grid shows through slightly. */
 .trade-monitor-new .hourly-ask-pill-yes.hourly-ask-pill--order-selected {
-  background: rgba(16, 185, 129, 0.5);
+  opacity: 1;
+  background: rgba(16, 185, 129, 0.82);
   border-color: rgb(16, 185, 129);
   color: #fff;
-  box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.55);
+  box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.62);
 }
 
 .trade-monitor-new .hourly-ask-pill-yes.hourly-ask-pill--order-selected:hover {
-  background: rgba(5, 150, 105, 0.5);
   border-color: rgb(5, 150, 105);
 }
 
 .trade-monitor-new .hourly-ask-pill-no.hourly-ask-pill--order-selected {
-  background: rgba(239, 68, 68, 0.5);
-  border-color: rgb(239, 68, 68);
+  opacity: 1;
+  background: rgba(255, 72, 72, 0.82);
+  border-color: rgb(255, 72, 72);
   color: #fff;
-  box-shadow: 0 0 calc(8px * 0.9) rgba(239, 68, 68, 0.45);
+  box-shadow: 0 0 calc(8px * 0.9) rgba(255, 72, 72, 0.55);
 }
 
 .trade-monitor-new .hourly-ask-pill-no.hourly-ask-pill--order-selected:hover {
-  background: rgba(220, 38, 38, 0.5);
-  border-color: rgb(220, 38, 38);
+  border-color: rgb(235, 48, 48);
 }
 
 /* Hourly embedded orderbook: Yes/No book toggle in table header row. */
@@ -1805,7 +1808,7 @@ body.trade-monitor-new-page #container {
 .trade-monitor-new .mid-inner {
   display: inline-flex;
   align-items: baseline;
-  justify-content: center;
+        justify-content: center;
   flex-wrap: wrap;
   width: 100%;
   box-sizing: border-box;
@@ -2222,7 +2225,7 @@ body.trade-monitor-new-page #container {
         document.body.dataset.currentSymbol = sym;
         document.body.dataset.currentMarket = mkt;
       } catch (e) {}
-    })();
+  })();
   </script>
   <script src="/js/uat_unified_modal_position_size.js"></script>
   <script src="/js/unified_auto_trade_settings.js"></script>

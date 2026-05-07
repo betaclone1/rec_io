@@ -907,6 +907,77 @@ async def health_check():
     }
 
 
+_READ_API_HISTORY_BREAKER_LOCK = threading.Lock()
+_READ_API_HISTORY_BREAKER: Dict[str, Dict[str, Any]] = {}
+_READ_API_HISTORY_FAIL_THRESHOLD = int(os.getenv("READ_API_HISTORY_BREAKER_FAIL_THRESHOLD", "3"))
+_READ_API_HISTORY_COOLDOWN_SEC = float(os.getenv("READ_API_HISTORY_BREAKER_COOLDOWN_SEC", "20"))
+
+
+def _history_breaker_is_open(key: str) -> bool:
+    now_ts = time.time()
+    with _READ_API_HISTORY_BREAKER_LOCK:
+        st = _READ_API_HISTORY_BREAKER.get(key)
+        return bool(st and float(st.get("open_until", 0.0)) > now_ts)
+
+
+def _history_breaker_mark_success(key: str) -> None:
+    with _READ_API_HISTORY_BREAKER_LOCK:
+        _READ_API_HISTORY_BREAKER[key] = {"fail_count": 0, "open_until": 0.0}
+
+
+def _history_breaker_mark_failure(key: str) -> None:
+    now_ts = time.time()
+    with _READ_API_HISTORY_BREAKER_LOCK:
+        st = _READ_API_HISTORY_BREAKER.setdefault(key, {"fail_count": 0, "open_until": 0.0})
+        st["fail_count"] = int(st.get("fail_count", 0)) + 1
+        if st["fail_count"] >= _READ_API_HISTORY_FAIL_THRESHOLD:
+            st["open_until"] = now_ts + _READ_API_HISTORY_COOLDOWN_SEC
+
+
+def _history_breaker_snapshot() -> Dict[str, Any]:
+    now_ts = time.time()
+    out: Dict[str, Any] = {}
+    with _READ_API_HISTORY_BREAKER_LOCK:
+        for key, st in _READ_API_HISTORY_BREAKER.items():
+            open_until = float(st.get("open_until", 0.0))
+            out[key] = {
+                "fail_count": int(st.get("fail_count", 0)),
+                "open": open_until > now_ts,
+                "retry_in_sec": max(0.0, round(open_until - now_ts, 2)),
+            }
+    return out
+
+
+@app.get("/health/read-path")
+async def read_path_health_check():
+    """
+    Read-path health for dashboard-critical data routes.
+
+    Aims to catch 'process alive but read path stalled' incidents.
+    """
+    test_url = f"{READ_API_BASE_URL}/api/pnl/history"
+    params = {"period": "1d"}
+    try:
+        resp = requests.get(test_url, params=params, timeout=3)
+        ok = resp.ok or resp.status_code in (401, 403)
+        return {
+            "status": "healthy" if ok else "degraded",
+            "service": "main_app",
+            "read_api_status_code": resp.status_code,
+            "auth_required": resp.status_code in (401, 403),
+            "breaker": _history_breaker_snapshot(),
+            "timestamp": now_est().isoformat(),
+        }
+    except Exception as e:
+        return {
+            "status": "degraded",
+            "service": "main_app",
+            "error": str(e),
+            "breaker": _history_breaker_snapshot(),
+            "timestamp": now_est().isoformat(),
+        }
+
+
 @app.get("/api/system/release_version")
 async def get_release_version_main() -> Dict[str, Any]:
     """Global deploy label from Redis (same contract as read_api; same-origin for System UI)."""
@@ -4988,6 +5059,13 @@ async def get_portfolio_history(
     ),
 ):
     """Proxy portfolio history reads to read_api."""
+    breaker_key = "portfolio_history"
+    if _history_breaker_is_open(breaker_key):
+        return {
+            "status": "error",
+            "message": "read_api history temporarily unavailable (breaker open)",
+            "retry_in_sec": _history_breaker_snapshot().get(breaker_key, {}).get("retry_in_sec", 0.0),
+        }
     try:
         params: Dict[str, Any] = {"period": period}
         if trading_mode:
@@ -5002,8 +5080,10 @@ async def get_portfolio_history(
             timeout=5,
         )
         resp.raise_for_status()
+        _history_breaker_mark_success(breaker_key)
         return resp.json()
     except Exception as e:
+        _history_breaker_mark_failure(breaker_key)
         _main_logger.warning(f"[read_api proxy] Error getting /api/portfolio/history from read_api: {e}")
         return {"status": "error", "message": "read_api proxy failed for /api/portfolio/history"}
 
@@ -5019,6 +5099,13 @@ async def get_bankroll_history(
         None, description="td|prev — calendar vs rolling (dashboard rollup toggle)"
     ),
 ):
+    breaker_key = "bankroll_history"
+    if _history_breaker_is_open(breaker_key):
+        return {
+            "status": "error",
+            "message": "read_api history temporarily unavailable (breaker open)",
+            "retry_in_sec": _history_breaker_snapshot().get(breaker_key, {}).get("retry_in_sec", 0.0),
+        }
     try:
         params: Dict[str, Any] = {"period": period}
         if trading_mode:
@@ -5033,8 +5120,10 @@ async def get_bankroll_history(
             timeout=5,
         )
         resp.raise_for_status()
+        _history_breaker_mark_success(breaker_key)
         return resp.json()
     except Exception as e:
+        _history_breaker_mark_failure(breaker_key)
         _main_logger.warning(f"[read_api proxy] Error getting /api/bankroll/history from read_api: {e}")
         return {"status": "error", "message": "read_api proxy failed for /api/bankroll/history"}
 
@@ -5050,6 +5139,13 @@ async def get_pnl_history(
         None, description="td|prev — calendar vs rolling (dashboard rollup toggle)"
     ),
 ):
+    breaker_key = "pnl_history"
+    if _history_breaker_is_open(breaker_key):
+        return {
+            "status": "error",
+            "message": "read_api history temporarily unavailable (breaker open)",
+            "retry_in_sec": _history_breaker_snapshot().get(breaker_key, {}).get("retry_in_sec", 0.0),
+        }
     try:
         params: Dict[str, Any] = {"period": period}
         if trading_mode:
@@ -5064,10 +5160,52 @@ async def get_pnl_history(
             timeout=5,
         )
         resp.raise_for_status()
+        _history_breaker_mark_success(breaker_key)
         return resp.json()
     except Exception as e:
+        _history_breaker_mark_failure(breaker_key)
         _main_logger.warning(f"[read_api proxy] Error getting /api/pnl/history from read_api: {e}")
         return {"status": "error", "message": "read_api proxy failed for /api/pnl/history"}
+
+
+@app.get("/api/dashboard/history-bundle")
+async def get_dashboard_history_bundle(
+    request: Request,
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — same as UI toggle; session selects tenant"
+    ),
+    rollup_view: Optional[str] = Query(
+        None, description="td|prev — calendar vs rolling (dashboard rollup toggle)"
+    ),
+):
+    breaker_key = "dashboard_history_bundle"
+    if _history_breaker_is_open(breaker_key):
+        return {
+            "status": "error",
+            "message": "read_api history temporarily unavailable (breaker open)",
+            "retry_in_sec": _history_breaker_snapshot().get(breaker_key, {}).get("retry_in_sec", 0.0),
+        }
+    try:
+        params: Dict[str, Any] = {"period": period}
+        if trading_mode:
+            params["trading_mode"] = trading_mode
+        if rollup_view:
+            params["rollup_view"] = rollup_view
+        params = _read_api_query_with_session(request, params)
+        resp = requests.get(
+            f"{READ_API_BASE_URL}/api/dashboard/history-bundle",
+            params=params,
+            headers=_read_api_forward_headers(request),
+            timeout=6,
+        )
+        resp.raise_for_status()
+        _history_breaker_mark_success(breaker_key)
+        return resp.json()
+    except Exception as e:
+        _history_breaker_mark_failure(breaker_key)
+        _main_logger.warning(f"[read_api proxy] Error getting /api/dashboard/history-bundle from read_api: {e}")
+        return {"status": "error", "message": "read_api proxy failed for /api/dashboard/history-bundle"}
 
 
 @app.get("/api/performance/realized")

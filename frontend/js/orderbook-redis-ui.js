@@ -693,6 +693,20 @@
     return Number.isFinite(ya) && Number.isFinite(na) && ya > 0 && na > 0;
   }
 
+  /** Hide strike rows when either side is hard-capped at 100c (except ATM 3-row fallback). */
+  function rowHasHardCapAsk(r) {
+    if (!r) return false;
+    const toCents = (v) => {
+      const n = Number(v);
+      if (!Number.isFinite(n)) return null;
+      // strike_table asks are dollars (e.g. 0.59), but tolerate cents-form payloads too.
+      return n > 2 ? Math.round(n) : Math.round(n * 100);
+    };
+    const y = toCents(r.yesAsk);
+    const n = toCents(r.noAsk);
+    return y === 100 || n === 100;
+  }
+
   function hasAsksAndBids(book) {
     if (!book || typeof book !== 'object') return false;
     const asks = Array.isArray(book.asks) ? book.asks : [];
@@ -742,8 +756,8 @@
       spotPrice != null && Number.isFinite(Number(spotPrice)) ? Number(spotPrice) : null;
     const mustTicker = spot != null ? closestStrikeTicker(rows, spot) : '';
     const candidates = rows
-      .filter((row) => rowHasLiquidityFromStrikeRow(row))
-      .map((row) => String(row.ticker));
+      .map((row) => String((row && row.ticker) || '').trim())
+      .filter(Boolean);
     const missing = candidates.filter((t) => cachedLiquidityFresh(t) == null);
     if (missing.length) {
       const batch = await fetchHourlyLiquidityBatch(missing);
@@ -752,8 +766,9 @@
       });
     }
     const checks = rows.map((row) => {
-      if (!rowHasLiquidityFromStrikeRow(row)) return false;
-      return cachedLiquidityFresh(row.ticker) === true;
+      if (rowHasHardCapAsk(row)) return false;
+      if (rowHasLiquidityFromStrikeRow(row)) return true;
+      return cachedLiquidityFresh(row && row.ticker) === true;
     });
 
     const out = [];

@@ -400,6 +400,28 @@ async def get_pnl_history(
     return pnl_history_payload(period=period, trading_mode=trading_mode, rollup_view=rollup_view)
 
 
+@app.get("/api/dashboard/history-bundle")
+async def get_dashboard_history_bundle(
+    period: str = "1m",
+    trading_mode: Optional[str] = Query(
+        None, description="paper|live — match UI toggle; omit to use server global mode file"
+    ),
+    rollup_view: Optional[str] = Query(
+        None,
+        description="td|prev — calendar vs rolling window (matches performance rollups / dashboard toggle)",
+    ),
+) -> Dict[str, Any]:
+    """Single payload for dashboard history panels to reduce read amplification."""
+    portfolio = portfolio_history_payload(
+        period=period, trading_mode=trading_mode, rollup_view=rollup_view
+    )
+    bankroll = bankroll_history_payload(
+        period=period, trading_mode=trading_mode, rollup_view=rollup_view
+    )
+    pnl = pnl_history_payload(period=period, trading_mode=trading_mode, rollup_view=rollup_view)
+    return {"status": "ok", "period": period, "portfolio": portfolio, "bankroll": bankroll, "pnl": pnl}
+
+
 @app.get("/api/performance/realized")
 async def get_performance_realized(
     trading_mode: Optional[str] = Query(
