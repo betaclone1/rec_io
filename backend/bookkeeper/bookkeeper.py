@@ -16,6 +16,8 @@ Run from repo root:
   ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --list-bank-uncleared --bank-days 90
   ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --transaction-list "Revenue Checking" \\
     --bank-days 90 --json --pretty-json
+  ./venv/bin/python -m backend.bookkeeper.bookkeeper --user-no 0001 --journal-entries "Kalshi Trading Account" \\
+    --bank-days 365 --json --pretty-json
 """
 from __future__ import annotations
 
@@ -155,6 +157,32 @@ def resolve_account_id(accounts: list[dict[str, Any]], label: str) -> str | None
     return account_id_by_exact_name(accounts, label)
 
 
+def _transaction_list_cleared_param(args: argparse.Namespace) -> str | None:
+    if args.cleared_filter == "all":
+        return None
+    if args.cleared_filter == "uncleared":
+        return "Uncleared"
+    if args.cleared_filter == "cleared":
+        return "Cleared"
+    return "Reconciled"
+
+
+def _transaction_list_date_span(
+    args: argparse.Namespace, parser: argparse.ArgumentParser
+) -> tuple[str, str]:
+    if args.report_start_date and args.report_end_date:
+        return args.report_start_date, args.report_end_date
+    if args.report_start_date or args.report_end_date:
+        parser.error(
+            "Use both --report-start-date and --report-end-date, or neither "
+            "(then --bank-days applies)."
+        )
+    days = max(1, min(int(args.bank_days), 3650))
+    end_d = date.today()
+    start_d = end_d - timedelta(days=days)
+    return start_d.isoformat(), end_d.isoformat()
+
+
 def _format_transaction_list_line(rd: dict[str, Any]) -> str:
     txn_type = rd.get("Transaction Type", "")
     dt = rd.get("Date", "")
@@ -287,7 +315,7 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=90,
         metavar="N",
-        help="With --list-bank-uncleared or --transaction-list (no explicit dates), "
+        help="With --list-bank-uncleared, --transaction-list, or --journal-entries (no explicit dates), "
         "start date is today minus N days (default 90).",
     )
     parser.add_argument(
@@ -301,24 +329,33 @@ def main(argv: list[str] | None = None) -> int:
         ),
     )
     parser.add_argument(
+        "--journal-entries",
+        metavar="ACCOUNT",
+        default=None,
+        help=(
+            "QBO TransactionList for one account, output only rows with Transaction Type Journal Entry "
+            "(same account resolution and date/cleared options as --transaction-list)."
+        ),
+    )
+    parser.add_argument(
         "--cleared-filter",
         choices=("all", "uncleared", "cleared", "reconciled"),
         default="all",
-        help="With --transaction-list, QBO cleared= filter (default: all).",
+        help="With --transaction-list or --journal-entries, QBO cleared= filter (default: all).",
     )
     parser.add_argument(
         "--report-start-date",
         dest="report_start_date",
         metavar="YYYY-MM-DD",
         default=None,
-        help="With --transaction-list, range start (requires --report-end-date).",
+        help="With --transaction-list or --journal-entries, range start (requires --report-end-date).",
     )
     parser.add_argument(
         "--report-end-date",
         dest="report_end_date",
         metavar="YYYY-MM-DD",
         default=None,
-        help="With --transaction-list, range end (requires --report-start-date).",
+        help="With --transaction-list or --journal-entries, range end (requires --report-start-date).",
     )
     args = parser.parse_args(argv)
     logging.basicConfig(
@@ -338,31 +375,18 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("Use either --reconcile-kalshi or transfer options, not both.")
 
     if args.transaction_list:
-        if args.reconcile_kalshi or transfer_requested or args.list_bank_uncleared:
+        if (
+            args.reconcile_kalshi
+            or transfer_requested
+            or args.list_bank_uncleared
+            or args.journal_entries
+        ):
             parser.error(
                 "--transaction-list cannot be used with --reconcile-kalshi, "
-                "--list-bank-uncleared, or transfer options."
+                "--list-bank-uncleared, --journal-entries, or transfer options."
             )
-        if args.cleared_filter == "all":
-            cleared_param = None
-        elif args.cleared_filter == "uncleared":
-            cleared_param = "Uncleared"
-        elif args.cleared_filter == "cleared":
-            cleared_param = "Cleared"
-        else:
-            cleared_param = "Reconciled"
-        if args.report_start_date and args.report_end_date:
-            start_s, end_s = args.report_start_date, args.report_end_date
-        elif args.report_start_date or args.report_end_date:
-            parser.error(
-                "Use both --report-start-date and --report-end-date, or neither "
-                "(then --bank-days applies)."
-            )
-        else:
-            days = max(1, min(int(args.bank_days), 3650))
-            end_d = date.today()
-            start_d = end_d - timedelta(days=days)
-            start_s, end_s = start_d.isoformat(), end_d.isoformat()
+        cleared_param = _transaction_list_cleared_param(args)
+        start_s, end_s = _transaction_list_date_span(args, parser)
         try:
             cfg, access, meta = qbo_connect(user_no)
             accounts = get_chart_of_accounts(cfg, access)
@@ -430,10 +454,103 @@ def main(argv: list[str] | None = None) -> int:
             print(_format_transaction_list_line(rd))
         return 0
 
-    if args.list_bank_uncleared:
-        if args.reconcile_kalshi or transfer_requested:
+    if args.journal_entries:
+        if (
+            args.reconcile_kalshi
+            or transfer_requested
+            or args.list_bank_uncleared
+            or args.transaction_list
+        ):
             parser.error(
-                "--list-bank-uncleared cannot be used with --reconcile-kalshi or transfer options."
+                "--journal-entries cannot be used with --reconcile-kalshi, "
+                "--list-bank-uncleared, --transaction-list, or transfer options."
+            )
+        cleared_param = _transaction_list_cleared_param(args)
+        start_s, end_s = _transaction_list_date_span(args, parser)
+        try:
+            cfg, access, meta = qbo_connect(user_no)
+            accounts = get_chart_of_accounts(cfg, access)
+            aid = resolve_account_id(accounts, args.journal_entries)
+            if not aid:
+                logger.error("Unknown QBO account: %r", args.journal_entries)
+                return 1
+            acct_row = _account_row_by_id(accounts, aid)
+            label = (
+                (acct_row or {}).get("FullyQualifiedName")
+                or (acct_row or {}).get("Name")
+                or aid
+            )
+            rep = run_transaction_list_report(
+                cfg,
+                access,
+                account_id=aid,
+                start_date=start_s,
+                end_date=end_s,
+                cleared=cleared_param,
+            )
+            hdrs, col_types, row_dicts = transaction_list_report_to_row_dicts(rep)
+            je_rows = [
+                r
+                for r in row_dicts
+                if (r.get("Transaction Type") or "").strip().casefold()
+                == "journal entry"
+            ]
+            payload_je: dict[str, Any] = {
+                "meta": {
+                    **meta,
+                    "bank_report": "TransactionList",
+                    "row_filter": "Journal Entry",
+                    "cleared_filter": args.cleared_filter,
+                    "start_date": start_s,
+                    "end_date": end_s,
+                    "report_line_count": len(row_dicts),
+                    "journal_entry_count": len(je_rows),
+                },
+                "account": {
+                    "account_id": aid,
+                    "account_name": str(label).strip(),
+                    "account_type": (acct_row or {}).get("AccountType"),
+                    "headers": hdrs,
+                    "column_types": col_types,
+                    "rows": je_rows,
+                },
+            }
+        except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
+            logger.error("%s", e)
+            return 1
+
+        if args.json:
+            print(
+                json.dumps(
+                    payload_je,
+                    indent=2 if args.pretty_json else None,
+                )
+            )
+            return 0
+
+        print(
+            f"QuickBooks JournalEntry lines (TransactionList) — user {user_no} | "
+            f"{meta['environment']} | realm {meta['realm_id']} | {start_s} .. {end_s} | "
+            f"cleared={args.cleared_filter}"
+        )
+        print(
+            f"Account [{aid}] {str(label).strip()}  ({(acct_row or {}).get('AccountType')})  "
+            f"journal_lines={len(je_rows)}  (of {len(row_dicts)} report lines)"
+        )
+        for rd in je_rows:
+            print(_format_transaction_list_line(rd))
+        return 0
+
+    if args.list_bank_uncleared:
+        if (
+            args.reconcile_kalshi
+            or transfer_requested
+            or args.transaction_list
+            or args.journal_entries
+        ):
+            parser.error(
+                "--list-bank-uncleared cannot be used with --reconcile-kalshi, "
+                "--transaction-list, --journal-entries, or transfer options."
             )
         days = max(1, min(int(args.bank_days), 3650))
         end_d = date.today()
