@@ -22,8 +22,10 @@ from __future__ import annotations
 import argparse
 import json
 import logging
+import os
 import sys
 from datetime import date, timedelta
+from pathlib import Path
 from typing import Any
 
 from backend.bookkeeper.kalshi_portfolio_balance import fetch_total_portfolio_cents
@@ -41,6 +43,44 @@ from backend.core.tenant_script_args import add_user_no_argument, resolve_user_n
 from backend.util.paths import get_quickbooks_credentials_dir
 
 logger = logging.getLogger(__name__)
+
+
+def _persist_refresh_token(cred_dir: str, new_refresh_token: str) -> None:
+    """
+    Atomically update INTUIT_REFRESH_TOKEN in the tenant quickbooks ``.env``.
+
+    Preserves file mode and updates in place (append key if missing).
+    """
+    env_path = Path(cred_dir) / ".env"
+    if not env_path.is_file():
+        raise FileNotFoundError(f"Missing QuickBooks env file: {env_path}")
+    raw = env_path.read_text(encoding="utf-8")
+    lines = raw.splitlines(keepends=True)
+    had_final_newline = raw.endswith("\n")
+    out_lines: list[str] = []
+    replaced = False
+    for line in lines:
+        stripped = line.lstrip()
+        if stripped.startswith("INTUIT_REFRESH_TOKEN="):
+            prefix = line[: len(line) - len(stripped)]
+            ending = "\n" if line.endswith("\n") else ""
+            out_lines.append(f"{prefix}INTUIT_REFRESH_TOKEN={new_refresh_token}{ending}")
+            replaced = True
+            continue
+        out_lines.append(line)
+    if not replaced:
+        if out_lines and not out_lines[-1].endswith("\n"):
+            out_lines[-1] = out_lines[-1] + "\n"
+        out_lines.append(f"INTUIT_REFRESH_TOKEN={new_refresh_token}\n")
+    new_content = "".join(out_lines)
+    if not had_final_newline:
+        new_content = new_content.rstrip("\n")
+
+    st = env_path.stat()
+    tmp_path = env_path.with_suffix(".env.tmp")
+    tmp_path.write_text(new_content, encoding="utf-8")
+    os.chmod(tmp_path, st.st_mode)
+    os.replace(tmp_path, env_path)
 
 
 def qbo_connect(user_no: str) -> tuple[QboConfig, str, dict[str, Any]]:
@@ -71,10 +111,13 @@ def qbo_connect(user_no: str) -> tuple[QboConfig, str, dict[str, Any]]:
         raise RuntimeError(f"No access_token in refresh response: {tok}")
     new_refresh = tok.get("refresh_token")
     if new_refresh and new_refresh != cfg.refresh_token:
-        logger.warning(
-            "Intuit returned a new refresh_token; update INTUIT_REFRESH_TOKEN in %s/.env",
-            cred_dir,
-        )
+        try:
+            _persist_refresh_token(cred_dir, str(new_refresh))
+            logger.info("QuickBooks: rotated refresh token persisted in %s/.env", cred_dir)
+        except OSError as e:
+            raise RuntimeError(
+                f"Intuit returned a rotated refresh_token but persistence failed in {cred_dir}/.env: {e}"
+            ) from e
     return cfg, access, meta
 
 
