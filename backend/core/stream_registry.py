@@ -29,6 +29,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     # Pre-aggregated dashboard performance rollups (users_<slot>.performance_{total|monitors}_<slot>)
     ("users", "performance_total_0001"): "performance_rollups",
     ("users", "performance_monitors_0001"): "performance_rollups",
+    # System health snapshot table (System tab/mobile)
+    ("system", "health_status"): "system_health",
     # Per-tenant monitor rows (lifecycle, counts); NOTIFY → stream "monitor_list" (Admin Tools refetch, etc.)
     ("users", "monitor_list_0001"): "monitor_list",
     # Live price feed snapshot table (used by the standalone live UI)

@@ -480,6 +480,10 @@
 
     <script>
         let systemReleasePrefsWs = null;
+        let systemHealthDbWs = null;
+        let _systemMobileHealthWsConnected = false;
+        let _systemMobileHealthFallbackTimer = null;
+        let _systemMobileHealthDebounce = null;
 
         function setSystemPanelReleaseVersion(version) {
             const el = document.getElementById('systemPanelReleaseVersion');
@@ -514,6 +518,57 @@
                     }
                 } catch (e) { /* ignore */ }
             };
+        }
+
+        function _scheduleSystemMobileHealthRefreshFromWs() {
+            if (_systemMobileHealthDebounce) clearTimeout(_systemMobileHealthDebounce);
+            _systemMobileHealthDebounce = setTimeout(() => {
+                _systemMobileHealthDebounce = null;
+                loadSystemHealth();
+            }, 350);
+        }
+
+        function connectSystemHealthWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            if (systemHealthDbWs) {
+                try { systemHealthDbWs.close(); } catch (e) { /* ignore */ }
+            }
+            systemHealthDbWs = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
+            systemHealthDbWs.onopen = function() {
+                _systemMobileHealthWsConnected = true;
+                if (_systemMobileHealthFallbackTimer) {
+                    clearInterval(_systemMobileHealthFallbackTimer);
+                    _systemMobileHealthFallbackTimer = null;
+                }
+            };
+            systemHealthDbWs.onmessage = function(event) {
+                try {
+                    const raw = event.data;
+                    if (typeof recDbChangeRawMentionsStream === 'function' &&
+                        !recDbChangeRawMentionsStream(raw, 'system_health')) {
+                        return;
+                    }
+                    const data = JSON.parse(raw);
+                    if (data.type === 'db_change' && data.database === 'system_health') {
+                        _scheduleSystemMobileHealthRefreshFromWs();
+                    }
+                } catch (e) {
+                    // Ignore malformed frames.
+                }
+            };
+            systemHealthDbWs.onclose = function() {
+                _systemMobileHealthWsConnected = false;
+                startSystemMobileHealthFallbackPolling();
+                setTimeout(connectSystemHealthWebSocket, 5000);
+            };
+        }
+
+        function startSystemMobileHealthFallbackPolling() {
+            if (_systemMobileHealthFallbackTimer) return;
+            _systemMobileHealthFallbackTimer = setInterval(() => {
+                if (_systemMobileHealthWsConnected) return;
+                loadSystemHealth();
+            }, 45000);
         }
 
         async function loadSystemHealth() {
@@ -815,6 +870,8 @@
             loadSystemHealth();
             void fetchReleaseVersionFromRedisCache();
             connectSystemReleaseVersionWebSocket();
+            connectSystemHealthWebSocket();
+            startSystemMobileHealthFallbackPolling();
             await checkAdminPermissions();
         });
         

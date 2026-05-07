@@ -690,6 +690,7 @@
 
         wireAccountManagerTradingSelectMobile();
         setupAccountManagerPreferencesWsMobile();
+        let _ammWsConnected = false;
 
         function clearAccountPanelToSyncing() {
             const accountBalanceEl = document.getElementById("account-balance");
@@ -844,11 +845,18 @@
         }
 
         function startAccountManagerMobilePolling() {
-            if (window._ammRefreshInterval) clearInterval(window._ammRefreshInterval);
+            if (window._ammRefreshInterval) return;
             window._ammRefreshInterval = setInterval(() => {
-                console.log('🔄 Periodic account data refresh (mobile)');
+                if (_ammWsConnected) return;
                 loadAccountData();
-            }, 10000);
+            }, 30000);
+        }
+
+        function stopAccountManagerMobilePolling() {
+            if (window._ammRefreshInterval) {
+                clearInterval(window._ammRefreshInterval);
+                window._ammRefreshInterval = null;
+            }
         }
         startAccountManagerMobilePolling();
 
@@ -1101,7 +1109,8 @@
             window._ammDbChangesWs = ws;
             
             ws.onopen = function() {
-                console.log('Connected to database change notifications (account manager mobile)');
+                _ammWsConnected = true;
+                stopAccountManagerMobilePolling();
             };
             
             ws.onmessage = function(event) {
@@ -1123,6 +1132,8 @@
             
             ws.onclose = function() {
                 window._ammDbChangesWs = null;
+                _ammWsConnected = false;
+                startAccountManagerMobilePolling();
                 if (!window.ACCOUNT_MOBILE_PAUSED) {
                     setTimeout(() => setupDatabaseChangeListener(), 5000);
                 }

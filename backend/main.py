@@ -24,6 +24,7 @@ import requests
 import sqlite3
 import psycopg2
 from psycopg2 import sql
+from urllib.parse import quote_plus
 from typing import List, Optional, Dict, Tuple
 import fcntl
 from datetime import datetime, timezone
@@ -109,7 +110,6 @@ _main_logger.info("Using centralized port %s (ATS port %s)", MAIN_APP_PORT, ACTI
 
 # Import centralized path utilities
 from backend.util.paths import get_data_dir, get_trade_history_dir, get_accounts_data_dir
-from backend.account_mode import get_account_mode
 from backend.trading_mode import (
     _norm_slot,
     account_balance_table_for_user,
@@ -218,11 +218,6 @@ async def _prefs_ws_send_json_to_slot(message: dict, tenant_slot: str) -> None:
 db_change_clients = set()
 
 # Legacy preference path removed - all data now in PostgreSQL
-
-# Global preferences cache
-_preferences_cache = None
-_cache_timestamp = 0
-CACHE_TTL = 1.0  # 1 second cache TTL
 
 # LEGACY REMOVED: update_auto_trade_settings_postgresql function - now using strategy_list table directly
 
@@ -381,73 +376,6 @@ async def _as_starlette_response(r: requests.Response) -> Response:
         media_type=r.headers.get("content-type"),
     )
 
-
-def load_preferences():
-    global _preferences_cache, _cache_timestamp
-    current_time = time.time()
-    
-    # Return cached version if still valid
-    if _preferences_cache is not None and (current_time - _cache_timestamp) < CACHE_TTL:
-        return _preferences_cache.copy()
-    
-    # Load from PostgreSQL - now using strategy-specific endpoints
-    try:
-        # Default preferences - auto settings now handled by strategy-specific endpoints
-        default_prefs = {"diff_mode": False, "position_size": 1, "multiplier": 1}
-        
-        # Update cache
-        _preferences_cache = default_prefs
-        _cache_timestamp = current_time
-        return default_prefs
-    except Exception as e:
-        _main_logger.warning(f"[Preferences Load Error] {e}")
-        # Default preferences
-        default_prefs = {"diff_mode": False, "position_size": 1, "multiplier": 1}
-        _preferences_cache = default_prefs
-        _cache_timestamp = current_time
-        return default_prefs
-
-async def save_preferences(prefs):
-    global _preferences_cache, _cache_timestamp
-    try:
-        # Auto settings now handled by strategy-specific endpoints
-        # Only handle non-auto settings here
-        
-        # Update cache
-        _preferences_cache = prefs.copy()
-        _cache_timestamp = time.time()
-        _main_logger.debug(f"[Preferences] ✅ Updated cache: {list(prefs.keys())}")
-    except Exception as e:
-        _main_logger.warning(f"[Preferences Save Error] {e}")
-
-# Broadcast helper function for preferences updates
-async def broadcast_preferences_update():
-    try:
-        data = json.dumps(load_preferences())
-        to_remove = set()
-        
-        # Send to all connected clients concurrently
-        tasks = []
-        for client in _prefs_ws_all_clients():
-            task = asyncio.create_task(send_to_client(client, data))
-            tasks.append(task)
-        
-        # Wait for all sends to complete with timeout
-        if tasks:
-            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1.0)
-        
-        # Clean up disconnected clients
-        for c in to_remove:
-            _prefs_ws_unregister(c)
-    except Exception as e:
-        _main_logger.warning(f"[Broadcast Preferences Error] {e}")
-
-async def send_to_client(client, data):
-    try:
-        await client.send_text(data)
-    except Exception:
-        # Client will be removed in the main function
-        pass
 
 # Broadcast helper function for account mode updates
 async def broadcast_account_mode(mode: str):
@@ -979,24 +907,10 @@ async def read_path_health_check():
 
 
 @app.get("/api/system/release_version")
-async def get_release_version_main() -> Dict[str, Any]:
-    """Global deploy label from Redis (same contract as read_api; same-origin for System UI)."""
-    ver: Optional[str] = None
-    try:
-        from backend.core.trading_redis_comms import (
-            redis_client_optional,
-            redis_key_system_release_version,
-        )
-
-        r = redis_client_optional()
-        if r:
-            raw = r.get(redis_key_system_release_version())
-            if raw is not None:
-                ver = raw.decode() if isinstance(raw, bytes) else str(raw)
-                ver = ver.strip() or None
-    except Exception:
-        ver = None
-    return {"version": ver}
+async def get_release_version_main(request: Request) -> Response:
+    """Proxy to read_api: global deploy label from Redis cache."""
+    r = await _proxy_read_api_raw(request, "GET", "/api/system/release_version")
+    return await _as_starlette_response(r)
 
 
 # Port information endpoint
@@ -1014,12 +928,6 @@ async def get_ports(request: Request):
         port_info["service_urls"] = {name: f"https://{host}:{port}" for name, port in ports.items()}
     
     return port_info
-
-# Test endpoint
-@app.get("/api/test-health")
-async def test_health():
-    """Test endpoint to verify routing works."""
-    return {"message": "Test health endpoint working"}
 
 # System health endpoint
 @app.get("/api/system-health")
@@ -1578,11 +1486,6 @@ def get_ttc_data_from_postgresql() -> Dict[str, Any]:
         _main_logger.warning(f"Error calculating TTC: {e}")
         return {"error": str(e)}
 
-@app.get("/api/ttc")
-async def get_ttc_data():
-    """Get time to close data directly from PostgreSQL."""
-    return get_ttc_data_from_postgresql()
-
 # Core data endpoint
 @app.get("/core")
 async def get_core_data(symbol: str = "BTC"):
@@ -1766,13 +1669,6 @@ async def get_core_data(symbol: str = "BTC"):
         _main_logger.warning(f"Error in core data: {e}")
         return {"error": str(e)}
 
-# Account mode endpoints
-@app.get("/api/get_account_mode")
-async def get_account_mode_endpoint():
-    """Get current account mode."""
-    return {"mode": get_account_mode()}
-
-
 @app.get("/api/system_settings")
 async def get_system_settings_endpoint(response: Response):
     """Global system settings (drawdown halt, threshold) for dashboard gear menu."""
@@ -1874,18 +1770,6 @@ async def seed_paper_bankroll_endpoint(payload: dict):
     except Exception as e:
         _main_logger.warning("paper bankroll seed: %s", e)
         return {"status": "error", "message": str(e)}
-
-
-@app.post("/api/set_account_mode")
-async def set_account_mode(mode_data: dict):
-    """Legacy: Kalshi env is prod only; demo requests are coerced to prod."""
-    from backend.account_mode import set_account_mode as _set_am
-
-    mode = mode_data.get("mode")
-    if mode in ("prod", "demo"):
-        _set_am("prod")
-        return {"status": "success", "mode": "prod"}
-    return {"status": "error", "message": "Invalid mode"}
 
 # Trade data endpoints — GET /trades is implemented on read_api; main proxies for same-origin cookies.
 @app.get("/trades")
@@ -2016,141 +1900,16 @@ async def create_trade(trade_data: dict):
 
 # Additional endpoints for other data
 @app.get("/btc_price_changes")
-async def get_btc_changes():
-    """Get BTC price changes from PostgreSQL live_data.price_change_btc."""
-    try:
-        import psycopg2
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        
-        # Get latest price changes from the database
-        cursor.execute("""
-            SELECT change1h, change3h, change1d, timestamp 
-            FROM live_data.price_change_btc 
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """)
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            changes = {
-                "change1h": float(result[0]) if result[0] is not None else None,
-                "change3h": float(result[1]) if result[1] is not None else None,
-                "change1d": float(result[2]) if result[2] is not None else None,
-                "timestamp": result[3].isoformat() if result[3] else now_est().isoformat()
-            }
-        else:
-            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": now_est().isoformat()}
-        
-        return changes
-        
-    except Exception as e:
-        _main_logger.warning(f"[btc_price_changes API] Error reading from PostgreSQL: {e}")
-        return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
+async def get_btc_changes(request: Request):
+    """Proxy to read_api: BTC price-change snapshot."""
+    r = await _proxy_read_api_raw(request, "GET", "/btc_price_changes")
+    return await _as_starlette_response(r)
 
 @app.get("/eth_price_changes")
-async def get_eth_changes():
-    """Get ETH price changes from PostgreSQL live_data.price_change_eth."""
-    try:
-        import psycopg2
-        from datetime import datetime
-        from zoneinfo import ZoneInfo
-        
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        
-        # Get latest price changes from the database
-        cursor.execute("""
-            SELECT change1h, change3h, change1d, timestamp 
-            FROM live_data.price_change_eth 
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """)
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            changes = {
-                "change1h": float(result[0]) if result[0] is not None else None,
-                "change3h": float(result[1]) if result[1] is not None else None,
-                "change1d": float(result[2]) if result[2] is not None else None,
-                "timestamp": result[3].isoformat() if result[3] else now_est().isoformat()
-            }
-        else:
-            changes = {"change1h": None, "change3h": None, "change1d": None, "timestamp": now_est().isoformat()}
-        
-        return changes
-        
-    except Exception as e:
-        _main_logger.warning(f"[eth_price_changes API] Error reading from PostgreSQL: {e}")
-        return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
-
-@app.get("/kalshi_market_snapshot")
-async def get_kalshi_snapshot():
-    """Get Kalshi market snapshot from PostgreSQL."""
-    try:
-        import psycopg2
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        
-        with conn.cursor() as cursor:
-            # Get market data from PostgreSQL
-            cursor.execute("""
-                SELECT 
-                    market_ticker,
-                    yes_ask_dollars,
-                    no_ask_dollars,
-                    yes_bid_dollars,
-                    no_bid_dollars,
-                    last_price_dollars,
-                    volume_fp,
-                    open_interest_fp,
-                    event_ticker,
-                    strike
-                FROM live_data.market_kalshi_hourly
-                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
-                  AND UPPER(TRIM(symbol::text)) = 'BTC'
-                ORDER BY updated_at DESC
-            """)
-            
-            markets_data = cursor.fetchall()
-            conn.close()
-            
-            if not markets_data:
-                return {"markets": []}
-            
-            markets = []
-            for row in markets_data:
-                market = {
-                    "ticker": row[0],
-                    "yes_ask_dollars": row[1],
-                    "no_ask_dollars": row[2],
-                    "yes_bid_dollars": row[3],
-                    "no_bid_dollars": row[4],
-                    "last_price_dollars": row[5],
-                    "volume_fp": row[6],
-                    "open_interest_fp": row[7],
-                    "event_ticker": row[8],
-                    "strike": row[9],
-                }
-                markets.append(market)
-            
-            # Return in the same format as the JSON file
-            return {
-                "markets": markets,
-                "timestamp": now_est().isoformat()
-            }
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting Kalshi snapshot from PostgreSQL: {e}")
-        return {"markets": []}
+async def get_eth_changes(request: Request):
+    """Proxy to read_api: ETH price-change snapshot."""
+    r = await _proxy_read_api_raw(request, "GET", "/eth_price_changes")
+    return await _as_starlette_response(r)
 
 # API endpoints for account data
 @app.post("/api/account/sync")
@@ -2174,6 +1933,7 @@ def _api_no_store_headers(response: Response) -> None:
 
 @app.get("/api/account/balance")
 async def get_account_balance(
+    request: Request,
     response: Response,
     mode: str = "prod",
     trading_mode: Optional[str] = Query(
@@ -2181,117 +1941,23 @@ async def get_account_balance(
         description="paper|live — must match UI toggle; same table selection as portfolio chart",
     ),
 ):
-    """Get account balance from PostgreSQL database."""
-    _api_no_store_headers(response)
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        if not conn:
-            _main_logger.error(
-                "get_account_balance: database connection unavailable "
-                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
-            )
-            return {
-                "portfolio": 0,
-                "positions": 0,
-                "bankroll_current": 0,
-                "mtb_base_value": None,
-                "master_trading_bankroll": None,
-            }
-
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            ab_ident = sql_ident_qualified_table(
-                account_balance_table_for_user(
-                    resolved_tenant_user_no_for_app(),
-                    client_trading_mode=trading_mode,
-                )
-            )
-            cursor.execute(
-                sql.SQL(
-                    """
-                SELECT portfolio, positions, bankroll_current, mtb_base_value, master_trading_bankroll
-                FROM {}
-                ORDER BY id DESC
-                LIMIT 1
-                """
-                ).format(ab_ident)
-            )
-            balance_result = cursor.fetchone()
-            
-            
-            conn.close()
-            
-            if balance_result:
-                portfolio_value = balance_result['portfolio']
-                positions_value = balance_result['positions'] if balance_result else 0
-                bankroll_current = balance_result['bankroll_current'] if balance_result else 0
-                mtb_base_value = balance_result.get('mtb_base_value')
-                master_trading_bankroll = balance_result.get('master_trading_bankroll')
-                return {
-                    "portfolio": portfolio_value,
-                    "positions": positions_value,
-                    "bankroll_current": bankroll_current,
-                    "mtb_base_value": mtb_base_value,
-                    "master_trading_bankroll": master_trading_bankroll,
-                }
-            else:
-                return {
-                    "portfolio": 0,
-                    "positions": 0,
-                    "bankroll_current": 0,
-                    "mtb_base_value": None,
-                    "master_trading_bankroll": None,
-                }
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting account balance from PostgreSQL: {e}")
-        return {
-            "portfolio": 0,
-            "positions": 0,
-            "bankroll_current": 0,
-            "mtb_base_value": None,
-            "master_trading_bankroll": None,
-        }
+    """Proxy to read_api: account balance snapshot for Account Manager."""
+    _ = response
+    path = f"/api/account/balance?mode={quote_plus(str(mode))}"
+    if trading_mode:
+        path += f"&trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.get("/api/subaccounts")
-async def get_subaccounts(response: Response, trading_mode: Optional[str] = None):
-    """Get subaccounts for display (live or paper table). Balances in cents."""
-    _api_no_store_headers(response)
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        conn = get_postgresql_connection()
-        if not conn:
-            _main_logger.error(
-                "get_subaccounts: database connection unavailable "
-                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
-            )
-            return {"subaccounts": []}
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            sa_ident = sql_ident_qualified_table(
-                subaccounts_table_for_user(
-                    resolved_tenant_user_no_for_app(), client_trading_mode=trading_mode
-                )
-            )
-            cursor.execute(
-                sql.SQL(
-                    """
-                SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
-                       target_pnl__pct, transfer_amt, automatic_transfers
-                FROM {}
-                ORDER BY id
-                """
-                ).format(sa_ident)
-            )
-            rows = cursor.fetchall()
-        conn.close()
-        return {"subaccounts": [dict(r) for r in rows]}
-    except Exception as e:
-        _main_logger.warning(f"Error getting subaccounts from PostgreSQL: {e}")
-        return {"subaccounts": []}
+async def get_subaccounts(request: Request, response: Response, trading_mode: Optional[str] = None):
+    """Proxy to read_api: subaccounts panel data."""
+    _ = response
+    path = "/api/subaccounts"
+    if trading_mode:
+        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.patch("/api/subaccounts/automatic-transfers")
 async def update_subaccount_automatic_transfers(request: Request):
@@ -2575,376 +2241,73 @@ async def get_monitor_bankroll(monitor_id: str):
 
 @app.get("/api/account/balance/history")
 async def get_account_balance_history(
+    request: Request,
     mode: str = "prod", limit: int = 1000, trading_mode: Optional[str] = None
 ):
-    """Get historical account balance data from PostgreSQL database."""
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            ab_ident = sql_ident_qualified_table(
-                account_balance_table_for_user(
-                    resolved_tenant_user_no_for_app(), client_trading_mode=trading_mode
-                )
-            )
-            cursor.execute(
-                sql.SQL(
-                    """
-                SELECT portfolio, positions, updated_at
-                FROM {}
-                ORDER BY updated_at ASC
-                LIMIT %s
-                """
-                ).format(ab_ident),
-                (limit,),
-            )
-            balance_results = cursor.fetchall()
-            
-            conn.close()
-            
-            # Convert to list of dictionaries
-            history_data = []
-            for result in balance_results:
-                history_data.append({
-                    "portfolio": result['portfolio'],
-                    "positions": result['positions'],
-                    "timestamp": result['updated_at'].isoformat() if result['updated_at'] else None
-                })
-            
-            return {"history": history_data}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting account balance history from PostgreSQL: {e}")
-        return {"history": []}
+    """Proxy to read_api: account balance history."""
+    path = (
+        f"/api/account/balance/history?mode={quote_plus(str(mode))}"
+        f"&limit={int(limit)}"
+    )
+    if trading_mode:
+        path += f"&trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.get("/api/db/fills")
-def get_fills(response: Response):
-    """Get fills data from PostgreSQL database."""
-    _api_no_store_headers(response)
-    if is_paper_trading():
-        return {"fills": []}
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
-                SELECT * FROM users.fills_0001 
-                ORDER BY id DESC 
-                LIMIT 100
-            """)
-            fills = cursor.fetchall()
-            
-            # Convert RealDictRow to dict; prefer _fp for count (rounded for display)
-            fills_list = []
-            for fill in fills:
-                fill_dict = dict(fill)
-                if fill_dict.get("count_fp") is not None:
-                    try:
-                        fill_dict["count"] = int(round(float(fill_dict["count_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                fills_list.append(fill_dict)
-            
-            conn.close()
-            return {"fills": fills_list}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting fills from PostgreSQL: {e}")
-        return {"fills": []}
+async def get_fills(request: Request, response: Response, trading_mode: Optional[str] = None):
+    """Proxy to read_api: fills list."""
+    _ = response
+    path = "/api/db/fills"
+    if trading_mode:
+        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.get("/api/db/positions")
-def get_positions(response: Response):
-    """Get positions data from PostgreSQL database."""
-    _api_no_store_headers(response)
-    if is_paper_trading():
-        return {"positions": []}
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
-                SELECT * FROM users.positions_0001 
-                ORDER BY id DESC 
-                LIMIT 100
-            """)
-            positions = cursor.fetchall()
-            
-            # Convert to dict; prefer _fp for position/total_traded (rounded for display)
-            positions_list = []
-            for position in positions:
-                position_dict = dict(position)
-                if position_dict.get("position_fp") is not None:
-                    try:
-                        position_dict["position"] = int(round(float(position_dict["position_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                if position_dict.get("total_traded_fp") is not None:
-                    try:
-                        position_dict["total_traded"] = int(round(float(position_dict["total_traded_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                positions_list.append(position_dict)
-            
-            conn.close()
-            return {"positions": positions_list}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting positions from PostgreSQL: {e}")
-        return {"positions": []}
+async def get_positions(request: Request, response: Response, trading_mode: Optional[str] = None):
+    """Proxy to read_api: positions list."""
+    _ = response
+    path = "/api/db/positions"
+    if trading_mode:
+        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.get("/api/db/settlements")
-def get_settlements(response: Response):
-    """Get settlements data from PostgreSQL database."""
-    _api_no_store_headers(response)
-    if is_paper_trading():
-        return {"settlements": []}
-    try:
-        import psycopg2
-        from psycopg2.extras import RealDictCursor
-        
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute("""
-                SELECT * FROM users.settlements_0001 
-                ORDER BY id DESC 
-                LIMIT 100
-            """)
-            settlements = cursor.fetchall()
-            
-            # Convert to dict; prefer _fp for yes_count/no_count (rounded for display)
-            settlements_list = []
-            for settlement in settlements:
-                settlement_dict = dict(settlement)
-                if settlement_dict.get("yes_count_fp") is not None:
-                    try:
-                        settlement_dict["yes_count"] = int(round(float(settlement_dict["yes_count_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                if settlement_dict.get("no_count_fp") is not None:
-                    try:
-                        settlement_dict["no_count"] = int(round(float(settlement_dict["no_count_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                settlements_list.append(settlement_dict)
-            
-            conn.close()
-            return {"settlements": settlements_list}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting settlements from PostgreSQL: {e}")
-        return {"settlements": []}
+async def get_settlements(request: Request, response: Response, trading_mode: Optional[str] = None):
+    """Proxy to read_api: settlements list."""
+    _ = response
+    path = "/api/db/settlements"
+    if trading_mode:
+        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 
 @app.get("/api/db/transfers")
-def get_transfers(
+async def get_transfers(
+    request: Request,
     response: Response,
     trading_mode: Optional[str] = Query(
         None,
         description="paper|live — match UI toggle (same table selection as subaccounts)",
     ),
 ):
-    """Transfer history: live ``transfers_<slot>``; paper ``transfers_paper_<slot>``."""
-    _api_no_store_headers(response)
-    try:
-        from psycopg2.extras import RealDictCursor
-
-        conn = get_postgresql_connection()
-        t_ident = sql_ident_qualified_table(
-            transfers_table_for_user(
-                resolved_tenant_user_no_for_app(),
-                client_trading_mode=trading_mode,
-            )
-        )
-        with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-            cursor.execute(
-                sql.SQL(
-                    """
-                SELECT id, timestamp, type, "from", "to", amount, initiated, status
-                FROM {}
-                ORDER BY id DESC
-                LIMIT 100
-                """
-                ).format(t_ident),
-            )
-            rows = cursor.fetchall()
-
-        transfers_list = [dict(r) for r in rows]
-        conn.close()
-        return {"transfers": transfers_list}
-
-    except Exception as e:
-        _main_logger.warning(f"Error getting transfers from PostgreSQL: {e}")
-        return {"transfers": []}
+    """Proxy to read_api: transfer history list."""
+    _ = response
+    path = "/api/db/transfers"
+    if trading_mode:
+        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 
 @app.get("/api/db/system_health")
-def get_system_health_from_db():
-    """Get current system health from database with real-time capacity data"""
-    try:
-        import psycopg2
-        import psutil
-        
-        # Get real-time system capacity data
-        memory = psutil.virtual_memory()
-        disk = psutil.disk_usage('/')
-        
-        memory_total_gb = memory.total / (1024**3)  # Convert bytes to GB
-        memory_used_gb = memory.used / (1024**3)
-        memory_available_gb = memory.available / (1024**3)
-        
-        disk_total_gb = disk.total / (1024**3)  # Convert bytes to GB
-        disk_used_gb = disk.used / (1024**3)
-        disk_free_gb = disk.free / (1024**3)
-        
-        conn = get_postgresql_connection()
-        
-        with conn.cursor() as cursor:
-            cursor.execute("SELECT * FROM system.health_status WHERE id = 1")
-            result = cursor.fetchone()
-            
-            if result:
-                cols = [d[0] for d in cursor.description]
-                row = dict(zip(cols, result))
-                service_summary = {}
-                hd = row.get("health_details")
-                if hd:
-                    try:
-                        if isinstance(hd, str):
-                            import json
-
-                            hd = json.loads(hd)
-                        if isinstance(hd, dict):
-                            service_summary = hd.get("service_summary") or {}
-                    except Exception:
-                        service_summary = {}
-                return {
-                    "overall_status": row.get("overall_status"),
-                    "cpu_percent": float(row["cpu_percent"]) if row.get("cpu_percent") else None,
-                    "memory_percent": float(row["memory_percent"]) if row.get("memory_percent") else None,
-                    "disk_percent": float(row["disk_percent"]) if row.get("disk_percent") else None,
-                    "database_status": row.get("database_status"),
-                    "supervisor_status": row.get("supervisor_status"),
-                    "services_healthy": row.get("services_healthy"),
-                    "services_total": row.get("services_total"),
-                    "failed_services": row.get("failed_services") or [],
-                    "service_summary": service_summary,
-                    "timestamp": row["timestamp"].isoformat() if row.get("timestamp") else None,
-                    # Add real-time capacity data
-                    "memory_total_gb": round(memory_total_gb, 1),
-                    "memory_used_gb": round(memory_used_gb, 1),
-                    "memory_available_gb": round(memory_available_gb, 1),
-                    "disk_total_gb": round(disk_total_gb, 1),
-                    "disk_used_gb": round(disk_used_gb, 1),
-                    "disk_free_gb": round(disk_free_gb, 1),
-                }
-            else:
-                return {"error": "No health data available"}
-                
-    except Exception as e:
-        _main_logger.debug(f"[DB SYSTEM HEALTH] Error: {e}")
-        return {"error": "Database error"}
-
-@app.get("/api/db/trades")
-def get_trades_from_postgresql():
-    """Get trades data from PostgreSQL database."""
-    try:
-        import psycopg2
-
-        # Connect to PostgreSQL
-        conn = get_postgresql_connection()
-        slot = resolved_tenant_user_no_for_app()
-
-        with conn.cursor() as cursor:
-            if not fetch_master_trades_column_names(cursor, slot):
-                conn.close()
-                return {"trades": []}
-            union_sql, _ = union_trades_with_archives_select(cursor, slot)
-            cursor.execute(
-                f"""
-                SELECT * FROM ({union_sql}) AS all_trades
-                ORDER BY id DESC
-                """
-            )
-            trades = cursor.fetchall()
-            columns = [desc[0] for desc in cursor.description]
-
-            trades_list = []
-            for row in trades:
-                trade_dict = dict(zip(columns, row))
-                # Ensure all fields are present for frontend compatibility
-                trade_dict.update(
-                    {
-                        "id": trade_dict.get("id"),
-                        "status": trade_dict.get("status", ""),
-                        "date": trade_dict.get("date", ""),
-                        "time": trade_dict.get("time", ""),
-                        "symbol": trade_dict.get("symbol", "BTC"),
-                        "trade_strategy": trade_dict.get("trade_strategy", ""),
-                        "market": trade_dict.get("market", "hourly"),
-                        "contract": trade_dict.get("contract", ""),
-                        "strike": trade_dict.get("strike", ""),
-                        "side": trade_dict.get("side", ""),
-                        "prob": trade_dict.get("prob"),
-                        "diff": trade_dict.get("diff"),
-                        "buy_price": trade_dict.get("buy_price"),
-                        "sell_price": trade_dict.get("sell_price"),
-                        "position": trade_dict.get("position"),
-                        "closed_at": trade_dict.get("closed_at"),
-                        "fees": trade_dict.get("fees"),
-                        "pnl": trade_dict.get("pnl"),
-                        "symbol_open": trade_dict.get("symbol_open"),
-                        "symbol_close": trade_dict.get("symbol_close"),
-                        "momentum": trade_dict.get("momentum"),
-                        "win_loss": trade_dict.get("win_loss"),
-                    }
-                )
-                trades_list.append(trade_dict)
-
-            conn.close()
-            return {"trades": trades_list}
-
-    except Exception as e:
-        _main_logger.warning(f"Error getting trades from PostgreSQL: {e}")
-        return {"trades": []}
-
-# Fingerprint and strike probability endpoints
-@app.get("/api/current_fingerprint")
-async def get_current_fingerprint():
-    """Get current fingerprint information."""
-    try:
-        from util.probability_calculator import get_probability_calculator
-        
-        calculator = get_probability_calculator()
-        
-        fingerprint_info = {
-            "symbol": calculator.symbol,
-            "current_momentum_bucket": calculator.current_momentum_bucket,
-            "last_used_momentum_bucket": calculator.last_used_momentum_bucket,
-            "fingerprint": f"{calculator.symbol}_fingerprint_directional_momentum_{calculator.current_momentum_bucket:03d}.csv",
-            "fingerprint_file": f"{calculator.symbol}_fingerprint_directional_momentum_{calculator.current_momentum_bucket:03d}.csv",
-            "available_buckets": list(calculator.momentum_fingerprints.keys()) if hasattr(calculator, 'momentum_fingerprints') else []
-        }
-        
-        _main_logger.debug(f"[FINGERPRINT] Current fingerprint: {fingerprint_info['fingerprint_file']}")
-        return fingerprint_info
-        
-    except Exception as e:
-        _main_logger.warning(f"Error getting fingerprint: {e}")
-        return {"fingerprint": "error", "error": str(e)}
+async def get_system_health_from_db(request: Request) -> Response:
+    """Proxy to read_api: system health snapshot for System UI."""
+    r = await _proxy_read_api_raw(request, "GET", "/api/db/system_health")
+    return await _as_starlette_response(r)
 
 @app.get("/api/momentum")
 async def get_current_momentum(symbol: str = "BTC"):
@@ -2977,48 +2340,16 @@ async def get_current_momentum(symbol: str = "BTC"):
         }
 
 @app.get("/api/btc_price")
-async def get_btc_price():
-    """Get current BTC price directly from PostgreSQL live_data.live_price_log_1s_btc."""
-    try:
-        import psycopg2
-        
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            price = float(result[0])
-            return {"price": price, "source": "postgresql_live_data"}
-        else:
-            return {"price": None, "error": "No price data available"}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting BTC price from PostgreSQL: {e}")
-        return {"price": None, "error": str(e)}
+async def get_btc_price(request: Request):
+    """Proxy to read_api: BTC price snapshot."""
+    r = await _proxy_read_api_raw(request, "GET", "/api/btc_price")
+    return await _as_starlette_response(r)
 
 @app.get("/api/eth_price")
-async def get_eth_price():
-    """Get current ETH price directly from PostgreSQL live_data.live_price_log_1s_eth."""
-    try:
-        import psycopg2
-        
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT price FROM live_data.live_price_log_1s_eth ORDER BY timestamp DESC LIMIT 1")
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result:
-            price = float(result[0])
-            return {"price": price, "source": "postgresql_live_data"}
-        else:
-            return {"price": None, "error": "No price data available"}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting ETH price from PostgreSQL: {e}")
-        return {"price": None, "error": str(e)}
+async def get_eth_price(request: Request):
+    """Proxy to read_api: ETH price snapshot."""
+    r = await _proxy_read_api_raw(request, "GET", "/api/eth_price")
+    return await _as_starlette_response(r)
 
 @app.get("/api/live_symbol_status_snapshot")
 async def get_live_symbol_status_snapshot():
@@ -3082,25 +2413,6 @@ async def get_live_symbol_status_snapshot():
         _main_logger.warning(f"Error getting live symbol status snapshot: {e}")
         return {"status": "error", "message": str(e), "symbols": []}
 
-@app.get("/api/momentum_score")
-async def get_momentum_score():
-    """Get current momentum score for mobile directly from PostgreSQL."""
-    try:
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT momentum FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result and result[0] is not None:
-            weighted_score = float(result[0])
-            return {"weighted_score": weighted_score}
-        else:
-            return {"weighted_score": 0, "error": "No momentum data available"}
-    except Exception as e:
-        _main_logger.warning(f"Error getting momentum score: {e}")
-        return {"weighted_score": 0, "error": str(e)}
-
 def _unified_strike_table_for_market(market: str) -> str:
     """Physical table in live_data: unified 15m or unified hourly (symbol scoped by exchange + symbol)."""
     m = (market or "").strip().lower()
@@ -3110,138 +2422,6 @@ def _unified_strike_table_for_market(market: str) -> str:
         return "strike_table_hourly"
     raise ValueError("market must be 'hourly' or '15m'")
 
-
-@app.get("/api/strike_table")
-async def get_strike_table_mobile(request: Request):
-    """Get strike table data for mobile. Query params: symbol, market (required: hourly or 15m)."""
-    try:
-        import psycopg2
-        symbol = (request.query_params.get("symbol") or "btc").lower()
-        market = (request.query_params.get("market") or "").strip().lower()
-        if market not in ("hourly", "15m"):
-            return {"strikes": [], "error": "market required (hourly or 15m)"}
-        sym_u = symbol.upper()
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            if market == "hourly":
-                h_tbl = _unified_strike_table_for_market("hourly")
-                cursor.execute(
-                    f"""
-                    SELECT 
-                        strike,
-                        buffer,
-                        buffer_pct,
-                        probability_hourly,
-                        yes_ask_dollars,
-                        no_ask_dollars,
-                        volume_fp,
-                        open_interest_fp,
-                        ticker,
-                        yes_diff,
-                        no_diff,
-                        active_side
-                    FROM live_data.{h_tbl}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY strike
-                    """,
-                    ("kalshi", sym_u),
-                )
-            else:
-                cursor.execute(
-                    """
-                    SELECT 
-                        strike,
-                        buffer,
-                        buffer_pct,
-                        probability_15m,
-                        yes_ask_dollars,
-                        no_ask_dollars,
-                        volume_fp,
-                        open_interest_fp,
-                        ticker,
-                        yes_diff,
-                        no_diff,
-                        active_side
-                    FROM live_data.strike_table_15m
-                    WHERE exchange = %s AND symbol = %s
-                      AND "timestamp" = (
-                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
-                        WHERE exchange = %s AND symbol = %s
-                      )
-                    ORDER BY strike
-                    """,
-                    ("kalshi", sym_u, "kalshi", sym_u),
-                )
-            
-            strikes_data = cursor.fetchall()
-            conn.close()
-            
-            if not strikes_data:
-                return {"strikes": [], "error": "No strike table data found"}
-            
-            strikes = []
-            for row in strikes_data:
-                strikes.append({
-                    "strike": float(row[0]) if row[0] else None,
-                    "buffer": float(row[1]) if row[1] else None,
-                    "buffer_pct": float(row[2]) if row[2] else None,
-                    "probability": float(row[3]) if row[3] else None,
-                    "yes_ask_dollars": row[4],
-                    "no_ask_dollars": row[5],
-                    "volume_fp": row[6] if row[6] is None else str(row[6]).strip(),
-                    "open_interest_fp": row[7] if row[7] is None else str(row[7]).strip(),
-                    "ticker": row[8],
-                    "yes_diff": float(row[9]) if row[9] else None,
-                    "no_diff": float(row[10]) if row[10] else None,
-                    "active_side": row[11],
-                })
-            
-            return {"strikes": strikes}
-            
-    except Exception as e:
-        _main_logger.warning(f"Error getting strike table from PostgreSQL: {e}")
-        return {"strikes": [], "error": str(e)}
-
-# === PREFERENCES API ENDPOINTS ===
-
-# LEGACY REMOVED: /api/set_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
-
-# LEGACY REMOVED: /api/set_auto_entry endpoint - no longer used, auto entry now controlled by auto_trade in monitor_list
-
-# LEGACY REMOVED: /api/get_auto_stop endpoint - no longer used, auto stop now controlled by auto_trade in monitor_list
-
-# LEGACY REMOVED: /api/get_auto_entry endpoint - no longer used, auto entry now controlled by auto_trade in monitor_list
-
-# Diff mode is now local only - no API endpoint needed
-
-# Legacy position sizing endpoints removed - all position sizing now handled by monitor_list table
-
-@app.post("/api/update_preferences")
-async def update_preferences(request: Request):
-    data = await request.json()
-    prefs = load_preferences()
-    updated = False
-
-    if "position_size" in data:
-        try:
-            prefs["position_size"] = int(data["position_size"])
-            updated = True
-        except Exception as e:
-            _main_logger.debug(f"[Invalid Position Size] {e}")
-
-    if "multiplier" in data:
-        try:
-            prefs["multiplier"] = float(data["multiplier"])
-            updated = True
-        except Exception as e:
-            _main_logger.debug(f"[Invalid Multiplier] {e}")
-
-    if updated:
-        await save_preferences(prefs)
-        await broadcast_preferences_update()
-    return {"status": "ok"}
-
-# Legacy /api/get_preferences endpoint removed - position sizing and strategy now handled by monitor_list table
 
 # === ACTIVE TRADES PROXY ROUTE ===
 @app.get("/api/active_trades")
@@ -3640,53 +2820,6 @@ def frontend_changes():
                 pass
     return {"last_modified": latest}
 
-@app.get("/api/live_probabilities")
-async def get_live_probabilities(request: Request):
-    """Get live probabilities. Query params: symbol, market (required: hourly or 15m)."""
-    try:
-        import psycopg2
-        symbol = (request.query_params.get("symbol") or "btc").lower()
-        market = (request.query_params.get("market") or "").strip().lower()
-        if market not in ("hourly", "15m"):
-            return {"error": "market required (hourly or 15m)"}
-        sym_u = symbol.upper()
-        tbl = _unified_strike_table_for_market(market)
-        prob_col = "probability_15m" if market == "15m" else "probability_hourly"
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT strike, {prob_col}
-                    FROM live_data.{tbl}
-                    WHERE exchange = %s AND symbol = %s
-                ORDER BY strike
-                """,
-                ("kalshi", sym_u),
-            )
-            
-            probabilities_data = cursor.fetchall()
-            conn.close()
-            
-            if not probabilities_data:
-                return {"error": "No probability data found"}
-            
-            # Convert to the same format as the JSON file
-            probabilities = []
-            for row in probabilities_data:
-                prob_data = {
-                    "strike": float(row[0]) if row[0] else None,
-                    "prob_within": float(row[1]) if row[1] else None
-                }
-                probabilities.append(prob_data)
-            
-            return {
-                "probabilities": probabilities,
-                "timestamp": now_est().isoformat()
-            }
-            
-    except Exception as e:
-        return {"error": f"Error loading live probabilities from PostgreSQL: {str(e)}"}
-
 def safe_read_json(filepath: str, timeout: float = 0.1):
     """Read JSON data with file locking to prevent race conditions"""
     try:
@@ -3706,171 +2839,6 @@ def safe_read_json(filepath: str, timeout: float = 0.1):
         except Exception as read_error:
             _main_logger.warning(f"Error reading JSON from {filepath}: {read_error}")
             return None
-
-@app.get("/api/strike_tables/{symbol}")
-async def get_strike_table(symbol: str, request: Request):
-    """Get strike table data. Query param: market (required: hourly or 15m)."""
-    try:
-        import psycopg2
-        
-        # Convert symbol to lowercase for consistency (used for error messages/logs)
-        symbol_lower = symbol.lower()
-        market = (request.query_params.get("market") or "").strip().lower()
-        if market not in ("hourly", "15m"):
-            return {"error": "market required (hourly or 15m)"}
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            sym_u = symbol.upper()
-            if market == "15m":
-                # Unified 15m source of truth.
-                cursor.execute(
-                    """
-                    SELECT
-                        symbol,
-                        current_price,
-                        ttc_15m,
-                        event_ticker,
-                        market_title,
-                        strike_tier,
-                        market_status,
-                        momentum_percentile
-                    FROM live_data.strike_table_15m
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY "timestamp" DESC
-                    LIMIT 1
-                    """,
-                    ("kalshi", sym_u),
-                )
-                header_data = cursor.fetchone()
-                if not header_data:
-                    return {"error": f"No strike table data found for {symbol}"}
-                cursor.execute(
-                    """
-                    SELECT
-                        strike,
-                        buffer,
-                        buffer_pct,
-                        probability_15m,
-                        yes_ask_dollars,
-                        no_ask_dollars,
-                        volume_fp,
-                        open_interest_fp,
-                        ticker,
-                        yes_diff,
-                        no_diff,
-                        active_side,
-                        yes_ask_min_15m,
-                        yes_ask_max_15m,
-                        no_ask_min_15m,
-                        no_ask_max_15m,
-                        yes_ask_range_15m,
-                        no_ask_range_15m
-                    FROM live_data.strike_table_15m
-                    WHERE exchange = %s AND symbol = %s
-                      AND "timestamp" = (
-                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
-                        WHERE exchange = %s AND symbol = %s
-                      )
-                    ORDER BY strike
-                    """,
-                    ("kalshi", sym_u, "kalshi", sym_u),
-                )
-                strikes_data = cursor.fetchall()
-            else:
-                h_tbl = _unified_strike_table_for_market("hourly")
-                cursor.execute(
-                    f"""
-                    SELECT
-                        symbol,
-                        current_price,
-                        ttc_hourly,
-                        event_ticker,
-                        market_title,
-                        strike_tier,
-                        market_status,
-                        momentum_percentile
-                    FROM live_data.{h_tbl}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY "timestamp" DESC
-                    LIMIT 1
-                    """,
-                    ("kalshi", sym_u),
-                )
-                header_data = cursor.fetchone()
-                if not header_data:
-                    return {"error": f"No strike table data found for {symbol}"}
-                cursor.execute(
-                    f"""
-                    SELECT
-                        strike,
-                        buffer,
-                        buffer_pct,
-                        probability_hourly,
-                        yes_ask_dollars,
-                        no_ask_dollars,
-                        volume_fp,
-                        open_interest_fp,
-                        ticker,
-                        yes_diff,
-                        no_diff,
-                        active_side,
-                        yes_ask_min_15m,
-                        yes_ask_max_15m,
-                        no_ask_min_15m,
-                        no_ask_max_15m,
-                        yes_ask_range_15m,
-                        no_ask_range_15m
-                    FROM live_data.{h_tbl}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY strike
-                    """,
-                    ("kalshi", sym_u),
-                )
-                strikes_data = cursor.fetchall()
-            conn.close()
-            
-            # Build response in the same format as JSON
-            response = {
-                "symbol": header_data[0],
-                "current_price": float(header_data[1]) if header_data[1] else None,
-                "ttc": int(header_data[2]) if header_data[2] else None,
-                "event_ticker": header_data[3],
-                "market_title": header_data[4],
-                "strike_tier": header_data[5],
-                "market_status": header_data[6],
-                "momentum": {
-                    "weighted_score": float(header_data[7]) if header_data[7] else 0.0
-                },
-                "strikes": []
-            }
-            
-            for row in strikes_data:
-                strike = {
-                    "strike": float(row[0]) if row[0] else None,
-                    "buffer": float(row[1]) if row[1] else None,
-                    "buffer_pct": float(row[2]) if row[2] else None,
-                    "probability": float(row[3]) if row[3] else None,
-                    "yes_ask_dollars": row[4],
-                    "no_ask_dollars": row[5],
-                    "volume_fp": row[6] if row[6] is None else str(row[6]).strip(),
-                    "open_interest_fp": row[7] if row[7] is None else str(row[7]).strip(),
-                    "ticker": row[8],
-                    "yes_diff": float(row[9]) if row[9] is not None else None,
-                    "no_diff": float(row[10]) if row[10] is not None else None,
-                    "active_side": row[11],
-                    "yes_ask_min_15m": float(row[12]) if row[12] is not None else None,
-                    "yes_ask_max_15m": float(row[13]) if row[13] is not None else None,
-                    "no_ask_min_15m": float(row[14]) if row[14] is not None else None,
-                    "no_ask_max_15m": float(row[15]) if row[15] is not None else None,
-                    "yes_ask_range_15m": float(row[16]) if row[16] is not None else None,
-                    "no_ask_range_15m": float(row[17]) if row[17] is not None else None,
-                }
-                response["strikes"].append(strike)
-            
-            return response
-            
-    except Exception as e:
-        return {"error": f"Error loading strike table for {symbol} from PostgreSQL: {str(e)}"}
 
 @app.get("/api/postgresql/strike_table/{symbol}")
 async def get_postgresql_strike_table(symbol: str, request: Request):
@@ -5359,65 +4327,11 @@ async def get_dashboard_performance_snapshot():
 
 
 @app.get("/api/dashboard/preferences")
-async def get_dashboard_preferences(mode: str = "prod"):
-    """Get dashboard preferences for the current user"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        import psycopg2
-
-        slot = resolved_tenant_user_no_for_app()
-        conn = get_postgresql_connection()
-        pref_table = f"users.dashboard_preferences_{slot}"
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT portfolio_chart_view, monitor_view_mode, monitor_sort_by, allocation_view, portfolio_view,
-                       performance_rollup_view
-                FROM {pref_table}
-                WHERE user_id = 1
-                """
-            )
-            result = cursor.fetchone()
-
-        conn.close()
-
-        if result:
-            rv = result[5] if len(result) > 5 else None
-            if rv not in ("td", "prev"):
-                rv = "td"
-            return {
-                "status": "ok",
-                "portfolio_chart_view": result[0],
-                "monitor_view_mode": result[1] if result[1] else "tile",
-                "monitor_sort_by": result[2] if result[2] else "name",
-                "allocation_view": result[3] if result[3] else "pie",
-                "portfolio_view": result[4] if result[4] else "portfolio",
-                "performance_rollup_view": rv,
-            }
-        return {
-            "status": "ok",
-            "portfolio_chart_view": "all",
-            "monitor_view_mode": "tile",
-            "monitor_sort_by": "name",
-            "allocation_view": "pie",
-            "portfolio_view": "portfolio",
-            "performance_rollup_view": "td",
-        }
-
-    except psycopg2.Error as e:
-        _main_logger.debug("dashboard preferences read skipped for slot (missing table or row): %s", e)
-        return {
-            "status": "ok",
-            "portfolio_chart_view": "all",
-            "monitor_view_mode": "tile",
-            "monitor_sort_by": "name",
-            "allocation_view": "pie",
-            "portfolio_view": "portfolio",
-            "performance_rollup_view": "td",
-        }
-    except Exception as e:
-        _main_logger.warning(f"Error getting dashboard preferences: {e}")
-        return {"status": "error", "message": str(e)}
+async def get_dashboard_preferences(request: Request, mode: str = "prod"):
+    """Proxy to read_api: dashboard preferences read."""
+    path = f"/api/dashboard/preferences?mode={quote_plus(str(mode))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.post("/api/dashboard/preferences")
 async def save_dashboard_preferences(request: Request):
@@ -5521,225 +4435,39 @@ async def get_total_position():
         return {"total_position": 0}
 
 @app.get("/api/monitors")
-async def get_monitors(user_id: Optional[str] = None):
-    """Get monitors list for the specified user"""
-    try:
-        from backend.core.monitor_list_api import get_monitors_api_payload
-
-        user_number = _session_user_number_from_optional_user_id(user_id)
-        return get_monitors_api_payload(user_number)
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+async def get_monitors(request: Request, user_id: Optional[str] = None):
+    """Proxy to read_api: monitors list."""
+    path = "/api/monitors"
+    if user_id:
+        path += f"?user_id={quote_plus(str(user_id))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 
 @app.get("/api/monitors/health")
-async def get_monitors_health(user_id: Optional[str] = None):
-    """Get monitor health only (power-light payload), without full monitor tile data."""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        from backend.core.strike_pipeline_health import (
-            row_passes_trade_gate,
-            strike_pipeline_health_strict_mode_enabled,
-        )
-
-        conn = get_postgresql_connection()
-        user_number = _session_user_number_from_optional_user_id(user_id)
-        strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
-        if not conn:
-            _main_logger.error(
-                "get_monitors_health: database connection unavailable "
-                "(check main_app logs for 'Failed to open tenant PostgreSQL connection')"
-            )
-            return {
-                "status": "error",
-                "message": "Database connection failed",
-            }
-
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT id, symbol, status, market
-                FROM users.monitor_list_{user_number}
-                WHERE status != 'ARCHIVED'
-                ORDER BY dashboard_order, id
-                """
-            )
-            monitor_rows = cursor.fetchall()
-            health_by_sym_mkt = {}
-            if strict_pipeline_health:
-                cursor.execute(
-                    """
-                    SELECT
-                        market,
-                        symbol,
-                        pipeline_healthy,
-                        pipeline_health_reason,
-                        EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
-                        EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
-                    FROM live_data.strike_pipeline_health
-                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
-                    """
-                )
-                for mkt, sym, ph, pr, cage, tage in cursor.fetchall():
-                    key = (str(sym).upper(), str(mkt).strip().lower())
-                    ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
-                    health_by_sym_mkt[key] = {
-                        "monitor_healthy": ok,
-                        "monitor_health_state": "healthy" if ok else "degraded",
-                        "monitor_health_reason": "ok" if ok else rsn,
-                        "monitor_health_age_sec": float(cage) if cage is not None else None,
-                    }
-        conn.close()
-
-        out = {}
-        for monitor_id, symbol, status, market in monitor_rows:
-            monitor_key = f"mon_{user_number}_{monitor_id}"
-            monitor_market = (market or "").strip().lower() if market else None
-            monitor_symbol = str(symbol or "").upper()
-            if monitor_market in ("15m", "hourly"):
-                if not strict_pipeline_health:
-                    out[monitor_key] = {
-                        "monitor_healthy": True,
-                        "monitor_health_state": "healthy",
-                        "monitor_health_reason": "strict_mode_off",
-                        "monitor_health_age_sec": 0.0,
-                    }
-                else:
-                    h = health_by_sym_mkt.get((monitor_symbol, monitor_market))
-                    if h:
-                        out[monitor_key] = dict(h)
-                    else:
-                        out[monitor_key] = {
-                            "monitor_healthy": False,
-                            "monitor_health_state": "degraded",
-                            "monitor_health_reason": "pipeline_health_missing",
-                            "monitor_health_age_sec": None,
-                        }
-            else:
-                out[monitor_key] = {
-                    "monitor_healthy": True,
-                    "monitor_health_state": "healthy",
-                    "monitor_health_reason": "not_ws_gated_market",
-                    "monitor_health_age_sec": 0.0,
-                }
-            out[monitor_key]["status"] = status
-
-        return {
-            "status": "ok",
-            "user_id": f"user_{user_number}",
-            "count": len(out),
-            "monitors": out,
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {"status": "error", "message": str(e)}
+async def get_monitors_health(request: Request, user_id: Optional[str] = None):
+    """Proxy to read_api: monitor health payload."""
+    path = "/api/monitors/health"
+    if user_id:
+        path += f"?user_id={quote_plus(str(user_id))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 
 @app.get("/api/symbols")
-async def get_symbols():
-    """Get available symbols for the symbol picker dropdown"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT symbol
-            FROM live_data.symbols_list
-            ORDER BY symbol
-        """)
-        
-        results = cursor.fetchall()
-        conn.close()
-        
-        symbols = []
-        for row in results:
-            symbol = row[0]
-            symbols.append(symbol)
-        
-        return {
-            "status": "ok",
-            "count": len(symbols),
-            "symbols": symbols
-        }
-        
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+async def get_symbols(request: Request):
+    """Proxy to read_api: symbol picker list."""
+    r = await _proxy_read_api_raw(request, "GET", "/api/symbols")
+    return await _as_starlette_response(r)
 
 @app.get("/api/monitor/{monitor_id}")
-async def get_monitor_details(monitor_id: int, user_id: Optional[str] = None):
-    """Get details for a specific monitor"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        
-        user_number = _session_user_number_from_optional_user_id(user_id)
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, test_filter, market
-            FROM users.monitor_list_{user_number}
-            WHERE id = %s AND status = 'active'
-        """, (monitor_id,))
-        result = cursor.fetchone()
-        conn.close()
-        if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, test_filter, market = result
-            mkt = (market or "").strip().lower()
-            if mkt not in ("hourly", "15m"):
-                mkt = None
-            return {
-                "status": "ok",
-                "monitor": {
-                    "id": monitor_id,
-                    "name": name,
-                    "symbol": symbol,
-                    "strategy": strategy,
-                    "position_size": position_size,
-                    "multiplier": multiplier,
-                    "total_position": total_position,
-                    "position_type": position_type,
-                    "bankroll_allotment_total": bankroll_allotment_total,
-                    "auto_trade": auto_trade,
-                    "paper_trade": bool((paper_trade or False) or (test_filter or False)),
-                    "test_filter": bool(test_filter) if test_filter is not None else False,
-                    "market": mkt,
-                }
-            }
-        else:
-            return {
-                "status": "error",
-                "message": "Monitor not found"
-            }
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+async def get_monitor_details(request: Request, monitor_id: int, user_id: Optional[str] = None):
+    """Proxy to read_api: monitor details."""
+    path = f"/api/monitor/{int(monitor_id)}"
+    if user_id:
+        path += f"?user_id={quote_plus(str(user_id))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.post("/api/monitor/{monitor_id}/update")
 async def update_monitor_details(monitor_id: int, request: dict, user_id: Optional[str] = None):
@@ -5834,165 +4562,34 @@ async def update_monitor_details(monitor_id: int, request: dict, user_id: Option
         }
 
 @app.get("/api/monitors/names")
-async def get_monitor_names(user_id: Optional[str] = None):
-    """Get just the monitor names for the monitor picker dropdown"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        
-        user_number = _session_user_number_from_optional_user_id(user_id)
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        cursor = conn.cursor()
-        cursor.execute(f"""
-            SELECT id, name, symbol, market, strategy, auto_trade_status, cooldown_timer
-            FROM users.monitor_list_{user_number}
-            WHERE status = 'active'
-            ORDER BY name
-        """)
-        results = cursor.fetchall()
-        conn.close()
-        monitors = []
-        for row in results:
-            monitor_id, name, symbol, market, strategy, auto_trade_status, cooldown_timer = row
-            mkt = (market or "").strip().lower() if market else None
-            if mkt not in ("hourly", "15m"):
-                mkt = None
-            monitors.append({
-                "id": monitor_id,
-                "name": name,
-                "symbol": symbol,
-                "market": mkt,
-                "strategy": strategy,
-                "auto_trade_status": (str(auto_trade_status).strip().lower() if auto_trade_status is not None else "inactive"),
-                "cooldown_timer": int(cooldown_timer or 0),
-            })
-        
-        return {
-            "status": "ok",
-            "user_id": f"user_{user_number}",
-            "count": len(monitors),
-            "monitors": monitors
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+async def get_monitor_names(request: Request, user_id: Optional[str] = None):
+    """Proxy to read_api: monitor name list."""
+    path = "/api/monitors/names"
+    if user_id:
+        path += f"?user_id={quote_plus(str(user_id))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.get("/api/monitors/allocation")
 async def get_monitors_allocation(
+    request: Request,
     user_id: Optional[str] = None,
     trading_mode: Optional[str] = Query(
         None,
         description="paper|live — which account_balance table backs dollar amounts (matches UI toggle)",
     ),
 ):
-    """Get bankroll allocation data for active monitors"""
-    try:
-        from backend.core.config.database import get_postgresql_connection
-        
-        user_number = _session_user_number_from_optional_user_id(user_id)
-        
-        conn = get_postgresql_connection()
-        if not conn:
-            return {
-                "status": "error",
-                "message": "Database connection failed"
-            }
-        
-        with conn.cursor() as cursor:
-            # Non-archived monitors with a positive allotment *percentage* (stored as decimal, e.g. 0.10 = 10%).
-            # Do not require bankroll_allotment_total > 0: totals are often still zero when the monitor was
-            # created before any bankroll existed; recompute display dollars from current bankroll × pct.
-            cursor.execute(f"""
-                SELECT 
-                    id,
-                    name,
-                    symbol,
-                    strategy,
-                    bankroll_allotment_pct,
-                    bankroll_allotment_total,
-                    status
-                FROM users.monitor_list_{user_number}
-                WHERE status != 'ARCHIVED' AND COALESCE(bankroll_allotment_pct, 0) > 0
-                ORDER BY bankroll_allotment_pct DESC, id
-            """)
-            
-            monitor_results = cursor.fetchall()
-            
-            # Get total bankroll from account_balance (stored in cents)
-            ab_ident = sql_ident_qualified_table(
-                account_balance_table_for_user(
-                    user_number, client_trading_mode=trading_mode
-                )
-            )
-            cursor.execute(
-                sql.SQL(
-                    """
-                SELECT bankroll_current, portfolio
-                FROM {}
-                ORDER BY timestamp DESC
-                LIMIT 1
-                """
-                ).format(ab_ident)
-            )
-            
-            balance_result = cursor.fetchone()
-            bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
-            portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
-            
-            # Use bankroll_current if available, otherwise portfolio (both in cents)
-            total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
-            total_bankroll_dollars = total_bankroll_cents / 100  # Convert cents to dollars
-            
-        conn.close()
-        
-        # Transform database results to frontend format
-        allocations = []
-        for row in monitor_results:
-            monitor_id, name, symbol, strategy, bankroll_allotment_pct, bankroll_allotment_total, status = row
-
-            # bankroll_allotment_pct is decimal fraction (0.10 = 10%)
-            pct_decimal = float(bankroll_allotment_pct or 0)
-            percentage = pct_decimal * 100
-            # Prefer live bankroll × pct so the chart matches portfolio header after balance moves
-            dollar_amount = total_bankroll_dollars * pct_decimal
-            if dollar_amount <= 0 and bankroll_allotment_total:
-                dollar_amount = float(bankroll_allotment_total) / 100.0
-
-            allocations.append({
-                "id": f"mon_{user_number}_{monitor_id}",
-                "name": name,
-                "symbol": symbol,
-                "strategy": strategy,
-                "bankroll_pct": round(percentage, 2),
-                "dollar_amount": round(dollar_amount, 2),
-                "total_bankroll": total_bankroll_dollars,
-                "status": status,
-            })
-        
-        return {
-            "status": "ok",
-            "allocations": allocations,
-            "total_bankroll": total_bankroll_dollars
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        _main_logger.warning(f"Error getting monitors allocation: {e}")
-        return {
-            "status": "error",
-            "message": str(e)
-        }
+    """Proxy to read_api: bankroll allocation payload."""
+    parts = []
+    if user_id:
+        parts.append(f"user_id={quote_plus(str(user_id))}")
+    if trading_mode:
+        parts.append(f"trading_mode={quote_plus(str(trading_mode))}")
+    path = "/api/monitors/allocation"
+    if parts:
+        path += "?" + "&".join(parts)
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
 @app.post("/api/monitors/allocation/update")
 async def update_monitors_allocation(request: dict):
@@ -6751,20 +5348,20 @@ async def activate_monitor(request: dict):
 
 
 @app.get("/api/strategies")
-async def get_strategies(user_id: Optional[str] = None):
-    """Strategy picker for the authenticated tenant (see :mod:`backend.core.tenant_strategy_list`)."""
-    _ = user_id  # optional query ignored; session token is authoritative (rec_session may still send user_id)
-    try:
-        from backend.core.tenant_strategy_list import load_strategy_picker_for_slot
+async def get_strategies(request: Request, user_id: Optional[str] = None):
+    """Proxy to read_api: tenant strategy picker."""
+    path = "/api/strategies"
+    if user_id:
+        path += f"?user_id={quote_plus(str(user_id))}"
+    r = await _proxy_read_api_raw(request, "GET", path)
+    return await _as_starlette_response(r)
 
-        slot = resolved_tenant_user_no_for_app()
-        payload = load_strategy_picker_for_slot(slot)
-        return {"status": "ok", **payload}
-    except ValueError as e:
-        return {"status": "error", "message": str(e)}
-    except Exception as e:
-        _main_logger.warning("get_strategies: %s", e)
-        return {"status": "error", "message": str(e)}
+
+@app.get("/api/earliest_trade_date")
+async def get_earliest_trade_date(request: Request):
+    """Proxy to read_api: earliest trade date for date-picker fallback."""
+    r = await _proxy_read_api_raw(request, "GET", "/api/earliest_trade_date")
+    return await _as_starlette_response(r)
 
 @app.post("/api/monitor/create")
 async def create_monitor(request: dict):

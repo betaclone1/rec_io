@@ -707,6 +707,7 @@
             width: 100%;
             border-collapse: collapse;
             font-size: 12px;
+            table-layout: fixed;
         }
         
         .tier-scripts-table td {
@@ -726,10 +727,15 @@
         .tier-scripts-table .script-name {
             font-weight: 500;
             padding-left: 20px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
         }
         
         .tier-scripts-table .script-status {
             font-weight: 600;
+            text-align: left;
+            white-space: nowrap;
         }
         
         .tier-scripts-table .script-status.running {
@@ -746,11 +752,15 @@
         
         .tier-scripts-table .script-uptime {
             color: var(--text-secondary);
+            white-space: nowrap;
+            text-align: left;
         }
         
         .tier-scripts-table .script-actions {
             display: flex;
             gap: 6px;
+            justify-content: flex-start;
+            white-space: nowrap;
         }
 
         .system-status-panel-stack {
@@ -894,6 +904,10 @@
 
     <script>
         let systemReleasePrefsWs = null;
+        let systemHealthDbWs = null;
+        let _systemHealthWsConnected = false;
+        let _systemHealthFallbackTimer = null;
+        let _systemHealthDbDebounce = null;
 
         function setSystemPanelReleaseVersion(version) {
             const el = document.getElementById('systemPanelReleaseVersion');
@@ -928,6 +942,59 @@
                     }
                 } catch (e) { /* ignore */ }
             };
+        }
+
+        function _scheduleSystemHealthRefreshFromWs() {
+            if (_systemHealthDbDebounce) clearTimeout(_systemHealthDbDebounce);
+            _systemHealthDbDebounce = setTimeout(() => {
+                _systemHealthDbDebounce = null;
+                loadSystemHealth();
+                updateSystemIcon();
+            }, 350);
+        }
+
+        function connectSystemHealthWebSocket() {
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            if (systemHealthDbWs) {
+                try { systemHealthDbWs.close(); } catch (e) { /* ignore */ }
+            }
+            systemHealthDbWs = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
+            systemHealthDbWs.onopen = function() {
+                _systemHealthWsConnected = true;
+                if (_systemHealthFallbackTimer) {
+                    clearInterval(_systemHealthFallbackTimer);
+                    _systemHealthFallbackTimer = null;
+                }
+            };
+            systemHealthDbWs.onmessage = function(event) {
+                try {
+                    const raw = event.data;
+                    if (typeof recDbChangeRawMentionsStream === 'function' &&
+                        !recDbChangeRawMentionsStream(raw, 'system_health')) {
+                        return;
+                    }
+                    const data = JSON.parse(raw);
+                    if (data.type === 'db_change' && data.database === 'system_health') {
+                        _scheduleSystemHealthRefreshFromWs();
+                    }
+                } catch (e) {
+                    // Ignore malformed frames.
+                }
+            };
+            systemHealthDbWs.onclose = function() {
+                _systemHealthWsConnected = false;
+                startSystemHealthFallbackPolling();
+                setTimeout(connectSystemHealthWebSocket, 5000);
+            };
+        }
+
+        function startSystemHealthFallbackPolling() {
+            if (_systemHealthFallbackTimer) return;
+            _systemHealthFallbackTimer = setInterval(() => {
+                if (_systemHealthWsConnected) return;
+                loadSystemHealth();
+                updateSystemIcon();
+            }, 30000);
         }
 
         async function loadSystemHealth() {
@@ -1066,26 +1133,14 @@
             loadSystemHealth();
             void fetchReleaseVersionFromRedisCache();
             connectSystemReleaseVersionWebSocket();
+            connectSystemHealthWebSocket();
             await checkAdminPermissions();
-            
-            // Start system health monitoring for icon updates
-            startSystemHealthMonitoring();
-            
-            // Start system health monitoring for page updates
-            startSystemPageMonitoring();
+            startSystemHealthFallbackPolling();
+            updateSystemIcon();
         });
         
-        // System health monitoring for icon updates
-        let systemHealthInterval;
+        // System health monitoring (ws-primary + fallback polling)
         let lastSystemStatus = null;
-        
-        function startSystemHealthMonitoring() {
-            // Check immediately
-            updateSystemIcon();
-            
-            // Then check every 15 seconds (same as system monitor)
-            systemHealthInterval = setInterval(updateSystemIcon, 15000);
-        }
         
         async function updateSystemIcon() {
             try {
@@ -1131,17 +1186,8 @@
             }
         }
         
-        // System page monitoring for real-time updates
-        let systemPageInterval;
+        // System page monitoring state
         let lastPageSystemStatus = null;
-        
-        function startSystemPageMonitoring() {
-            // Check immediately
-            updateSystemPage();
-            
-            // Then check every 15 seconds (same as system monitor)
-            systemPageInterval = setInterval(updateSystemPage, 15000);
-        }
         
         async function updateSystemPage() {
             try {
@@ -1428,6 +1474,12 @@
                     </div>
                     <div class="tier-content" id="content-${tierId}">
                         <table class="tier-scripts-table">
+                            <colgroup>
+                                <col style="width: 45%;">
+                                <col style="width: 16%;">
+                                <col style="width: 14%;">
+                                <col style="width: 25%;">
+                            </colgroup>
                             <tbody>
                                 ${scriptsHTML}
                             </tbody>

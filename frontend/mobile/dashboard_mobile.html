@@ -1871,6 +1871,7 @@
     let dashboardMobilePrefsWsUnsub = null;
     let dashboardMobileDbChangesWsUnsub = null;
     let monitorHealthRefreshTimer = null;
+    let marketDataRefreshTimer = null;
     let monitorListRefreshDebounceTimer = null;
     let dbChangesBankrollDebounceTimer = null;
     let dbChangesBankrollPendingStreams = null;
@@ -6378,6 +6379,27 @@
       }
     }
 
+    async function refreshMarketDataPanel() {
+      await Promise.allSettled([
+        fetchBTCCurrentPrice(),
+        fetchETHCurrentPrice(),
+        fetchBTCPriceChanges(),
+        fetchETHPriceChanges(),
+      ]);
+    }
+
+    function scheduleMarketDataRefresh(delayMs = 350) {
+      if (marketDataRefreshTimer) return;
+      marketDataRefreshTimer = setTimeout(async function() {
+        marketDataRefreshTimer = null;
+        try {
+          await refreshMarketDataPanel();
+        } catch (e) {
+          console.error('Dashboard mobile: market data refresh failed:', e);
+        }
+      }, delayMs);
+    }
+
     // Helper function to extract numeric monitor ID from full monitor ID
     function extractMonitorId(fullMonitorId) {
       if (!fullMonitorId) return null;
@@ -6611,21 +6633,14 @@
       }
     }
 
-    // Initialize market data on page load
+    // Initialize market data once on page load. Realtime updates are WS-driven.
     document.addEventListener('DOMContentLoaded', function() {
-      // Fetch initial data
-      fetchBTCCurrentPrice();
-      fetchETHCurrentPrice();
-      fetchBTCPriceChanges();
-      fetchETHPriceChanges();
       function startDashboardMarketDataPolling() {
-        if (window._dmMarketDataInterval) clearInterval(window._dmMarketDataInterval);
-        window._dmMarketDataInterval = setInterval(() => {
-          fetchBTCCurrentPrice();
-          fetchETHCurrentPrice();
-          fetchBTCPriceChanges();
-          fetchETHPriceChanges();
-        }, 30000);
+        if (window._dmMarketDataInterval) {
+          clearInterval(window._dmMarketDataInterval);
+          window._dmMarketDataInterval = null;
+        }
+        scheduleMarketDataRefresh(0);
       }
       window.startDashboardMarketDataPolling = startDashboardMarketDataPolling;
       startDashboardMarketDataPolling();
@@ -7497,7 +7512,7 @@
           'trades', 'fills', 'positions', 'settlements', 'account_balance',
           'account_balance_paper', 'subaccounts', 'performance_rollups',
         ];
-        const monitorHealthNames = ['market_kalshi_15m', 'live_symbol_status'];
+        const monitorHealthNames = ['market_kalshi_15m', 'market_kalshi_hourly', 'live_symbol_status'];
         const monitorListNames = ['monitor_list'];
         const careBankroll = typeof recDbChangeRawMentionsAny === 'function'
           ? recDbChangeRawMentionsAny(raw, bankrollNames) : true;
@@ -7520,6 +7535,7 @@
 
         if (monitorHealthStreams.has(stream)) {
           scheduleMonitorHealthRefresh();
+          scheduleMarketDataRefresh();
         }
 
         if (stream === 'monitor_list') {
@@ -7603,6 +7619,10 @@
       if (monitorHealthRefreshTimer) {
         clearTimeout(monitorHealthRefreshTimer);
         monitorHealthRefreshTimer = null;
+      }
+      if (marketDataRefreshTimer) {
+        clearTimeout(marketDataRefreshTimer);
+        marketDataRefreshTimer = null;
       }
     }
 
