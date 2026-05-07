@@ -185,11 +185,11 @@ def fetch_strike_ladder_payload_from_db(
                         symbol,
                         current_price,
                         {ttc_column},
+                        ttc_15m,
                         event_ticker,
                         market_title,
                         strike_tier,
-                        market_status,
-                        timestamp
+                        market_status
                     FROM live_data.{table_name}
                     WHERE exchange = %s AND symbol = %s
                     ORDER BY timestamp DESC
@@ -274,16 +274,30 @@ def fetch_strike_ladder_payload_from_db(
                 )
 
             strikes_data = cursor.fetchall()
-            response: Dict[str, Any] = {
-                "symbol": header_data[0],
-                "current_price": float(header_data[1]) if header_data[1] else None,
-                "ttc": int(header_data[2]) if header_data[2] else None,
-                "event_ticker": header_data[3],
-                "market_title": header_data[4],
-                "strike_tier": header_data[5],
-                "market_status": header_data[6],
-                "strikes": [],
-            }
+            if current_market == "hourly":
+                response: Dict[str, Any] = {
+                    "symbol": header_data[0],
+                    "current_price": float(header_data[1]) if header_data[1] else None,
+                    "ttc": int(header_data[2]) if header_data[2] else None,
+                    "ttc_15m": int(header_data[3]) if header_data[3] is not None else None,
+                    "event_ticker": header_data[4],
+                    "market_title": header_data[5],
+                    "strike_tier": header_data[6],
+                    "market_status": header_data[7],
+                    "strikes": [],
+                }
+            else:
+                response: Dict[str, Any] = {
+                    "symbol": header_data[0],
+                    "current_price": float(header_data[1]) if header_data[1] else None,
+                    "ttc": int(header_data[2]) if header_data[2] else None,
+                    "event_ticker": header_data[3],
+                    "market_title": header_data[4],
+                    "strike_tier": header_data[5],
+                    "market_status": header_data[6],
+                    "strikes": [],
+                }
+                response["ttc_15m"] = response["ttc"]
             for strike_row in strikes_data:
                 ph = float(strike_row[17]) if strike_row[17] is not None else None
                 p15 = float(strike_row[20]) if strike_row[20] is not None else None

@@ -2338,77 +2338,87 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
         return None
 
 
-def get_master_strike_table_data_simulated_15m():
-    """Read hourly strike table using ttc_15m and probability_15m for simulated 15m path.
-    Uses same DB connection as duplicate check and trade_manager (server-agnostic)."""
+def _fetch_ttc_15m_latest_header(current_symbol: str) -> Optional[int]:
+    """If ladder JSON omits ``ttc_15m`` (older Redis snapshots), read latest hourly row from ``live_data``."""
     try:
-        conn = get_db_connection()
+        from backend.core.config.database import get_system_postgresql_connection
+
+        conn = get_system_postgresql_connection()
         if not conn:
             return None
         try:
-            with conn.cursor() as cursor:
-                current_symbol, _ = get_current_monitor_symbol_and_market()
-                table_name = get_strike_table_name(current_symbol, "hourly")
-                sym_u = current_symbol.upper()
-                ex = _strike_data_exchange_key()
-                cursor.execute(
-                    """
-                    SELECT MAX(timestamp) FROM live_data.{tbl}
-                    WHERE exchange = %s AND symbol = %s
-                    """.format(tbl=table_name),
-                    (ex, sym_u),
-                )
-                rts = cursor.fetchone()
-                latest_ts = rts[0] if rts else None
-                if not latest_ts:
-                    return None
-                cursor.execute(
+            ex = _strike_data_exchange_key()
+            sym_u = (current_symbol or "").upper().strip()
+            if not sym_u:
+                return None
+            table_name = get_strike_table_name(current_symbol, "hourly")
+            with conn.cursor() as cur:
+                cur.execute(
                     f"""
-                    SELECT symbol, current_price, ttc_15m, event_ticker, market_title, strike_tier, market_status
-                    FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
-                    ORDER BY strike
+                    SELECT ttc_15m FROM live_data.{table_name}
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY timestamp DESC
                     LIMIT 1
                     """,
-                    (ex, sym_u, latest_ts),
+                    (ex, sym_u),
                 )
-                header = cursor.fetchone()
-                if not header:
-                    return None
-                cursor.execute(
-                    f"""
-                    SELECT strike, buffer, buffer_pct, probability_15m, yes_ask_dollars, no_ask_dollars,
-                           volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side, yes_price_spread, no_price_spread
-                    FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s AND timestamp = %s
-                    ORDER BY strike
-                    """,
-                    (ex, sym_u, latest_ts),
-                )
-                rows = cursor.fetchall()
+                row = cur.fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
         finally:
-            conn.close()
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return None
+    return None
+
+
+def get_master_strike_table_data_simulated_15m():
+    """Hourly ladder snapshot (same source as AES: Redis or DB) with ``ttc_15m`` and side-aware 15m probability.
+
+    Uses ``DISTINCT ON (ticker)`` ladder rows and explicit yes/no 15m legs so simulated gates match the
+    monitor prob band on the traded side (avoids drift from a second ad-hoc SQL read).
+    """
+    try:
+        from backend.core.strike_ladder_fetch import probability_from_strike_row_side_aware
+
+        sym, mkt = get_current_monitor_symbol_and_market()
+        if (mkt or "").strip().lower() != "hourly":
+            return None
+        data = get_master_strike_table_data()
+        if not data or "strikes" not in data:
+            return None
+        raw_ttc = data.get("ttc_15m")
+        if raw_ttc is None:
+            raw_ttc = _fetch_ttc_15m_latest_header(sym)
+        if raw_ttc is None:
+            return None
         out = {
-            "symbol": header[0], "current_price": float(header[1]) if header[1] else None,
-            "ttc": int(header[2]) if header[2] else None,
-            "event_ticker": header[3], "market_title": header[4], "strike_tier": header[5], "market_status": header[6],
-            "strikes": []
+            "symbol": data.get("symbol"),
+            "current_price": data.get("current_price"),
+            "ttc": int(raw_ttc),
+            "event_ticker": data.get("event_ticker"),
+            "market_title": data.get("market_title"),
+            "strike_tier": data.get("strike_tier"),
+            "market_status": data.get("market_status"),
+            "strikes": [],
         }
-        for r in rows:
-            out["strikes"].append({
-                "strike": float(r[0]) if r[0] else None, "buffer": float(r[1]) if r[1] else None,
-                "buffer_pct": float(r[2]) if r[2] else None, "probability": float(r[3]) if r[3] else None,
-                "yes_ask_dollars": r[4], "no_ask_dollars": r[5],
-                "volume_fp": r[6] if r[6] is None else str(r[6]).strip(),
-                "open_interest_fp": r[7] if r[7] is None else str(r[7]).strip(),
-                "ticker": r[8], "yes_diff": float(r[9]) if r[9] is not None else None,
-                "no_diff": float(r[10]) if r[10] is not None else None, "active_side": r[11],
-                "yes_price_spread": float(r[12]) if r[12] is not None else None,
-                "no_price_spread": float(r[13]) if r[13] is not None else None
-            })
+        for strike in data["strikes"]:
+            row = dict(strike)
+            active_side = row.get("active_side")
+            p15_side = probability_from_strike_row_side_aware(row, "15m", active_side)
+            if p15_side is not None:
+                row["probability"] = float(p15_side)
+            elif row.get("probability_15m") is not None:
+                row["probability"] = float(row["probability_15m"])
+            else:
+                row["probability"] = None
+            out["strikes"].append(row)
         return out
     except Exception as e:
-        log(f"[SIMULATED 15m] Error reading hourly strike table: {e}")
+        log(f"[SIMULATED 15m] Error building simulated ladder: {e}")
         return None
 
 
@@ -3368,7 +3378,7 @@ def trigger_simulated_trade(strike_data):
 
 
 def check_simulated_15m_entry_hourly_htc():
-    """Run simulated 15m path: ttc_15m and probability_15m from hourly table; record to tenant trades_simulated. No price/diff/volume checks."""
+    """Run simulated 15m path: ``ttc_15m`` + side-aware 15m prob from hourly ladder; monitor prob/TTC gates (spike prob_adj on min); no diff/volume/ask."""
     import time as _t
     _throttle = getattr(check_simulated_15m_entry_hourly_htc, "_log_ts", 0)
     _now = _t.time()
@@ -3381,10 +3391,13 @@ def check_simulated_15m_entry_hourly_htc():
                     log_debug(f"[SIMULATED 15m] skip: missing setting {k}")
                     check_simulated_15m_entry_hourly_htc._log_ts = _now
                 return
-        min_t = settings["min_time"]
-        max_t = settings["max_time"]
-        min_p = settings["min_probability"]
-        max_p = settings["max_probability"]
+        min_t = int(float(settings["min_time"]))
+        max_t = int(float(settings["max_time"]))
+        base_min_p = float(settings["min_probability"])
+        max_p = float(settings["max_probability"])
+        prob_adj = float(settings.get("prob_adj", 5.00))
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
+        min_p = base_min_p + prob_adj if spike_alert_active else base_min_p
         data = get_master_strike_table_data_simulated_15m()
         if not data or "strikes" not in data:
             if _do_log:
@@ -3398,7 +3411,13 @@ def check_simulated_15m_entry_hourly_htc():
                 check_simulated_15m_entry_hourly_htc._log_ts = _now
             return
         if _do_log:
-            log_debug(f"[SIMULATED 15m] in window ttc_15m={ttc} [{min_t},{max_t}] scanning {len(data['strikes'])} strikes prob=[{min_p},{max_p}]")
+            _prob_log = f"[{min_p},{max_p}]"
+            if spike_alert_active:
+                _prob_log = f"[{min_p},{max_p}] (spike base_min={base_min_p}+{prob_adj})"
+            log_debug(
+                f"[SIMULATED 15m] in window ttc_15m={ttc} [{min_t},{max_t}] "
+                f"scanning {len(data['strikes'])} strikes prob={_prob_log}"
+            )
             check_simulated_15m_entry_hourly_htc._log_ts = _now
         # Throttled success: one line per ~15 min so we get ~4/hour that cycle ran
         _ok_ts = getattr(check_simulated_15m_entry_hourly_htc, "_ok_log_ts", 0)

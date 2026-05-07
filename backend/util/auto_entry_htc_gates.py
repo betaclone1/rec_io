@@ -6,9 +6,10 @@ this file manually to stay aligned with the live paths:
 
 - **Full Hourly HTC:** ``check_auto_entry_conditions_hourly_htc`` (probability,
   differential, volume, max_ask, ``strike_data``). Use ``gate_profile="full"``.
-- **Simulated 15m (hourly monitor):** ``check_simulated_15m_entry_hourly_htc`` only
-  checks TTC window + probability band + duplicate/cooldown (handled elsewhere live);
-  it does **not** apply min_diff, volume, or max_ask. Use ``gate_profile="simulated_15m"``
+- **Simulated 15m (hourly monitor):** ``check_simulated_15m_entry_hourly_htc`` uses the
+  same hourly ladder snapshot as AES, ``ttc_15m`` for TTC, and side-aware 15m probability
+  on the traded side; probability band includes spike ``prob_adj`` on ``min_probability``
+  (like full Hourly HTC). No min_diff, volume, or max_ask. Use ``gate_profile="simulated_15m"``
   in backtests when reconciling trades recorded from that path.
 
 Does not handle cooldown, DB duplicate checks, or TTC window (callers supply TTC).
