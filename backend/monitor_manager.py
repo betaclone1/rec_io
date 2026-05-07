@@ -2810,7 +2810,11 @@ def create_monitor():
                 999,  # dashboard_order defaults to 999 (end of list)
                 # Strategy defaults (from strategy_list)
                 strategy_defaults.get('win_streak_threshold', 22),
-                strategy_defaults.get('loss_prevention', 'none'),
+                (
+                    "new"
+                    if strategy_defaults.get('loss_prevention_toggle', True)
+                    else "off"
+                ),
                 strategy_defaults.get('loss_prevention_toggle', True),
                 strategy_defaults.get('performance_based_allocation', False),
                 strategy_defaults.get('max_price_spread', 0.0300),

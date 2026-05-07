@@ -18,8 +18,7 @@ _log = logging.getLogger(__name__)
 
 # Aligns with trade_manager.update_win_streak_for_cycle: when toggle is on,
 # loss_prevention is 'off' iff win_streak >= threshold, else 'one_contract'.
-
-
+# Monitors may also be in ``new`` (bootstrap) — see symbol_wide_loss_prevention.resolve_monitor_loss_prevention_value.
 def loss_prevention_value_for_streak(
     win_streak: int, loss_prevention_toggle_on: bool, win_streak_threshold: int
 ) -> str:

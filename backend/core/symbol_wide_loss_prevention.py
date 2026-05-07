@@ -77,21 +77,56 @@ def symbol_wide_cooldown_window_live(
     return now < end_est
 
 
+def resolve_monitor_loss_prevention_value(
+    *,
+    symbol_wide_cooldown_live: bool,
+    loss_prevention_toggle: bool,
+    win_streak: int,
+    win_streak_threshold: int,
+    current_loss_prevention: Optional[str],
+    cycle_had_loss: Optional[bool] = None,
+) -> str:
+    """
+    Pure helper: next ``monitor_list.loss_prevention`` string.
+
+    ``new``: ignore win streak for sizing/recompute callers until the monitor records a **losing**
+    closed cycle (`cycle_had_loss is True` from trade_manager), then normal streak rules apply.
+
+    ``cycle_had_loss``:
+    - ``True``: a closed cycle included a loss (trade_manager streak path).
+    - ``False``: closed cycle had no loss.
+    - ``None``: streak-agnostic recompute (settings save, symbol-wide tick); keep ``new``.
+    """
+    if symbol_wide_cooldown_live:
+        return "symbol_one_contract"
+    if not loss_prevention_toggle:
+        return "off"
+    cur = str(current_loss_prevention or "").strip().lower()
+    if cur == "new" and cycle_had_loss is not True:
+        return "new"
+    return loss_prevention_value_for_streak(
+        int(win_streak or 0), bool(loss_prevention_toggle), int(win_streak_threshold or 22)
+    )
+
+
 def recompute_monitor_loss_prevention(
     cursor,
     monitor_list_qualified: str,
     monitor_id: str,
     *,
     now_est: Optional[datetime] = None,
+    cycle_had_loss: Optional[bool] = None,
 ) -> Optional[str]:
     """
-    Set monitor_list.loss_prevention from symbol-wide cooldown (if active) else win-streak rule.
+    Set monitor_list.loss_prevention from symbol-wide cooldown (if active) else win-streak rule
+    or ``new`` preservation (see :func:`resolve_monitor_loss_prevention_value`).
     Returns new loss_prevention or None if monitor row missing.
     """
     cursor.execute(
         f"""
         SELECT symbol_wide_loss_prevention, symbol_wide_cooldown_start_time, symbol_wide_cooldown_duration,
-               win_streak, COALESCE(win_streak_threshold, 22), COALESCE(loss_prevention_toggle, TRUE)
+               win_streak, COALESCE(win_streak_threshold, 22), COALESCE(loss_prevention_toggle, TRUE),
+               loss_prevention
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -100,14 +135,18 @@ def recompute_monitor_loss_prevention(
     row = cursor.fetchone()
     if not row:
         return None
-    sw_flag, sw_start, sw_dur, ws, wthresh, lp_tog = row
+    sw_flag, sw_start, sw_dur, ws, wthresh, lp_tog, current_lp = row
     now = now_est or datetime.now(EST)
 
-    new_lp: str
-    if symbol_wide_cooldown_window_live(sw_flag, sw_start, sw_dur, now_est=now):
-        new_lp = "symbol_one_contract"
-    else:
-        new_lp = loss_prevention_value_for_streak(int(ws or 0), bool(lp_tog), int(wthresh))
+    sw_live = symbol_wide_cooldown_window_live(sw_flag, sw_start, sw_dur, now_est=now)
+    new_lp = resolve_monitor_loss_prevention_value(
+        symbol_wide_cooldown_live=sw_live,
+        loss_prevention_toggle=bool(lp_tog),
+        win_streak=int(ws or 0),
+        win_streak_threshold=int(wthresh),
+        current_loss_prevention=current_lp if isinstance(current_lp, str) else None,
+        cycle_had_loss=cycle_had_loss,
+    )
 
     cursor.execute(
         f"""

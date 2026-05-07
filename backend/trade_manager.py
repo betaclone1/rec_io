@@ -2432,7 +2432,7 @@ def insert_trade(trade):
                         if not toggle_on:
                             loss_prevention_flag = False
                         else:
-                            # Monitor stores loss_prevention as string ("one_contract", "off", etc.)
+                            # Monitor stores loss_prevention as string ("one_contract", "off", "new", etc.)
                             # Convert to boolean: True if "one_contract", False otherwise
                             monitor_loss_prevention = monitor_state.get('loss_prevention')
                             if isinstance(monitor_loss_prevention, str):
@@ -5033,7 +5033,12 @@ def update_monitor_win_streak(trade_id: int) -> None:
                 else:
                     log(f"📈 Cycle {cycle_id} for {monitor} all wins - win_streak +{win_count} (trades: {len(cycle_trades)}, threshold: {win_streak_threshold})")
 
-            recompute_monitor_loss_prevention(cursor, _tm_monitor_list_table(), str(monitor_id))
+            recompute_monitor_loss_prevention(
+                cursor,
+                _tm_monitor_list_table(),
+                str(monitor_id),
+                cycle_had_loss=has_loss,
+            )
             pg_conn.commit()
         
         pg_conn.close()

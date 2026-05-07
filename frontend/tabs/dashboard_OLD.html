@@ -3001,7 +3001,11 @@
           title: tip,
         };
       }
-      const lossPreventionActive = lossPreventionValue && lossPreventionValue !== 'none' && lossPreventionValue !== 'off';
+      const lossPreventionActive =
+        lossPreventionValue &&
+        lossPreventionValue !== 'none' &&
+        lossPreventionValue !== 'off' &&
+        lossPreventionValue !== 'new';
       if (lossPreventionActive) {
         return { visible: true, text: 'LP', className: 'allocation-status-badge lp' };
       }

@@ -536,7 +536,7 @@ _hourly_event_resolve_last_failed: dict[str, str | None] = {}
 
 def get_current_event_ticker(symbol: str, interval: str = "hourly"):
     """
-    Resolve Kalshi hourly crypto event (BTC/ETH) by constructing the period event ticker for the
+    Resolve Kalshi hourly crypto event (BTC, ETH, SOL) by constructing the period event ticker for the
     upcoming hour (America/New_York wall clock) and fetching ``/events/{ticker}``.
 
     The 15m WebSocket rollover path uses :func:`get_current_event_ticker_15m` with a
@@ -558,6 +558,7 @@ def get_current_event_ticker(symbol: str, interval: str = "hourly"):
     symbol_config = {
         "BTC": "KXBTCD",
         "ETH": "KXETHD",
+        "SOL": "KXSOLD",
     }
     prefix = symbol_config.get(sym_u)
     if not prefix:

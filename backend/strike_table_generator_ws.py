@@ -67,7 +67,7 @@ DEFAULT_STREAM_SYMBOL = "live_symbol_status"
 DEFAULT_REDIS_CHANNEL = "rec_io:db_changes"
 DEFAULT_PIPELINE_MAX_AGE_SEC = 30
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
-KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH"})
+KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL"})
 
 
 def _redis_client():
@@ -647,7 +647,7 @@ def main() -> None:
     if args.market == "hourly":
         syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
         if not syms:
-            raise SystemExit("No valid hourly symbols configured (BTC, ETH)")
+            raise SystemExit("No valid hourly symbols configured (BTC, ETH, SOL)")
     else:
         syms = tuple(s for s in syms if s in KALSHI_15M_SYMBOLS)
         if not syms:

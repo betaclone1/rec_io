@@ -96,7 +96,7 @@ from backend.market_watchdog import (
 WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
 WS_TABLE = "live_data.market_kalshi_15m"
 WS_TABLE_HOURLY = "live_data.market_kalshi_hourly"
-KALSHI_HOURLY_SYMBOLS = ("BTC", "ETH")
+KALSHI_HOURLY_SYMBOLS = ("BTC", "ETH", "SOL")
 DEFAULT_HOUR_ROLLOVER_SKEW_SEC = 0
 DEFAULT_WS_PING_INTERVAL_SEC = 25
 DEFAULT_WS_TRANSPORT_BEAT_SEC = 25
@@ -690,7 +690,11 @@ def _hourly_spot_price(sym_u: str) -> float | None:
         row = cur.fetchone()
         if row and row[0] is not None:
             return float(row[0])
-        pt = {"BTC": "live_price_log_1s_btc", "ETH": "live_price_log_1s_eth"}.get(sym_u)
+        pt = {
+            "BTC": "live_price_log_1s_btc",
+            "ETH": "live_price_log_1s_eth",
+            "SOL": "live_price_log_1s_sol",
+        }.get(sym_u)
         if pt:
             cur.execute(
                 f"SELECT price FROM live_data.{pt} ORDER BY timestamp DESC LIMIT 1"
@@ -2077,7 +2081,7 @@ def main() -> None:
         if args.symbols:
             sym = tuple(s.strip().upper() for s in args.symbols if s.strip())
         else:
-            raw = str(os.getenv("WS_HOURLY_SYMBOLS", "BTC,ETH")).upper()
+            raw = str(os.getenv("WS_HOURLY_SYMBOLS", "BTC,ETH,SOL")).upper()
             sym = tuple(s.strip() for s in raw.split(",") if s.strip())
         if skip:
             logger.warning("WS subscription skip symbols active: %s", ",".join(skip))
