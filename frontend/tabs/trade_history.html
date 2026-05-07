@@ -1195,6 +1195,8 @@
     let currentSort = { key: 'id', asc: false };
     let trades = [];
     let filteredTrades = [];
+    let _thRenderToken = 0;
+    const _TH_RENDER_CHUNK_SIZE = 180;
     let _tradeHistoryInsights = null;
     let _thInsightsReqId = 0;
     let _thInsightsDebounce = null;
@@ -2410,6 +2412,19 @@
       return { n, avgProb, winPct, avgBuy, avgDiff, sumRet, sumPnl };
     }
 
+    function applyImmediateSummaryFromFilteredTrades(list) {
+      const agg = tradeHistoryAggregateTradesForSummaryRow(Array.isArray(list) ? list : []);
+      applyInsightsSummary({
+        trade_count: agg.n,
+        avg_prob: agg.avgProb,
+        win_percentage: agg.winPct,
+        avg_buy: agg.avgBuy,
+        avg_diff: agg.avgDiff,
+        sum_ret_pct: agg.sumRet,
+        total_pnl: agg.sumPnl,
+      });
+    }
+
     /** Map lower(monitor id) → row from last insights response (full timeframe, not paginated trades). */
     function tradeHistoryInsightsByMonitorMap() {
       const raw = _tradeHistoryInsights && _tradeHistoryInsights.by_monitor;
@@ -2888,6 +2903,7 @@
     }
 
     function renderTrades(tradesToRender) {
+      const renderToken = ++_thRenderToken;
       tradeHistoryHideLossDetailTooltip();
       _thTradeRowCrossHoverLastMid = undefined;
       if (_thMonitorCrossHoverLeaveTimer) {
@@ -2905,66 +2921,79 @@
 
       let lastContract = null;
       let groupIndex = 0;
-      for (const trade of tradesToRender) {
-        const isNewGroup = trade.contract !== lastContract;
-        if (isNewGroup) {
-          groupIndex++;
-        }
-        lastContract = trade.contract;
-        const tr = document.createElement('tr');
-        tr.style.borderTop = isNewGroup ? '2px solid #666' : '';
-        // Assign group-odd or group-even class based on groupIndex
-        tr.classList.add(groupIndex % 2 === 1 ? 'group-odd' : 'group-even');
-        const pt = trade.paper_trade ?? trade.paperTrade;
-        if (pt === true || pt === 1 || pt === 'true' || pt === '1' || pt === 'True') {
-          tr.classList.add('paper-trade-row');
-        }
-        const tfRow = trade.test_filter === true || trade.test_filter === 1 || trade.test_filter === 'true' || trade.test_filter === '1';
-        if (tfRow) {
-          tr.classList.add('test-filter-trade-row');
-        }
-        // Helper to format numbers with + sign for positive values, no decimals
-        function plusSign(val) {
-          if (val === null || val === undefined || val === '') return '';
-          const num = Number(val);
-          if (isNaN(num)) return val;
-          return (num > 0 ? '+' : '') + Math.round(num);
-        }
-        tr.innerHTML = `
-          <td>${trade.id !== null ? trade.id : ''}</td>
-          <td>${trade.status !== null ? trade.status : ''}</td>
-          <td>${trade.date !== null ? trade.date : ''}</td>
-          <td>${trade.time !== null ? trade.time : ''}</td>
-          <td>${trade.symbol !== null ? trade.symbol : ''}</td>
-          <td>${trade.trade_strategy !== null ? trade.trade_strategy : ''}</td>
-          <td>${trade.contract !== null ? trade.contract : ''}</td>
-          <td>${trade.strike !== null ? trade.strike : ''}</td>
-          <td>${trade.side === 'Yes' || trade.side === 'Y' ? 'Y' : trade.side === 'No' || trade.side === 'N' ? 'N' : ''}</td>
-          <td>${trade.prob !== null && trade.prob !== undefined && trade.prob !== '' ? Number(trade.prob).toFixed(1) : ''}</td>
-          <td>${plusSign(trade.diff)}</td>
-          <td>${trade.buy_price !== null ? Number(trade.buy_price).toFixed(2) : ''}</td>
-          <td>${trade.sell_price !== null ? Number(trade.sell_price).toFixed(2) : ''}</td>
-          <td>${trade.position !== null ? trade.position : ''}</td>
-          <td>${trade.fees !== null ? Number(trade.fees).toFixed(2) : ''}</td>
-          <td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>
-          <td>${trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '' ? Number(trade.ret_pct).toFixed(2) : ''}</td>
-          <td>${trade.closed_at !== null ? trade.closed_at : ''}</td>
-          <td>${formatTradeSymbolSpot(trade.symbol, trade.symbol_open)}</td>
-          <td>${formatTradeSymbolSpot(trade.symbol, trade.symbol_close)}</td>
-          <td>${trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Number(trade.momentum_percentile).toFixed(1) : ''}</td>
-          
-          <td>${plusSign(trade.win_loss)}</td>
-        `;
-        const lossTitle = tradeHistoryLosingTradeRowTitle(trade);
-        if (lossTitle) {
-          tr.dataset.thLossDetail = lossTitle;
-        }
-        const monRaw = trade.monitor;
-        if (monRaw != null && String(monRaw).trim() !== '') {
-          tr.setAttribute('data-monitor-id', String(monRaw).trim());
-        }
-        tbody.appendChild(tr);
+      let cursor = 0;
+
+      function plusSign(val) {
+        if (val === null || val === undefined || val === '') return '';
+        const num = Number(val);
+        if (isNaN(num)) return val;
+        return (num > 0 ? '+' : '') + Math.round(num);
       }
+
+      function appendRenderChunk() {
+        if (renderToken !== _thRenderToken) return;
+        const frag = document.createDocumentFragment();
+        const end = Math.min(cursor + _TH_RENDER_CHUNK_SIZE, tradesToRender.length);
+
+        for (; cursor < end; cursor++) {
+          const trade = tradesToRender[cursor];
+          const isNewGroup = trade.contract !== lastContract;
+          if (isNewGroup) groupIndex++;
+          lastContract = trade.contract;
+          const tr = document.createElement('tr');
+          tr.style.borderTop = isNewGroup ? '2px solid #666' : '';
+          tr.classList.add(groupIndex % 2 === 1 ? 'group-odd' : 'group-even');
+          const pt = trade.paper_trade ?? trade.paperTrade;
+          if (pt === true || pt === 1 || pt === 'true' || pt === '1' || pt === 'True') {
+            tr.classList.add('paper-trade-row');
+          }
+          const tfRow = trade.test_filter === true || trade.test_filter === 1 || trade.test_filter === 'true' || trade.test_filter === '1';
+          if (tfRow) {
+            tr.classList.add('test-filter-trade-row');
+          }
+          tr.innerHTML = `
+            <td>${trade.id !== null ? trade.id : ''}</td>
+            <td>${trade.status !== null ? trade.status : ''}</td>
+            <td>${trade.date !== null ? trade.date : ''}</td>
+            <td>${trade.time !== null ? trade.time : ''}</td>
+            <td>${trade.symbol !== null ? trade.symbol : ''}</td>
+            <td>${trade.trade_strategy !== null ? trade.trade_strategy : ''}</td>
+            <td>${trade.contract !== null ? trade.contract : ''}</td>
+            <td>${trade.strike !== null ? trade.strike : ''}</td>
+            <td>${trade.side === 'Yes' || trade.side === 'Y' ? 'Y' : trade.side === 'No' || trade.side === 'N' ? 'N' : ''}</td>
+            <td>${trade.prob !== null && trade.prob !== undefined && trade.prob !== '' ? Number(trade.prob).toFixed(1) : ''}</td>
+            <td>${plusSign(trade.diff)}</td>
+            <td>${trade.buy_price !== null ? Number(trade.buy_price).toFixed(2) : ''}</td>
+            <td>${trade.sell_price !== null ? Number(trade.sell_price).toFixed(2) : ''}</td>
+            <td>${trade.position !== null ? trade.position : ''}</td>
+            <td>${trade.fees !== null ? Number(trade.fees).toFixed(2) : ''}</td>
+            <td>${trade.pnl !== null && trade.pnl !== undefined && trade.pnl !== '' ? Number(trade.pnl).toFixed(2) : ''}</td>
+            <td>${trade.ret_pct !== null && trade.ret_pct !== undefined && trade.ret_pct !== '' ? Number(trade.ret_pct).toFixed(2) : ''}</td>
+            <td>${trade.closed_at !== null ? trade.closed_at : ''}</td>
+            <td>${formatTradeSymbolSpot(trade.symbol, trade.symbol_open)}</td>
+            <td>${formatTradeSymbolSpot(trade.symbol, trade.symbol_close)}</td>
+            <td>${trade.momentum_percentile !== null && trade.momentum_percentile !== undefined ? Number(trade.momentum_percentile).toFixed(1) : ''}</td>
+            
+            <td>${plusSign(trade.win_loss)}</td>
+          `;
+          const lossTitle = tradeHistoryLosingTradeRowTitle(trade);
+          if (lossTitle) {
+            tr.dataset.thLossDetail = lossTitle;
+          }
+          const monRaw = trade.monitor;
+          if (monRaw != null && String(monRaw).trim() !== '') {
+            tr.setAttribute('data-monitor-id', String(monRaw).trim());
+          }
+          frag.appendChild(tr);
+        }
+
+        tbody.appendChild(frag);
+        if (cursor < tradesToRender.length) {
+          requestAnimationFrame(appendRenderChunk);
+        }
+      }
+
+      requestAnimationFrame(appendRenderChunk);
     }
 
     function applyFilters(options = {}) {
@@ -2993,6 +3022,7 @@
       
       filteredTrades = [...filtered];
       applyCurrentSort();
+      applyImmediateSummaryFromFilteredTrades(filteredTrades);
       renderTrades(filteredTrades);
       tradeHistoryRefreshMonitorStripCharts();
       if (options.skipInsightsRefresh !== true) {
