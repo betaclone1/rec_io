@@ -157,10 +157,6 @@ def round_dollar_4dp(val: Optional[float]) -> Optional[float]:
     return round(float(val), 4)
 
 
-# Hourly contracts: YES/NO ask min/max/range columns track only the last 15 minutes before expiry.
-HOURLY_FINAL_QUARTER_TRACKING_SEC = 15 * 60
-
-
 def merge_ask_extrema(
     prev_lo: Optional[float],
     prev_hi: Optional[float],
@@ -191,9 +187,8 @@ def final_quarter_ask_tracking_fields(
     """
     Accumulate YES/NO ask min/max (and ranges) for the same Kalshi (event_ticker, ticker).
 
-    For **15m** tables the generator calls this every tick (full 15m window).
-    For **hourly** tables the caller must only use the result when within the last 15 minutes
-    of the cycle; otherwise it writes NULL (see HOURLY_FINAL_QUARTER_TRACKING_SEC).
+    For both **15m** and **hourly** tables this function accumulates over the caller's active
+    tracking window. The caller controls reset boundaries by passing ``prev=None`` when needed.
 
     prev: (event_ticker, ticker, yes_min, yes_max, no_min, no_max) from the prior strike row.
     Returns dollar-unit (yes_min, yes_max, no_min, no_max, yes_range, no_range).
@@ -236,6 +231,28 @@ def final_quarter_ask_tracking_fields(
         round_dollar_4dp(y_rng),
         round_dollar_4dp(n_rng),
     )
+
+
+def should_reset_hourly_quarter_tracking(
+    prev_ttc_15m: Optional[int], current_ttc_15m: Optional[int]
+) -> bool:
+    """True when hourly quarter tracking must reset for a new 15m boundary.
+
+    ``ttc_15m`` should decrease within a quarter. A significant upward jump means the
+    clock rolled to a new :00/:15/:30/:45 boundary and ask extrema should restart.
+    """
+    if prev_ttc_15m is None or current_ttc_15m is None:
+        return False
+    return int(current_ttc_15m) > int(prev_ttc_15m) + 3
+
+
+def should_delay_hourly_first_quarter_tracking(now: datetime) -> bool:
+    """Suppress hourly ask-range tracking for first 15s after top-of-hour.
+
+    Right after :00 Kalshi ladders can briefly flash 1.0000 asks. Skipping those
+    first seconds prevents polluted min/max/range for the 00-15 quarter.
+    """
+    return now.minute == 0 and now.second < 15
 
 
 class LookupProbabilityCalculator:
@@ -1357,12 +1374,12 @@ class StrikeTableGenerator:
             cursor = conn.cursor()
             
             table_name = self._strike_table_name()
-            # Carry forward min/max asks across DELETE/INSERT (same Kalshi event_ticker + market ticker).
+            # Carry forward ask extrema across DELETE/INSERT (same Kalshi event_ticker + market ticker).
             prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
             try:
                 sel = (
                     f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "
-                    f"no_ask_min_15m, no_ask_max_15m FROM live_data.{table_name}"
+                    f"no_ask_min_15m, no_ask_max_15m, ttc_15m FROM live_data.{table_name}"
                 )
                 if self.unified_15m or self.interval == "hourly":
                     sel += " WHERE exchange = %s AND symbol = %s"
@@ -1513,6 +1530,7 @@ class StrikeTableGenerator:
                     prev_track = None
                     if ev_tk is not None and ticker is not None:
                         prev_track = prev_final_ask_map.get((str(ev_tk), str(ticker)))
+                    strike_row_ts = now_est()
                     prev_6 = (
                         (
                             prev_track[0],
@@ -1525,22 +1543,20 @@ class StrikeTableGenerator:
                         if prev_track
                         else None
                     )
-                    ymn, ymx, nmn, nmx, yrg, nrg = final_quarter_ask_tracking_fields(
-                        event_ticker=ev_tk,
-                        ticker=ticker,
-                        yes_ask_dollars=yes_ask_dollars,
-                        no_ask_dollars=no_ask_dollars,
-                        prev=prev_6,
-                    )
-                    # Hourly: keep min/max/range NULL until the final 15m of the cycle (new hour → fresh NULLs).
-                    if (
-                        self.interval == "hourly"
-                        and ttc_seconds is not None
-                        and ttc_seconds > HOURLY_FINAL_QUARTER_TRACKING_SEC
-                    ):
+                    if self.interval == "hourly" and prev_track:
+                        prev_ttc_15m = prev_track[6] if len(prev_track) > 6 else None
+                        if should_reset_hourly_quarter_tracking(prev_ttc_15m, ttc_15m_seconds):
+                            prev_6 = None
+                    if self.interval == "hourly" and should_delay_hourly_first_quarter_tracking(strike_row_ts):
                         ymn = ymx = nmn = nmx = yrg = nrg = None
-
-                    strike_row_ts = now_est()
+                    else:
+                        ymn, ymx, nmn, nmx, yrg, nrg = final_quarter_ask_tracking_fields(
+                            event_ticker=ev_tk,
+                            ticker=ticker,
+                            yes_ask_dollars=yes_ask_dollars,
+                            no_ask_dollars=no_ask_dollars,
+                            prev=prev_6,
+                        )
                     strike_archive_values = (
                         self.symbol.upper(),
                         self.data_exchange,

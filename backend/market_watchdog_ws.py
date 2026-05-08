@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """
-Kalshi 15m: REST only at each quarter-hour rollover (wipe → event JSON → seed DB).
+Kalshi 15m: REST only at each quarter-hour rollover (scoped per-symbol wipe → event JSON → seed DB).
+Symbols that fail discovery in a cycle no longer block refresh for the others (``scoped_ready`` delete).
 All other time: WebSocket ``ticker`` updates only (same table columns as REST snapshot on seed).
 
 Hourly: after REST event discovery, markets are capped to an ATM-centered window
@@ -1224,13 +1225,16 @@ def _run_rollover(
     market_label: str,
     delete_mode: str,
     discover_fn,
-) -> bool:
+) -> tuple[bool, list[str] | None]:
     """
     REST discovery first, then wipe + seed in one DB transaction (no empty-table window).
 
-    delete_mode: ``all`` (15m) or ``scoped`` (hourly symbols only).
-    discover_fn: ``(symbols, last_failed) -> resolved dict`` for 15m, or hourly variant
-    (caller wraps to match signature).
+    delete_mode: ``scoped_ready`` (15m: delete+seed only symbols in the ready set),
+    ``scoped`` (hourly: all configured symbols), or legacy ``all`` (full table delete).
+
+    Returns ``(ok, ws_verify_tickers)``. When ``ws_verify_tickers`` is not None (15m partial
+    rollover), the caller must pass it to :func:`_wait_first_tick` so illiquid/stale legs
+    for pending symbols do not fail verification for the whole socket.
     """
     sub.rolling.set()
     try:
@@ -1248,21 +1252,29 @@ def _run_rollover(
             logger.warning(
                 "rollover discovery returned zero seed rows; table not modified"
             )
-            return False
+            return False, None
         sym_set = {str(s).upper() for s in symbols}
-        ready_set = set(ready.keys())
-        if ready_set < sym_set:
+        ready_set = {str(k).upper() for k in ready.keys()}
+        mkt = market_label.strip().lower()
+        partial_15m = mkt == "15m" and ready_set < sym_set
+        if ready_set < sym_set and not partial_15m:
             pending = sorted(sym_set - ready_set)
             logger.warning(
                 "rollover partial: ready=%s pending=%s; not deleting or seeding (retry later)",
                 ",".join(sorted(ready_set)),
                 ",".join(pending),
             )
-            return False
+            return False, None
+        if partial_15m:
+            logger.warning(
+                "rollover partial (15m): scoped refresh for %s; still pending %s",
+                ",".join(sorted(ready_set)),
+                ",".join(sorted(sym_set - ready_set)),
+            )
 
         conn = _borrow_conn_retry("rollover_atomic", db_retry_sec)
         if not conn:
-            return False
+            return False, None
         old_ac = getattr(conn, "autocommit", False)
         try:
             if old_ac:
@@ -1275,6 +1287,14 @@ def _run_rollover(
                     WHERE exchange = %s AND UPPER(TRIM(symbol::text)) = ANY(%s)
                     """,
                     (exchange_key.lower(), [str(s).upper() for s in symbols]),
+                )
+            elif delete_mode == "scoped_ready":
+                cur.execute(
+                    f"""
+                    DELETE FROM {table_ref}
+                    WHERE exchange = %s AND UPPER(TRIM(symbol::text)) = ANY(%s)
+                    """,
+                    (exchange_key.lower(), sorted(ready_set)),
                 )
             else:
                 cur.execute(f"DELETE FROM {table_ref}")
@@ -1296,13 +1316,13 @@ def _run_rollover(
             ):
                 conn.rollback()
                 sub.replace_clear()
-                return False
+                return False, None
             if not _verify_count(
                 conn, table_ref, exchange_key, tuple(sorted(ready.keys())), expected
             ):
                 conn.rollback()
                 sub.replace_clear()
-                return False
+                return False, None
             conn.commit()
         except Exception:
             try:
@@ -1311,7 +1331,7 @@ def _run_rollover(
                 pass
             logger.exception("rollover atomic delete+seed failed")
             sub.replace_clear()
-            return False
+            return False, None
         finally:
             if old_ac:
                 try:
@@ -1339,6 +1359,15 @@ def _run_rollover(
             )
         sub.replace(meta, tickers, pending_lm)
         ok = len(tickers) > 0
+        verify_override: list[str] | None = None
+        if partial_15m and tickers:
+            verify_override = [
+                mt
+                for mt in tickers
+                if meta.get(mt) and str(meta[mt][0]).upper() in ready_set
+            ]
+            if not verify_override:
+                verify_override = None
         snap = sub.snapshot()
         logger.info(
             "rollover %s symbols=%s rows=%s cycle_tickers=%s total_ws_tickers=%s",
@@ -1367,10 +1396,10 @@ def _run_rollover(
                         mi,
                         len(keep_ob),
                     )
-        return ok
+        return ok, verify_override
     except Exception:
         logger.exception("rollover crashed")
-        return False
+        return False, None
     finally:
         sub.rolling.clear()
 
@@ -1455,7 +1484,7 @@ def _main_loop(
         # straddles that instant (common after MASTER_RESTART near :00/:15/:30/:45), the seeded
         # event can lag Kalshi until the *following* quarter unless we roll again immediately.
         quarter_close_target = next_15m_close_est()
-        ok = _run_rollover(
+        ok, verify_override = _run_rollover(
             symbols,
             exchange_key,
             sub,
@@ -1465,7 +1494,7 @@ def _main_loop(
             db_retry_sec,
             table_ref=WS_TABLE,
             market_label="15m",
-            delete_mode="all",
+            delete_mode="scoped_ready",
             discover_fn=lambda sy, lf: _discover_all(
                 sy,
                 lf,
@@ -1474,16 +1503,17 @@ def _main_loop(
             ),
         )
         tickers_now = sub.snapshot().cycle_tickers
+        tickers_verify = verify_override if verify_override is not None else tickers_now
 
         if ok:
-            if not _wait_first_tick(sub, tickers_now, ws_verify_sec):
+            if not _wait_first_tick(sub, tickers_verify, ws_verify_sec):
                 ok = False
             elif datetime.now(EST) >= quarter_close_target:
                 logger.info(
                     "crossed ET quarter-hour during first-tick wait (>= %s); re-running rollover",
                     quarter_close_target.strftime("%H:%M:%S"),
                 )
-                ok = _run_rollover(
+                ok, verify_override = _run_rollover(
                     symbols,
                     exchange_key,
                     sub,
@@ -1493,7 +1523,7 @@ def _main_loop(
                     db_retry_sec,
                     table_ref=WS_TABLE,
                     market_label="15m",
-                    delete_mode="all",
+                    delete_mode="scoped_ready",
                     discover_fn=lambda sy, lf: _discover_all(
                         sy,
                         lf,
@@ -1503,7 +1533,8 @@ def _main_loop(
                 )
                 if ok:
                     tickers_now = sub.snapshot().cycle_tickers
-                    if not _wait_first_tick(sub, tickers_now, ws_verify_sec):
+                    tickers_verify = verify_override if verify_override is not None else tickers_now
+                    if not _wait_first_tick(sub, tickers_verify, ws_verify_sec):
                         ok = False
 
         if time.time() - last_hb >= HEARTBEAT_INTERVAL_SEC:
@@ -1546,7 +1577,7 @@ def _main_loop_hourly(
 
     while not stop.is_set():
         hour_close_target = next_hour_close_est()
-        ok = _run_rollover(
+        ok, verify_override = _run_rollover(
             symbols,
             exchange_key,
             sub,
@@ -1564,16 +1595,17 @@ def _main_loop_hourly(
             ),
         )
         tickers_now = sub.snapshot().cycle_tickers
+        tickers_verify = verify_override if verify_override is not None else tickers_now
 
         if ok:
-            if not _wait_first_tick(sub, tickers_now, ws_verify_sec, hourly_relaxed=True):
+            if not _wait_first_tick(sub, tickers_verify, ws_verify_sec, hourly_relaxed=True):
                 ok = False
             elif datetime.now(EST) >= hour_close_target:
                 logger.info(
                     "crossed ET hour boundary during first-tick wait (>= %s); re-running rollover",
                     hour_close_target.strftime("%H:%M:%S"),
                 )
-                ok = _run_rollover(
+                ok, verify_override = _run_rollover(
                     symbols,
                     exchange_key,
                     sub,
@@ -1592,7 +1624,8 @@ def _main_loop_hourly(
                 )
                 if ok:
                     tickers_now = sub.snapshot().cycle_tickers
-                    if not _wait_first_tick(sub, tickers_now, ws_verify_sec, hourly_relaxed=True):
+                    tickers_verify = verify_override if verify_override is not None else tickers_now
+                    if not _wait_first_tick(sub, tickers_verify, ws_verify_sec, hourly_relaxed=True):
                         ok = False
 
         if time.time() - last_hb >= HEARTBEAT_INTERVAL_SEC:

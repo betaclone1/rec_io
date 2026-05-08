@@ -1,9 +1,14 @@
 """Unit tests for strike_table_generator YES/NO ask extrema (full contract window)."""
 
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
 from backend.strike_table_generator import (
     final_quarter_ask_tracking_fields,
     merge_ask_extrema,
     parse_ask_dollars_float,
+    should_delay_hourly_first_quarter_tracking,
+    should_reset_hourly_quarter_tracking,
 )
 
 
@@ -74,3 +79,18 @@ def test_contract_roll_resets():
         prev=prev,
     )
     assert y_lo == y_hi == 0.5
+
+
+def test_hourly_quarter_tracking_reset_on_ttc_jump():
+    # Within same 15m quarter, ttc_15m counts down and should not reset.
+    assert should_reset_hourly_quarter_tracking(810, 804) is False
+    # New quarter boundary causes ttc_15m jump back up near 900; this must reset.
+    assert should_reset_hourly_quarter_tracking(2, 899) is True
+
+
+def test_delay_hourly_first_quarter_tracking_only_first_15s_after_hour():
+    est = ZoneInfo("America/New_York")
+    assert should_delay_hourly_first_quarter_tracking(datetime(2026, 5, 8, 12, 0, 0, tzinfo=est)) is True
+    assert should_delay_hourly_first_quarter_tracking(datetime(2026, 5, 8, 12, 0, 14, tzinfo=est)) is True
+    assert should_delay_hourly_first_quarter_tracking(datetime(2026, 5, 8, 12, 0, 15, tzinfo=est)) is False
+    assert should_delay_hourly_first_quarter_tracking(datetime(2026, 5, 8, 12, 15, 5, tzinfo=est)) is False
