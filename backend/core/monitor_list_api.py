@@ -12,7 +12,7 @@ from typing import Any, Dict, List
 
 from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import (
-    row_passes_trade_gate,
+    evaluate_symbol_pipeline_gate_conn,
     strike_pipeline_health_strict_mode_enabled,
 )
 from backend.core.time_eastern import EST, now_est
@@ -89,29 +89,22 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
         results: List[Any] = cursor.fetchall()
 
         strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
-        health_by_sym_mkt: Dict[Any, Any] = {}
+        health_by_symbol: Dict[str, Any] = {}
         if strict_pipeline_health:
-            cursor.execute(
-                """
-                SELECT
-                    market,
-                    symbol,
-                    pipeline_healthy,
-                    pipeline_health_reason,
-                    EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
-                    EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
-                FROM live_data.strike_pipeline_health
-                WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
-                """
+            symbols = sorted(
+                {
+                    str(r[2]).upper()
+                    for r in results
+                    if r[2] and ((str(r[27] or "").strip().lower()) in ("15m", "hourly"))
+                }
             )
-            for mkt, sym, ph, pr, cage, tage in cursor.fetchall():
-                key = (str(sym).upper(), str(mkt).strip().lower())
-                ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
-                health_by_sym_mkt[key] = {
+            for sym in symbols:
+                ok, rsn = evaluate_symbol_pipeline_gate_conn(conn, exchange="kalshi", symbol=sym)
+                health_by_symbol[sym] = {
                     "healthy": ok,
                     "state": "healthy" if ok else "degraded",
                     "reason": "ok" if ok else rsn,
-                    "age_sec": float(cage) if cage is not None else None,
+                    "age_sec": None,
                 }
 
     conn.close()
@@ -229,7 +222,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 formatted_monitor["monitor_health_reason"] = "strict_mode_off"
                 formatted_monitor["monitor_health_age_sec"] = 0.0
             else:
-                h = health_by_sym_mkt.get((monitor_symbol, monitor_market))
+                h = health_by_symbol.get(monitor_symbol)
                 if h:
                     formatted_monitor["monitor_healthy"] = bool(h["healthy"])
                     formatted_monitor["monitor_health_state"] = h["state"]

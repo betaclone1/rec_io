@@ -261,3 +261,48 @@ def evaluate_pipeline_gate_conn(
     if not ok:
         return ok, reason
     return _spot_series_passes_gate(conn, sym)
+
+
+def evaluate_symbol_pipeline_gate_conn(
+    conn,
+    *,
+    exchange: str = "kalshi",
+    symbol: str,
+) -> tuple[bool, str]:
+    """
+    Symbol-level gate for monitor health: if a symbol's spot feed is degraded, every monitor
+    using that symbol (hourly and 15m) must be degraded.
+
+    Rule:
+      1) strict mode off -> pass
+      2) require at least one strike_pipeline_health row for symbol
+      3) every present market row must pass row_passes_trade_gate
+      4) spot flatline/freshness gate must pass
+    """
+    if not strike_pipeline_health_strict_mode_enabled():
+        return True, "ok"
+    ex = (exchange or "kalshi").strip().lower()
+    sym = (symbol or "").strip().upper()
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT
+                market,
+                pipeline_healthy,
+                pipeline_health_reason,
+                EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
+                EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
+            FROM live_data.strike_pipeline_health
+            WHERE LOWER(TRIM(exchange::text)) = %s
+              AND UPPER(TRIM(symbol::text)) = %s
+            """,
+            (ex, sym),
+        )
+        rows = cur.fetchall()
+    if not rows:
+        return False, "pipeline_health_missing_symbol"
+    for market, ph, pr, cage, tage in rows:
+        ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
+        if not ok:
+            return False, f"market_{str(market).strip().lower()}:{rsn}"
+    return _spot_series_passes_gate(conn, sym)

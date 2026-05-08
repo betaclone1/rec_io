@@ -53,7 +53,7 @@ from backend.core.performance_rollups import (
 )
 from backend.core.monitor_list_api import get_monitors_api_payload
 from backend.core.strike_pipeline_health import (
-    row_passes_trade_gate,
+    evaluate_symbol_pipeline_gate_conn,
     strike_pipeline_health_strict_mode_enabled,
 )
 from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_list_query
@@ -949,29 +949,22 @@ async def get_monitors_health(user_id: Optional[str] = None) -> Dict[str, Any]:
                 """
             )
             monitor_rows = cursor.fetchall()
-            health_by_sym_mkt = {}
+            health_by_symbol = {}
             if strict_pipeline_health:
-                cursor.execute(
-                    """
-                    SELECT
-                        market,
-                        symbol,
-                        pipeline_healthy,
-                        pipeline_health_reason,
-                        EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
-                        EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
-                    FROM live_data.strike_pipeline_health
-                    WHERE LOWER(TRIM(exchange::text)) = 'kalshi'
-                    """
+                symbols = sorted(
+                    {
+                        str(symbol).upper()
+                        for _mid, symbol, _status, market in monitor_rows
+                        if symbol and ((market or "").strip().lower() in ("15m", "hourly"))
+                    }
                 )
-                for mkt, sym, ph, pr, cage, tage in cursor.fetchall():
-                    key = (str(sym).upper(), str(mkt).strip().lower())
-                    ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
-                    health_by_sym_mkt[key] = {
+                for sym in symbols:
+                    ok, rsn = evaluate_symbol_pipeline_gate_conn(conn, exchange="kalshi", symbol=sym)
+                    health_by_symbol[sym] = {
                         "monitor_healthy": ok,
                         "monitor_health_state": "healthy" if ok else "degraded",
                         "monitor_health_reason": "ok" if ok else rsn,
-                        "monitor_health_age_sec": float(cage) if cage is not None else None,
+                        "monitor_health_age_sec": None,
                     }
         conn.close()
 
@@ -989,7 +982,7 @@ async def get_monitors_health(user_id: Optional[str] = None) -> Dict[str, Any]:
                         "monitor_health_age_sec": 0.0,
                     }
                 else:
-                    h = health_by_sym_mkt.get((monitor_symbol, monitor_market))
+                    h = health_by_symbol.get(monitor_symbol)
                     if h:
                         out[monitor_key] = dict(h)
                     else:
