@@ -181,7 +181,7 @@ No other wiring. No "notify this service" — everyone subscribes to the same pi
   - `/api/bankroll/history`
   - `/api/pnl/history`
   - `/api/performance/realized`
-- **Front door:** `backend/main.py` exposes the same four routes but only as **thin HTTP proxies** into read_api; it no longer contains SQL or aggregation for this panel.
+- **Front door:** **main_app** exposes the same four routes as **thin HTTP proxies** into read_api (implemented in `backend/web/routers/`, e.g. dashboard read proxies); **not** in slim `backend/main.py`, which is wiring-only.
 - **Realtime triggers:** The panel’s refresh behavior is driven by the backbone:
   - PostgreSQL triggers (e.g. on `users.account_balance_0001`) emit NOTIFY.
   - `redis_switchboard` maps those tables to logical streams (e.g. `account_balance`) via `stream_registry.py` and publishes `db_change` events to Redis.

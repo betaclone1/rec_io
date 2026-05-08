@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """
-Fail CI when the count of ``users.<table>_0001`` literals in ``backend/main.py`` changes.
+Fail CI when the count of ``users.<table>_0001`` literals on the main_app edge changes.
+
+Scanned paths:
+  - ``backend/main.py``
+  - ``backend/web/**/*.py`` (routers and helpers split out of main_app)
 
 Intentional edits: update ``scripts/ci/main_py_users_0001_literal_count.txt`` to match.
 """
@@ -13,17 +17,27 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 MAIN = ROOT / "backend" / "main.py"
+WEB = ROOT / "backend" / "web"
 BASELINE = Path(__file__).resolve().parent / "main_py_users_0001_literal_count.txt"
+PATTERN = re.compile(r"users\.\w+_0001\b")
+
+
+def _main_app_edge_py_files() -> list[Path]:
+    paths: list[Path] = [MAIN]
+    if WEB.is_dir():
+        paths.extend(sorted(WEB.rglob("*.py")))
+    return [p for p in paths if "__pycache__" not in p.parts and p.is_file()]
 
 
 def main() -> int:
-    text = MAIN.read_text(encoding="utf-8")
-    n = len(re.findall(r"users\.\w+_0001\b", text))
+    n = 0
+    for path in _main_app_edge_py_files():
+        n += len(PATTERN.findall(path.read_text(encoding="utf-8")))
     expected = int(BASELINE.read_text(encoding="utf-8").strip())
     if n != expected:
         print(
-            f"scan_main_tenant_literals: backend/main.py has {n} "
-            f"matches of users.<name>_0001; baseline file expects {expected}. "
+            f"scan_main_tenant_literals: main_app edge (backend/main.py + backend/web/**/*.py) "
+            f"has {n} matches of users.<name>_0001; baseline file expects {expected}. "
             "Update the baseline only when the change is intentional.",
             file=sys.stderr,
         )

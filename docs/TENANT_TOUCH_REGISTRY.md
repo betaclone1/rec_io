@@ -50,7 +50,7 @@ From [`scripts/config/generate_unified_supervisor_config.py`](../scripts/config/
 | `backend/core/config/database.py` | `init_bootstrap` | Y (default schema DDL) | `default_pg_schema_for_init()` |
 | `backend/trade_manager.py` | `tenant_worker` | Y | `REC_USER_SCHEMA` |
 | `backend/monitor_manager.py` | `tenant_worker` | Y | `REC_USER_SCHEMA` |
-| `backend/main.py` | `http_multi_tenant` | Y | request token / `tenant_user_no` |
+| `backend/main.py` + `backend/web/routers/*` | `http_multi_tenant` | Y (where routes implement writes) | request token / `tenant_user_no` |
 | `backend/read_api.py` | `http_multi_tenant` | varies | request / params |
 | `backend/market_watchdog_ws.py` | `global_daemon` | N (publish + read-only pending tickers helper) | n/a (system pool) |
 | `backend/strike_table_generator_ws.py` | `global_daemon` | N | system connection |

@@ -1,12 +1,17 @@
 ---
-description: "Keep backend/main.py minimal: no feature or UI-specific logic there."
+description: "Keep backend/main.py minimal: wiring only; routes live under backend/web/routers."
 globs:
   - backend/main.py
+  - backend/web/main_app_*.py
+  - backend/web/configure_trading_mode_app.py
+  - backend/web/routers/**/*.py
 alwaysApply: false
 ---
 
 # `backend/main.py` stays slim
 
-- **Do not** add or expand endpoints, SQL, domain rules, or UI-driven behavior in `backend/main.py` for polish, nit fixes, or one-off display concerns.
-- **Prefer** `monitor_manager.py`, `read_api`, dedicated service modules, or new small modules wired from existing patterns. If an HTTP route must live on the main app, keep the handler as a thin delegate to a function in another module.
-- **Redis / WebSocket / UI sync** belongs in the service that owns the event (e.g. supervisor fanout, prefs payload shape) or in the **frontend** consumer (normalize envelopes, apply fields), not new branches in `main.py`.
+- **`backend/main.py`** may only: set `sys.path`, read ports, configure logging, build `FastAPI` (lifespan, middleware), mount static files via `mount_frontend_static()`, and call **`register_main_app_routers()`** from `backend/web/routers/register_main_app_routers.py`. No `@app.get` / `@app.post` in `main.py`.
+- **Do not** add endpoints, SQL, domain rules, or UI-driven behavior in `main.py` for polish, nit fixes, or one-off display concerns.
+- **New HTTP on main_app:** add a route (or `APIRouter`) under **`backend/web/routers/`** and register it in `register_main_app_routers.py` (preserve order when paths could overlap). Implement heavy logic in imported modules, not inline in the router file when it is large or reusable.
+- **Prefer** `read_api` for read/aggregate paths, `monitor_manager` for monitor process lifecycle, and **`main_realtime`** / **`read_api_proxy`** for WS and read_api forwarding patterns already in the tree.
+- **Redis / WebSocket / UI sync** belongs in the owning service (`main_realtime`, switchboard, etc.) or the **frontend** consumer—not new branches in `main.py`.

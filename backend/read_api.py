@@ -22,11 +22,13 @@ panel without adding routes to main_app.
 
 import asyncio
 import json
+import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Any, List, Optional
 
+import requests
 from psycopg2 import sql
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
@@ -72,6 +74,7 @@ from backend.util.trade_log_archivist import (
 from backend.web.auth_routes import auth_router, user_router
 from backend.web.auth_self_registration import self_reg_router
 from backend.web.tenant_asgi import WebTenantMiddleware
+from backend.core.time_eastern import now_est
 
 app = FastAPI(title="read_api")
 
@@ -86,6 +89,7 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(self_reg_router, prefix="/api/auth")
 app.include_router(user_router, prefix="/api/user")
+_read_logger = logging.getLogger("read_api")
 
 
 class TradeHistoryInsightsBody(BaseModel):
@@ -1448,6 +1452,529 @@ async def get_monitor_auto_stop_accuracy(monitor_id: str | None = None) -> Dict[
         }
     except Exception as e:  # pragma: no cover - defensive
         return {"status": "error", "message": str(e)}
+
+
+def _unified_strike_table_for_market(market: str) -> str:
+    m = (market or "").strip().lower()
+    if m == "15m":
+        return "strike_table_15m"
+    if m == "hourly":
+        return "strike_table_hourly"
+    raise ValueError("market must be 'hourly' or '15m'")
+
+
+def _log_route_timing(route: str, started: float) -> None:
+    elapsed_ms = (time.perf_counter() - started) * 1000.0
+    _read_logger.info("read_api_route %s %.1fms", route, elapsed_ms)
+
+
+def _core_ttc_data() -> Dict[str, Any]:
+    try:
+        ne = now_est()
+        next_hour = ne.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        ttc_seconds = int((next_hour - ne).total_seconds())
+        return {
+            "ttc_seconds": ttc_seconds,
+            "timestamp": ne.isoformat(),
+            "current_time_est": ne.strftime("%I:%M:%S %p %Z"),
+            "next_hour_est": next_hour.strftime("%I:%M:%S %p %Z"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/core")
+async def get_core_data(symbol: str = "BTC") -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        now = now_est()
+        date_str = now.strftime("%A, %B %d, %Y")
+        time_str = now.strftime("%I:%M:%S %p %Z")
+
+        ttc_seconds = 0
+        try:
+            ttc_data = _core_ttc_data()
+            ttc_seconds = ttc_data.get("ttc_seconds", 0)
+        except Exception:
+            close_time = now.replace(hour=16, minute=0, second=0, microsecond=0)
+            if now.time() >= close_time.time():
+                close_time += timedelta(days=1)
+            ttc_seconds = int((close_time - now).total_seconds())
+
+        btc_price = 0
+        try:
+            conn = get_postgresql_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
+            result = cursor.fetchone()
+            conn.close()
+            if result:
+                btc_price = float(result[0])
+            else:
+                response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    btc_price = float(data["result"]["XXBTZUSD"]["c"][0])
+        except Exception:
+            try:
+                response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
+                if response.status_code == 200:
+                    data = response.json()
+                    btc_price = float(data["result"]["XXBTZUSD"]["c"][0])
+            except Exception:
+                pass
+
+        momentum_data: Dict[str, Any] = {}
+        try:
+            conn = get_postgresql_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                f"""
+                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
+                       move_1m, move_2m, move_3m, move_4m, movement, movement_percentile
+                FROM live_data.live_price_log_1s_{symbol.lower()}
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """
+            )
+            result = cursor.fetchone()
+            conn.close()
+            if result:
+                (
+                    momentum,
+                    delta_1m,
+                    delta_2m,
+                    delta_3m,
+                    delta_4m,
+                    delta_15m,
+                    delta_30m,
+                    momentum_percentile,
+                    momentum_5s_avg,
+                    move_1m,
+                    move_2m,
+                    move_3m,
+                    move_4m,
+                    movement,
+                    movement_percentile,
+                ) = result
+                momentum_data = {
+                    "weighted_momentum_score": float(momentum) if momentum is not None else 0.0,
+                    "delta_1m": float(delta_1m) if delta_1m is not None else None,
+                    "delta_2m": float(delta_2m) if delta_2m is not None else None,
+                    "delta_3m": float(delta_3m) if delta_3m is not None else None,
+                    "delta_4m": float(delta_4m) if delta_4m is not None else None,
+                    "delta_15m": float(delta_15m) if delta_15m is not None else None,
+                    "delta_30m": float(delta_30m) if delta_30m is not None else None,
+                    "momentum_percentile": float(momentum_percentile) if momentum_percentile is not None else None,
+                    "momentum_5s_avg": float(momentum_5s_avg) if momentum_5s_avg is not None else None,
+                    "move_1m": float(move_1m) if move_1m is not None else None,
+                    "move_2m": float(move_2m) if move_2m is not None else None,
+                    "move_3m": float(move_3m) if move_3m is not None else None,
+                    "move_4m": float(move_4m) if move_4m is not None else None,
+                    "movement": float(movement) if movement is not None else None,
+                    "movement_percentile": float(movement_percentile) if movement_percentile is not None else None,
+                }
+            else:
+                momentum_data = {
+                    "delta_1m": None,
+                    "delta_2m": None,
+                    "delta_3m": None,
+                    "delta_4m": None,
+                    "delta_15m": None,
+                    "delta_30m": None,
+                    "weighted_momentum_score": None,
+                    "move_1m": None,
+                    "move_2m": None,
+                    "move_3m": None,
+                    "move_4m": None,
+                    "movement": None,
+                    "movement_percentile": None,
+                }
+        except Exception:
+            momentum_data = {
+                "delta_1m": None,
+                "delta_2m": None,
+                "delta_3m": None,
+                "delta_4m": None,
+                "delta_15m": None,
+                "delta_30m": None,
+                "weighted_momentum_score": None,
+                "move_1m": None,
+                "move_2m": None,
+                "move_3m": None,
+                "move_4m": None,
+                "movement": None,
+                "movement_percentile": None,
+            }
+
+        latest_db_price = 0
+        try:
+            conn = get_postgresql_connection()
+            slot_price = resolved_tenant_user_no_for_app()
+            with conn.cursor() as cursor:
+                if fetch_master_trades_column_names(cursor, slot_price):
+                    union_sql, _ = union_trades_with_archives_select(cursor, slot_price)
+                    cursor.execute(
+                        f"""
+                        SELECT buy_price FROM ({union_sql}) AS all_trades
+                        WHERE test_filter IS NULL OR test_filter = FALSE
+                        ORDER BY date DESC, time DESC LIMIT 1
+                        """
+                    )
+                    result = cursor.fetchone()
+                    if result:
+                        latest_db_price = result[0]
+            conn.close()
+        except Exception:
+            pass
+
+        kraken_changes: Dict[str, Any] = {}
+        try:
+            response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
+            if response.status_code == 200:
+                data = response.json()
+                ticker = data["result"]["XXBTZUSD"]
+                current_price = float(ticker["c"][0])
+                for period in ("1h", "3h", "1d"):
+                    old_price = float(ticker["p"][0])
+                    change = (current_price - old_price) / old_price
+                    kraken_changes[f"change{period}"] = change
+        except Exception:
+            pass
+
+        return {
+            "date": date_str,
+            "time": time_str,
+            "ttc_seconds": ttc_seconds,
+            "btc_price": btc_price,
+            "latest_db_price": latest_db_price,
+            "timestamp": now_est().isoformat(),
+            **momentum_data,
+            "status": "online",
+            "volScore": 0,
+            "volSpike": 0,
+            **kraken_changes,
+            "kalshi_markets": [],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+    finally:
+        _log_route_timing("/core", started)
+
+
+@app.get("/api/momentum")
+async def get_current_momentum(symbol: str = "BTC") -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        conn = get_postgresql_connection()
+        cursor = conn.cursor()
+        cursor.execute(f"SELECT momentum FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
+        result = cursor.fetchone()
+        conn.close()
+        if result and result[0] is not None:
+            return {"status": "ok", "momentum_score": float(result[0])}
+        return {"status": "error", "momentum_score": 0, "error": "No momentum data available"}
+    except Exception:
+        return {"status": "error", "momentum_score": 0, "error": "Unable to get momentum from PostgreSQL"}
+    finally:
+        _log_route_timing("/api/momentum", started)
+
+
+@app.get("/api/live_symbol_status_snapshot")
+async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        allowed = ("BTC", "ETH", "SOL", "XRP")
+        conn = get_postgresql_connection()
+        cursor = conn.cursor()
+        out = []
+        for sym in allowed:
+            cursor.execute(
+                """
+                SELECT symbol, price, momentum_percentile, volatility_percentile, movement_percentile, "timestamp"
+                FROM live_data.live_symbol_status
+                WHERE symbol = %s
+                """,
+                (sym,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                continue
+            symbol, price, mom_pct, vol_pct, mov_pct, ts = row
+            out.append(
+                {
+                    "symbol": symbol,
+                    "price": float(price) if price is not None else None,
+                    "momentum_percentile": float(mom_pct) if mom_pct is not None else None,
+                    "volatility_percentile": float(vol_pct) if vol_pct is not None else None,
+                    "movement_percentile": float(mov_pct) if mov_pct is not None else None,
+                    "timestamp": ts,
+                }
+            )
+        conn.close()
+        ts_out = None
+        for sym in allowed:
+            found = next((r for r in out if r["symbol"] == sym), None)
+            if found and found.get("timestamp"):
+                ts_out = found["timestamp"]
+                break
+        return {"status": "ok", "timestamp": ts_out, "symbols": out}
+    except Exception as e:
+        return {"status": "error", "message": str(e), "symbols": []}
+    finally:
+        _log_route_timing("/api/live_symbol_status_snapshot", started)
+
+
+@app.get("/api/postgresql/strike_table/{symbol}")
+async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        from backend.core.kalshi_contract_settlement import kalshi_contract_settlement_end_est
+
+        def _strike_pack_settlement_end_ms(event_ticker, strike_rows, ticker_col_index):
+            ref = (str(event_ticker).strip() if event_ticker else "") or ""
+            if not ref and strike_rows:
+                ref = str(strike_rows[0][ticker_col_index] or "").strip()
+            if not ref:
+                return None
+            end = kalshi_contract_settlement_end_est(ref)
+            return int(end.timestamp() * 1000) if end else None
+
+        market = (request.query_params.get("market") or "").strip().lower()
+        raw = (request.query_params.get("raw") or "").strip().lower() in ("1", "true", "yes")
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)"}
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            sym_u = (symbol or "").upper()
+            if market == "15m":
+                cursor.execute(
+                    """
+                    SELECT symbol, current_price, ttc_15m, momentum_percentile, market_title, "timestamp", event_ticker
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY "timestamp" DESC
+                    LIMIT 1
+                    """,
+                    ("kalshi", sym_u),
+                )
+                header_data = cursor.fetchone()
+                if not header_data:
+                    return {"error": f"No strike table data found for {symbol}"}
+                cursor.execute(
+                    """
+                    SELECT strike, buffer, buffer_pct, probability_15m, yes_ask_dollars, no_ask_dollars,
+                           volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side,
+                           yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m
+                    FROM live_data.strike_table_15m
+                    WHERE exchange = %s AND symbol = %s
+                      AND "timestamp" = (
+                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
+                        WHERE exchange = %s AND symbol = %s
+                      )
+                    ORDER BY strike
+                    """,
+                    ("kalshi", sym_u, "kalshi", sym_u),
+                )
+                strikes_data = cursor.fetchall()
+                momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
+                response = {
+                    "symbol": header_data[0],
+                    "current_price": (str(header_data[1]) if raw else float(header_data[1])) if header_data[1] is not None else None,
+                    "ttc_seconds": int(header_data[2]) if header_data[2] else None,
+                    "momentum_percentile": momentum_percentile,
+                    "momentum_bucket": round(momentum_percentile),
+                    "market_title": header_data[4],
+                    "timestamp": header_data[5].isoformat() if header_data[5] else None,
+                    "event_ticker": header_data[6],
+                    "strikes": [],
+                }
+                response["settlement_end_ms"] = _strike_pack_settlement_end_ms(header_data[6], strikes_data, 8)
+            else:
+                h_tbl = _unified_strike_table_for_market("hourly")
+                cursor.execute(
+                    f"""
+                    SELECT symbol, current_price, ttc_hourly, momentum_percentile, market_title, "timestamp", event_ticker, strike_tier
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY "timestamp" DESC
+                    LIMIT 1
+                    """,
+                    ("kalshi", sym_u),
+                )
+                header_data = cursor.fetchone()
+                if not header_data:
+                    return {"error": f"No strike table data found for {symbol}"}
+                cursor.execute(
+                    f"""
+                    SELECT strike, buffer, buffer_pct, probability_hourly, yes_ask_dollars, no_ask_dollars,
+                           volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side,
+                           yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                           yes_ask_range_15m, no_ask_range_15m
+                    FROM live_data.{h_tbl}
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY strike
+                    """,
+                    ("kalshi", sym_u),
+                )
+                strikes_data = cursor.fetchall()
+                momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
+                response = {
+                    "symbol": header_data[0],
+                    "current_price": (str(header_data[1]) if raw else float(header_data[1])) if header_data[1] is not None else None,
+                    "ttc_seconds": int(header_data[2]) if header_data[2] else None,
+                    "momentum_percentile": momentum_percentile,
+                    "momentum_bucket": round(momentum_percentile),
+                    "market_title": header_data[4],
+                    "timestamp": header_data[5].isoformat() if header_data[5] else None,
+                    "event_ticker": header_data[6],
+                    "strike_tier": int(header_data[7]) if header_data[7] is not None else None,
+                    "strikes": [],
+                }
+                response["settlement_end_ms"] = _strike_pack_settlement_end_ms(header_data[6], strikes_data, 8)
+
+            for strike_row in strikes_data:
+                vfp = strike_row[6]
+                oifp = strike_row[7]
+                response["strikes"].append(
+                    {
+                        "strike": (str(strike_row[0]) if raw else float(strike_row[0])) if strike_row[0] is not None else None,
+                        "buffer": (str(strike_row[1]) if raw else float(strike_row[1])) if strike_row[1] is not None else None,
+                        "buffer_pct": (str(strike_row[2]) if raw else float(strike_row[2])) if strike_row[2] is not None else None,
+                        "probability": (str(strike_row[3]) if raw else float(strike_row[3])) if strike_row[3] is not None else None,
+                        "yes_ask_dollars": strike_row[4],
+                        "no_ask_dollars": strike_row[5],
+                        "volume_fp": vfp if vfp is None else str(vfp).strip(),
+                        "open_interest_fp": oifp if oifp is None else str(oifp).strip(),
+                        "ticker": strike_row[8],
+                        "yes_diff": (str(strike_row[9]) if raw else float(strike_row[9])) if strike_row[9] is not None else None,
+                        "no_diff": (str(strike_row[10]) if raw else float(strike_row[10])) if strike_row[10] is not None else None,
+                        "active_side": strike_row[11],
+                        "yes_ask_min_15m": (str(strike_row[12]) if raw else float(strike_row[12])) if strike_row[12] is not None else None,
+                        "yes_ask_max_15m": (str(strike_row[13]) if raw else float(strike_row[13])) if strike_row[13] is not None else None,
+                        "no_ask_min_15m": (str(strike_row[14]) if raw else float(strike_row[14])) if strike_row[14] is not None else None,
+                        "no_ask_max_15m": (str(strike_row[15]) if raw else float(strike_row[15])) if strike_row[15] is not None else None,
+                        "yes_ask_range_15m": (str(strike_row[16]) if raw else float(strike_row[16])) if strike_row[16] is not None else None,
+                        "no_ask_range_15m": (str(strike_row[17]) if raw else float(strike_row[17])) if strike_row[17] is not None else None,
+                    }
+                )
+            conn.close()
+            return response
+    except Exception as e:
+        return {"error": f"Error loading PostgreSQL strike table for {symbol}: {str(e)}"}
+    finally:
+        _log_route_timing("/api/postgresql/strike_table/{symbol}", started)
+
+
+@app.get("/api/watchlist/{monitor_name}")
+async def get_watchlist(monitor_name: str) -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        table_suffix = monitor_name[4:] if monitor_name.startswith("mon_") else monitor_name
+        if not table_suffix.replace("_", "").isalnum():
+            return {"error": "Invalid monitor identifier"}
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"error": "Database unavailable"}
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT symbol, current_price, ttc_seconds, broker, event_ticker, market_title, strike_tier, market_status
+                FROM live_data.watchlist_{table_suffix}
+                LIMIT 1
+                """
+            )
+            header_data = cursor.fetchone()
+            if not header_data:
+                return {"error": f"No watchlist data found for monitor {monitor_name}"}
+            cursor.execute(
+                f"""
+                SELECT strike, buffer, buffer_pct, probability, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume_fp, ticker, active_side
+                FROM live_data.watchlist_{table_suffix}
+                ORDER BY probability DESC
+                """
+            )
+            strikes_data = cursor.fetchall()
+            conn.close()
+            response = {
+                "symbol": header_data[0],
+                "current_price": float(header_data[1]) if header_data[1] else None,
+                "ttc": int(header_data[2]) if header_data[2] else None,
+                "broker": header_data[3],
+                "event_ticker": header_data[4],
+                "market_title": header_data[5],
+                "strike_tier": header_data[6],
+                "market_status": header_data[7],
+                "strikes": [],
+            }
+            for row in strikes_data:
+                response["strikes"].append(
+                    {
+                        "strike": float(row[0]) if row[0] else None,
+                        "buffer": float(row[1]) if row[1] else None,
+                        "buffer_pct": float(row[2]) if row[2] else None,
+                        "probability": float(row[3]) if row[3] else None,
+                        "yes_ask_dollars": float(row[4]) if row[4] is not None else None,
+                        "no_ask_dollars": float(row[5]) if row[5] is not None else None,
+                        "yes_diff": float(row[6]) if row[6] else None,
+                        "no_diff": float(row[7]) if row[7] else None,
+                        "volume_fp": row[8] if row[8] is None else str(row[8]).strip(),
+                        "ticker": row[9],
+                        "active_side": row[10],
+                    }
+                )
+            return response
+    except Exception as e:
+        return {"error": f"Error loading watchlist for monitor {monitor_name} from PostgreSQL: {str(e)}"}
+    finally:
+        _log_route_timing("/api/watchlist/{monitor_name}", started)
+
+
+@app.get("/api/unified_ttc/{symbol}")
+async def get_unified_ttc(symbol: str, request: Request) -> Dict[str, Any]:
+    started = time.perf_counter()
+    try:
+        market = (request.query_params.get("market") or "").strip().lower()
+        if market not in ("hourly", "15m"):
+            return {"error": "market required (hourly or 15m)", "ttc_seconds": 0}
+        sym_u = (symbol or "BTC").upper()
+        tbl = _unified_strike_table_for_market(market)
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            ttc_column = "ttc_15m" if market == "15m" else "ttc_hourly"
+            cursor.execute(
+                f"""
+                SELECT {ttc_column}, event_ticker, market_title, market_status
+                FROM live_data.{tbl}
+                WHERE exchange = %s AND symbol = %s
+                  AND market_status = 'active'
+                ORDER BY "timestamp" DESC, {ttc_column} ASC NULLS LAST
+                LIMIT 1
+                """,
+                ("kalshi", sym_u),
+            )
+            result = cursor.fetchone()
+            conn.close()
+            if result and result[0] is not None:
+                return {
+                    "ttc_seconds": int(result[0]),
+                    "event_ticker": result[1],
+                    "market_title": result[2],
+                    "market_status": result[3],
+                    "symbol": symbol.upper(),
+                }
+            return {
+                "ttc_seconds": 0,
+                "event_ticker": None,
+                "market_title": None,
+                "market_status": "no_active_markets",
+                "symbol": symbol.upper(),
+            }
+    except Exception as e:
+        return {"error": f"Error getting unified TTC: {str(e)}"}
+    finally:
+        _log_route_timing("/api/unified_ttc/{symbol}", started)
 
 
 def main() -> None:

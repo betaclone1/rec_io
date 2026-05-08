@@ -10,12 +10,12 @@ Inventory of what each script logs and where. Used for the logging audit (see `d
 
 ## 1. Supervisor program scripts (backend)
 
-### main_app — `backend/main.py`
+### main_app — entry `backend/main.py`, setup `backend/web/main_app_logging.py`
 
 | Aspect | Details |
 |--------|---------|
-| **Mechanism** | `logging` (logger name `main_app`). EST formatter, single handler to stdout with flush. |
-| **Destination** | stdout → supervisor. main.py also serves log content by reading `logs/{script_name}.out.log` from disk for the UI. |
+| **Mechanism** | `logging` (logger name **`main_app`**). EST formatter, single handler to stdout with flush—configured in **`main_app_logging.py`** (`get_main_app_logger()`). Route modules use `logging.getLogger("main_app")` for the same logger. |
+| **Destination** | stdout → supervisor. Admin/UI log viewers still read `logs/{script_name}.out.log` via routes implemented under **`backend/web/routers/`** (not in slim `main.py`). |
 | **Volume** | INFO: startup (port, main app started/shutting down). WARNING: PostgreSQL/AUTH/Preferences/MAIN forwarding errors, sync failed, API errors. DEBUG: all per-request success (forwarding, client connect/disconnect, preferences updated, momentum/BTC price, etc.). |
 | **Notable** | One-line startup; errors upgraded to warning so they appear at default level; routine traffic at DEBUG to avoid storage ballooning. |
 | **Extra files** | None. |
@@ -253,7 +253,7 @@ Legacy REST poller moved to `archive/2026-03-legacy-kalshi-market-watchdog/kalsh
 
 | Script (program or file) | Mechanism | Extra files | Volume | Priority cleanup |
 |--------------------------|-----------|-------------|--------|------------------|
-| main.py | _main_logger | — | Low (INFO) | Phase 2 done; errors→warning |
+| main_app (`main.py` + `web/routers` + `main_app_logging`) | `main_app` logger | — | Low (INFO) | Phase 2 done; errors→warning |
 | trade_manager.py | log/log_debug + log_event(DB) | heartbeat | Med (INFO) | Phase 2 done |
 | trade_executor.py | print | — | Low | logging |
 | kalshi_account_sync_ws.py | print | — | High | logging; raw dumps→DEBUG |
@@ -280,7 +280,7 @@ Cross-check of the **project `logs/`** directory and other log locations. Done 2
 - **Legacy / old program names (no longer in current supervisor):**  
   `kalshi_market_watchdog_*` (script archived 2026-03), per-symbol `strike_table_generator_*`, `symbol_price_watchdog_ndx`, `symbol_price_watchdog_spx`, etc. Current generator uses `market_watchdog_ws_kalshi_hourly`, `market_watchdog_ws_kalshi_15m`, `strike_table_generator_ws_hourly`, `strike_table_generator_ws_15m`. Old `.out.log` files may remain on disk.
 - **Dedicated `auto_entry_supervisor_0001_10019.log`:**  
-  Single plain `.log` file (no `.out`/`.err`). **main.py** prefers this when serving the “out” log for script name `auto_entry_supervisor_0001_10019` (see §1 main_app). **Current `auto_entry_supervisor.py` does not write to it** — it only prints to stdout (supervisor captures to `.out.log`). So this file was either from an older code path, a test (`auto_entry_supervisor_test.py` references a similar path), or a one-off. **Action:** Treat as legacy; document that the UI prefers it if present; consider removing the special case in main once we standardize on .out.log.
+  Single plain `.log` file (no `.out`/`.err`). **main_app** (admin log-serving routes under `backend/web/routers/`) prefers this when serving the “out” log for script name `auto_entry_supervisor_0001_10019` (see §1 main_app). **Current `auto_entry_supervisor.py` does not write to it** — it only prints to stdout (supervisor captures to `.out.log`). So this file was either from an older code path, a test (`auto_entry_supervisor_test.py` references a similar path), or a one-off. **Action:** Treat as legacy; document that the UI prefers it if present; consider removing the special case in the log-view route once we standardize on .out.log.
 - **log_archive/monitor_log_archive/:**  
   **monitor_manager** moves inactive monitor logs here (cleanup of deactivated monitors). It’s a **destination** for moved `.out.log`/`.err.log` files, not an extra writer. Do not rotate/delete blindly; document as part of retention policy.
 - **kalshi_websocket_market.log:**  
@@ -297,7 +297,7 @@ Cross-check of the **project `logs/`** directory and other log locations. Done 2
 
 | Item | Location | Writer | In §1–4? |
 |------|----------|--------|----------|
-| Dedicated auto_entry_supervisor_*.log | logs/ | Legacy/test (current code does not write) | main.py read path only |
+| Dedicated auto_entry_supervisor_*.log | logs/ | Legacy/test (current code does not write) | main_app log-view route only |
 | log_archive/monitor_log_archive/ | logs/ | monitor_manager (moves files here) | Not previously called out |
 | daily_update_*.log | backend/logs/ | daily_update.py, daily_update_lightweight.py | §3 “analytics” — path clarified here |
 | weekly_update_*.log | backend/util/logs/ | analytics_updater.py | §3 “analytics” — path clarified here |

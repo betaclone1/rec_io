@@ -22,7 +22,9 @@ Systematic checklist of every backend and frontend use of the legacy notify/broa
 
 ## Part A: Backend assets
 
-### A1. main.py
+### A1. main_app (legacy checklist: handlers now under `backend/web/routers/` + `main_realtime.py`)
+
+Originally tracked as **`main.py` monolith**; **notify / broadcast / WS** implementations now live in **`backend/web/main_realtime.py`** and related routers. This table remains the migration checklist until Redis-only paths replace the HTTP notify surface.
 
 | Item | Location / function | Current behavior | Migration action |
 |------|----------------------|------------------|------------------|

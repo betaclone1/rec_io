@@ -6,6 +6,31 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-08 — Release v3.5.0: Slim main_app wiring, extracted backend/web routers, and tenant-literal CI guard update
+
+**Summary**
+- **Release: v3.5.0**
+- **Backend architecture:** `backend/main.py` is reduced to wiring/bootstrap responsibilities, while route and middleware logic is extracted into `backend/web/*` and `backend/web/routers/*` modules.
+- **Route behavior:** Main app paths remain stable while handlers are delegated through extracted router modules, including read-api proxy routes, internal service proxy routes, monitor/admin routes, auth proxy routes, and frontend/static serving routes.
+- **Read path alignment:** `backend/read_api.py` is aligned with the split so main-app delegates remain behavior-compatible with the read-api edge.
+- **CI guardrail:** `scripts/ci/scan_main_tenant_literals.py` now scans both `backend/main.py` and `backend/web/**/*.py`; baseline updated to match the split architecture.
+- **Docs/rules:** `AGENTS.md`, `.cursor/rules/07-main-app-slim.mdc`, and related architecture/logging docs were updated to reflect the new main-app surface.
+- **Plans:** `slim-main-app-architecture` (active implementation plan), `logging-audit` (`Status: done`; logging inventory alignment touch-up).
+- **DB impact:** No schema migration in this release.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart services from repo root on production:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify runtime health after restart:  
+  `curl -sSf http://localhost:3000/health && curl -sSf http://localhost:8001/health && curl -sSf http://localhost:3050/health && supervisorctl -c /opt/rec_io_server/backend/supervisord.conf status`
+- [ ] Verify key logs for current errors after process start (`trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, one `market_watchdog_ws` service).
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.5.0`
+
+---
+
 ## 2026-05-06 — Dashboard filenames: NEW → canonical `dashboard.html`, legacy → `*_OLD.html`
 
 **Summary:** The former **`dashboard_NEW.html`** is now **`frontend/tabs/dashboard.html`**; the previous legacy dashboard is **`frontend/tabs/dashboard_OLD.html`**. Same pattern for mobile: **`dashboard_mobile.html`** (canonical) and **`dashboard_mobile_OLD.html`**. **`frontend/index.html`** loads **`/tabs/dashboard.html`**. **`backend/main.py`** **`/mobile/dashboard`** and **`/mobile/dashboard_new`** serve **`dashboard_mobile.html`**.
