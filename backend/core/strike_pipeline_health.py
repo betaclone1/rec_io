@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import os
+import re
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 TABLE = "strike_pipeline_health"
 MARKET_15M = "15m"
@@ -25,11 +28,57 @@ def strike_pipeline_health_strict_mode_enabled() -> bool:
 
     Set STRIKE_PIPELINE_HEALTH_STRICT_MODE=1 only when publishers are reliable.
     """
-    return os.getenv("STRIKE_PIPELINE_HEALTH_STRICT_MODE", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
+    raw = os.getenv("STRIKE_PIPELINE_HEALTH_STRICT_MODE")
+    if raw is None:
+        # Fail-closed by default for live trading safety.
+        return True
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
+
+
+def pipeline_spot_flatline_window_sec() -> int:
+    """Window used to detect flatlined spot stream in live_data.live_price_log_1s_<symbol>."""
+    return int(os.getenv("PIPELINE_SPOT_FLATLINE_WINDOW_SEC", "120"))
+
+
+def pipeline_spot_flatline_min_distinct() -> int:
+    """Minimum distinct spot prices required in flatline window to consider stream healthy."""
+    return int(os.getenv("PIPELINE_SPOT_FLATLINE_MIN_DISTINCT", "2"))
+
+
+def _spot_series_passes_gate(conn, symbol: str) -> tuple[bool, str]:
+    sym = str(symbol or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2,10}", sym):
+        return False, "invalid_symbol_for_spot_gate"
+    table = f"live_data.live_price_log_1s_{sym.lower()}"
+    window_sec = max(5, int(pipeline_spot_flatline_window_sec()))
+    min_distinct = max(1, int(pipeline_spot_flatline_min_distinct()))
+    cutoff = (datetime.now(ZoneInfo("America/New_York")) - timedelta(seconds=window_sec)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
     )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    COUNT(*)::bigint,
+                    COUNT(DISTINCT price::text)::bigint
+                FROM {table}
+                WHERE timestamp >= %s
+                """,
+                (cutoff,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return False, "spot_series_missing"
+        sample_count = int(row[0] or 0)
+        distinct_count = int(row[1] or 0)
+        if sample_count < min_distinct:
+            return False, f"spot_samples_insufficient:{sample_count}<{min_distinct}"
+        if distinct_count < min_distinct:
+            return False, f"spot_flatline:{distinct_count}<{min_distinct}_in_{window_sec}s"
+        return True, "ok"
+    except Exception as e:
+        return False, f"spot_gate_query_failed:{e}"
 
 
 def pipeline_health_writer_dead_sec() -> int:
@@ -208,4 +257,7 @@ def evaluate_pipeline_gate_conn(
             (ex, mkt, sym),
         )
         row = cur.fetchone()
-    return row_passes_trade_gate(row)
+    ok, reason = row_passes_trade_gate(row)
+    if not ok:
+        return ok, reason
+    return _spot_series_passes_gate(conn, sym)

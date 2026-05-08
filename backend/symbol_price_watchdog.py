@@ -1148,6 +1148,7 @@ def insert_tick(symbol: str, timestamp: str, price: float):
         conn.close()
 
 HEARTBEAT_INTERVAL_SEC = 300  # 5 min internal heartbeat to stdout
+STALE_PRICE_RECONNECT_SEC = 180  # force WS reconnect if ticker price is unchanged too long
 
 async def log_symbol_price(symbol: str):
     """Log price data for the specified symbol"""
@@ -1155,6 +1156,8 @@ async def log_symbol_price(symbol: str):
 
     last_logged_second = None
     last_heartbeat = time.time()
+    last_distinct_price = None
+    last_distinct_price_ts = time.time()
     symbol_config = SYMBOL_CONFIG[symbol]
 
     # Pre-load momentum, volatility, and movement profiles for this symbol
@@ -1191,6 +1194,18 @@ async def log_symbol_price(symbol: str):
                             continue
 
                         price = float(data["price"])
+                        now_epoch = time.time()
+                        if last_distinct_price is None or price != last_distinct_price:
+                            last_distinct_price = price
+                            last_distinct_price_ts = now_epoch
+                        elif (now_epoch - last_distinct_price_ts) >= STALE_PRICE_RECONNECT_SEC:
+                            logger.error(
+                                "[%s] Price stream appears stale (unchanged %.2f for %.0fs); reconnecting",
+                                symbol,
+                                price,
+                                now_epoch - last_distinct_price_ts,
+                            )
+                            break
                         now = datetime.now(ZoneInfo("America/New_York"))
                         now = now.replace(microsecond=0)
 

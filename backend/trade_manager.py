@@ -53,6 +53,7 @@ from backend.core.symbol_wide_loss_prevention import (
     on_trade_closed_symbol_wide_loss,
     recompute_monitor_loss_prevention,
 )
+from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 
 _ORDERBOOK_SCHEMA = "live_data"
 _ORDERBOOK_TABLE_PREFIX = "orderbook_kalshi_"
@@ -1156,7 +1157,12 @@ def _live_price_log_timestamp_cutoff_str(expiration_est: datetime) -> str:
     return exp.strftime("%Y-%m-%dT%H:%M:%S")
 
 
-def _fetch_one_minute_avg_at_or_before(symbol, expiration_est):
+def _fetch_one_minute_avg_at_or_before(
+    symbol,
+    expiration_est,
+    *,
+    max_gap_seconds: Optional[int] = None,
+):
     """Read one_minute_avg from the latest row at/before expiration_est.
 
     ``live_price_log_1s_*`` stores ``timestamp`` as TEXT in ``%%Y-%%m-%%dT%%H:%%M:%%S`` EST.
@@ -1173,7 +1179,7 @@ def _fetch_one_minute_avg_at_or_before(symbol, expiration_est):
         with pg_conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT one_minute_avg
+                SELECT one_minute_avg, timestamp
                 FROM live_data.live_price_log_1s_{symbol.lower()}
                 WHERE one_minute_avg IS NOT NULL
                   AND timestamp <= %s
@@ -1184,7 +1190,29 @@ def _fetch_one_minute_avg_at_or_before(symbol, expiration_est):
             )
             row = cursor.fetchone()
         pg_conn.close()
-        return normalize_trade_spot_price(symbol, row[0]) if row and row[0] is not None else None
+        if not row or row[0] is None:
+            return None
+        if max_gap_seconds is not None and row[1]:
+            try:
+                row_ts = datetime.strptime(str(row[1]), "%Y-%m-%dT%H:%M:%S").replace(
+                    tzinfo=EST_ZONE
+                )
+                if expiration_est.tzinfo is None:
+                    cutoff_dt = expiration_est.replace(tzinfo=EST_ZONE)
+                else:
+                    cutoff_dt = expiration_est.astimezone(EST_ZONE)
+                gap_s = (cutoff_dt - row_ts).total_seconds()
+                if gap_s < 0 or gap_s > float(max_gap_seconds):
+                    log(
+                        f"⚠️ one_minute_avg stale/misaligned for {symbol}: "
+                        f"row_ts={row[1]} cutoff={cutoff_str} gap_s={gap_s:.1f} "
+                        f"(max={max_gap_seconds})"
+                    )
+                    return None
+            except Exception as gap_err:
+                log(f"⚠️ one_minute_avg gap check failed for {symbol}: {gap_err}")
+                return None
+        return normalize_trade_spot_price(symbol, row[0])
     except Exception as e:
         log(f"⚠️ one_minute_avg lookup at/before {cutoff_str} for {symbol}: {e}")
         if pg_conn:
@@ -1206,7 +1234,7 @@ def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_dat
     exp_est = _contract_expiration_est(trade_date, contract, now_est)
     if now_est < exp_est:
         return 0
-    px = _fetch_one_minute_avg_at_or_before(symbol, exp_est)
+    px = _fetch_one_minute_avg_at_or_before(symbol, exp_est, max_gap_seconds=90)
     if px is None:
         return 0
     contract_key = str(contract).strip()
@@ -3515,25 +3543,19 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                             sell_price = None
                             log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
                     
-                        # symbol_close from latest one_minute_avg only (no raw price column fallback)
-                        symbol_close = None
-                        try:
-                            pg_conn_symbol = get_postgresql_connection()
-                            if pg_conn_symbol:
-                                with pg_conn_symbol.cursor() as cursor:
-                                    cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                                    result = cursor.fetchone()
-                                    if result and result[0] is not None:
-                                        symbol_close = normalize_trade_spot_price(symbol, result[0])
-                                        log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
-                                    else:
-                                        log_event(
-                                            ticket_id,
-                                            f"MANAGER: No one_minute_avg in live price log for {symbol}; symbol_close left unset",
-                                        )
-                                pg_conn_symbol.close()
-                        except Exception as e:
-                            log_event(ticket_id, f"MANAGER: Failed to get one_minute_avg from live price log: {e}")
+                        # symbol_close from 1m avg aligned to close-time with freshness guard.
+                        symbol_close = _fetch_one_minute_avg_at_or_before(
+                            symbol,
+                            now_est,
+                            max_gap_seconds=120,
+                        )
+                        if symbol_close is not None:
+                            log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
+                        else:
+                            log_event(
+                                ticket_id,
+                                f"MANAGER: No fresh one_minute_avg near close for {symbol}; symbol_close left unset",
+                            )
                     
                         # Get trade data for PnL calculation including existing fees
                         pg_conn_trade = get_postgresql_connection()
@@ -5400,25 +5422,19 @@ async def add_trade(request: Request):
                     except Exception as e:
                         log(f"⚠️ Failed to get symbol for paper trade close: {e}")
                     
-                    # symbol_close from latest one_minute_avg only (no raw price column fallback)
+                    # symbol_close from 1m avg aligned to close-time with freshness guard.
                     symbol_close = None
                     if symbol:
-                        try:
-                            pg_conn_symbol = get_postgresql_connection()
-                            if pg_conn_symbol:
-                                with pg_conn_symbol.cursor() as cursor:
-                                    cursor.execute(f"SELECT one_minute_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-                                    result = cursor.fetchone()
-                                    if result and result[0] is not None:
-                                        symbol_close = normalize_trade_spot_price(symbol, result[0])
-                                        log(f"📝 PAPER TRADE: Retrieved one_minute_avg for close: {symbol_close}")
-                                    else:
-                                        log(
-                                            f"📝 PAPER TRADE: No one_minute_avg for {symbol}; symbol_close left unset",
-                                        )
-                                pg_conn_symbol.close()
-                        except Exception as e:
-                            log(f"⚠️ Failed to get one_minute_avg from live price log: {e}")
+                        now_est_close = datetime.now(ZoneInfo("America/New_York"))
+                        symbol_close = _fetch_one_minute_avg_at_or_before(
+                            symbol,
+                            now_est_close,
+                            max_gap_seconds=120,
+                        )
+                        if symbol_close is not None:
+                            log(f"📝 PAPER TRADE: Retrieved one_minute_avg for close: {symbol_close}")
+                        else:
+                            log(f"📝 PAPER TRADE: No fresh one_minute_avg for {symbol}; symbol_close left unset")
                     
                     # Mark as closing first
                     try:
@@ -5641,6 +5657,51 @@ async def add_trade(request: Request):
     except Exception as e:
         log(f"⚠️ Error checking system trading mode: {e}")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="trading_disabled")
+
+    # Hard fail-closed data gate for live opens: require healthy + non-flatlined spot pipeline.
+    # Paper/simulated paths are allowed to continue for diagnostics/backtesting.
+    try:
+        _paper_raw = data.get("paper_trade", False)
+        if isinstance(_paper_raw, str):
+            _paper_for_gate = _paper_raw.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            _paper_for_gate = bool(_paper_raw)
+        if not simulated and not _paper_for_gate:
+            symbol_for_gate = str(data.get("symbol") or "").strip().upper()
+            market_for_gate = str(data.get("market") or "hourly").strip().lower() or "hourly"
+            if symbol_for_gate:
+                pg_gate = get_postgresql_connection()
+                if not pg_gate:
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail="pipeline_gate_db_unavailable",
+                    )
+                try:
+                    ok_gate, reason_gate = evaluate_pipeline_gate_conn(
+                        pg_gate,
+                        exchange="kalshi",
+                        market=market_for_gate,
+                        symbol=symbol_for_gate,
+                    )
+                finally:
+                    try:
+                        pg_gate.close()
+                    except Exception:
+                        pass
+                if not ok_gate:
+                    log(
+                        f"🚫 OPEN BLOCKED by pipeline gate symbol={symbol_for_gate} "
+                        f"market={market_for_gate} reason={reason_gate}"
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                        detail=f"pipeline_gate_blocked:{reason_gate}",
+                    )
+    except HTTPException:
+        raise
+    except Exception as e:
+        log(f"⚠️ pipeline gate check error in add_trade open path: {e}")
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="pipeline_gate_check_failed")
 
     required_fields = {"date", "time", "strike", "side", "buy_price", "position"}
     if not required_fields.issubset(data.keys()):
@@ -6708,7 +6769,9 @@ def check_expired_simulated_trades():
                 continue
             cache_key = (symbol, expiration_est.replace(tzinfo=None))
             if cache_key not in symbol_prices:
-                symbol_prices[cache_key] = _fetch_one_minute_avg_at_or_before(symbol, expiration_est)
+                symbol_prices[cache_key] = _fetch_one_minute_avg_at_or_before(
+                    symbol, expiration_est, max_gap_seconds=90
+                )
             symbol_close = symbol_prices.get(cache_key)
             if symbol_close is None:
                 continue
@@ -6856,7 +6919,9 @@ def check_expired_trades():
             expiration_est = _contract_expiration_est(trade_date, contract, now_est)
             cache_key = (symbol, expiration_est.replace(tzinfo=None))
             if cache_key not in expiration_price_cache:
-                expiration_price_cache[cache_key] = _fetch_one_minute_avg_at_or_before(symbol, expiration_est)
+                expiration_price_cache[cache_key] = _fetch_one_minute_avg_at_or_before(
+                    symbol, expiration_est, max_gap_seconds=90
+                )
             if expiration_price_cache.get(cache_key) is None:
                 log(
                     f"[15-MIN CHECK] No one_minute_avg at/before expiration for {symbol} "
