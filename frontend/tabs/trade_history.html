@@ -2902,7 +2902,30 @@
       tbl.addEventListener('pointerleave', onTradeTablePointerLeave);
     }
 
-    function renderTrades(tradesToRender) {
+    function _thGetTradeHistoryResultsScrollEl() {
+      return document.getElementById('trade-history-results-scroll');
+    }
+
+    function _thScheduleRestoreResultsScroll(scrollEl, saved, renderToken) {
+      if (!scrollEl || !saved) return;
+      requestAnimationFrame(() => {
+        requestAnimationFrame(() => {
+          if (renderToken !== _thRenderToken) return;
+          const maxY = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+          const maxX = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
+          scrollEl.scrollTop = Math.min(Math.max(0, saved.top), maxY);
+          scrollEl.scrollLeft = Math.min(Math.max(0, saved.left), maxX);
+        });
+      });
+    }
+
+    function renderTrades(tradesToRender, renderOptions = {}) {
+      const preserveScroll = renderOptions.preserveScroll === true;
+      const scrollHost = preserveScroll ? _thGetTradeHistoryResultsScrollEl() : null;
+      const savedScroll =
+        preserveScroll && scrollHost
+          ? { top: scrollHost.scrollTop, left: scrollHost.scrollLeft }
+          : null;
       const renderToken = ++_thRenderToken;
       tradeHistoryHideLossDetailTooltip();
       _thTradeRowCrossHoverLastMid = undefined;
@@ -2913,15 +2936,6 @@
       _thMonitorCrossHoverActiveId = null;
       tradeHistoryApplyMonitorCrossHover(null);
       const tbody = document.querySelector('#trade-log-table tbody');
-      tbody.innerHTML = '';
-      if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="22">No trades found.</td></tr>';
-        return;
-      }
-
-      let lastContract = null;
-      let groupIndex = 0;
-      let cursor = 0;
 
       function plusSign(val) {
         if (val === null || val === undefined || val === '') return '';
@@ -2930,12 +2944,20 @@
         return (num > 0 ? '+' : '') + Math.round(num);
       }
 
-      function appendRenderChunk() {
-        if (renderToken !== _thRenderToken) return;
-        const frag = document.createDocumentFragment();
-        const end = Math.min(cursor + _TH_RENDER_CHUNK_SIZE, tradesToRender.length);
+      if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
+        const emptyTr = document.createElement('tr');
+        emptyTr.innerHTML = '<td colspan="22">No trades found.</td>';
+        tbody.replaceChildren(emptyTr);
+        _thScheduleRestoreResultsScroll(scrollHost, savedScroll, renderToken);
+        return;
+      }
 
-        for (; cursor < end; cursor++) {
+      let lastContract = null;
+      let groupIndex = 0;
+      let cursor = 0;
+
+      function appendRowsToFragment(frag, endIdx) {
+        for (; cursor < endIdx; cursor++) {
           const trade = tradesToRender[cursor];
           const isNewGroup = trade.contract !== lastContract;
           if (isNewGroup) groupIndex++;
@@ -2986,13 +3008,37 @@
           }
           frag.appendChild(tr);
         }
+      }
 
+      if (preserveScroll) {
+        const mountFrag = document.createDocumentFragment();
+        function appendChunkPreserve() {
+          if (renderToken !== _thRenderToken) return;
+          const end = Math.min(cursor + _TH_RENDER_CHUNK_SIZE, tradesToRender.length);
+          appendRowsToFragment(mountFrag, end);
+          if (cursor < tradesToRender.length) {
+            requestAnimationFrame(appendChunkPreserve);
+          } else {
+            if (renderToken !== _thRenderToken) return;
+            tbody.replaceChildren(mountFrag);
+            _thScheduleRestoreResultsScroll(scrollHost, savedScroll, renderToken);
+          }
+        }
+        requestAnimationFrame(appendChunkPreserve);
+        return;
+      }
+
+      tbody.innerHTML = '';
+      function appendRenderChunk() {
+        if (renderToken !== _thRenderToken) return;
+        const frag = document.createDocumentFragment();
+        const end = Math.min(cursor + _TH_RENDER_CHUNK_SIZE, tradesToRender.length);
+        appendRowsToFragment(frag, end);
         tbody.appendChild(frag);
         if (cursor < tradesToRender.length) {
           requestAnimationFrame(appendRenderChunk);
         }
       }
-
       requestAnimationFrame(appendRenderChunk);
     }
 
@@ -3023,7 +3069,9 @@
       filteredTrades = [...filtered];
       applyCurrentSort();
       applyImmediateSummaryFromFilteredTrades(filteredTrades);
-      renderTrades(filteredTrades);
+      renderTrades(filteredTrades, {
+        preserveScroll: options.preserveResultsScroll === true,
+      });
       tradeHistoryRefreshMonitorStripCharts();
       if (options.skipInsightsRefresh !== true) {
         refreshTradeHistoryInsights();
@@ -3199,6 +3247,7 @@
         applyFilters({
           preserveMonitorPreview: true,
           skipInsightsRefresh: true,
+          preserveResultsScroll: _thTradeFetchSilentFooterProgress(r),
         });
       } catch (error) {
         const hadRows = Array.isArray(trades) && trades.length > 0;

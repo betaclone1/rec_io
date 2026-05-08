@@ -19,14 +19,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **DB impact:** No schema migration in this release.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart services from repo root on production:  
+- [x] Restart services from repo root on production:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify runtime health after restart:  
+- [x] Verify runtime health after restart:  
   `curl -sSf http://localhost:3000/health && curl -sSf http://localhost:8001/health && curl -sSf http://localhost:3050/health && supervisorctl -c /opt/rec_io_server/backend/supervisord.conf status`
-- [ ] Verify key logs for current errors after process start (`trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, one `market_watchdog_ws` service).
-- [ ] Record release in DB:  
+- [x] Verify key logs for current errors after process start (`trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, one `market_watchdog_ws` service).
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.5.0`
 
 ---

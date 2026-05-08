@@ -1565,7 +1565,30 @@
             }
         }
 
-        function renderTrades(tradesToRender) {
+        function _thmGetTradeHistoryResultsScrollEl() {
+            return document.querySelector('.results-section');
+        }
+
+        function _thmScheduleRestoreResultsScroll(scrollEl, saved, renderToken) {
+            if (!scrollEl || !saved) return;
+            requestAnimationFrame(() => {
+                requestAnimationFrame(() => {
+                    if (renderToken !== _thmRenderToken) return;
+                    const maxY = Math.max(0, scrollEl.scrollHeight - scrollEl.clientHeight);
+                    const maxX = Math.max(0, scrollEl.scrollWidth - scrollEl.clientWidth);
+                    scrollEl.scrollTop = Math.min(Math.max(0, saved.top), maxY);
+                    scrollEl.scrollLeft = Math.min(Math.max(0, saved.left), maxX);
+                });
+            });
+        }
+
+        function renderTrades(tradesToRender, renderOptions = {}) {
+            const preserveScroll = renderOptions.preserveScroll === true;
+            const scrollHost = preserveScroll ? _thmGetTradeHistoryResultsScrollEl() : null;
+            const savedScroll =
+                preserveScroll && scrollHost
+                    ? { top: scrollHost.scrollTop, left: scrollHost.scrollLeft }
+                    : null;
             const renderToken = ++_thmRenderToken;
             _thmTradeRowCrossHoverLastMid = undefined;
             if (_thmMonitorCrossHoverLeaveTimer) {
@@ -1575,17 +1598,6 @@
             _thmMonitorCrossHoverActiveId = null;
             thmApplyMonitorCrossHover(null);
             const tbody = document.querySelector('#trade-log-table tbody');
-            tbody.innerHTML = '';
-            if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
-                const isPercentMode = document.body.classList.contains('percent-mode');
-                const colSpan = isPercentMode ? 20 : 23; // 3 fewer columns when % Mode is ON
-                tbody.innerHTML = `<tr><td colspan="${colSpan}">No trades found.</td></tr>`;
-                return;
-            }
-
-            let lastContract = null;
-            let groupIndex = 0;
-            let cursor = 0;
             const isPercentMode = document.body.classList.contains('percent-mode');
 
             function plusSign(val) {
@@ -1595,12 +1607,21 @@
                 return (num > 0 ? '+' : '') + Math.round(num);
             }
 
-            function appendRenderChunk() {
-                if (renderToken !== _thmRenderToken) return;
-                const frag = document.createDocumentFragment();
-                const end = Math.min(cursor + _THM_RENDER_CHUNK_SIZE, tradesToRender.length);
+            if (!Array.isArray(tradesToRender) || tradesToRender.length === 0) {
+                const colSpan = isPercentMode ? 20 : 23;
+                const emptyTr = document.createElement('tr');
+                emptyTr.innerHTML = `<td colspan="${colSpan}">No trades found.</td>`;
+                tbody.replaceChildren(emptyTr);
+                _thmScheduleRestoreResultsScroll(scrollHost, savedScroll, renderToken);
+                return;
+            }
 
-                for (; cursor < end; cursor++) {
+            let lastContract = null;
+            let groupIndex = 0;
+            let cursor = 0;
+
+            function appendRowsToFragment(frag, endIdx) {
+                for (; cursor < endIdx; cursor++) {
                     const trade = tradesToRender[cursor];
                     const isNewGroup = trade.contract !== lastContract;
                     if (isNewGroup) groupIndex++;
@@ -1646,13 +1667,37 @@
                     }
                     frag.appendChild(tr);
                 }
+            }
 
+            if (preserveScroll) {
+                const mountFrag = document.createDocumentFragment();
+                function appendChunkPreserve() {
+                    if (renderToken !== _thmRenderToken) return;
+                    const end = Math.min(cursor + _THM_RENDER_CHUNK_SIZE, tradesToRender.length);
+                    appendRowsToFragment(mountFrag, end);
+                    if (cursor < tradesToRender.length) {
+                        requestAnimationFrame(appendChunkPreserve);
+                    } else {
+                        if (renderToken !== _thmRenderToken) return;
+                        tbody.replaceChildren(mountFrag);
+                        _thmScheduleRestoreResultsScroll(scrollHost, savedScroll, renderToken);
+                    }
+                }
+                requestAnimationFrame(appendChunkPreserve);
+                return;
+            }
+
+            tbody.innerHTML = '';
+            function appendRenderChunk() {
+                if (renderToken !== _thmRenderToken) return;
+                const frag = document.createDocumentFragment();
+                const end = Math.min(cursor + _THM_RENDER_CHUNK_SIZE, tradesToRender.length);
+                appendRowsToFragment(frag, end);
                 tbody.appendChild(frag);
                 if (cursor < tradesToRender.length) {
                     requestAnimationFrame(appendRenderChunk);
                 }
             }
-
             requestAnimationFrame(appendRenderChunk);
         }
 
@@ -2542,7 +2587,15 @@
             });
         }
 
-        function applyFilters() {
+        function _thmTradeFetchSilentFooterProgress(reason) {
+            const r = reason || 'unspecified';
+            if (r === 'ws-db_change-trades') return true;
+            if (r === 'tab-visible' && Array.isArray(trades) && trades.length > 0) return true;
+            if (r === 'parent-refresh_data') return true;
+            return false;
+        }
+
+        function applyFilters(options = {}) {
             const dateFilterPicker = document.getElementById('date-filter-picker');
             
             const includeTestEl = document.getElementById('include-test-trades');
@@ -2565,7 +2618,9 @@
             filteredTrades = [...filtered];
             applyCurrentSort();
             updateSummary(filteredTrades);
-            renderTrades(filteredTrades);
+            renderTrades(filteredTrades, {
+                preserveScroll: options.preserveResultsScroll === true,
+            });
             refreshThmTradeHistoryInsights();
         }
 
@@ -2680,7 +2735,7 @@
                 }
                 if (!Array.isArray(trades)) throw new Error('Invalid trades response');
                 _thmSetFetchBanner('', false);
-                applyFilters();
+                applyFilters({ preserveResultsScroll: _thmTradeFetchSilentFooterProgress(r) });
             } catch (error) {
                 const hadRows = Array.isArray(trades) && trades.length > 0;
                 const now = Date.now();
