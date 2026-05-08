@@ -6701,6 +6701,11 @@ def check_expired_simulated_trades():
             trade_id, ticker, symbol, strike, side = row[0], row[1], row[2], row[3], row[4]
             monitor, trade_date, weekly_cycle, contract = row[5], row[6], row[7], row[8]
             expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+            # Do not settle before the contract's expiration instant (wall clock). Otherwise each
+            # 15m sweep would still pick one_minute_avg with timestamp <= expiry, which is often
+            # "latest tick so far" — e.g. closing 8:00pm hourly-sim rows at the 7:45 sweep.
+            if now_est < expiration_est:
+                continue
             cache_key = (symbol, expiration_est.replace(tzinfo=None))
             if cache_key not in symbol_prices:
                 symbol_prices[cache_key] = _fetch_one_minute_avg_at_or_before(symbol, expiration_est)
