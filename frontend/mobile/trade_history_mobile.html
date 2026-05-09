@@ -603,6 +603,10 @@
             background-color: #3f4a5e !important;
             cursor: pointer;
         }
+        #thm-monitor-summary-table tbody tr.th-ms-monitor-paper,
+        #thm-monitor-summary-table tbody tr.th-ms-monitor-paper td {
+            font-style: italic;
+        }
         #thm-monitor-summary-table tbody tr.th-ms-summary-placeholder,
         #thm-monitor-summary-table tbody tr.th-ms-summary-placeholder:hover {
             cursor: default;
@@ -2486,6 +2490,7 @@
                     strat: '—',
                     mkt: '—',
                     num: '—',
+                    isPaper: false,
                 };
             }
 
@@ -2498,6 +2503,7 @@
                     '#thm-monitor-tiles .th-monitor-filter-tile[data-monitor-id="' + esc + '"]'
                 );
                 if (tile) {
+                    row.isPaper = tile.classList.contains('th-m-tile-paper');
                     const sym = tile.querySelector('.th-m-tile-symbol');
                     const strat = tile.querySelector('.th-m-tile-strategy');
                     const mkt = tile.querySelector('.th-m-tile-market');
@@ -2667,6 +2673,9 @@
                     ev.stopPropagation();
                     thmSoloMonitorById(mid);
                 });
+                if (d.isPaper) {
+                    tr.classList.add('th-ms-monitor-paper');
+                }
 
                 const tdMon = document.createElement('td');
                 tdMon.textContent = thmMonitorMonLabel(mid);

@@ -184,6 +184,10 @@
       background-color: #3f4a5e !important;
       cursor: pointer;
     }
+    #th-monitor-summary-table tbody tr.th-ms-monitor-paper,
+    #th-monitor-summary-table tbody tr.th-ms-monitor-paper td {
+      font-style: italic;
+    }
     #trade-log-table tbody tr.test-filter-trade-row:hover {
       cursor: pointer;
     }
@@ -2655,6 +2659,10 @@
       for (const { mid, agg } of rows) {
         const tr = document.createElement('tr');
         tr.setAttribute('data-monitor-id', mid);
+        const sumMeta = tradeHistoryMonitorIdToFilterMeta[mid];
+        if (sumMeta && sumMeta.paper_trade) {
+          tr.classList.add('th-ms-monitor-paper');
+        }
         tr.addEventListener('mouseenter', () => tradeHistorySetMonitorCrossHover(mid, true));
         tr.addEventListener('mouseleave', () => tradeHistorySetMonitorCrossHover(mid, false));
         tr.addEventListener('click', (ev) => {
@@ -4063,6 +4071,10 @@
                 strategy: (monitor.strategy || '').trim(),
                 market: mktDisp,
                 num: monitor.id != null && monitor.id !== '' ? monitor.id : null,
+                paper_trade:
+                  monitor.paper_trade === true ||
+                  monitor.paper_trade === 'true' ||
+                  monitor.paper_trade === 1,
               };
             });
 
