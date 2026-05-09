@@ -91,6 +91,20 @@
       justify-content: space-between;
       align-items: center;
     }
+    /* LIVE / PAPER / TEST filter row — same accent colors as dashboard monitor tiles */
+    .th-filter-trade-type-label {
+      font-weight: 600;
+      letter-spacing: 0.04em;
+    }
+    .th-filter-trade-type-label--live {
+      color: #48bb78;
+    }
+    .th-filter-trade-type-label--paper {
+      color: #fbbf24;
+    }
+    .th-filter-trade-type-label--test {
+      color: #c53030;
+    }
     .group-odd {
       background-color: #394559;
     }
@@ -826,15 +840,15 @@
       <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;" onclick="event.stopPropagation();">
         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
           <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
-          LIVE
+          <span class="th-filter-trade-type-label th-filter-trade-type-label--live">LIVE</span>
         </label>
         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
           <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
-          PAPER
+          <span class="th-filter-trade-type-label th-filter-trade-type-label--paper">PAPER</span>
         </label>
         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
           <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
-          TEST
+          <span class="th-filter-trade-type-label th-filter-trade-type-label--test">TEST</span>
         </label>
         <span class="th-monitor-all-none" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; user-select: none;" role="group" aria-label="Monitor tiles: select all or none">
           <span id="th-monitor-select-all" tabindex="0" style="cursor: pointer; color: #7dd3fc;">All</span>
