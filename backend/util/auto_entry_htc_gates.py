@@ -6,10 +6,11 @@ this file manually to stay aligned with the live paths:
 
 - **Full Hourly HTC:** ``check_auto_entry_conditions_hourly_htc`` (probability,
   differential, volume, max_ask, ``strike_data``). Use ``gate_profile="full"``.
-- **Simulated 15m (hourly monitor):** ``check_simulated_15m_entry_hourly_htc`` uses the
-  same hourly ladder snapshot as AES, ``ttc_15m`` for TTC, and side-aware 15m probability
-  on the traded side; probability band includes spike ``prob_adj`` on ``min_probability``
-  (like full Hourly HTC). No min_diff, volume, or max_ask. Use ``gate_profile="simulated_15m"``
+- **Simulated model-probe (hourly or 15m monitor):** ``check_simulated_15m_entry_hourly_htc``
+  uses the same ladder snapshot as AES for that monitor's market: hourly rows use ``ttc_15m``
+  for quarter TTC; 15m rows use native 15m ``ttc``. Side-aware 15m probability on the traded
+  side; probability band includes spike ``prob_adj`` on ``min_probability`` (like full Hourly HTC).
+  No min_diff, volume, max_ask, or Rising Devil range. Use ``gate_profile="simulated_15m"``
   in backtests when reconciling trades recorded from that path.
 
 Does not handle cooldown, DB duplicate checks, or TTC window (callers supply TTC).
@@ -118,9 +119,9 @@ def evaluate_hourly_htc_strike_entry(
     Single source of truth for Hourly HTC gates. Returns ``(payload, None)`` if all
     gates pass, else ``(None, short reason)`` for the first failing check.
 
-    ``gate_profile="simulated_15m"`` matches ``check_simulated_15m_entry_hourly_htc``:
-    probability band only (plus spike-adjusted min_probability); skips differential,
-    volume, and max_ask caps. TTC window is enforced by the caller.
+    ``gate_profile="simulated_15m"`` matches ``check_simulated_15m_entry_hourly_htc`` (hourly
+    and 15m monitors): probability band only (plus spike-adjusted min_probability); skips
+    differential, volume, max_ask, and Rising Devil range. TTC window is enforced by the caller.
 
     When the strike dict includes ``probability_min`` and ``probability_max`` (backtest rows),
     the probability gate allows entry if those bounds overlap the configured min/max range

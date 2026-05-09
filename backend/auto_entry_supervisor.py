@@ -2313,26 +2313,77 @@ def _fetch_ttc_15m_latest_header(current_symbol: str) -> Optional[int]:
     return None
 
 
-def get_master_strike_table_data_simulated_15m():
-    """Hourly ladder snapshot (same source as AES: Redis or DB) with ``ttc_15m`` and side-aware 15m probability.
+def _fetch_ttc_native_15m_latest_header(current_symbol: str) -> Optional[int]:
+    """If 15m ladder snapshot omits TTC, read latest ``ttc_15m`` from the native 15m strike table."""
+    try:
+        from backend.core.config.database import get_system_postgresql_connection
 
-    Uses ``DISTINCT ON (ticker)`` ladder rows and explicit yes/no 15m legs so simulated gates match the
-    monitor prob band on the traded side (avoids drift from a second ad-hoc SQL read).
+        conn = get_system_postgresql_connection()
+        if not conn:
+            return None
+        try:
+            ex = _strike_data_exchange_key()
+            sym_u = (current_symbol or "").upper().strip()
+            if not sym_u:
+                return None
+            table_name = get_strike_table_name(current_symbol, "15m")
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT ttc_15m FROM live_data.{table_name}
+                    WHERE exchange = %s AND symbol = %s
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """,
+                    (ex, sym_u),
+                )
+                row = cur.fetchone()
+            if row and row[0] is not None:
+                return int(row[0])
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    except Exception:
+        return None
+    return None
+
+
+def get_master_strike_table_data_simulated_15m():
+    """Ladder snapshot for the model-probe simulated path: side-aware 15m probability + quarter TTC.
+
+    - **Hourly monitors:** same hourly ladder as live AES; TTC from ``ttc_15m`` on that snapshot
+      (Kalshi quarter countdown within the hour).
+    - **15m monitors:** native 15m ladder; TTC from the 15m contract countdown (``ttc`` / ``ttc_15m``).
+
+    Uses ``DISTINCT ON (ticker)`` ladder rows and explicit yes/no 15m legs so the prob band matches
+    the traded side. Simulated entries do not apply differential / volume / max_ask / Rising Devil range.
     """
     try:
         from backend.core.strike_ladder_fetch import probability_from_strike_row_side_aware
 
         sym, mkt = get_current_monitor_symbol_and_market()
-        if (mkt or "").strip().lower() != "hourly":
+        mkt_l = (mkt or "").strip().lower()
+        if mkt_l not in ("hourly", "15m"):
             return None
         data = get_master_strike_table_data()
         if not data or "strikes" not in data:
             return None
-        raw_ttc = data.get("ttc_15m")
-        if raw_ttc is None:
-            raw_ttc = _fetch_ttc_15m_latest_header(sym)
+
+        if mkt_l == "hourly":
+            raw_ttc = data.get("ttc_15m")
+            if raw_ttc is None:
+                raw_ttc = _fetch_ttc_15m_latest_header(sym)
+        else:
+            raw_ttc = data.get("ttc")
+            if raw_ttc is None:
+                raw_ttc = data.get("ttc_15m")
+            if raw_ttc is None:
+                raw_ttc = _fetch_ttc_native_15m_latest_header(sym)
         if raw_ttc is None:
             return None
+
         out = {
             "symbol": data.get("symbol"),
             "current_price": data.get("current_price"),
@@ -2351,6 +2402,8 @@ def get_master_strike_table_data_simulated_15m():
                 row["probability"] = float(p15_side)
             elif row.get("probability_15m") is not None:
                 row["probability"] = float(row["probability_15m"])
+            elif row.get("probability") is not None:
+                row["probability"] = float(row["probability"])
             else:
                 row["probability"] = None
             out["strikes"].append(row)
@@ -3095,7 +3148,12 @@ def trigger_simulated_trade(strike_data):
 
 
 def check_simulated_15m_entry_hourly_htc():
-    """Run simulated 15m path: ``ttc_15m`` + side-aware 15m prob from hourly ladder; monitor prob/TTC gates (spike prob_adj on min); no diff/volume/ask."""
+    """Model-probe simulated trades: quarter TTC + side-aware 15m probability band only (spike prob_adj on min).
+
+    Runs for **hourly** and **15m** monitors with auto_trade. Does not apply differential, volume,
+    max_ask, or Rising Devil ``min_ask_range`` so inserts reflect internal probability behavior even
+    when live gates would block.
+    """
     import time as _t
     _throttle = getattr(check_simulated_15m_entry_hourly_htc, "_log_ts", 0)
     _now = _t.time()
@@ -3118,7 +3176,7 @@ def check_simulated_15m_entry_hourly_htc():
         data = get_master_strike_table_data_simulated_15m()
         if not data or "strikes" not in data:
             if _do_log:
-                log_debug(f"[SIMULATED 15m] skip: no strike data from hourly table")
+                log_debug(f"[SIMULATED 15m] skip: no strike ladder for simulated path")
                 check_simulated_15m_entry_hourly_htc._log_ts = _now
             return
         ttc = data.get("ttc")
@@ -3277,19 +3335,23 @@ def _check_auto_entry_conditions_impl():
     """Single-monitor check (or one bound monitor inside the 15m pool)."""
     try:
         strategy = get_trade_strategy()
-        # Simulated 15m path: all hourly monitors with auto_trade=TRUE (Breakout/Contain excluded for testing; may re-include)
+        # Simulated model-probe path: hourly and 15m monitors with auto_trade (Breakout/Contain excluded)
         try:
             import time as _t
             _, market = get_current_monitor_symbol_and_market()
-            is_hourly = (market or "").strip().lower() == "hourly"
+            mkt_l = (market or "").strip().lower()
+            is_hourly = mkt_l == "hourly"
+            is_15m = mkt_l == "15m"
             auto_on = is_auto_trade_enabled()
             # Simulated 15m: exclude Momentum Breakout/Contain for testing; may re-include later
             skip_sim = strategy in ("Momentum Breakout", "Momentum Contain")
-            if is_hourly and auto_on and not skip_sim:
+            if (is_hourly or is_15m) and auto_on and not skip_sim:
                 if not hasattr(check_auto_entry_conditions, "_sim_log_ts"):
                     check_auto_entry_conditions._sim_log_ts = 0
                 if (_t.time() - check_auto_entry_conditions._sim_log_ts) >= 90:
-                    log_debug(f"[SIMULATED 15m] running (hourly + auto_trade)")
+                    log_debug(
+                        f"[SIMULATED 15m] running ({'hourly' if is_hourly else '15m'} monitor + auto_trade)"
+                    )
                     check_auto_entry_conditions._sim_log_ts = _t.time()
                 # Only one simulated scan at a time to avoid duplicate inserts (race on duplicate check)
                 if _simulated_15m_lock.acquire(blocking=False):
