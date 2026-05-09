@@ -74,17 +74,60 @@
             align-items: center;
         }
         .th-filter-trade-type-label {
+            color: #ffffff;
             font-weight: 600;
             letter-spacing: 0.04em;
         }
-        .th-filter-trade-type-label--live {
-            color: #48bb78;
+        #filter-live,
+        #filter-paper,
+        #include-test-trades {
+            appearance: none;
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            min-width: 14px;
+            min-height: 14px;
+            margin: 0;
+            flex-shrink: 0;
+            border: 2px solid #718096;
+            border-radius: 3px;
+            background: rgba(0, 0, 0, 0.2);
+            cursor: pointer;
+            position: relative;
+            box-sizing: border-box;
+            vertical-align: middle;
         }
-        .th-filter-trade-type-label--paper {
-            color: #fbbf24;
+        #filter-live:checked {
+            background: #48bb78;
+            border-color: #48bb78;
         }
-        .th-filter-trade-type-label--test {
-            color: #c53030;
+        #filter-paper:checked {
+            background: #fbbf24;
+            border-color: #fbbf24;
+        }
+        #include-test-trades:checked {
+            background: #c53030;
+            border-color: #c53030;
+        }
+        #filter-live:checked::after,
+        #filter-paper:checked::after,
+        #include-test-trades:checked::after {
+            content: '';
+            position: absolute;
+            left: 3px;
+            top: 0;
+            width: 4px;
+            height: 8px;
+            border: solid #ffffff;
+            border-width: 0 2px 2px 0;
+            transform: rotate(45deg);
+            box-sizing: border-box;
+        }
+        #filter-live:focus-visible,
+        #filter-paper:focus-visible,
+        #include-test-trades:focus-visible {
+            outline: 2px solid #63b3ed;
+            outline-offset: 2px;
         }
         .th-search-overlay {
             display: none;
@@ -716,16 +759,16 @@
                     </div>
                     <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;" onclick="event.stopPropagation();">
                         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                            <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
-                            <span class="th-filter-trade-type-label th-filter-trade-type-label--live">LIVE</span>
+                            <input type="checkbox" id="filter-live" checked>
+                            <span class="th-filter-trade-type-label">LIVE</span>
                         </label>
                         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                            <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
-                            <span class="th-filter-trade-type-label th-filter-trade-type-label--paper">PAPER</span>
+                            <input type="checkbox" id="filter-paper">
+                            <span class="th-filter-trade-type-label">PAPER</span>
                         </label>
                         <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-                            <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
-                            <span class="th-filter-trade-type-label th-filter-trade-type-label--test">TEST</span>
+                            <input type="checkbox" id="include-test-trades">
+                            <span class="th-filter-trade-type-label">TEST</span>
                         </label>
                         <span class="th-monitor-all-none" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; user-select: none;" role="group" aria-label="Monitor tiles: select all or none">
                             <span id="th-monitor-select-all" tabindex="0" style="cursor: pointer; color: #7dd3fc;">All</span>

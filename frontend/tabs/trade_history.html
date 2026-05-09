@@ -91,19 +91,72 @@
       justify-content: space-between;
       align-items: center;
     }
-    /* LIVE / PAPER / TEST filter row — same accent colors as dashboard monitor tiles */
+    /* LIVE / PAPER / TEST: custom face so tick is always white on colored fill */
     .th-filter-trade-type-label {
+      color: #ffffff;
       font-weight: 600;
       letter-spacing: 0.04em;
     }
-    .th-filter-trade-type-label--live {
-      color: #48bb78;
+    .th-filter-trade-cb-wrap {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      cursor: pointer;
     }
-    .th-filter-trade-type-label--paper {
-      color: #fbbf24;
+    .th-filter-trade-cb-input {
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 14px;
+      height: 14px;
+      margin: 0;
+      opacity: 0;
+      cursor: pointer;
+      z-index: 2;
     }
-    .th-filter-trade-type-label--test {
-      color: #c53030;
+    .th-filter-trade-cb-face {
+      width: 14px;
+      height: 14px;
+      min-width: 14px;
+      min-height: 14px;
+      flex-shrink: 0;
+      border: 2px solid #718096;
+      border-radius: 3px;
+      background: rgba(0, 0, 0, 0.2);
+      box-sizing: border-box;
+      position: relative;
+      pointer-events: none;
+    }
+    .th-filter-trade-cb-input:checked + .th-filter-trade-cb-face--live {
+      background: #48bb78;
+      border-color: #48bb78;
+    }
+    .th-filter-trade-cb-input:checked + .th-filter-trade-cb-face--paper {
+      background: #fbbf24;
+      border-color: #fbbf24;
+    }
+    .th-filter-trade-cb-input:checked + .th-filter-trade-cb-face--test {
+      background: #c53030;
+      border-color: #c53030;
+    }
+    .th-filter-trade-cb-input:checked + .th-filter-trade-cb-face::after {
+      content: '';
+      position: absolute;
+      left: 3px;
+      top: 0;
+      width: 4px;
+      height: 8px;
+      border: solid #ffffff;
+      border-width: 0 2px 2px 0;
+      transform: rotate(45deg);
+      box-sizing: border-box;
+    }
+    .th-filter-trade-cb-input:focus-visible + .th-filter-trade-cb-face {
+      outline: 2px solid #63b3ed;
+      outline-offset: 2px;
     }
     .group-odd {
       background-color: #394559;
@@ -838,17 +891,20 @@
         </div>
       </div>
       <div style="display: flex; align-items: center; gap: 15px; flex-wrap: wrap;" onclick="event.stopPropagation();">
-        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-          <input type="checkbox" id="filter-live" checked style="width: 14px; height: 14px;">
-          <span class="th-filter-trade-type-label th-filter-trade-type-label--live">LIVE</span>
+        <label class="th-filter-trade-cb-wrap">
+          <input type="checkbox" id="filter-live" class="th-filter-trade-cb-input" checked>
+          <span class="th-filter-trade-cb-face th-filter-trade-cb-face--live" aria-hidden="true"></span>
+          <span class="th-filter-trade-type-label">LIVE</span>
         </label>
-        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-          <input type="checkbox" id="filter-paper" style="width: 14px; height: 14px;">
-          <span class="th-filter-trade-type-label th-filter-trade-type-label--paper">PAPER</span>
+        <label class="th-filter-trade-cb-wrap">
+          <input type="checkbox" id="filter-paper" class="th-filter-trade-cb-input">
+          <span class="th-filter-trade-cb-face th-filter-trade-cb-face--paper" aria-hidden="true"></span>
+          <span class="th-filter-trade-type-label">PAPER</span>
         </label>
-        <label style="display: flex; align-items: center; gap: 5px; font-size: 12px; cursor: pointer;">
-          <input type="checkbox" id="include-test-trades" style="width: 14px; height: 14px;">
-          <span class="th-filter-trade-type-label th-filter-trade-type-label--test">TEST</span>
+        <label class="th-filter-trade-cb-wrap">
+          <input type="checkbox" id="include-test-trades" class="th-filter-trade-cb-input">
+          <span class="th-filter-trade-cb-face th-filter-trade-cb-face--test" aria-hidden="true"></span>
+          <span class="th-filter-trade-type-label">TEST</span>
         </label>
         <span class="th-monitor-all-none" style="display: inline-flex; align-items: center; gap: 6px; font-size: 12px; user-select: none;" role="group" aria-label="Monitor tiles: select all or none">
           <span id="th-monitor-select-all" tabindex="0" style="cursor: pointer; color: #7dd3fc;">All</span>
