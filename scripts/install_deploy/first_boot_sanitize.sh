@@ -98,7 +98,6 @@ perform_sanitization() {
             DELETE FROM users.trade_preferences_${REC_SLOT};
             DELETE FROM users.orders_${REC_SLOT};
             DELETE FROM users.account_balance_${REC_SLOT};
-            DELETE FROM users.watchlist_${REC_SLOT};
             DELETE FROM users.auto_trade_settings_${REC_SLOT};
             
             -- Recreate auto_trade_settings with SAFE defaults (both OFF)
@@ -121,7 +120,6 @@ perform_sanitization() {
             ALTER SEQUENCE users.positions_${REC_SLOT}_id_seq RESTART WITH 1;
             ALTER SEQUENCE users.orders_${REC_SLOT}_id_seq RESTART WITH 1;
             ALTER SEQUENCE users.account_balance_${REC_SLOT}_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.watchlist_${REC_SLOT}_id_seq RESTART WITH 1;
             ALTER SEQUENCE users.auto_trade_settings_${REC_SLOT}_id_seq RESTART WITH 1;
             
             -- Clear system health data

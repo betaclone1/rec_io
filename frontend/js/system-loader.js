@@ -389,8 +389,7 @@ class SystemLoader {
         const modules = [
             { name: 'Strike Table', init: () => this.initializeStrikeTable() },
             { name: 'Active Trade Supervisor', init: () => this.initializeActiveTradeSupervisor() },
-            { name: 'Live Data', init: () => this.initializeLiveData() },
-            { name: 'Watchlist', init: () => this.initializeWatchlist() }
+            { name: 'Live Data', init: () => this.initializeLiveData() }
         ];
 
         modules.forEach(module => {
@@ -426,12 +425,6 @@ class SystemLoader {
     initializeLiveData() {
         if (typeof window.initializeLiveDataWhenReady === 'function') {
             window.initializeLiveDataWhenReady();
-        }
-    }
-
-    initializeWatchlist() {
-        if (typeof window.initializeWatchlistWhenReady === 'function') {
-            window.initializeWatchlistWhenReady();
         }
     }
 }

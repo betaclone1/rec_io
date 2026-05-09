@@ -213,12 +213,6 @@ async def get_postgresql_strike_table(symbol: str, request: Request):
     return await _get(request, path)
 
 
-@read_api_passthrough_router.get("/api/watchlist/{monitor_name}")
-async def get_watchlist(monitor_name: str, request: Request):
-    path = f"/api/watchlist/{quote_plus(monitor_name)}"
-    return await _get(request, path)
-
-
 @read_api_passthrough_router.get("/api/unified_ttc/{symbol}")
 async def get_unified_ttc(symbol: str, request: Request):
     q = request.url.query

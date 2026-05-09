@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any, Dict, Optional
 
@@ -44,27 +45,37 @@ async def _proxy_history(
     rollup_view: Optional[str],
     timeout: int = 5,
 ) -> Any:
-    if history_breaker_is_open(breaker_key):
-        return {
-            "status": "error",
-            "message": "read_api history temporarily unavailable (breaker open)",
-            "retry_in_sec": history_breaker_snapshot().get(breaker_key, {}).get("retry_in_sec", 0.0),
-        }
+    started = asyncio.get_running_loop().time()
     try:
-        params = _session_params(request, period, trading_mode, rollup_view)
-        resp = requests.get(
-            f"{READ_API_BASE_URL}{upstream_path}",
-            params=params,
-            headers=read_api_forward_headers(request),
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        history_breaker_mark_success(breaker_key)
-        return resp.json()
-    except Exception as e:
-        history_breaker_mark_failure(breaker_key)
-        _LOG.warning("[read_api proxy] Error getting %s from read_api: %s", upstream_path, e)
-        return {"status": "error", "message": f"read_api proxy failed for {upstream_path}"}
+        if history_breaker_is_open(breaker_key):
+            return {
+                "status": "error",
+                "message": "read_api history temporarily unavailable (breaker open)",
+                "retry_in_sec": history_breaker_snapshot().get(breaker_key, {}).get("retry_in_sec", 0.0),
+            }
+        try:
+            params = _session_params(request, period, trading_mode, rollup_view)
+
+            def _do_get() -> Any:
+                resp = requests.get(
+                    f"{READ_API_BASE_URL}{upstream_path}",
+                    params=params,
+                    headers=read_api_forward_headers(request),
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+            data = await asyncio.to_thread(_do_get)
+            history_breaker_mark_success(breaker_key)
+            return data
+        except Exception as e:
+            history_breaker_mark_failure(breaker_key)
+            _LOG.warning("[read_api proxy] Error getting %s from read_api: %s", upstream_path, e)
+            return {"status": "error", "message": f"read_api proxy failed for {upstream_path}"}
+    finally:
+        elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000.0
+        _LOG.info("dashboard_read_proxy %s %.1fms", upstream_path, elapsed_ms)
 
 
 async def _proxy_simple_get(
@@ -74,19 +85,28 @@ async def _proxy_simple_get(
     *,
     timeout: int = 5,
 ) -> Any:
+    started = asyncio.get_running_loop().time()
     try:
-        params = read_api_query_with_session(request, params)
-        resp = requests.get(
-            f"{READ_API_BASE_URL}{upstream_path}",
-            params=params,
-            headers=read_api_forward_headers(request),
-            timeout=timeout,
-        )
-        resp.raise_for_status()
-        return resp.json()
-    except Exception as e:
-        _LOG.warning("[read_api proxy] Error getting %s from read_api: %s", upstream_path, e)
-        return {"status": "error", "message": f"read_api proxy failed for {upstream_path}"}
+        try:
+            params = read_api_query_with_session(request, params)
+
+            def _do_simple() -> Any:
+                resp = requests.get(
+                    f"{READ_API_BASE_URL}{upstream_path}",
+                    params=params,
+                    headers=read_api_forward_headers(request),
+                    timeout=timeout,
+                )
+                resp.raise_for_status()
+                return resp.json()
+
+            return await asyncio.to_thread(_do_simple)
+        except Exception as e:
+            _LOG.warning("[read_api proxy] Error getting %s from read_api: %s", upstream_path, e)
+            return {"status": "error", "message": f"read_api proxy failed for {upstream_path}"}
+    finally:
+        elapsed_ms = (asyncio.get_running_loop().time() - started) * 1000.0
+        _LOG.info("dashboard_read_proxy %s %.1fms", upstream_path, elapsed_ms)
 
 
 @dashboard_read_proxy_router.get("/api/portfolio/history")

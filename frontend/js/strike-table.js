@@ -1128,7 +1128,8 @@ function loadDiffModeFromPreferences() {
 // Interval IDs for pause-when-hidden (Trade Monitor tab)
 let middleColumnIntervalId = null;
 let strikeTableIntervalId = null;
-const STRIKE_TABLE_FALLBACK_POLL_MS = 2500;
+/** Fallback when WS quiet; primary updates come from /ws/db_changes coalescing in orderbook-redis-ui.js */
+const STRIKE_TABLE_FALLBACK_POLL_MS = 3500;
 
 function startStrikeTablePolling() {
   if (middleColumnIntervalId != null) clearInterval(middleColumnIntervalId);

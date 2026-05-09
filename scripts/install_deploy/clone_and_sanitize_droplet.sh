@@ -271,7 +271,6 @@ sanitize_user_data() {
             DELETE FROM users.trade_preferences_${REC_SLOT};
             DELETE FROM users.orders_${REC_SLOT};
             DELETE FROM users.account_balance_${REC_SLOT};
-            DELETE FROM users.watchlist_${REC_SLOT};
             DELETE FROM users.auto_trade_settings_${REC_SLOT};
             
             -- Reset sequences
@@ -281,7 +280,6 @@ sanitize_user_data() {
             ALTER SEQUENCE users.positions_${REC_SLOT}_id_seq RESTART WITH 1;
             ALTER SEQUENCE users.orders_${REC_SLOT}_id_seq RESTART WITH 1;
             ALTER SEQUENCE users.account_balance_${REC_SLOT}_id_seq RESTART WITH 1;
-            ALTER SEQUENCE users.watchlist_${REC_SLOT}_id_seq RESTART WITH 1;
             ALTER SEQUENCE users.auto_trade_settings_${REC_SLOT}_id_seq RESTART WITH 1;
             
             -- Clear system health data
@@ -438,10 +436,6 @@ EMPTY_PEM_EOF
             
             CREATE TABLE IF NOT EXISTS users.account_balance_'${NEW_USER_ID#user_}' (
                 LIKE users.account_balance_${REC_SLOT} INCLUDING ALL
-            );
-            
-            CREATE TABLE IF NOT EXISTS users.watchlist_'${NEW_USER_ID#user_}' (
-                LIKE users.watchlist_${REC_SLOT} INCLUDING ALL
             );
             
             CREATE TABLE IF NOT EXISTS users.auto_trade_settings_'${NEW_USER_ID#user_}' (

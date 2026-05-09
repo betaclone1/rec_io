@@ -333,7 +333,7 @@ test_deployment() {
     success "Main app health check passed"
     
     # Test API endpoints
-    local endpoints=("api/ports" "api/active_trades" "api/strike_tables/btc" "api/watchlist/btc" "api/db/system_health" "api/db/trades")
+    local endpoints=("api/ports" "api/active_trades" "api/strike_tables/btc" "api/db/system_health" "api/db/trades")
     
     for endpoint in "${endpoints[@]}"; do
         if ! curl -s "http://$SERVER_IP:3000/$endpoint" > /dev/null; then

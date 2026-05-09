@@ -130,63 +130,6 @@ def _aes_preferences_notify(event_type: str, data: dict) -> None:
         log(f"[AUTO_ENTRY] preferences notify error (event_type={event_type}): {exc}")
 
 
-# Add these functions after the existing imports and before the get_monitor_identifier function
-
-def create_monitor_watchlist_table_DELETED():
-    """Create monitor-specific watchlist table when supervisor starts"""
-    try:
-        conn = get_db_connection()
-        if not conn:
-            return
-        with conn.cursor() as cursor:
-            # Create monitor-specific watchlist table
-            watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
-            cursor.execute(f"""
-                CREATE TABLE IF NOT EXISTS live_data.{watchlist_table} (
-                    id SERIAL PRIMARY KEY,
-                    symbol VARCHAR(10),
-                    current_price DECIMAL(10,2),
-                    ttc_seconds INTEGER,
-                    broker VARCHAR(20),
-                    event_ticker VARCHAR(50),
-                    market_title VARCHAR(200),
-                    strike_tier VARCHAR(20),
-                    market_status VARCHAR(20),
-                    strike DECIMAL(10,2),
-                    buffer DECIMAL(10,2),
-                    buffer_pct DECIMAL(5,2),
-                    probability DECIMAL(5,2),
-                    yes_ask_dollars NUMERIC(12,6),
-                    no_ask_dollars NUMERIC(12,6),
-                    yes_diff INTEGER,
-                    no_diff INTEGER,
-                    volume_fp TEXT,
-                    ticker VARCHAR(50),
-                    active_side VARCHAR(10),
-                    created_at TIMESTAMP DEFAULT NOW()
-                )
-            """)
-            conn.commit()
-        conn.close()
-        log_debug(f"[WATCHLIST] Created monitor-specific watchlist table: {watchlist_table}")
-    except Exception as e:
-        log(f"[WATCHLIST] ❌ Error creating watchlist table: {e}")
-
-def drop_monitor_watchlist_table_DELETED():
-    """Drop monitor-specific watchlist table when supervisor stops"""
-    try:
-        import psycopg2
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            # Drop monitor-specific watchlist table
-            watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
-            cursor.execute(f"DROP TABLE IF EXISTS live_data.{watchlist_table}")
-            conn.commit()
-        conn.close()
-        log_debug(f"[WATCHLIST] Dropped monitor-specific watchlist table: {watchlist_table}")
-    except Exception as e:
-        log(f"[WATCHLIST] ❌ Error dropping watchlist table: {e}")
-
 # Monitor identification - extract from script name or command line args
 def get_monitor_identifier():
     """Extract monitor identifier from script name or command line arguments"""
@@ -2299,11 +2242,6 @@ def get_strike_table_path():
     current_symbol = get_current_monitor_symbol()
     return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", f"strike_table_{current_symbol.lower()}.json")
 
-def get_watchlist_path_DELETED():
-    """Get the path to the watchlist JSON file"""
-    current_symbol = get_current_monitor_symbol()
-    return os.path.join(get_data_dir(), "live_data", "markets", "kalshi", "strike_tables", f"{current_symbol.lower()}_watchlist.json")
-
 def get_master_strike_table_data():
     """Get current master strike table data from PostgreSQL (uses monitor symbol + market)."""
     sym, mkt = get_current_monitor_symbol_and_market()
@@ -2334,7 +2272,7 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
             current_symbol, current_market, _strike_data_exchange_key()
         )
     except Exception as e:
-        log(f"[WATCHLIST] Error reading master strike table data from PostgreSQL: {e}")
+        log(f"[AUTO_ENTRY] Error reading master strike table data: {e}")
         return None
 
 
@@ -2421,227 +2359,6 @@ def get_master_strike_table_data_simulated_15m():
         log(f"[SIMULATED 15m] Error building simulated ladder: {e}")
         return None
 
-
-def generate_watchlist_from_strike_table_DELETED():
-    """Generate watchlist by filtering the master strike table based on auto entry settings"""
-    try:
-        # Get master strike table data
-        strike_table_data = get_master_strike_table_data()
-        if not strike_table_data or "strikes" not in strike_table_data:
-            log_debug(f"[WATCHLIST] No master strike table data available")
-            return False
-        
-        current_price = strike_table_data.get("current_price")
-        ttc_seconds = strike_table_data.get("ttc")
-        strikes = strike_table_data["strikes"]
-        market_data = {
-            "event_ticker": strike_table_data.get("event_ticker"),
-            "event_title": strike_table_data.get("market_title"),
-            "strike_tier": strike_table_data.get("strike_tier"),
-            "market_status": strike_table_data.get("market_status")
-        }
-        
-        # Load auto entry settings for filter parameters
-        settings = get_auto_entry_settings()
-        if not settings:
-            log_debug(f"[WATCHLIST] No auto entry settings available")
-            return False
-        
-        min_volume = settings.get("watchlist_min_volume", 1000)
-        max_ask = settings.get("watchlist_max_ask", 98)
-        min_probability = settings.get("min_probability", 0) - 5  # Subtract 5 from min_probability
-        min_differential = settings.get("min_differential", 0) - 3  # Subtract 3 from min_differential
-        max_differential = settings.get("max_differential", None)  # No default, use None if not set
-        
-        # Check if settings have changed
-        max_diff_str = f", max_diff={max_differential}" if max_differential is not None else ""
-        current_settings = f"min_prob={min_probability}, min_diff={min_differential}{max_diff_str}, min_vol={min_volume}, max_ask={max_ask}"
-        global previous_watchlist_settings
-        if previous_watchlist_settings != current_settings:
-            log_debug(f"[WATCHLIST] Filtering with settings: {current_settings}")
-            previous_watchlist_settings = current_settings
-        
-        # Filter strikes for watchlist
-        filtered_strikes = []
-        for strike in strikes:
-            vol_n = _kalshi_fp_volume_number(strike.get("volume_fp"))
-            probability = strike.get("probability")
-            yes_ask_dollars = strike.get("yes_ask_dollars")
-            no_ask_dollars = strike.get("no_ask_dollars")
-            yes_diff = strike.get("yes_diff")
-            no_diff = strike.get("no_diff")
-            
-            if (vol_n is None or probability is None or 
-                yes_ask_dollars is None or no_ask_dollars is None or
-                yes_diff is None or no_diff is None):
-                continue
-            
-            max_ask_price_cents = max(
-                float(yes_ask_dollars) * 100.0,
-                float(no_ask_dollars) * 100.0,
-            )
-            max_ask_threshold_cents = max_ask * 100.0 if max_ask < 1 else float(max_ask)
-            
-            # Determine which side would be the active buy button
-            is_above_money_line = strike.get("strike", 0) > current_price
-            
-            # Get the active button's differential
-            active_diff = no_diff if is_above_money_line else yes_diff
-            
-            # Check if at least one side meets the differential requirement
-            yes_diff_ok = yes_diff >= min_differential
-            no_diff_ok = no_diff >= min_differential
-            at_least_one_diff_ok = yes_diff_ok or no_diff_ok
-            
-            # Check max_differential constraint on active side
-            max_diff_ok = True  # Default to True if max_differential is not set
-            if max_differential is not None:
-                # Check the active side's differential against max_differential
-                if is_above_money_line:
-                    # Above money line: active side is NO
-                    max_diff_ok = no_diff <= max_differential
-                else:
-                    # Below money line: active side is YES
-                    max_diff_ok = yes_diff <= max_differential
-            
-            # Apply filter criteria from auto entry settings
-            volume_ok = vol_n >= min_volume
-            probability_ok = probability > min_probability
-            ask_ok = max_ask_price_cents <= max_ask_threshold_cents
-            
-            if (volume_ok and probability_ok and ask_ok and at_least_one_diff_ok and max_diff_ok):
-                filtered_strikes.append(strike)
-        
-        # Sort by probability (highest to lowest)
-        filtered_strikes.sort(key=lambda x: x.get("probability", 0), reverse=True)
-        
-        # Create watchlist output
-        current_symbol = get_current_monitor_symbol()
-        watchlist_output = {
-            "symbol": current_symbol,
-            "current_price": current_price,
-            "ttc": ttc_seconds,
-            "broker": "Kalshi",
-            "event_ticker": market_data.get("event_ticker"),
-            "market_title": market_data.get("event_title"),
-            "strike_tier": market_data.get("strike_tier"),
-            "market_status": market_data.get("market_status"),
-            "last_updated": est_now().isoformat(),
-            "strikes": filtered_strikes
-        }
-        
-        # Write watchlist to PostgreSQL using monitor-specific table
-        try:
-            import psycopg2
-            conn = get_db_connection()
-            with conn.cursor() as cursor:
-                # Use monitor-specific watchlist table
-                watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
-                
-                # Clear existing watchlist data for this monitor
-                cursor.execute(f"DELETE FROM live_data.{watchlist_table}")
-                
-                # Insert filtered strikes into monitor-specific watchlist table
-                for strike in filtered_strikes:
-                    cursor.execute(f"""
-                        INSERT INTO live_data.{watchlist_table} (
-                            symbol, current_price, ttc_seconds, broker, event_ticker,
-                            market_title, strike_tier, market_status, strike, buffer,
-                            buffer_pct, probability, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff,
-                            volume_fp, ticker, active_side
-                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                    """, (
-                        current_symbol, current_price, ttc_seconds, "Kalshi", market_data.get("event_ticker"),
-                        market_data.get("event_title"), market_data.get("strike_tier"),
-                        market_data.get("market_status"), strike.get("strike"), strike.get("buffer"),
-                        strike.get("buffer_pct"), strike.get("probability"), strike.get("yes_ask_dollars"),
-                        strike.get("no_ask_dollars"), strike.get("yes_diff"), strike.get("no_diff"),
-                        strike.get("volume_fp"), strike.get("ticker"), strike.get("active_side")
-                    ))
-                conn.commit()
-                conn.close()
-                return True
-        except Exception as e:
-            log(f"[WATCHLIST] Error writing to PostgreSQL: {e}")
-            return False
-        
-    except Exception as e:
-        log(f"[WATCHLIST] Error generating watchlist: {e}")
-        return False
-
-def get_watchlist_data_DELETED():
-    """Get current watchlist data from monitor-specific PostgreSQL table"""
-    try:
-        import psycopg2
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            # Use monitor-specific watchlist table
-            watchlist_table = f"watchlist_{ctx_user()}_{ctx_mid()}"
-            cursor.execute(f"""
-                SELECT
-                    symbol,
-                    current_price,
-                    ttc_seconds,
-                    broker,
-                    event_ticker,
-                    market_title,
-                    strike_tier,
-                    market_status
-                FROM live_data.{watchlist_table}
-                LIMIT 1
-            """)
-            header_data = cursor.fetchone()
-            if not header_data:
-                # No watchlist data - this is normal when no strikes meet filter criteria
-                return None
-            cursor.execute(f"""
-                SELECT
-                    strike,
-                    buffer,
-                    buffer_pct,
-                    probability,
-                    yes_ask_dollars,
-                    no_ask_dollars,
-                    yes_diff,
-                    no_diff,
-                    volume_fp,
-                    ticker,
-                    active_side
-                FROM live_data.{watchlist_table}
-                ORDER BY probability DESC
-            """)
-            strikes_data = cursor.fetchall()
-            response = {
-                "symbol": header_data[0],
-                "current_price": float(header_data[1]) if header_data[1] else None,
-                "ttc": int(header_data[2]) if header_data[2] else None,
-                "broker": header_data[3],
-                "event_ticker": header_data[4],
-                "market_title": header_data[5],
-                "strike_tier": header_data[6],
-                "market_status": header_data[7],
-                "strikes": []
-            }
-            for strike_row in strikes_data:
-                strike_data = {
-                    "strike": float(strike_row[0]) if strike_row[0] else None,
-                    "buffer": float(strike_row[1]) if strike_row[1] else None,
-                    "buffer_pct": float(strike_row[2]) if strike_row[2] else None,
-                    "probability": float(strike_row[3]) if strike_row[3] else None,
-                    "yes_ask_dollars": float(strike_row[4]) if strike_row[4] is not None else None,
-                    "no_ask_dollars": float(strike_row[5]) if strike_row[5] is not None else None,
-                    "yes_diff": float(strike_row[6]) if strike_row[6] else None,
-                    "no_diff": float(strike_row[7]) if strike_row[7] else None,
-                    "volume_fp": strike_row[8] if strike_row[8] is None else str(strike_row[8]).strip(),
-                    "ticker": strike_row[9],
-                    "active_side": strike_row[10]
-                }
-                response["strikes"].append(strike_data)
-            conn.close()
-            return response
-    except Exception as e:
-        log(f"[AUTO ENTRY] Error reading watchlist data from PostgreSQL: {e}")
-        return None
 
 def get_position_size():
     """Get total position size from monitor-specific configuration"""
@@ -3617,7 +3334,7 @@ def _check_auto_entry_conditions_impl():
 def check_auto_entry_conditions_hourly_htc():
     """Check if auto entry conditions are met and trigger trades for Hourly HTC strategy"""
     try:
-        # Get strike table data directly (no watchlist needed)
+        # Get strike table data directly
         
         # Check spike alert conditions first
         check_spike_alert_conditions()
@@ -4171,7 +3888,7 @@ def check_auto_entry_conditions_reverse_htc():
     It uses the same entry logic as Hourly HTC but enters with the OPPOSITE side.
     """
     try:
-        # Get strike table data directly (no watchlist needed)
+        # Get strike table data directly
         
         # Check spike alert conditions first
         check_spike_alert_conditions()

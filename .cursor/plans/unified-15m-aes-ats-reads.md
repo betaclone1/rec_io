@@ -12,7 +12,7 @@
 - **One** `auto_entry_supervisor` process (15m pool) that, each tick, **iterates all monitors** with `market = '15m'` (and `auto_trade` / eligibility rules as today), using **per-monitor context** (symbol, settings, cooldowns, state) so behavior stays isolated.
 - **One** `active_trade_supervisor` process (15m pool) that **iterates all 15m monitors** and runs auto-stop / monitoring logic **per monitor**, again with explicit `monitor_id` (and user number) everywhere.
 - **Hourly monitors — intentionally untouched for this initiative:** keep **one AES + one ATS per hourly monitor**, same scripts, ports, and logic. **Do not** fold hourlies into the global 15m processes.
-  - **Reason:** Hourly is a **different animal**: each hourly monitor is oriented around **many strikes** (full chain / watchlist-style behavior). 15m, by product definition here, is **one strike per monitor/cycle**, so iterating many 15m monitors in one process is simpler and lower risk. Consolidating hourly would need its own design pass (state, bracket rules, multi-strike scans) and is **explicitly deferred**.
+  - **Reason:** Hourly is a **different animal**: each hourly monitor is oriented around **many strikes** (full chain). 15m, by product definition here, is **one strike per monitor/cycle**, so iterating many 15m monitors in one process is simpler and lower risk. Consolidating hourly would need its own design pass (state, bracket rules, multi-strike scans) and is **explicitly deferred**.
 
 ## Active trades storage
 

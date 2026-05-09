@@ -289,7 +289,7 @@ window.prepareTradeData = async function(target) {
       strike = parseFloat(strikeCell.textContent.replace(/\$|,/g, ''));
     }
     
-    // Side is ONLY the active_side from the watchlist JSON
+    // Side from data-side on the strike-row button (strike table UI)
     if (target.dataset.side) {
       side = target.dataset.side;
   

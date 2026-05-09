@@ -158,7 +158,7 @@ Legacy REST poller moved to `archive/2026-03-legacy-kalshi-market-watchdog/kalsh
 |--------|---------|
 | **Mechanism** | `logging` (logger name `auto_entry_supervisor`). EST formatter, single handler to stdout with flush. `log(msg)` → INFO; `log_debug(msg)` → DEBUG. |
 | **Destination** | stdout → supervisor. |
-| **Volume** | INFO: startup (user, monitor, symbol, port), **spike started** / **spike ended** (monitor_id), STATUS CHANGE (auto_trade_status), SPIKE DETECTED, RECOVERY COMPLETE, errors (❌). DEBUG: cooldown/notification sent, symbol/market change, settings changed, watchlist, check #N, position loaded, "No monitor found", recovery in progress, still in spike conditions, started/reset cooldown DB, heartbeat detail. |
+| **Volume** | INFO: startup (user, monitor, symbol, port), **spike started** / **spike ended** (monitor_id), STATUS CHANGE (auto_trade_status), SPIKE DETECTED, RECOVERY COMPLETE, errors (❌). DEBUG: cooldown/notification sent, symbol/market change, settings changed, check #N, position loaded, "No monitor found", recovery in progress, still in spike conditions, started/reset cooldown DB, heartbeat detail. |
 | **Notable** | Internal heartbeat every 5 min. Explicit `_aes_logger.info("spike started monitor_id=%s", MONITOR_ID)` and `"spike ended monitor_id=%s"` for cooldown lifecycle. auto_trade_status change already at INFO. |
 | **Extra files** | None. |
 
@@ -280,7 +280,7 @@ Cross-check of the **project `logs/`** directory and other log locations. Done 2
 - **Legacy / old program names (no longer in current supervisor):**  
   `kalshi_market_watchdog_*` (script archived 2026-03), per-symbol `strike_table_generator_*`, `symbol_price_watchdog_ndx`, `symbol_price_watchdog_spx`, etc. Current generator uses `market_watchdog_ws_kalshi_hourly`, `market_watchdog_ws_kalshi_15m`, `strike_table_generator_ws_hourly`, `strike_table_generator_ws_15m`. Old `.out.log` files may remain on disk.
 - **Dedicated `auto_entry_supervisor_0001_10019.log`:**  
-  Single plain `.log` file (no `.out`/`.err`). **main_app** (admin log-serving routes under `backend/web/routers/`) prefers this when serving the “out” log for script name `auto_entry_supervisor_0001_10019` (see §1 main_app). **Current `auto_entry_supervisor.py` does not write to it** — it only prints to stdout (supervisor captures to `.out.log`). So this file was either from an older code path, a test (`auto_entry_supervisor_test.py` references a similar path), or a one-off. **Action:** Treat as legacy; document that the UI prefers it if present; consider removing the special case in the log-view route once we standardize on .out.log.
+  Single plain `.log` file (no `.out`/`.err`). **main_app** (admin log-serving routes under `backend/web/routers/`) prefers this when serving the “out” log for script name `auto_entry_supervisor_0001_10019` (see §1 main_app). **Current `auto_entry_supervisor.py` does not write to it** — it only prints to stdout (supervisor captures to `.out.log`). So this file was likely from an older code path or a one-off. **Action:** Treat as legacy; document that the UI prefers it if present; consider removing the special case in the log-view route once we standardize on .out.log.
 - **log_archive/monitor_log_archive/:**  
   **monitor_manager** moves inactive monitor logs here (cleanup of deactivated monitors). It’s a **destination** for moved `.out.log`/`.err.log` files, not an extra writer. Do not rotate/delete blindly; document as part of retention policy.
 - **kalshi_websocket_market.log:**  

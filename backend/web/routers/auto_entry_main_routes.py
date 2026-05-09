@@ -1,5 +1,6 @@
 """Auto-entry monitor_list reads/writes, read_api auto-stop accuracy proxy, trigger_open_trade."""
 
+import asyncio
 import logging
 import uuid
 from typing import Any, Dict
@@ -144,14 +145,18 @@ async def get_monitor_auto_stop_accuracy(request: Request, monitor_id: str = Non
         if monitor_id:
             params["monitor_id"] = monitor_id
         params = read_api_query_with_session(request, params)
-        resp = requests.get(
-            f"{_READ_API_BASE_URL}/api/monitor_auto_stop_accuracy",
-            params=params,
-            headers=read_api_forward_headers(request),
-            timeout=5,
-        )
-        resp.raise_for_status()
-        return resp.json()
+
+        def _do_accuracy() -> Any:
+            resp = requests.get(
+                f"{_READ_API_BASE_URL}/api/monitor_auto_stop_accuracy",
+                params=params,
+                headers=read_api_forward_headers(request),
+                timeout=5,
+            )
+            resp.raise_for_status()
+            return resp.json()
+
+        return await asyncio.to_thread(_do_accuracy)
     except Exception as e:
         _log.warning("[read_api proxy] Error getting monitor_auto_stop_accuracy from read_api: %s", e)
         return {"status": "error", "message": "read_api proxy failed for /api/monitor_auto_stop_accuracy"}

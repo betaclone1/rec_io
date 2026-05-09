@@ -139,7 +139,7 @@ tr.spanner-row td {
   padding: 2px 4px !important;
 }
 
-/* Main monitor strike table (#strike-table): body rows ~10% smaller than header; watchlist keeps base .strike-table sizes. */
+/* Main monitor strike table (#strike-table): body rows ~10% smaller than header. */
 #strike-table tbody td {
   font-size: 12.6px;
   padding: 3.6px 5.4px;

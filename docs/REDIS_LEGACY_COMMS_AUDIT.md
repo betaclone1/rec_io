@@ -123,13 +123,9 @@ Originally tracked as **`main.py` monolith**; **notify / broadcast / WS** implem
 
 ---
 
-### A7. auto_entry_supervisor_test.py
+### A7. ~~auto_entry_supervisor_test.py~~ (removed)
 
-| Item | Function / line | Current behavior | Migration action |
-|------|------------------|------------------|------------------|
-| 1 | Same pattern as A6 | Test / mirror of AES | Update tests to use Redis or mock Redis when migrating A6. |
-
-- [ ] A7 done: Tests updated for Redis-based comms.
+The standalone **`backend/auto_entry_supervisor_test.py`** harness was deleted. Cover AES integration with targeted unit tests and Redis mocks when migrating A6.
 
 ---
 

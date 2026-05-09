@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-08 — CPU load reduction (read paths, trading-safe)
+
+**Summary**
+- **read_api:** Single-query `live_symbol_status_snapshot`; one-query `monitor_auto_stop_accuracy`; shared PG connection for dashboard `history-bundle`; `/core` uses one DB connection where practical, Kraken ticker short TTL cache, route timing on auto-stop + orderbook liquidity; strike-table read path tweaks; **~0.35s** TTL cache on batch orderbook liquidity map (keyed by sorted ticker set).
+- **read_api logging:** [`backend/web/read_api_logging.py`](../backend/web/read_api_logging.py) attaches a flushing **stdout** handler so **`read_api_route`** lines reliably land in **`logs/read_api.out.log`** for baseline and deploy checks.
+- **Deploy gate:** [`scripts/verify_read_path_deploy_ready.sh`](../scripts/verify_read_path_deploy_ready.sh) — health on **3000 / 8001 / 3050**, **`GET /core`** smoke, and grep for **`read_api_route`** in the read_api log tail.
+- **main_app:** Non-blocking `requests` in dashboard read proxies and auto-entry monitor accuracy proxy (`asyncio.to_thread`); `dashboard_read_proxy` timing logs; **`/frontend-changes`** uses short TTL cache + `asyncio.to_thread` for `os.walk`.
+- **Frontend:** Strike-table fallback poll **3.5s** (WS + debounced refresh remains primary).
+- **Docs:** [`docs/cpu-read-path-baseline.md`](../cpu-read-path-baseline.md) for baseline/compare procedure.
+- **Watchlist removal:** All watchlist API code, UI hooks, supervisor dead code, **`auto_entry_supervisor_test.py`**, and **`users.watchlist_*`** provisioning/sanitize/clone steps removed from install scripts.
+- **Trading plane:** No intentional changes to `trade_manager`, `trade_executor`, `auto_entry_supervisor` **runtime** behavior, `monitor_manager`, `redis_switchboard`, or lifecycle consumers.
+
+**Rollback**
+- Revert the commit(s) touching `read_api.py`, `dashboard_portfolio_queries.py`, dashboard/auto-entry routers, `main_misc_routes.py`, and the listed frontend JS files; restart `./scripts/MASTER_RESTART.sh`.
+
+**Verification checklist (local after restart)**
+- [ ] `./scripts/verify_read_path_deploy_ready.sh` (must pass before treating read-path deploy as green)
+- [ ] `curl -sSf http://localhost:3000/health && curl -sSf http://localhost:8001/health && curl -sSf http://localhost:3050/health`
+- [ ] `supervisorctl` status for `read_api`, `main_app`, supervisors
+- [ ] Smoke: dashboard history charts load; trade monitor strike ladder; auto-entry accuracy panel if used
+- [ ] Logs: `grep -E 'read_api_route|read_api_proxy|dashboard_read_proxy' logs/*.out.log` — no spike in errors; compare hot-route ms vs prior baseline per [`docs/cpu-read-path-baseline.md`](../cpu-read-path-baseline.md)
+
+---
+
 ## 2026-05-08 — Release v3.5.0: Slim main_app wiring, extracted backend/web routers, and tenant-literal CI guard update
 
 **Summary**

@@ -1,10 +1,12 @@
 """System settings, paper seed, trade prefs, account sync, dashboard/portfolio helpers, logs, health."""
 
+import asyncio
 import json
 import logging
 import os
 import threading
-from typing import Optional
+import time
+from typing import Optional, Tuple
 
 import psycopg2
 from fastapi import APIRouter, HTTPException, Request
@@ -23,6 +25,10 @@ from backend.web.response_cache_headers import apply_private_no_store_headers
 from backend.util.trade_logger import get_trade_logs, log_trade_event
 
 _log = logging.getLogger("main_app")
+
+_frontend_changes_lock = threading.Lock()
+_frontend_changes_cache: Optional[Tuple[float, float]] = None
+_FRONTEND_CHANGES_TTL_SEC = 5.0
 
 main_misc_router = APIRouter()
 
@@ -162,10 +168,8 @@ async def trigger_account_sync():
     return {"ok": True}
 
 
-@main_misc_router.get("/frontend-changes")
-def frontend_changes():
-    """Get the latest modification time of frontend files for cache busting."""
-    latest = 0
+def _compute_frontend_last_modified() -> float:
+    latest = 0.0
     for root, dirs, files in os.walk("frontend"):
         for f in files:
             path = os.path.join(root, f)
@@ -175,6 +179,20 @@ def frontend_changes():
                     latest = mtime
             except Exception:
                 pass
+    return float(latest)
+
+
+@main_misc_router.get("/frontend-changes")
+async def frontend_changes():
+    """Get the latest modification time of frontend files for cache busting."""
+    global _frontend_changes_cache
+    now_m = time.monotonic()
+    with _frontend_changes_lock:
+        if _frontend_changes_cache is not None and now_m < _frontend_changes_cache[0]:
+            return {"last_modified": _frontend_changes_cache[1]}
+    latest = await asyncio.to_thread(_compute_frontend_last_modified)
+    with _frontend_changes_lock:
+        _frontend_changes_cache = (now_m + _FRONTEND_CHANGES_TTL_SEC, latest)
     return {"last_modified": latest}
 
 

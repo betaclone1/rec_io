@@ -22,11 +22,7 @@ REPO = Path(__file__).resolve().parents[2]
 BACKEND = REPO / "backend"
 
 # Whole-file skips (template DDL / generated / tests live only here)
-SKIP_FILES = frozenset(
-    {
-        BACKEND / "auto_entry_supervisor_test.py",
-    }
-)
+SKIP_FILES = frozenset()
 
 SKIP_DIR_PARTS = frozenset(
     {

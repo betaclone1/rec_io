@@ -22,11 +22,11 @@ panel without adding routes to main_app.
 
 import asyncio
 import json
-import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta
-from typing import Dict, Any, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import requests
 from psycopg2 import sql
@@ -45,6 +45,7 @@ from backend.core.trade_history_preferences_handlers import (
 )
 from backend.core.dashboard_portfolio_queries import (
     bankroll_history_payload,
+    dashboard_history_bundle_payload,
     performance_realized_payload,
     pnl_history_payload,
     portfolio_history_payload,
@@ -74,6 +75,7 @@ from backend.util.trade_log_archivist import (
 from backend.web.auth_routes import auth_router, user_router
 from backend.web.auth_self_registration import self_reg_router
 from backend.web.tenant_asgi import WebTenantMiddleware
+from backend.web.read_api_logging import get_read_api_logger
 from backend.core.time_eastern import now_est
 
 app = FastAPI(title="read_api")
@@ -89,7 +91,41 @@ app.add_middleware(
 app.include_router(auth_router, prefix="/api/auth")
 app.include_router(self_reg_router, prefix="/api/auth")
 app.include_router(user_router, prefix="/api/user")
-_read_logger = logging.getLogger("read_api")
+_read_logger = get_read_api_logger()
+
+# Short TTL cache for Kraken public ticker (reduces duplicate HTTP on /core hot path).
+_kraken_ticker_lock = threading.Lock()
+_kraken_ticker_cache: Optional[Dict[str, Any]] = None
+_kraken_ticker_expires_monotonic: float = 0.0
+_KRAKEN_TICKER_TTL_SEC = 2.5
+
+# Short TTL cache for batch orderbook liquidity probes (absorbs UI polling bursts).
+_liquidity_map_lock = threading.Lock()
+_liquidity_map_cache: Dict[str, Tuple[float, Dict[str, bool]]] = {}
+_LIQUIDITY_MAP_TTL_SEC = 0.35
+
+
+def _kraken_xxbtzusd_ticker_cached() -> Optional[Dict[str, Any]]:
+    """Return Kraken ``XXBTZUSD`` ticker object or None; shared TTL across /core paths."""
+    global _kraken_ticker_cache, _kraken_ticker_expires_monotonic
+    now_m = time.monotonic()
+    with _kraken_ticker_lock:
+        if _kraken_ticker_cache is not None and now_m < _kraken_ticker_expires_monotonic:
+            return _kraken_ticker_cache
+    try:
+        response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
+        if response.status_code != 200:
+            return None
+        data = response.json()
+        ticker = data.get("result", {}).get("XXBTZUSD")
+        if not isinstance(ticker, dict):
+            return None
+        with _kraken_ticker_lock:
+            _kraken_ticker_cache = ticker
+            _kraken_ticker_expires_monotonic = time.monotonic() + _KRAKEN_TICKER_TTL_SEC
+        return ticker
+    except Exception:
+        return None
 
 
 class TradeHistoryInsightsBody(BaseModel):
@@ -701,6 +737,7 @@ async def get_trade_monitor_orderbook_liquidity(
     ),
 ) -> JSONResponse:
     """Batch liquidity probe for trade-monitor strike rows."""
+    started = time.perf_counter()
     from backend.core.trade_monitor_live_orderbook_payload import (
         build_trade_monitor_orderbook_liquidity_map,
     )
@@ -710,28 +747,43 @@ async def get_trade_monitor_orderbook_liquidity(
         mt = tok.strip()
         if mt:
             tickers.append(mt)
-    if not tickers:
-        return JSONResponse({"liquidity_by_ticker": {}})
-    # Keep request bounded to avoid accidental oversized probes.
-    tickers = tickers[:200]
-
-    conn = get_system_postgresql_connection()
-    if not conn:
-        return JSONResponse({"error": "database_unavailable"}, status_code=503)
     try:
-        with conn.cursor() as cursor:
-            payload = build_trade_monitor_orderbook_liquidity_map(
-                cursor,
-                market_tickers=tickers,
-            )
-        return JSONResponse({"liquidity_by_ticker": payload})
-    except Exception:
-        return JSONResponse({"error": "orderbook_liquidity_failed"}, status_code=503)
-    finally:
+        if not tickers:
+            return JSONResponse({"liquidity_by_ticker": {}})
+        # Keep request bounded to avoid accidental oversized probes.
+        tickers = tickers[:200]
+
+        cache_key = ",".join(sorted(set(tickers)))
+        now_mono = time.monotonic()
+        with _liquidity_map_lock:
+            hit = _liquidity_map_cache.get(cache_key)
+            if hit is not None and now_mono < hit[0]:
+                return JSONResponse({"liquidity_by_ticker": hit[1]})
+
+        conn = get_system_postgresql_connection()
+        if not conn:
+            return JSONResponse({"error": "database_unavailable"}, status_code=503)
         try:
-            conn.close()
+            with conn.cursor() as cursor:
+                payload = build_trade_monitor_orderbook_liquidity_map(
+                    cursor,
+                    market_tickers=tickers,
+                )
+            with _liquidity_map_lock:
+                _liquidity_map_cache[cache_key] = (
+                    time.monotonic() + _LIQUIDITY_MAP_TTL_SEC,
+                    payload,
+                )
+            return JSONResponse({"liquidity_by_ticker": payload})
         except Exception:
-            pass
+            return JSONResponse({"error": "orderbook_liquidity_failed"}, status_code=503)
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    finally:
+        _log_route_timing("/api/trade-monitor/orderbook/liquidity", started)
 
 
 @app.get("/api/live_symbol_spot_bootstrap")
@@ -826,14 +878,13 @@ async def get_dashboard_history_bundle(
     ),
 ) -> Dict[str, Any]:
     """Single payload for dashboard history panels to reduce read amplification."""
-    portfolio = portfolio_history_payload(
-        period=period, trading_mode=trading_mode, rollup_view=rollup_view
-    )
-    bankroll = bankroll_history_payload(
-        period=period, trading_mode=trading_mode, rollup_view=rollup_view
-    )
-    pnl = pnl_history_payload(period=period, trading_mode=trading_mode, rollup_view=rollup_view)
-    return {"status": "ok", "period": period, "portfolio": portfolio, "bankroll": bankroll, "pnl": pnl}
+    started = time.perf_counter()
+    try:
+        return dashboard_history_bundle_payload(
+            period=period, trading_mode=trading_mode, rollup_view=rollup_view
+        )
+    finally:
+        _log_route_timing("/api/dashboard/history-bundle", started)
 
 
 @app.get("/api/performance/realized")
@@ -1355,44 +1406,99 @@ async def get_eth_changes() -> Dict[str, Any]:
         return {"change1h": None, "change3h": None, "change1d": None, "timestamp": None}
 
 
-def _monitor_auto_stop_accuracy_bucket(
-    cursor: Any, union_sql: str, monitor_key: str, close_method: str, days: int
-) -> Dict[str, Any]:
+def _monitor_auto_stop_accuracy_bucket_counts(confirmed: int, total: int) -> Dict[str, Any]:
+    """Build confirmed/total/accuracy_pct from pre-aggregated counts."""
+    c = int(confirmed or 0)
+    t = int(total or 0)
+    pct = round(100.0 * c / t, 1) if t > 0 else None
+    return {"confirmed": c, "total": t, "accuracy_pct": pct}
+
+
+def _monitor_auto_stop_accuracy_all_buckets(
+    cursor: Any, union_sql: str, monitor_key: str
+) -> Tuple[Dict[str, Any], Dict[str, Any], Dict[str, Any], Dict[str, Any]]:
     """
-    Losing closed trades for this monitor and ``close_method``, closed in the last ``days`` days
-    (rolling window from ``closed_at`` / ``created_at`` fallback).
-
-    Percentage = among those losses, share with ``win_loss_confirmed`` IS TRUE (e.g. 3/4 → 75%).
-
-    Uses the same closed_at-as-text fallback as /api/pnl/history and /api/performance/realized.
+    Single scan over union trades for all four (close_method × window) buckets.
+    Semantics match the previous four separate queries (rolling windows from ts_eff).
     """
     cursor.execute(
         """
         SELECT
-            COUNT(*) FILTER (WHERE t.win_loss_confirmed IS TRUE),
-            COUNT(*)
-        FROM ("""
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_probability'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+              AND t.win_loss_confirmed IS TRUE
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_probability'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_probability'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+              AND t.win_loss_confirmed IS TRUE
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_probability'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_stop_loss_floor'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+              AND t.win_loss_confirmed IS TRUE
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_stop_loss_floor'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '30 days'
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_stop_loss_floor'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+              AND t.win_loss_confirmed IS TRUE
+          ),
+          COUNT(*) FILTER (
+            WHERE t.status = 'closed' AND t.win_loss = 'L'
+              AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
+              AND LOWER(TRIM(COALESCE(t.close_method, ''))) = 'auto_stop_loss_floor'
+              AND t.ts_eff >= CURRENT_TIMESTAMP - INTERVAL '7 days'
+          )
+        FROM (
+          SELECT u.*,
+            (CASE
+              WHEN u.closed_at IS NOT NULL AND u.closed_at ~ '^\\d{4}-\\d{2}-\\d{2}'
+              THEN u.closed_at::timestamptz
+              ELSE u.created_at
+            END) AS ts_eff
+          FROM ("""
         + union_sql
-        + """) AS t
-        WHERE t.status = 'closed'
-          AND t.win_loss = 'L'
-          AND LOWER(TRIM(COALESCE(t.close_method, ''))) = %s
-          AND LOWER(TRIM(COALESCE(t.monitor, ''))) = LOWER(TRIM(%s))
-          AND (CASE
-            WHEN t.closed_at IS NOT NULL AND t.closed_at ~ '^\\d{4}-\\d{2}-\\d{2}'
-            THEN t.closed_at::timestamptz
-            ELSE t.created_at
-          END) >= (CURRENT_TIMESTAMP - (%s::integer * INTERVAL '1 day'))
+        + """) AS u
+        ) AS t
         """,
-        (close_method.lower(), monitor_key, days),
+        (monitor_key,) * 8,
     )
     row = cursor.fetchone()
-    confirmed = int(row[0] or 0)
-    total = int(row[1] or 0)
-    pct = None
-    if total > 0:
-        pct = round(100.0 * confirmed / total, 1)
-    return {"confirmed": confirmed, "total": total, "accuracy_pct": pct}
+    if not row:
+        empty = {"confirmed": 0, "total": 0, "accuracy_pct": None}
+        return empty, empty, empty, empty
+    prob_30 = _monitor_auto_stop_accuracy_bucket_counts(row[0], row[1])
+    prob_7 = _monitor_auto_stop_accuracy_bucket_counts(row[2], row[3])
+    sl_30 = _monitor_auto_stop_accuracy_bucket_counts(row[4], row[5])
+    sl_7 = _monitor_auto_stop_accuracy_bucket_counts(row[6], row[7])
+    return prob_30, prob_7, sl_30, sl_7
 
 
 @app.get("/api/monitor_auto_stop_accuracy")
@@ -1403,55 +1509,50 @@ async def get_monitor_auto_stop_accuracy(monitor_id: str | None = None) -> Dict[
 
     Includes tenant trades table and archive tables.
     """
-    if not monitor_id:
-        return {"status": "error", "message": "monitor_id required"}
-    mid = str(monitor_id).strip()
-    if not mid.isdigit():
-        return {"status": "error", "message": "monitor_id must be numeric"}
-
+    started = time.perf_counter()
     try:
-        slot = resolved_tenant_user_no_for_app()
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"status": "error", "message": "No DB connection"}
-        monitor_key = canonical_monitor_key(slot, mid)
-        with conn.cursor() as cursor:
-            if not fetch_master_trades_column_names(cursor, slot):
-                conn.close()
-                return {
-                    "status": "ok",
-                    "monitor_key": monitor_key,
-                    "probability_stop": {
-                        "30d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
-                        "7d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
-                    },
-                    "stop_loss_floor": {
-                        "30d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
-                        "7d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
-                    },
-                }
-            union_sql, _ = union_trades_with_archives_select(cursor, slot)
-            prob_30 = _monitor_auto_stop_accuracy_bucket(
-                cursor, union_sql, monitor_key, "auto_probability", 30
-            )
-            prob_7 = _monitor_auto_stop_accuracy_bucket(
-                cursor, union_sql, monitor_key, "auto_probability", 7
-            )
-            sl_30 = _monitor_auto_stop_accuracy_bucket(
-                cursor, union_sql, monitor_key, "auto_stop_loss_floor", 30
-            )
-            sl_7 = _monitor_auto_stop_accuracy_bucket(
-                cursor, union_sql, monitor_key, "auto_stop_loss_floor", 7
-            )
-        conn.close()
-        return {
-            "status": "ok",
-            "monitor_key": monitor_key,
-            "probability_stop": {"30d": prob_30, "7d": prob_7},
-            "stop_loss_floor": {"30d": sl_30, "7d": sl_7},
-        }
-    except Exception as e:  # pragma: no cover - defensive
-        return {"status": "error", "message": str(e)}
+        if not monitor_id:
+            return {"status": "error", "message": "monitor_id required"}
+        mid = str(monitor_id).strip()
+        if not mid.isdigit():
+            return {"status": "error", "message": "monitor_id must be numeric"}
+
+        try:
+            slot = resolved_tenant_user_no_for_app()
+            conn = get_postgresql_connection()
+            if not conn:
+                return {"status": "error", "message": "No DB connection"}
+            monitor_key = canonical_monitor_key(slot, mid)
+            with conn.cursor() as cursor:
+                if not fetch_master_trades_column_names(cursor, slot):
+                    conn.close()
+                    return {
+                        "status": "ok",
+                        "monitor_key": monitor_key,
+                        "probability_stop": {
+                            "30d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                            "7d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                        },
+                        "stop_loss_floor": {
+                            "30d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                            "7d": {"confirmed": 0, "total": 0, "accuracy_pct": None},
+                        },
+                    }
+                union_sql, _ = union_trades_with_archives_select(cursor, slot)
+                prob_30, prob_7, sl_30, sl_7 = _monitor_auto_stop_accuracy_all_buckets(
+                    cursor, union_sql, monitor_key
+                )
+            conn.close()
+            return {
+                "status": "ok",
+                "monitor_key": monitor_key,
+                "probability_stop": {"30d": prob_30, "7d": prob_7},
+                "stop_loss_floor": {"30d": sl_30, "7d": sl_7},
+            }
+        except Exception as e:  # pragma: no cover - defensive
+            return {"status": "error", "message": str(e)}
+    finally:
+        _log_route_timing("/api/monitor_auto_stop_accuracy", started)
 
 
 def _unified_strike_table_for_market(market: str) -> str:
@@ -1501,33 +1602,24 @@ async def get_core_data(symbol: str = "BTC") -> Dict[str, Any]:
                 close_time += timedelta(days=1)
             ttc_seconds = int((close_time - now).total_seconds())
 
-        btc_price = 0
-        try:
-            conn = get_postgresql_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1")
-            result = cursor.fetchone()
-            conn.close()
-            if result:
-                btc_price = float(result[0])
-            else:
-                response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    btc_price = float(data["result"]["XXBTZUSD"]["c"][0])
-        except Exception:
-            try:
-                response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
-                if response.status_code == 200:
-                    data = response.json()
-                    btc_price = float(data["result"]["XXBTZUSD"]["c"][0])
-            except Exception:
-                pass
-
+        btc_price = 0.0
         momentum_data: Dict[str, Any] = {}
+        latest_db_price = 0
+        conn = None
         try:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
+            cursor.execute(
+                "SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1"
+            )
+            row_btc = cursor.fetchone()
+            if row_btc and row_btc[0] is not None:
+                btc_price = float(row_btc[0])
+            else:
+                tk = _kraken_xxbtzusd_ticker_cached()
+                if tk:
+                    btc_price = float(tk["c"][0])
+
             cursor.execute(
                 f"""
                 SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
@@ -1538,7 +1630,6 @@ async def get_core_data(symbol: str = "BTC") -> Dict[str, Any]:
                 """
             )
             result = cursor.fetchone()
-            conn.close()
             if result:
                 (
                     momentum,
@@ -1590,6 +1681,20 @@ async def get_core_data(symbol: str = "BTC") -> Dict[str, Any]:
                     "movement": None,
                     "movement_percentile": None,
                 }
+
+            slot_price = resolved_tenant_user_no_for_app()
+            if fetch_master_trades_column_names(cursor, slot_price):
+                union_sql, _ = union_trades_with_archives_select(cursor, slot_price)
+                cursor.execute(
+                    f"""
+                    SELECT buy_price FROM ({union_sql}) AS all_trades
+                    WHERE test_filter IS NULL OR test_filter = FALSE
+                    ORDER BY date DESC, time DESC LIMIT 1
+                    """
+                )
+                row_lp = cursor.fetchone()
+                if row_lp:
+                    latest_db_price = row_lp[0]
         except Exception:
             momentum_data = {
                 "delta_1m": None,
@@ -1606,37 +1711,27 @@ async def get_core_data(symbol: str = "BTC") -> Dict[str, Any]:
                 "movement": None,
                 "movement_percentile": None,
             }
-
-        latest_db_price = 0
-        try:
-            conn = get_postgresql_connection()
-            slot_price = resolved_tenant_user_no_for_app()
-            with conn.cursor() as cursor:
-                if fetch_master_trades_column_names(cursor, slot_price):
-                    union_sql, _ = union_trades_with_archives_select(cursor, slot_price)
-                    cursor.execute(
-                        f"""
-                        SELECT buy_price FROM ({union_sql}) AS all_trades
-                        WHERE test_filter IS NULL OR test_filter = FALSE
-                        ORDER BY date DESC, time DESC LIMIT 1
-                        """
-                    )
-                    result = cursor.fetchone()
-                    if result:
-                        latest_db_price = result[0]
-            conn.close()
-        except Exception:
-            pass
+            if btc_price == 0.0:
+                tk = _kraken_xxbtzusd_ticker_cached()
+                if tk:
+                    try:
+                        btc_price = float(tk["c"][0])
+                    except (KeyError, TypeError, ValueError):
+                        pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
 
         kraken_changes: Dict[str, Any] = {}
         try:
-            response = requests.get("https://api.kraken.com/0/public/Ticker?pair=BTCUSD", timeout=5)
-            if response.status_code == 200:
-                data = response.json()
-                ticker = data["result"]["XXBTZUSD"]
+            ticker = _kraken_xxbtzusd_ticker_cached()
+            if ticker:
                 current_price = float(ticker["c"][0])
+                old_price = float(ticker["p"][0])
                 for period in ("1h", "3h", "1d"):
-                    old_price = float(ticker["p"][0])
                     change = (current_price - old_price) / old_price
                     kraken_changes[f"change{period}"] = change
         except Exception:
@@ -1687,17 +1782,19 @@ async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
         allowed = ("BTC", "ETH", "SOL", "XRP")
         conn = get_postgresql_connection()
         cursor = conn.cursor()
-        out = []
+        cursor.execute(
+            """
+            SELECT symbol, price, momentum_percentile, volatility_percentile, movement_percentile, "timestamp"
+            FROM live_data.live_symbol_status
+            WHERE symbol = ANY(%s)
+            """,
+            (list(allowed),),
+        )
+        rows = {str(r[0]).upper(): r for r in cursor.fetchall()}
+        conn.close()
+        out: List[Dict[str, Any]] = []
         for sym in allowed:
-            cursor.execute(
-                """
-                SELECT symbol, price, momentum_percentile, volatility_percentile, movement_percentile, "timestamp"
-                FROM live_data.live_symbol_status
-                WHERE symbol = %s
-                """,
-                (sym,),
-            )
-            row = cursor.fetchone()
+            row = rows.get(sym)
             if not row:
                 continue
             symbol, price, mom_pct, vol_pct, mov_pct, ts = row
@@ -1711,7 +1808,6 @@ async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
                     "timestamp": ts,
                 }
             )
-        conn.close()
         ts_out = None
         for sym in allowed:
             found = next((r for r in out if r["symbol"] == sym), None)
@@ -1761,6 +1857,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
                 header_data = cursor.fetchone()
                 if not header_data:
                     return {"error": f"No strike table data found for {symbol}"}
+                ts_header = header_data[5]
                 cursor.execute(
                     """
                     SELECT strike, buffer, buffer_pct, probability_15m, yes_ask_dollars, no_ask_dollars,
@@ -1769,13 +1866,10 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
                            yes_ask_range_15m, no_ask_range_15m
                     FROM live_data.strike_table_15m
                     WHERE exchange = %s AND symbol = %s
-                      AND "timestamp" = (
-                        SELECT MAX("timestamp") FROM live_data.strike_table_15m
-                        WHERE exchange = %s AND symbol = %s
-                      )
+                      AND "timestamp" = %s
                     ORDER BY strike
                     """,
-                    ("kalshi", sym_u, "kalshi", sym_u),
+                    ("kalshi", sym_u, ts_header),
                 )
                 strikes_data = cursor.fetchall()
                 momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
@@ -1806,6 +1900,7 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
                 header_data = cursor.fetchone()
                 if not header_data:
                     return {"error": f"No strike table data found for {symbol}"}
+                ts_hourly = header_data[5]
                 cursor.execute(
                     f"""
                     SELECT strike, buffer, buffer_pct, probability_hourly, yes_ask_dollars, no_ask_dollars,
@@ -1814,9 +1909,10 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
                            yes_ask_range_15m, no_ask_range_15m
                     FROM live_data.{h_tbl}
                     WHERE exchange = %s AND symbol = %s
+                      AND "timestamp" = %s
                     ORDER BY strike
                     """,
-                    ("kalshi", sym_u),
+                    ("kalshi", sym_u, ts_hourly),
                 )
                 strikes_data = cursor.fetchall()
                 momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
@@ -1865,70 +1961,6 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
         return {"error": f"Error loading PostgreSQL strike table for {symbol}: {str(e)}"}
     finally:
         _log_route_timing("/api/postgresql/strike_table/{symbol}", started)
-
-
-@app.get("/api/watchlist/{monitor_name}")
-async def get_watchlist(monitor_name: str) -> Dict[str, Any]:
-    started = time.perf_counter()
-    try:
-        table_suffix = monitor_name[4:] if monitor_name.startswith("mon_") else monitor_name
-        if not table_suffix.replace("_", "").isalnum():
-            return {"error": "Invalid monitor identifier"}
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"error": "Database unavailable"}
-        with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT symbol, current_price, ttc_seconds, broker, event_ticker, market_title, strike_tier, market_status
-                FROM live_data.watchlist_{table_suffix}
-                LIMIT 1
-                """
-            )
-            header_data = cursor.fetchone()
-            if not header_data:
-                return {"error": f"No watchlist data found for monitor {monitor_name}"}
-            cursor.execute(
-                f"""
-                SELECT strike, buffer, buffer_pct, probability, yes_ask_dollars, no_ask_dollars, yes_diff, no_diff, volume_fp, ticker, active_side
-                FROM live_data.watchlist_{table_suffix}
-                ORDER BY probability DESC
-                """
-            )
-            strikes_data = cursor.fetchall()
-            conn.close()
-            response = {
-                "symbol": header_data[0],
-                "current_price": float(header_data[1]) if header_data[1] else None,
-                "ttc": int(header_data[2]) if header_data[2] else None,
-                "broker": header_data[3],
-                "event_ticker": header_data[4],
-                "market_title": header_data[5],
-                "strike_tier": header_data[6],
-                "market_status": header_data[7],
-                "strikes": [],
-            }
-            for row in strikes_data:
-                response["strikes"].append(
-                    {
-                        "strike": float(row[0]) if row[0] else None,
-                        "buffer": float(row[1]) if row[1] else None,
-                        "buffer_pct": float(row[2]) if row[2] else None,
-                        "probability": float(row[3]) if row[3] else None,
-                        "yes_ask_dollars": float(row[4]) if row[4] is not None else None,
-                        "no_ask_dollars": float(row[5]) if row[5] is not None else None,
-                        "yes_diff": float(row[6]) if row[6] else None,
-                        "no_diff": float(row[7]) if row[7] else None,
-                        "volume_fp": row[8] if row[8] is None else str(row[8]).strip(),
-                        "ticker": row[9],
-                        "active_side": row[10],
-                    }
-                )
-            return response
-    except Exception as e:
-        return {"error": f"Error loading watchlist for monitor {monitor_name} from PostgreSQL: {str(e)}"}
-    finally:
-        _log_route_timing("/api/watchlist/{monitor_name}", started)
 
 
 @app.get("/api/unified_ttc/{symbol}")

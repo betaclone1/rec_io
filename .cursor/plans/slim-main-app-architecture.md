@@ -52,7 +52,7 @@ If a change might affect auto trading and cannot be proven safe by static analys
 
 **Phase 2 — Hot reads to `read_api` (proxy from main)**
 
-- Candidates: `/core`, strike table, unified TTC, watchlist, live symbol snapshots, momentum — **only after** manifest marks them read-only and non-trading-plane.
+- Candidates: `/core`, strike table, unified TTC, live symbol snapshots, momentum — **only after** manifest marks them read-only and non-trading-plane.
 
 **Phase 3 — Writes policy**
 

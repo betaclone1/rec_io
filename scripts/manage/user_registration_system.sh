@@ -189,10 +189,6 @@ setup_database_tables() {
             LIKE users.account_balance_${TEMPLATE_SLOT} INCLUDING ALL
         );
         
-        CREATE TABLE IF NOT EXISTS users.watchlist_$USER_NUMBER (
-            LIKE users.watchlist_${TEMPLATE_SLOT} INCLUDING ALL
-        );
-        
         CREATE TABLE IF NOT EXISTS users.auto_trade_settings_$USER_NUMBER (
             LIKE users.auto_trade_settings_${TEMPLATE_SLOT} INCLUDING ALL
         );

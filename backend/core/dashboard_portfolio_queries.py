@@ -123,12 +123,18 @@ def _pnl_prev_window_start(period: str, now: datetime) -> datetime:
 
 
 def portfolio_history_payload(
-    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+    *,
+    period: str,
+    trading_mode: Optional[str],
+    rollup_view: Optional[str] = None,
+    conn: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    conn = None
+    own_conn = False
     try:
         slot = resolved_tenant_user_no_for_app()
-        conn = get_postgresql_connection()
+        if conn is None:
+            conn = get_postgresql_connection()
+            own_conn = bool(conn)
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
@@ -250,7 +256,7 @@ def portfolio_history_payload(
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
-        if conn is not None:
+        if own_conn and conn is not None:
             try:
                 conn.close()
             except Exception:
@@ -258,11 +264,17 @@ def portfolio_history_payload(
 
 
 def bankroll_history_payload(
-    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+    *,
+    period: str,
+    trading_mode: Optional[str],
+    rollup_view: Optional[str] = None,
+    conn: Optional[Any] = None,
 ) -> Dict[str, Any]:
-    conn = None
+    own_conn = False
     try:
-        conn = get_postgresql_connection()
+        if conn is None:
+            conn = get_postgresql_connection()
+            own_conn = bool(conn)
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
@@ -384,7 +396,7 @@ def bankroll_history_payload(
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
-        if conn is not None:
+        if own_conn and conn is not None:
             try:
                 conn.close()
             except Exception:
@@ -392,14 +404,20 @@ def bankroll_history_payload(
 
 
 def pnl_history_payload(
-    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+    *,
+    period: str,
+    trading_mode: Optional[str],
+    rollup_view: Optional[str] = None,
+    conn: Optional[Any] = None,
 ) -> Dict[str, Any]:
     from zoneinfo import ZoneInfo
 
-    conn = None
+    own_conn = False
     try:
         slot = resolved_tenant_user_no_for_app()
-        conn = get_postgresql_connection()
+        if conn is None:
+            conn = get_postgresql_connection()
+            own_conn = bool(conn)
         if not conn:
             return {"status": "error", "message": "No DB connection"}
 
@@ -491,11 +509,52 @@ def pnl_history_payload(
     except Exception as e:
         return {"status": "error", "message": str(e)}
     finally:
-        if conn is not None:
+        if own_conn and conn is not None:
             try:
                 conn.close()
             except Exception:
                 pass
+
+
+def dashboard_history_bundle_payload(
+    *, period: str, trading_mode: Optional[str], rollup_view: Optional[str] = None
+) -> Dict[str, Any]:
+    """
+    Portfolio + bankroll + PnL in one response using a **single** PostgreSQL connection
+    to avoid triple connect overhead on hot dashboard loads.
+    """
+    err = {"status": "error", "message": "No DB connection"}
+    conn = get_postgresql_connection()
+    if not conn:
+        return {
+            "status": "ok",
+            "period": period,
+            "portfolio": err,
+            "bankroll": err,
+            "pnl": err,
+        }
+    try:
+        portfolio = portfolio_history_payload(
+            period=period, trading_mode=trading_mode, rollup_view=rollup_view, conn=conn
+        )
+        bankroll = bankroll_history_payload(
+            period=period, trading_mode=trading_mode, rollup_view=rollup_view, conn=conn
+        )
+        pnl = pnl_history_payload(
+            period=period, trading_mode=trading_mode, rollup_view=rollup_view, conn=conn
+        )
+        return {
+            "status": "ok",
+            "period": period,
+            "portfolio": portfolio,
+            "bankroll": bankroll,
+            "pnl": pnl,
+        }
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def performance_previous_period_pnls(
