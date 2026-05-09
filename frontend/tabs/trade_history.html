@@ -324,21 +324,50 @@
     .th-monitor-filter-tile:hover {
       background: #2d3748;
     }
-    /* Portfolio chart line accent #4a9eff + soft outer glow (same family as dashboard glowPlugin) */
+    /* Live / paper / test-filter borders — same palette as dashboard ``.monitor-tile.*-mode`` (+ test-filter) */
     .th-monitor-filter-tile.th-monitor-filter-tile--on {
       opacity: 1;
-      border-color: rgba(74, 158, 255, 0.65);
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--on.th-m-tile-live {
+      border-width: 2px;
+      border-color: #48bb78;
       box-shadow:
-        0 0 6px rgba(74, 158, 255, 0.22),
-        0 0 14px rgba(74, 158, 255, 0.14),
-        0 0 24px rgba(74, 158, 255, 0.06);
+        0 0 6px rgba(72, 187, 120, 0.26),
+        0 0 14px rgba(72, 187, 120, 0.14),
+        0 0 24px rgba(72, 187, 120, 0.07);
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--on.th-m-tile-paper {
+      border-width: 2px;
+      border-color: #fbbf24;
+      box-shadow:
+        0 0 6px rgba(251, 191, 36, 0.26),
+        0 0 14px rgba(251, 191, 36, 0.14),
+        0 0 24px rgba(251, 191, 36, 0.07);
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--on.th-m-tile-test-filter {
+      border-width: 2px;
+      border-color: #c53030;
+      box-shadow:
+        0 0 6px rgba(197, 48, 48, 0.26),
+        0 0 14px rgba(197, 48, 48, 0.14),
+        0 0 24px rgba(197, 48, 48, 0.07);
     }
     .th-monitor-filter-tile.th-monitor-filter-tile--off {
       opacity: 0.45;
       filter: grayscale(0.35);
       background-color: #171c24;
+      border-width: 2px;
       border-color: #2d3748;
       box-shadow: none;
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--off.th-m-tile-live {
+      border-color: rgba(72, 187, 120, 0.38);
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--off.th-m-tile-paper {
+      border-color: rgba(251, 191, 36, 0.42);
+    }
+    .th-monitor-filter-tile.th-monitor-filter-tile--off.th-m-tile-test-filter {
+      border-color: rgba(197, 48, 48, 0.5);
     }
     .th-monitor-filter-tile.th-monitor-filter-tile--off:hover {
       background-color: #252e3d;
@@ -351,10 +380,25 @@
       opacity: 1;
       filter: none;
       background-color: #3a4a5c !important;
-      border-color: rgba(74, 158, 255, 0.85) !important;
+      border-width: 2px !important;
+    }
+    .th-monitor-filter-tile.th-monitor-cross-hover.th-m-tile-live {
+      border-color: rgba(72, 187, 120, 0.9) !important;
       box-shadow:
-        0 0 8px rgba(74, 158, 255, 0.35),
-        0 0 16px rgba(74, 158, 255, 0.15) !important;
+        0 0 8px rgba(72, 187, 120, 0.38),
+        0 0 16px rgba(72, 187, 120, 0.18) !important;
+    }
+    .th-monitor-filter-tile.th-monitor-cross-hover.th-m-tile-paper {
+      border-color: rgba(251, 191, 36, 0.95) !important;
+      box-shadow:
+        0 0 8px rgba(251, 191, 36, 0.38),
+        0 0 16px rgba(251, 191, 36, 0.18) !important;
+    }
+    .th-monitor-filter-tile.th-monitor-cross-hover.th-m-tile-test-filter {
+      border-color: rgba(197, 48, 48, 0.95) !important;
+      box-shadow:
+        0 0 8px rgba(197, 48, 48, 0.38),
+        0 0 16px rgba(197, 48, 48, 0.18) !important;
     }
     #th-monitor-summary-table tbody tr.th-monitor-cross-hover td {
       background-color: #3f4a5e !important;
@@ -3896,8 +3940,26 @@
               symbol: m.symbol,
               strategy: m.strategy,
               market: m.market,
+              paper_trade: m.paper_trade,
+              test_filter: m.test_filter,
             };
           });
+      }
+
+      function tradeHistoryMonitorTileModeClasses(monitor) {
+        const paper =
+          monitor.paper_trade === true ||
+          monitor.paper_trade === 'true' ||
+          monitor.paper_trade === 1;
+        const testF =
+          monitor.test_filter === true ||
+          monitor.test_filter === 'true' ||
+          monitor.test_filter === 1 ||
+          monitor.test_filter === '1';
+        const out = [];
+        out.push(paper ? 'th-m-tile-paper' : 'th-m-tile-live');
+        if (testF) out.push('th-m-tile-test-filter');
+        return out;
       }
 
       // Load monitor options from API (selectionMap: mon_<slot>_<id> -> checked; missing keys default on)
@@ -3964,6 +4026,7 @@
                 tile.className = checked
                   ? 'th-monitor-filter-tile th-monitor-filter-tile--on'
                   : 'th-monitor-filter-tile th-monitor-filter-tile--off';
+                tradeHistoryMonitorTileModeClasses(monitor).forEach((c) => tile.classList.add(c));
                 tile.setAttribute('data-monitor-id', monitor.name);
                 tile.setAttribute('aria-pressed', checked ? 'true' : 'false');
                 tile.setAttribute('title', 'Cmd-click to solo');

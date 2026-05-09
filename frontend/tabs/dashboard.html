@@ -4978,7 +4978,7 @@
               callbacks: {
                 title: function(context) {
                   const dataIndex = context[0].dataIndex;
-                  const originalTimestamp = filteredData[dataIndex].timestamp;
+                  const originalTimestamp = chartData[dataIndex].timestamp;
                   return formatTooltipTitle(new Date(originalTimestamp), currentView);
                 },
                 label: function(context) {
@@ -5725,7 +5725,7 @@
               callbacks: {
                 title: function(context) {
                   const dataIndex = context[0].dataIndex;
-                  const originalTimestamp = filteredData[dataIndex].timestamp;
+                  const originalTimestamp = chartData[dataIndex].timestamp;
                   const date = new Date(originalTimestamp);
                   return formatTooltipTitle(date, currentView);
                 },
