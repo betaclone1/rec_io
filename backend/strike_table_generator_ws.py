@@ -65,7 +65,11 @@ DEFAULT_STREAM_MARKET = "market_kalshi_15m"
 DEFAULT_STREAM_MARKET_HOURLY = "market_kalshi_hourly"
 DEFAULT_STREAM_SYMBOL = "live_symbol_status"
 DEFAULT_REDIS_CHANNEL = "rec_io:db_changes"
+# Hourly: WS ladder rows update often; tight freshness is reasonable.
 DEFAULT_PIPELINE_MAX_AGE_SEC = 30
+# 15m: same Kalshi feed can go many minutes without touching MAX(updated_at) on the
+# unified market table between rollovers / quiet tape; 30s false-negatives the whole pipeline.
+DEFAULT_PIPELINE_MAX_AGE_15M_SEC = 900
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
 KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL"})
 
@@ -630,7 +634,14 @@ def main() -> None:
     parser.add_argument("--redis-channel", default=DEFAULT_REDIS_CHANNEL)
     parser.add_argument("--debounce-ms", type=int, default=1200)
     parser.add_argument("--min-refresh-sec", type=float, default=1.2)
-    parser.add_argument("--pipeline-max-age-sec", type=int, default=DEFAULT_PIPELINE_MAX_AGE_SEC)
+    parser.add_argument(
+        "--pipeline-max-age-sec",
+        type=int,
+        default=None,
+        help="Max age (seconds) for WS market + spot freshness checks. "
+        "Default: hourly 30 (or STRIKE_PIPELINE_MARKET_MAX_AGE_HOURLY_SEC), "
+        "15m 900 (or STRIKE_PIPELINE_MARKET_MAX_AGE_15M_SEC).",
+    )
     parser.add_argument("--degrade-confirm-sec", type=int, default=DEFAULT_DEGRADE_CONFIRM_SEC)
     args = parser.parse_args()
 
@@ -653,6 +664,19 @@ def main() -> None:
         if not syms:
             raise SystemExit("No valid 15m symbols configured")
 
+    if args.pipeline_max_age_sec is not None:
+        pipeline_max_age = max(5, int(args.pipeline_max_age_sec))
+    elif args.market == "15m":
+        pipeline_max_age = max(
+            30,
+            int(os.getenv("STRIKE_PIPELINE_MARKET_MAX_AGE_15M_SEC", str(DEFAULT_PIPELINE_MAX_AGE_15M_SEC))),
+        )
+    else:
+        pipeline_max_age = max(
+            5,
+            int(os.getenv("STRIKE_PIPELINE_MARKET_MAX_AGE_HOURLY_SEC", str(DEFAULT_PIPELINE_MAX_AGE_SEC))),
+        )
+
     run_redis_triggered(
         data_exchange=venue,
         symbols=syms,
@@ -660,7 +684,7 @@ def main() -> None:
         redis_channel=args.redis_channel,
         debounce_ms=max(20, int(args.debounce_ms)),
         min_refresh_sec=max(0.1, float(args.min_refresh_sec)),
-        pipeline_max_age_sec=max(5, int(args.pipeline_max_age_sec)),
+        pipeline_max_age_sec=pipeline_max_age,
         degrade_confirm_sec=max(5, int(args.degrade_confirm_sec)),
     )
 

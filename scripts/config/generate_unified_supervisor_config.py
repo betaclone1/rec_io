@@ -599,7 +599,7 @@ class SupervisorConfigGenerator:
         services.append(
             {
                 "name": "strike_table_generator_ws_hourly",
-                "script": "strike_table_generator_ws.py --exchange kalshi --market hourly --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+                "script": "strike_table_generator_ws.py --exchange kalshi --market hourly --debounce-ms 1200 --min-refresh-sec 1.2",
                 "port": ports.get("strike_table_generator_ws_hourly", 8014),
                 "environment": env_global,
                 "autostart": True,
@@ -608,7 +608,7 @@ class SupervisorConfigGenerator:
         services.append(
             {
                 "name": "strike_table_generator_ws_15m",
-                "script": "strike_table_generator_ws.py --exchange kalshi --market 15m --debounce-ms 1200 --min-refresh-sec 1.2 --pipeline-max-age-sec 30",
+                "script": "strike_table_generator_ws.py --exchange kalshi --market 15m --debounce-ms 1200 --min-refresh-sec 1.2",
                 "port": ports.get("strike_table_generator_ws_15m", 8036),
                 "environment": env_global,
                 "autostart": True,
