@@ -10269,10 +10269,12 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `flip_sell_floor_mult` | `character varying(32)` | YES | - | Same for floor stops. |
 | `time_in_force` | `text` | NO | fill_or_kill | Kalshi **time in force** for auto-entry orders: `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled`. Migration `20260426_1600_monitor_trades_execution_settings`. |
 | `order_type` | `text` | NO | market | Execution pricing policy `limit` or `market` (Kalshi request still uses limit pricing where applicable). Same migration. |
-| `symbol_wide_loss_prevention` | `boolean` | YES | false | Symbol-wide LP gate; **`GET /api/monitors`** depends on this column. Migration **`20260501_2200_monitor_list_symbol_wide_columns`**. |
-| `symbol_wide_cooldown_duration` | `integer(32)` | YES | 4 | Cooldown duration (hours) when symbol-wide LP is active. Same migration. |
-| `symbol_wide_cooldown_start_time` | `timestamp with time zone` | YES | - | When symbol-wide cooldown began. Same migration. |
-| `live_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Live (non–paper) loss-prevention cooldown anchor; **`GET /api/monitors`** and `simulated_trade_loss_prevention` use this. Migration **`20260510_1200_monitor_live_trade_cooldown_column`**. |
+| `simulated_trade_loss_prevention` | `boolean` | YES | false | Per-monitor **paper/UAT** symbol-wide loss prevention (canonical name after migration **`20260509_2100`**; supersedes `symbol_wide_loss_prevention`). Greenfield shape in **`database.py`** `CREATE TABLE users.monitor_list_0001`. |
+| `simulated_trade_cooldown_duration` | `integer(32)` | YES | 4 | Cooldown duration when simulated LP is active. |
+| `simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Simulated cooldown anchor. |
+| `original_simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Original tier anchor for LP window / counts. |
+| `simulated_trade_cooldown_loss_count` | `integer(32)` | NO | 0 | Loss count within LP tier. |
+| `live_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Live (non–paper) loss-prevention cooldown anchor. Migration **`20260510_1200`** on legacy catalogs; greenfield **`database.py` CREATE**. |
 
 #### Constraints
 
@@ -10487,9 +10489,12 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `regime_window` | `text` | YES | '30d' | Regime evaluation window token (e.g. `30d`). |
 | `time_in_force` | `text` | NO | 'fill_or_kill' | Kalshi TIF default for strategy-sourced monitor settings. CHECK per table: `{table}_time_in_force_chk`. Migration `20260501_1200_strategy_list_unified_auto_trade_columns`. |
 | `order_type` | `text` | NO | 'market' | `limit` or `market`. CHECK per table: `{table}_order_type_policy_chk`. Same migration. |
-| `symbol_wide_loss_prevention` | `boolean` | YES | false | Strategy default for symbol-wide loss prevention. |
-| `symbol_wide_cooldown_duration` | `integer(32)` | YES | 4 | Strategy default cooldown duration (aligned with `monitor_list_*`). |
-| `symbol_wide_cooldown_start_time` | `timestamp with time zone` | YES | - | Optional anchor; typically NULL on strategy rows. |
+| `simulated_trade_loss_prevention` | `boolean` | YES | false | Strategy default; mirrors `monitor_list_*` (**`20260509_2100`**). Greenfield **`database.py`** `CREATE TABLE users.strategy_list_0001`. |
+| `simulated_trade_cooldown_duration` | `integer(32)` | YES | 4 | |
+| `simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | |
+| `original_simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | |
+| `simulated_trade_cooldown_loss_count` | `integer(32)` | NO | 0 | |
+| `live_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Live-trade LP cooldown anchor; same as monitor list. |
 | `flip_sell_prob` | `boolean` | NO | false | Flip-sell sizing for probability stops. |
 | `flip_sell_floor` | `boolean` | NO | false | Flip-sell sizing for floor stops. |
 | `flip_sell_prob_mult` | `character varying(32)` | YES | - | Flip-sell token for prob stops (e.g. `1x`). |
@@ -10709,6 +10714,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 | `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |
 | `weekly_cycle` | `numeric(5,1)` | YES | - | Day+hour bucket with 15m specificity: integer part = 1–168 (Sunday 12am … Saturday 11pm); decimal: hourly = .4 (fourth quarter), 15m = .0 ( :00), .1 ( :15), .2 ( :30), .3 ( :45). Cycle performance logic uses FLOOR(weekly_cycle). |
 | `loss_prevention` | `boolean` | YES | false | |
+| `loss_prevention_state` | `character varying(64)` | YES | - | Loss-prevention state token on the trade row. Present on **`database.py`** greenfield `CREATE TABLE users.trades_0001`; legacy DBs pick it up via `init_database()` repair DDL. Distinct from `market_result` (venue outcome). |
 | `multiplier` | `numeric(10,2)` | YES | - | |
 | `price_spread` | `numeric(6,4)` | YES | - | |
 | `yes_ask_min_15m` | `numeric(18,4)` | YES | - | Snapshot from latest matching strike row at insert: final-window YES ask min (dollars). Migration `20260330_2200_trades_strike_final_quarter_asks`. |
