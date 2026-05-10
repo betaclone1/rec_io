@@ -1414,6 +1414,10 @@ class StrikeTableGenerator:
                 conn.rollback()
                 raise
             
+            # One timestamp per DB refresh so read_api can load all strikes with
+            # WHERE timestamp = (SELECT max(timestamp) ... LIMIT 1).
+            batch_strike_row_ts = now_est()
+
             # Process each strike
             strike_data = []
             for strike in strikes:
@@ -1530,7 +1534,7 @@ class StrikeTableGenerator:
                     prev_track = None
                     if ev_tk is not None and ticker is not None:
                         prev_track = prev_final_ask_map.get((str(ev_tk), str(ticker)))
-                    strike_row_ts = now_est()
+                    strike_row_ts = batch_strike_row_ts
                     prev_6 = (
                         (
                             prev_track[0],

@@ -1868,19 +1868,27 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
                 header_data = cursor.fetchone()
                 if not header_data:
                     return {"error": f"No strike table data found for {symbol}"}
-                ts_header = header_data[5]
+                # Latest row per ticker (matches strike_ladder_fetch). Avoids empty ladder when
+                # batch inserts used per-row timestamps so max(timestamp) matched only one strike.
                 cursor.execute(
                     """
                     SELECT strike, buffer, buffer_pct, probability_15m, yes_ask_dollars, no_ask_dollars,
                            volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side,
                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m
-                    FROM live_data.strike_table_15m
-                    WHERE exchange = %s AND symbol = %s
-                      AND "timestamp" = %s
+                    FROM (
+                        SELECT DISTINCT ON (ticker)
+                            strike, buffer, buffer_pct, probability_15m, yes_ask_dollars, no_ask_dollars,
+                            volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side,
+                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                            yes_ask_range_15m, no_ask_range_15m
+                        FROM live_data.strike_table_15m
+                        WHERE exchange = %s AND symbol = %s
+                        ORDER BY ticker, "timestamp" DESC
+                    ) latest_per_ticker
                     ORDER BY strike
                     """,
-                    ("kalshi", sym_u, ts_header),
+                    ("kalshi", sym_u),
                 )
                 strikes_data = cursor.fetchall()
                 momentum_percentile = float(header_data[3]) if header_data[3] else 0.0
@@ -1911,19 +1919,25 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
                 header_data = cursor.fetchone()
                 if not header_data:
                     return {"error": f"No strike table data found for {symbol}"}
-                ts_hourly = header_data[5]
                 cursor.execute(
                     f"""
                     SELECT strike, buffer, buffer_pct, probability_hourly, yes_ask_dollars, no_ask_dollars,
                            volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side,
                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                            yes_ask_range_15m, no_ask_range_15m
-                    FROM live_data.{h_tbl}
-                    WHERE exchange = %s AND symbol = %s
-                      AND "timestamp" = %s
+                    FROM (
+                        SELECT DISTINCT ON (ticker)
+                            strike, buffer, buffer_pct, probability_hourly, yes_ask_dollars, no_ask_dollars,
+                            volume_fp, open_interest_fp, ticker, yes_diff, no_diff, active_side,
+                            yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
+                            yes_ask_range_15m, no_ask_range_15m
+                        FROM live_data.{h_tbl}
+                        WHERE exchange = %s AND symbol = %s
+                        ORDER BY ticker, "timestamp" DESC
+                    ) latest_per_ticker
                     ORDER BY strike
                     """,
-                    ("kalshi", sym_u, ts_hourly),
+                    ("kalshi", sym_u),
                 )
                 strikes_data = cursor.fetchall()
                 momentum_percentile = float(header_data[3]) if header_data[3] else 0.0

@@ -821,13 +821,66 @@
     }
   }
 
+  /** Live / header spot for money-line default (aligned with hourly ATM sources). */
+  function tmNewSpotForMoneyLine() {
+    try {
+      var sym = (document.body.dataset.currentSymbol || 'BTC').toString().trim().toUpperCase();
+      var bag = window.__liveSpotBySymbol;
+      if (bag && sym) {
+        var sp = bag[sym];
+        if (sp != null && Number.isFinite(Number(sp))) return Number(sp);
+      }
+    } catch (e) {}
+    var el = document.getElementById('symbol-price-value');
+    if (el) {
+      var raw = (el.textContent || '').trim();
+      if (raw && raw !== '$—' && raw !== '—') {
+        var n = Number(String(raw).replace(/[^0-9.]/g, ''));
+        if (Number.isFinite(n)) return n;
+      }
+    }
+    return null;
+  }
+
+  function tmNewNormalizeActiveSide(v) {
+    if (v == null || v === '') return '';
+    var s = String(v).trim().toLowerCase();
+    if (s === 'y' || s === 'yes') return 'yes';
+    if (s === 'n' || s === 'no') return 'no';
+    return '';
+  }
+
   /**
-   * Default Yes/No for order builder + strike table alignment.
-   * Strike rows highlight the "lead" side via higher ask (see hourlyStrikeAskPillClassNames);
-   * prefer that over raw active_side from DB so page load matches what the row shows.
+   * Default Yes/No for order builder on load and ATM sync.
+   * Prefer backend active_side (same as strike_table_generator). For strike vs spot fallback,
+   * use strike-table header current_price first so we match how active_side was computed; live
+   * spot can differ by a few dollars and would pick the wrong side. Higher ask is last resort.
    */
-  function tmNewDeriveSideFromRow(row) {
+  function tmNewDeriveSideFromRow(row, spotHint, strikeTableCurrentPrice) {
     if (!row) return 'yes';
+    var active = tmNewNormalizeActiveSide(row.activeSide);
+    if (active === 'yes' || active === 'no') return active;
+
+    var packPx = null;
+    try {
+      var g = window.__recTmStrikeTableHeaderPrice;
+      if (g != null && Number.isFinite(Number(g))) packPx = Number(g);
+    } catch (eG) {}
+    var ref =
+      strikeTableCurrentPrice != null && Number.isFinite(Number(strikeTableCurrentPrice))
+        ? Number(strikeTableCurrentPrice)
+        : packPx != null
+          ? packPx
+          : spotHint != null && Number.isFinite(Number(spotHint))
+            ? Number(spotHint)
+            : tmNewSpotForMoneyLine();
+
+    var k = Number(row.strike);
+    if (ref != null && Number.isFinite(ref) && Number.isFinite(k)) {
+      if (k < ref) return 'yes';
+      if (k > ref) return 'no';
+    }
+
     var y = Number(row.yesAsk);
     var n = Number(row.noAsk);
     if (Number.isFinite(y) && Number.isFinite(n)) {
@@ -838,8 +891,7 @@
     } else if (Number.isFinite(n)) {
       return 'no';
     }
-    var active = (row.activeSide != null ? String(row.activeSide) : '').trim().toLowerCase();
-    if (active === 'yes' || active === 'no') return active;
+
     return 'yes';
   }
 
@@ -1283,32 +1335,38 @@
     window.addEventListener('rec:tm-strike-atm-synced', function (ev) {
       var d = ev && ev.detail;
       if (!d || !d.atmTicker) return;
-      if (tmNewObState.userPickedStrike) {
-        if (String(tmNewObState.ticker) === String(d.atmTicker)) {
-          tmNewOrderBuilderRefreshQuoteDependentUi();
-        }
+      var atmT = String(d.atmTicker);
+      var userTicker = tmNewObState.ticker ? String(tmNewObState.ticker) : '';
+      var matchUserTicker = tmNewObState.userPickedStrike && userTicker === atmT;
+
+      if (tmNewObState.userPickedStrike && userTicker !== '' && userTicker !== atmT) {
         return;
       }
-      tmNewObState.ticker = String(d.atmTicker);
+      if (matchUserTicker && tmNewObState.userLockedSide) {
+        tmNewOrderBuilderRefreshQuoteDependentUi();
+        tmNewOrderBuilderUpdateUi();
+        tmNewSyncOrderBuilderContractsFromPicker();
+        return;
+      }
+
+      tmNewObState.ticker = atmT;
       if (!tmNewObState.userLockedSide) {
         var rowForInit = d.atmRow;
-        if (
-          !rowForInit &&
-          tmNewObState.ticker &&
-          typeof window.recTmGetHourlyStrikeRow === 'function'
-        ) {
-          rowForInit = window.recTmGetHourlyStrikeRow(tmNewObState.ticker);
+        if (!rowForInit && typeof window.recTmGetHourlyStrikeRow === 'function') {
+          rowForInit = window.recTmGetHourlyStrikeRow(atmT);
         }
         var hasAtmRow =
           rowForInit &&
           (Number.isFinite(Number(rowForInit.yesAsk)) ||
             Number.isFinite(Number(rowForInit.noAsk)) ||
-            (rowForInit.activeSide != null && String(rowForInit.activeSide).trim() !== ''));
+            tmNewNormalizeActiveSide(rowForInit.activeSide) !== '');
         if (hasAtmRow) {
-          tmNewObState.side = tmNewDeriveSideFromRow(rowForInit);
-          if (tmNewRowHasBothAsks(rowForInit)) {
-            tmNewObState.userLockedSide = true;
-          }
+          var spotHint = d.spot != null && Number.isFinite(Number(d.spot)) ? Number(d.spot) : null;
+          var stPx =
+            d.strikeTableCurrentPrice != null && Number.isFinite(Number(d.strikeTableCurrentPrice))
+              ? Number(d.strikeTableCurrentPrice)
+              : null;
+          tmNewObState.side = tmNewDeriveSideFromRow(rowForInit, spotHint, stPx);
         }
       }
       tmNewOrderBuilderUpdateUi();
@@ -1332,7 +1390,7 @@
             typeof window.recTmGetHourlyStrikeRow === 'function'
               ? window.recTmGetHourlyStrikeRow(d.ticker)
               : null;
-          tmNewObState.side = tmNewDeriveSideFromRow(rowPick);
+          tmNewObState.side = tmNewDeriveSideFromRow(rowPick, null, null);
         }
       }
       tmNewOrderBuilderUpdateUi();

@@ -4,17 +4,15 @@
   let isBookVisible = false;
   let lastMarketMode = '';
   let hourlyStrikeRows = [];
-  /** Last full strike list from strike-table API (before liquidity filter). */
+  /** Full strike ladder from strike-table API (same rows we render). */
   let hourlyRawStrikeRows = [];
-  /** Hourly pack `current_price`: used only for ATM / liquidity filtering when DOM spot is missing. */
+  /** Pack `current_price` when DOM / live spot not yet available. */
   let hourlyCurrentPrice = null;
   let expandedHourlyTicker = '';
   let lastHourlyRowsSignature = '';
   let lastHourlyStructureSignature = '';
   let lastExpandedOrderbookSignature = '';
   let hourlyExpandedStateByTicker = new Map();
-  let hourlyLiquidityByTicker = new Map();
-  const HOURLY_LIQUIDITY_TTL_MS = 45000;
   let centerAtmStrikeOnNextRender = true;
 
   /**
@@ -28,6 +26,9 @@
   let hourlyStrikeTableDbWsUnsub = null;
   /** Last `live_symbol_spot` frame (Redis → main `/ws/db_changes`); used when symbol/monitor changes. */
   let lastLiveSymbolSpotMsg = null;
+
+  /** Strikes with 100¢ on either side are hidden except this many kept around the money line. */
+  const MIN_HOURLY_VISIBLE_AROUND_MONEY_LINE = 3;
 
   let refreshBusy = false;
   let refreshPending = false;
@@ -699,124 +700,6 @@
     };
   }
 
-  function rowHasLiquidityFromStrikeRow(r) {
-    if (!r) return false;
-    const ya = Number(r.yesAsk);
-    const na = Number(r.noAsk);
-    return Number.isFinite(ya) && Number.isFinite(na) && ya > 0 && na > 0;
-  }
-
-  /** Hide strike rows when either side is hard-capped at 100c (except ATM 3-row fallback). */
-  function rowHasHardCapAsk(r) {
-    if (!r) return false;
-    const toCents = (v) => {
-      const n = Number(v);
-      if (!Number.isFinite(n)) return null;
-      // strike_table asks are dollars (e.g. 0.59), but tolerate cents-form payloads too.
-      return n > 2 ? Math.round(n) : Math.round(n * 100);
-    };
-    const y = toCents(r.yesAsk);
-    const n = toCents(r.noAsk);
-    return y === 100 || n === 100;
-  }
-
-  function hasAsksAndBids(book) {
-    if (!book || typeof book !== 'object') return false;
-    const asks = Array.isArray(book.asks) ? book.asks : [];
-    const bids = Array.isArray(book.bids) ? book.bids : [];
-    return asks.length > 0 && bids.length > 0;
-  }
-
-  function cacheLiquidity(ticker, ok) {
-    hourlyLiquidityByTicker.set(String(ticker), { ok: !!ok, ts: Date.now() });
-  }
-
-  function cachedLiquidityFresh(ticker) {
-    const row = hourlyLiquidityByTicker.get(String(ticker));
-    if (!row) return null;
-    if (Date.now() - row.ts > HOURLY_LIQUIDITY_TTL_MS) return null;
-    return row.ok;
-  }
-
-  async function fetchHourlyLiquidityBatch(tickers) {
-    const out = {};
-    const unique = Array.from(new Set((tickers || []).map((t) => String(t || '').trim()).filter(Boolean)));
-    if (!unique.length) return out;
-    const chunkSize = 120;
-    for (let i = 0; i < unique.length; i += chunkSize) {
-      const chunk = unique.slice(i, i + chunkSize);
-      try {
-        const u = new URL(tmMainApiBase() + '/api/trade-monitor/orderbook/liquidity');
-        u.searchParams.set('market_tickers', chunk.join(','));
-        const res = await tmMainApiFetch(u.pathname + u.search, { cache: 'no-store' });
-        const data = await res.json();
-        const map = data && data.liquidity_by_ticker ? data.liquidity_by_ticker : {};
-        chunk.forEach((t) => {
-          out[t] = map[t] === true;
-        });
-      } catch (e) {
-        chunk.forEach((t) => {
-          out[t] = false;
-        });
-      }
-    }
-    return out;
-  }
-
-  async function filterHourlyRowsByLiquidity(rows, spotPrice) {
-    if (!Array.isArray(rows) || rows.length === 0) return [];
-    const spot =
-      spotPrice != null && Number.isFinite(Number(spotPrice)) ? Number(spotPrice) : null;
-    const mustTicker = spot != null ? closestStrikeTicker(rows, spot) : '';
-    const candidates = rows
-      .map((row) => String((row && row.ticker) || '').trim())
-      .filter(Boolean);
-    const missing = candidates.filter((t) => cachedLiquidityFresh(t) == null);
-    if (missing.length) {
-      const batch = await fetchHourlyLiquidityBatch(missing);
-      Object.keys(batch).forEach((ticker) => {
-        cacheLiquidity(ticker, batch[ticker] === true);
-      });
-    }
-    const checks = rows.map((row) => {
-      if (rowHasHardCapAsk(row)) return false;
-      if (rowHasLiquidityFromStrikeRow(row)) return true;
-      return cachedLiquidityFresh(row && row.ticker) === true;
-    });
-
-    const out = [];
-    const outTickers = new Set();
-    for (let i = 0; i < rows.length; i += 1) {
-      if (checks[i]) {
-        out.push(rows[i]);
-        outTickers.add(String(rows[i].ticker));
-      }
-    }
-    if (mustTicker && !outTickers.has(String(mustTicker))) {
-      const pinned = rows.find((r) => String(r.ticker) === String(mustTicker));
-      if (pinned) {
-        out.push(pinned);
-        outTickers.add(String(mustTicker));
-      }
-    }
-    /* Always show ATM band: closest-to-spot strike plus one strike above and below on the ladder, even with no book liquidity. */
-    if (mustTicker) {
-      const atmIdx = rows.findIndex((r) => String(r.ticker) === String(mustTicker));
-      if (atmIdx >= 0) {
-        for (const j of [atmIdx - 1, atmIdx, atmIdx + 1]) {
-          if (j < 0 || j >= rows.length) continue;
-          const r = rows[j];
-          const t = String(r.ticker);
-          if (outTickers.has(t)) continue;
-          out.push(r);
-          outTickers.add(t);
-        }
-      }
-    }
-    out.sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
-    return out;
-  }
-
   function fmtStrike(v) {
     const n = Number(v);
     if (!Number.isFinite(n)) return '—';
@@ -841,6 +724,120 @@
     return bestTicker;
   }
 
+  /** Whole cents from dollars; matches fmtWholeCentsFromDollars / pill display. */
+  function hourlyAskWholeCents(dollarsField) {
+    const d = parseDollarField(dollarsField);
+    if (d == null) return null;
+    return Math.round(d * 100);
+  }
+
+  /** True if this side quotes at 100¢ (hide candidate). Missing ask is not treated as 100. */
+  function hourlyAskIs100Cents(dollarsField) {
+    const c = hourlyAskWholeCents(dollarsField);
+    return c != null && c >= 100;
+  }
+
+  function hourlyRowHasEitherAsk100(row) {
+    return hourlyAskIs100Cents(row.yesAsk) || hourlyAskIs100Cents(row.noAsk);
+  }
+
+  function moneyLineCenterIndex(rows, spot) {
+    const n = rows.length;
+    if (!n) return 0;
+    if (spot == null || !Number.isFinite(spot)) return Math.floor(n / 2);
+    let bestI = 0;
+    let bestD = Infinity;
+    let bestStrike = Infinity;
+    for (let i = 0; i < n; i++) {
+      const s = Number(rows[i].strike);
+      if (!Number.isFinite(s)) continue;
+      const d = Math.abs(s - spot);
+      if (d < bestD || (d === bestD && s < bestStrike)) {
+        bestD = d;
+        bestStrike = s;
+        bestI = i;
+      }
+    }
+    return bestI;
+  }
+
+  /**
+   * At least this many ladder indices stay visible even when both asks would otherwise filter out
+   * (100¢). Indices are expanded symmetrically around the strike closest to `spot`.
+   */
+  function moneyLineProtectedIndices(rows, spot) {
+    const n = rows.length;
+    const out = new Set();
+    if (n === 0) return out;
+    if (n <= MIN_HOURLY_VISIBLE_AROUND_MONEY_LINE) {
+      for (let i = 0; i < n; i++) out.add(i);
+      return out;
+    }
+    const c = moneyLineCenterIndex(rows, spot);
+    out.add(c);
+    let lo = c;
+    let hi = c;
+    while (out.size < MIN_HOURLY_VISIBLE_AROUND_MONEY_LINE) {
+      const canLo = lo > 0;
+      const canHi = hi < n - 1;
+      if (!canLo && !canHi) break;
+      const preferLo = canLo && (!canHi || c - lo <= hi - c);
+      if (preferLo) {
+        lo--;
+        out.add(lo);
+      } else if (canHi) {
+        hi++;
+        out.add(hi);
+      } else {
+        lo--;
+        out.add(lo);
+      }
+    }
+    return out;
+  }
+
+  /**
+   * Hide strikes where YES or NO ask is 100¢, except always keep at least 3 rows around the
+   * money line (closest strike to `spot`). `rows` must be strike-sorted like the API.
+   */
+  function applyHourlyStrikeAskVisibility(rows, spot) {
+    const list = rows || [];
+    if (!list.length) return [];
+    const protectedIdx = moneyLineProtectedIndices(list, spot);
+    const out = [];
+    for (let i = 0; i < list.length; i++) {
+      if (protectedIdx.has(i) || !hourlyRowHasEitherAsk100(list[i])) out.push(list[i]);
+    }
+    return out;
+  }
+
+  /** Re-filter ladder when live spot moves (protected-3 center tracks money line). */
+  function reapplyHourlyStrikeVisibilityFromSpot() {
+    if (!document.body || !document.body.classList.contains('trade-monitor-new-page')) return;
+    if (!hourlyRawStrikeRows.length) return;
+    const spot = hourlySpotPrice();
+    const visible = applyHourlyStrikeAskVisibility(hourlyRawStrikeRows, spot);
+    const nextStruct = hourlyStructureSignature(visible);
+    const nextQuotes = hourlyQuotesSignature(visible);
+    if (nextStruct === lastHourlyStructureSignature && nextQuotes === lastHourlyRowsSignature) return;
+    hourlyStrikeRows = visible;
+    ensureHourlyExpandedTicker();
+    if (nextStruct !== lastHourlyStructureSignature) {
+      lastHourlyStructureSignature = nextStruct;
+      lastHourlyRowsSignature = nextQuotes;
+      centerAtmStrikeOnNextRender = true;
+      renderHourlyRows();
+    } else {
+      lastHourlyRowsSignature = nextQuotes;
+      patchHourlyRowQuotesInPlace();
+    }
+    try {
+      if (typeof window.recTmOrderBuilderRefreshQuotes === 'function') {
+        window.recTmOrderBuilderRefreshQuotes();
+      }
+    } catch (eOb) {}
+  }
+
   function parseSymbolPriceFromDom() {
     const el = document.getElementById('symbol-price-value');
     if (!el) return null;
@@ -850,7 +847,7 @@
     return Number.isFinite(n) ? n : null;
   }
 
-  /** Spot for ATM / liquidity filter and ATM strike caption: live DB feed, then DOM, else pack `current_price`. */
+  /** Spot for ATM highlight / centering: live feed, DOM, else pack `current_price`. */
   function hourlySpotPrice() {
     try {
       const sym = currentSymbol();
@@ -992,7 +989,15 @@
             : null;
         window.dispatchEvent(
           new CustomEvent('rec:tm-strike-atm-synced', {
-            detail: { atmTicker: closest ? String(closest) : '', atmRow: atmRow || null },
+            detail: {
+              atmTicker: closest ? String(closest) : '',
+              atmRow: atmRow || null,
+              spot: hourlySpotPrice(),
+              strikeTableCurrentPrice:
+                hourlyCurrentPrice != null && Number.isFinite(hourlyCurrentPrice)
+                  ? hourlyCurrentPrice
+                  : null,
+            },
           })
         );
       }
@@ -1348,23 +1353,6 @@
     }
   }
 
-  /** If spot moved and the true closest strike was liquidity-filtered out, add it from raw rows. */
-  function ensureClosestStrikeRowVisible() {
-    const raw = hourlyRawStrikeRows;
-    if (!raw || !raw.length) return;
-    const spot = hourlySpotPrice();
-    const must = closestStrikeTicker(raw, spot);
-    if (!must) return;
-    if (hourlyStrikeRows.some((r) => String(r.ticker) === String(must))) return;
-    const row = raw.find((r) => String(r.ticker) === String(must));
-    if (!row) return;
-    hourlyStrikeRows = hourlyStrikeRows.concat([row]).sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
-    lastHourlyStructureSignature = hourlyStructureSignature(hourlyStrikeRows);
-    lastHourlyRowsSignature = hourlyQuotesSignature(hourlyStrikeRows);
-    ensureHourlyExpandedTicker();
-    renderHourlyRows();
-  }
-
   function centerMidRowInPanel(scrollEl, midEl) {
     if (!scrollEl || !midEl) return;
     const midTop = midEl.offsetTop;
@@ -1589,7 +1577,6 @@
       hourlyHeaderLastFetchSymbol = symNow;
       clearMarketExpiration();
     }
-    ensureClosestStrikeRowVisible();
     const pack = await fetchStrikeTablePack(currentSymbol(), mkt);
     applyStrikePackHeader(pack, mkt);
     const errEl = document.getElementById('loadErr');
@@ -1602,7 +1589,12 @@
       hourlyRawStrikeRows = rawRows.slice();
       hourlyCurrentPrice =
         pack.currentPrice != null && Number.isFinite(pack.currentPrice) ? pack.currentPrice : null;
-      const fetchedRows = await filterHourlyRowsByLiquidity(rawRows, hourlySpotPrice());
+      try {
+        window.__recTmStrikeTableHeaderPrice =
+          hourlyCurrentPrice != null && Number.isFinite(hourlyCurrentPrice) ? hourlyCurrentPrice : null;
+      } catch (eHdr) {}
+      const spotForVisibility = hourlySpotPrice();
+      const fetchedRows = applyHourlyStrikeAskVisibility(rawRows, spotForVisibility);
       if (symNow !== currentSymbol() || mkt !== currentMarket()) {
         return;
       }
@@ -1623,6 +1615,9 @@
     } else if (errEl) {
       errEl.classList.remove('u-hidden');
       errEl.textContent = 'No strike table data';
+      try {
+        window.__recTmStrikeTableHeaderPrice = null;
+      } catch (eHdr2) {}
     }
     if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
     await refreshExpandedHourlyOrderbookIfOpen();
@@ -1630,8 +1625,9 @@
 
   try {
     window.addEventListener('rec:live-symbol-spot', function () {
-      if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
       applyHeaderTtcToClock();
+      reapplyHourlyStrikeVisibilityFromSpot();
+      if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
     });
   } catch (e) {}
 
@@ -1669,7 +1665,6 @@
       lastHourlyRowsSignature = '';
       lastHourlyStructureSignature = '';
       lastExpandedOrderbookSignature = '';
-      hourlyLiquidityByTicker.clear();
       centerAtmStrikeOnNextRender = true;
       requestDataRefresh();
     });
