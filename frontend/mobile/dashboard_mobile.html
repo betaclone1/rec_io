@@ -553,7 +553,10 @@
     .monitor-tile .monitor-icon,
     .monitor-tile .paper-trading-toggle,
     .monitor-tile .auto-trade-toggle,
-    .monitor-tile .monitor-settings-icon {
+    .monitor-tile .monitor-settings-icon,
+    .monitor-tile .th-monitor-trades-box,
+    .monitor-tile .allocation-status-badge,
+    .monitor-tile .monitor-name--tap-tip {
       pointer-events: auto;
     }
     
@@ -883,31 +886,6 @@
       position: relative;
       cursor: pointer;
       -webkit-tap-highlight-color: transparent;
-    }
-    .th-monitor-trades-box::after {
-      visibility: hidden;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity 0.12s ease;
-      content: 'Win streak: ' attr(data-win-streak);
-      position: absolute;
-      left: 50%;
-      bottom: 100%;
-      transform: translateX(-50%) translateY(-6px);
-      white-space: nowrap;
-      background: #1a202c;
-      color: #e2e8f0;
-      border: 1px solid #4a5568;
-      border-radius: 4px;
-      padding: 5px 8px;
-      font-size: 11px;
-      font-weight: 500;
-      z-index: 50;
-      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
-    }
-    .th-monitor-trades-box.th-monitor-trades-box--tip-open::after {
-      visibility: visible;
-      opacity: 1;
     }
 
     .monitor-name--tap-tip {
@@ -2543,34 +2521,26 @@
                 const badge = document.createElement('div');
                 badge.className = badgeState.className;
                 badge.textContent = badgeState.text;
-                const tipPoll = String(badgeState.mobileTip || badgeState.dataTooltip || badgeState.title || '').trim();
-                if (tipPoll) {
-                  badge.dataset.mobileTip = tipPoll;
-                  badge.removeAttribute('title');
-                  delete badge.dataset.tooltip;
-                } else {
-                  delete badge.dataset.mobileTip;
-                  if (badgeState.title) badge.title = badgeState.title;
-                  else badge.removeAttribute('title');
-                  if (badgeState.dataTooltip) badge.dataset.tooltip = badgeState.dataTooltip;
-                  else delete badge.dataset.tooltip;
-                }
+                const tipPoll = String(badgeState.dataTooltip || badgeState.mobileTip || badgeState.title || '').trim();
+                if (tipPoll) badge.dataset.mobileTip = tipPoll;
+                else delete badge.dataset.mobileTip;
+                if (badgeState.dataTooltip) badge.dataset.tooltip = badgeState.dataTooltip;
+                else delete badge.dataset.tooltip;
+                if (tipPoll || badgeState.dataTooltip) badge.removeAttribute('title');
+                else if (badgeState.title) badge.title = badgeState.title;
+                else badge.removeAttribute('title');
                 statusParent.insertBefore(badge, statusElement);
               } else {
                 existingBadge.className = badgeState.className;
                 existingBadge.textContent = badgeState.text;
-                const tipPollE = String(badgeState.mobileTip || badgeState.dataTooltip || badgeState.title || '').trim();
-                if (tipPollE) {
-                  existingBadge.dataset.mobileTip = tipPollE;
-                  existingBadge.removeAttribute('title');
-                  delete existingBadge.dataset.tooltip;
-                } else {
-                  delete existingBadge.dataset.mobileTip;
-                  if (badgeState.title) existingBadge.title = badgeState.title;
-                  else existingBadge.removeAttribute('title');
-                  if (badgeState.dataTooltip) existingBadge.dataset.tooltip = badgeState.dataTooltip;
-                  else delete existingBadge.dataset.tooltip;
-                }
+                const tipPollE = String(badgeState.dataTooltip || badgeState.mobileTip || badgeState.title || '').trim();
+                if (tipPollE) existingBadge.dataset.mobileTip = tipPollE;
+                else delete existingBadge.dataset.mobileTip;
+                if (badgeState.dataTooltip) existingBadge.dataset.tooltip = badgeState.dataTooltip;
+                else delete existingBadge.dataset.tooltip;
+                if (tipPollE || badgeState.dataTooltip) existingBadge.removeAttribute('title');
+                else if (badgeState.title) existingBadge.title = badgeState.title;
+                else existingBadge.removeAttribute('title');
               }
             } else if (existingBadge) {
               existingBadge.remove();
@@ -2896,14 +2866,11 @@
       if (swLive || simTier) {
         const timeText = formatSymbolWideCooldownEndEtRounded(monitor);
         const text = timeText || 'SIM';
-        const tipBody = buildSimCooldownTooltipText(monitor, swLive, lpKey);
-        const tipOneLine = tipBody.replace(/\n/g, ' · ');
         return {
           visible: true,
           text,
           className: 'allocation-status-badge lp lp-symbol-wide',
-          title: tipOneLine,
-          mobileTip: tipOneLine,
+          dataTooltip: buildSimCooldownTooltipText(monitor, swLive, lpKey),
         };
       }
       const lossPreventionActive =
@@ -2965,15 +2932,19 @@
       return { visible: true, text: formatted, className: 'allocation-status-badge alloc-green' };
     }
 
+    function encodeDataMobileTipAttr(text) {
+      return escapeHtmlAttr(String(text)).replace(/\r\n/g, '&#10;').replace(/\r/g, '&#10;').replace(/\n/g, '&#10;');
+    }
+
     function getAllocationBadgeMarkup(monitor) {
       const badge = resolveAllocationBadgeState(monitor);
       if (!badge.visible) {
         return '';
       }
-      const mobileTipText = String(badge.mobileTip || badge.dataTooltip || badge.title || '').trim();
-      const mt = mobileTipText ? ` data-mobile-tip="${escapeHtmlAttr(mobileTipText)}"` : '';
-      const t = badge.title && !mobileTipText ? ` title="${escapeHtmlAttr(badge.title)}"` : '';
-      const dt = badge.dataTooltip && !mobileTipText ? ` data-tooltip="${escapeHtmlAttr(badge.dataTooltip)}"` : '';
+      const tipForTap = String(badge.dataTooltip || badge.mobileTip || badge.title || '').trim();
+      const mt = tipForTap ? ` data-mobile-tip="${encodeDataMobileTipAttr(tipForTap)}"` : '';
+      const t = !tipForTap && badge.title ? ` title="${escapeHtmlAttr(badge.title)}"` : '';
+      const dt = badge.dataTooltip ? ` data-tooltip="${escapeHtmlAttr(badge.dataTooltip)}"` : '';
       return `<div class="${badge.className}"${t}${dt}${mt}>${badge.text}</div>`;
     }
 
@@ -3505,23 +3476,24 @@
       const grid = document.getElementById('monitors-grid');
       if (!grid || !grid.isConnected) {
         hideMobileDashboardFloatingTip();
-        document.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
         return;
       }
 
       const box = e.target.closest('.th-monitor-trades-box');
       if (box && grid.contains(box)) {
-        const wasOpen = box.classList.contains('th-monitor-trades-box--tip-open');
-        grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
-        if (!wasOpen) box.classList.add('th-monitor-trades-box--tip-open');
-        hideMobileDashboardFloatingTip();
+        const streak = box.getAttribute('data-win-streak') || box.dataset.winStreak || '0';
+        const msg = `Win streak: ${streak}`;
+        if (mobileDashboardTipToggleEl === box) {
+          hideMobileDashboardFloatingTip();
+        } else {
+          showMobileDashboardFloatingTip(box, msg);
+        }
         return;
       }
 
       const badge = e.target.closest('.allocation-status-badge');
       if (badge && grid.contains(badge) && badge.dataset.mobileTip) {
         const tip = badge.dataset.mobileTip;
-        grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
         if (mobileDashboardTipToggleEl === badge) {
           hideMobileDashboardFloatingTip();
         } else {
@@ -3533,7 +3505,6 @@
       const nameTip = e.target.closest('.monitor-name--tap-tip');
       if (nameTip && grid.contains(nameTip) && nameTip.dataset.monitorTip) {
         const tid = nameTip.dataset.monitorTip;
-        grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
         if (mobileDashboardTipToggleEl === nameTip) {
           hideMobileDashboardFloatingTip();
         } else {
@@ -3542,7 +3513,6 @@
         return;
       }
 
-      grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
       hideMobileDashboardFloatingTip();
     }
 
