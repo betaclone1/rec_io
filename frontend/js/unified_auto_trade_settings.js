@@ -64,10 +64,16 @@
     function uatApplySymbolWideFromApi(data) {
       if (!data || typeof data !== 'object') return;
       var on =
+        data.simulated_trade_loss_prevention === true ||
+        data.simulated_trade_loss_prevention === 'true' ||
+        data.simulated_trade_loss_prevention === 1 ||
         data.symbol_wide_loss_prevention === true ||
         data.symbol_wide_loss_prevention === 'true' ||
         data.symbol_wide_loss_prevention === 1;
-      var rawDur = data.symbol_wide_cooldown_duration;
+      var rawDur =
+        data.simulated_trade_cooldown_duration != null
+          ? data.simulated_trade_cooldown_duration
+          : data.symbol_wide_cooldown_duration;
       var hrs =
         rawDur != null && rawDur !== ''
           ? String(Math.max(1, parseInt(rawDur, 10) || 4))
@@ -91,10 +97,15 @@
         ? document.getElementById('msSymbolWideCooldownDurationInput')
         : document.getElementById('symbolWideCooldownDurationInput');
       var out = {};
-      if (swEl) out.symbol_wide_loss_prevention = swEl.checked;
+      if (swEl) {
+        out.simulated_trade_loss_prevention = swEl.checked;
+        out.symbol_wide_loss_prevention = swEl.checked;
+      }
       if (durEl) {
         var n = parseInt(String(durEl.value).trim(), 10);
-        out.symbol_wide_cooldown_duration = Number.isFinite(n) && n > 0 ? n : 4;
+        var hrs = Number.isFinite(n) && n > 0 ? n : 4;
+        out.simulated_trade_cooldown_duration = hrs;
+        out.symbol_wide_cooldown_duration = hrs;
       }
       return out;
     }

@@ -34,3 +34,32 @@ def test_merge_psycopg2_connect_kwargs():
     assert out["options"] == PG_SESSION_TIMEZONE_OPTIONS
     again = merge_psycopg2_connect_kwargs(out)
     assert again["options"].count("timezone=America/New_York") == 1
+
+
+def test_timestamptz_bind_utc_naive_is_eastern_wall():
+    from backend.core.time_eastern import EST, timestamptz_bind_utc
+
+    naive_ny = datetime(2026, 5, 9, 14, 30, 0)
+    utc = timestamptz_bind_utc(naive_ny)
+    assert utc.tzinfo == timezone.utc
+    assert utc.astimezone(EST).replace(tzinfo=None) == naive_ny
+
+
+def test_timestamptz_bind_utc_preserves_instant_for_aware_input():
+    from backend.core.time_eastern import EST, timestamptz_bind_utc
+
+    utc_in = datetime(2026, 5, 9, 18, 30, tzinfo=timezone.utc)
+    bound = timestamptz_bind_utc(utc_in.astimezone(EST))
+    assert bound == utc_in
+
+
+def test_timestamptz_wire_iso_et_uses_eastern_offset():
+    from backend.core.time_eastern import timestamptz_wire_iso_et
+
+    # 2026-05-09 is EDT (UTC-4); 18:30Z → 14:30 Eastern.
+    utc_in = datetime(2026, 5, 9, 18, 30, tzinfo=timezone.utc)
+    s = timestamptz_wire_iso_et(utc_in)
+    assert s is not None
+    assert "-04:00" in s
+    assert "14:30" in s
+    assert timestamptz_wire_iso_et(None) is None

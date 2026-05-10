@@ -49,10 +49,15 @@ from backend.core.kalshi_execution_settings import (
     normalize_time_in_force_loose,
     limit_price_for_executor_payload,
 )
-from backend.core.symbol_wide_loss_prevention import (
-    on_trade_closed_symbol_wide_loss,
+from backend.core.simulated_trade_loss_prevention import (
+    apply_sim_trade_cycle_loss,
+    cycle_loss_contribution_and_anchor,
+    on_trade_closed_live_loss_throttle,
+    on_trade_closed_simulated_trade_loss,
     recompute_monitor_loss_prevention,
+    startup_reconcile_simulated_trade_for_tenant,
 )
+from backend.core.tenant_legacy_sql import legacy_users_sim_trade_lp_cycle_ledger
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 
 _ORDERBOOK_SCHEMA = "live_data"
@@ -1060,7 +1065,14 @@ def _normalize_boolean_flag(value):
     if isinstance(value, bool):
         return value
     if isinstance(value, str):
-        return value.lower() in ('true', '1', 'yes', 'on', 'one_contract')
+        return value.lower() in (
+            'true',
+            '1',
+            'yes',
+            'on',
+            'one_contract',
+            'win_streak_one_contract',
+        )
     if isinstance(value, (int, float)):
         return bool(value)
     return False
@@ -2447,10 +2459,18 @@ def insert_trade(trade):
                     except Exception as e:
                         log(f"⚠️ Error fetching cooldown_timer for {monitor_key}: {e}")
                 
-                # Handle loss_prevention
+                # Handle loss_prevention (boolean) + loss_prevention_state (monitor string snapshot)
                 trade_loss_prevention = trade.get('loss_prevention')
+                loss_prevention_state_for_db = None
+                if monitor_state and monitor_state.get("loss_prevention") is not None:
+                    _raw_lp = monitor_state.get("loss_prevention")
+                    if isinstance(_raw_lp, str) and _raw_lp.strip():
+                        loss_prevention_state_for_db = _raw_lp.strip()
+                    elif _raw_lp is not None:
+                        _s = str(_raw_lp).strip()
+                        loss_prevention_state_for_db = _s if _s else None
                 if trade_loss_prevention is not None:
-                    # Trade explicitly provided loss_prevention (boolean: True = one_contract mode)
+                    # Trade explicitly provided loss_prevention (boolean: True = sizing LP active)
                     loss_prevention_flag = _normalize_boolean_flag(trade_loss_prevention)
                 else:
                     # Trade didn't provide loss_prevention, fetch from monitor state
@@ -2460,13 +2480,18 @@ def insert_trade(trade):
                         if not toggle_on:
                             loss_prevention_flag = False
                         else:
-                            # Monitor stores loss_prevention as string ("one_contract", "off", "new", etc.)
-                            # Convert to boolean: True if "one_contract", False otherwise
+                            # Monitor stores loss_prevention as string (win_streak_one_contract, sim_loss_*, off, new, …)
                             monitor_loss_prevention = monitor_state.get('loss_prevention')
                             if isinstance(monitor_loss_prevention, str):
-                                loss_prevention_flag = monitor_loss_prevention in (
+                                lpv = monitor_loss_prevention.strip().lower()
+                                loss_prevention_flag = lpv in (
                                     "one_contract",
+                                    "win_streak_one_contract",
                                     "symbol_one_contract",
+                                    "sim_loss_50",
+                                    "sim_loss_25",
+                                    "sim_loss_1c",
+                                    "live_loss_1c",
                                 )
                             else:
                                 loss_prevention_flag = _normalize_boolean_flag(monitor_loss_prevention)
@@ -2670,13 +2695,13 @@ def insert_trade(trade):
                         win_loss, ticker, ticket_id, market_id,
                         momentum_percentile, momentum_5s_avg, entry_method, close_method, monitor, bankroll,
                         master_trading_bankroll, mtb_base_value,
-                        hour_idx, weekly_cycle, loss_prevention, multiplier, price_spread,
+                        hour_idx, weekly_cycle, loss_prevention, loss_prevention_state, multiplier, price_spread,
                         yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         time_in_force, order_type,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -2695,6 +2720,7 @@ def insert_trade(trade):
                     master_trading_bankroll_for_db, mtb_base_value_for_db,
                     hour_idx_for_db, weekly_cycle_for_db,
                     loss_prevention_flag,
+                    loss_prevention_state_for_db,
                     multiplier_for_db,
                     price_spread,
                     yes_ask_min_15m_for_db,
@@ -4867,25 +4893,36 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
         check_and_update_cycle_metrics(trade_id)
 
 def _symbol_wide_loss_after_close(trade_id: int) -> None:
-    """Event-driven symbol-wide cooldown: qualifying closed L trade fans out start_time."""
+    """Event-driven simulated-trade LP: qualifying closed L (incl. paper) updates per-monitor ledger."""
     try:
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return
         try:
+            tenant_slot = effective_tenant_context_for_sql_rewrite().user_no
             with pg_conn.cursor() as cursor:
-                ran = on_trade_closed_symbol_wide_loss(
+                ran_sim = on_trade_closed_simulated_trade_loss(
                     cursor,
                     _tm_trades_table(),
                     _tm_monitor_list_table(),
+                    _tm_trades_simulated_table(),
+                    legacy_users_sim_trade_lp_cycle_ledger(tenant_slot),
+                    tenant_slot,
                     trade_id,
                 )
-            if ran:
+                ran_live = on_trade_closed_live_loss_throttle(
+                    cursor,
+                    _tm_trades_table(),
+                    _tm_monitor_list_table(),
+                    tenant_slot,
+                    trade_id,
+                )
+            if ran_sim or ran_live:
                 pg_conn.commit()
         finally:
             pg_conn.close()
     except Exception as e:
-        log(f"⚠️ symbol_wide_loss_after_close trade {trade_id}: {e}")
+        log(f"⚠️ simulated_trade_loss_after_close trade {trade_id}: {e}")
 
 
 def update_monitor_win_streak(trade_id: int) -> None:
@@ -6811,7 +6848,9 @@ def check_expired_simulated_trades():
                 log(f"⚠️ Failed to settle simulated trade {trade_id}: {e}")
             finally:
                 conn.close()
-        # Set cycle_win_loss per 15m window: L if any loss in that monitor/cycle, else W
+        # Set cycle_win_loss per 15m window: L if any loss in that monitor/cycle, else W;
+        # then bump per-monitor simulated-trade LP ledger when the cycle has losses.
+        loss_cycles_for_lp: List[Tuple[Any, Any, Any]] = []
         for monitor, trade_date, weekly_cycle in cycles_closed:
             try:
                 conn = get_postgresql_connection()
@@ -6836,10 +6875,57 @@ def check_expired_simulated_trades():
                         """,
                         (cycle_win_loss, monitor, trade_date, weekly_cycle),
                     )
+                    if has_loss:
+                        loss_cycles_for_lp.append((monitor, trade_date, weekly_cycle))
                 conn.commit()
                 conn.close()
             except Exception as e:
                 log(f"⚠️ Failed to set cycle_win_loss for simulated cycle {monitor}/{trade_date}/{weekly_cycle}: {e}")
+
+        if loss_cycles_for_lp:
+            try:
+                pg_lp = get_postgresql_connection()
+                if not pg_lp:
+                    log("⚠️ simulated_trade LP batch: no DB connection")
+                else:
+                    tenant_slot = effective_tenant_context_for_sql_rewrite().user_no
+                    ml_tbl = _tm_monitor_list_table()
+                    tr_tbl = _tm_trades_table()
+                    tsim_tbl = _tm_trades_simulated_table()
+                    led_tbl = legacy_users_sim_trade_lp_cycle_ledger(tenant_slot)
+                    with pg_lp.cursor() as lp_cur:
+                        for monitor, trade_date, weekly_cycle in loss_cycles_for_lp:
+                            try:
+                                contrib, anch = cycle_loss_contribution_and_anchor(
+                                    lp_cur,
+                                    tsim_tbl,
+                                    tr_tbl,
+                                    str(monitor).strip(),
+                                    trade_date,
+                                    weekly_cycle,
+                                )
+                                if contrib <= 0 or anch is None:
+                                    continue
+                                apply_sim_trade_cycle_loss(
+                                    lp_cur,
+                                    monitor_list_qualified=ml_tbl,
+                                    trades_qualified=tr_tbl,
+                                    trades_simulated_qualified=tsim_tbl,
+                                    ledger_qualified=led_tbl,
+                                    tenant_slot=str(tenant_slot),
+                                    monitor_key=str(monitor).strip(),
+                                    cycle_date=trade_date,
+                                    weekly_cycle=weekly_cycle,
+                                    loss_anchor_ts=anch,
+                                )
+                            except Exception as le:
+                                log(
+                                    f"⚠️ simulated_trade LP after sim settle {monitor}/{trade_date}/{weekly_cycle}: {le}"
+                                )
+                    pg_lp.commit()
+                    pg_lp.close()
+            except Exception as e:
+                log(f"⚠️ simulated_trade LP batch after simulated settle: {e}")
     except Exception as e:
         log(f"⚠️ check_expired_simulated_trades: {e}")
 
@@ -7480,6 +7566,31 @@ _scheduler.add_job(
 
 from contextlib import asynccontextmanager
 
+
+def _tm_startup_sim_trade_lp_reconcile() -> None:
+    """Rebuild sim-trade LP ledger + cooldown anchors from trades (Eastern-safe); runs once per TM process."""
+    try:
+        pg = get_postgresql_connection()
+        if not pg:
+            log("⚠️ [SIM TRADE LP] trade_manager startup reconcile skipped (no DB)")
+            return
+        try:
+            with pg.cursor() as cur:
+                startup_reconcile_simulated_trade_for_tenant(
+                    cur,
+                    _tm_trades_table(),
+                    _tm_trades_simulated_table(),
+                    _tm_monitor_list_table(),
+                    str(effective_tenant_context_for_sql_rewrite().user_no),
+                )
+            pg.commit()
+            log("✅ [SIM TRADE LP] trade_manager startup reconcile completed")
+        finally:
+            pg.close()
+    except Exception as e:
+        log(f"⚠️ [SIM TRADE LP] trade_manager startup reconcile failed: {e}")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start APScheduler when FastAPI app starts"""
@@ -7491,6 +7602,7 @@ async def lifespan(app: FastAPI):
             kwargs={"window_days": 84},
             daemon=True
         ).start()
+        _tm_startup_sim_trade_lp_reconcile()
         start_trading_redis_trade_manager_consumers(_trade_manager_scheduler_shutdown)
         start_trade_manager_positions_updated_subscriber()
     except Exception as e:

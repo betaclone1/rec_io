@@ -56,7 +56,7 @@ from backend.core.performance_rollups import (
 )
 from backend.core.monitor_list_api import get_monitors_api_payload
 from backend.core.strike_pipeline_health import (
-    evaluate_symbol_pipeline_gate_conn,
+    evaluate_pipeline_gate_conn,
     strike_pipeline_health_strict_mode_enabled,
 )
 from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_list_query
@@ -978,8 +978,17 @@ async def get_dashboard_preferences(mode: str = "prod") -> Dict[str, Any]:
 
 @app.get("/api/monitors")
 async def get_monitors(user_id: Optional[str] = None) -> Dict[str, Any]:
-    user_number = _session_user_number_from_optional_user_id(user_id)
-    return get_monitors_api_payload(user_number)
+    try:
+        user_number = _session_user_number_from_optional_user_id(user_id)
+        return get_monitors_api_payload(user_number)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _read_logger.exception("GET /api/monitors failed")
+        raise HTTPException(
+            status_code=500,
+            detail=f"get_monitors_failed: {exc}"[:2000],
+        ) from exc
 
 
 @app.get("/api/monitors/health")
@@ -1004,18 +1013,20 @@ async def get_monitors_health(user_id: Optional[str] = None) -> Dict[str, Any]:
                 """
             )
             monitor_rows = cursor.fetchall()
-            health_by_symbol = {}
+            health_by_symbol_market: dict = {}
             if strict_pipeline_health:
-                symbols = sorted(
+                sym_mkt_pairs = sorted(
                     {
-                        str(symbol).upper()
+                        (str(symbol).upper(), (market or "").strip().lower())
                         for _mid, symbol, _status, market in monitor_rows
                         if symbol and ((market or "").strip().lower() in ("15m", "hourly"))
                     }
                 )
-                for sym in symbols:
-                    ok, rsn = evaluate_symbol_pipeline_gate_conn(conn, exchange="kalshi", symbol=sym)
-                    health_by_symbol[sym] = {
+                for sym, mkt in sym_mkt_pairs:
+                    ok, rsn = evaluate_pipeline_gate_conn(
+                        conn, exchange="kalshi", market=mkt, symbol=sym
+                    )
+                    health_by_symbol_market[(sym, mkt)] = {
                         "monitor_healthy": ok,
                         "monitor_health_state": "healthy" if ok else "degraded",
                         "monitor_health_reason": "ok" if ok else rsn,
@@ -1037,7 +1048,7 @@ async def get_monitors_health(user_id: Optional[str] = None) -> Dict[str, Any]:
                         "monitor_health_age_sec": 0.0,
                     }
                 else:
-                    h = health_by_symbol.get(monitor_symbol)
+                    h = health_by_symbol_market.get((monitor_symbol, monitor_market))
                     if h:
                         out[monitor_key] = dict(h)
                     else:

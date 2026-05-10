@@ -89,6 +89,7 @@
   <link href="https://fonts.googleapis.com/css2?family=Tektur:wght@400;600;700&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/styles/global.css">
   <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
   
   <!-- Preload only shell-critical images (sidebar logo, favicon, default-tab icon, collapse/expand). Others load when needed. -->
   <link rel="preload" href="/images/rec_logo_1.png" as="image" type="image/png">
@@ -885,7 +886,7 @@
     // Master-admin: highlight Admin Tools when any user is pending_admin_approval (WS + initial fetch).
     const ADMIN_TOOLS_ICON_DEFAULT = '/images/icons/admin_tools_icon.png';
     const ADMIN_TOOLS_ICON_ATTN = '/images/icons/admin_tools_icon_attn.png';
-    let _adminIndexPendingWs = null;
+    let _adminIndexPendingDbUnsub = null;
     let _adminIndexPendingWsStopped = true;
     let _adminIndexPendingRefreshTimer = null;
     const _ADMIN_INDEX_PENDING_WS_DEBOUNCE_MS = 500;
@@ -917,30 +918,25 @@
 
     function setupAdminToolsPendingDbChangesWs() {
       if (_adminIndexPendingWsStopped) return;
-      if (_adminIndexPendingWs) return;
+      if (_adminIndexPendingDbUnsub) return;
+      if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+        return;
+      }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
-      _adminIndexPendingWs = ws;
-      ws.onmessage = function (event) {
-        try {
-          const raw = event.data;
-          if (typeof recDbChangeRawMentionsStream === 'function' &&
-              !recDbChangeRawMentionsStream(raw, 'master_users')) {
-            return;
-          }
-          const data = JSON.parse(raw);
-          if (data.type === 'db_change' && data.database === 'master_users') {
-            scheduleAdminToolsAttentionRefresh();
-          }
-        } catch (e) { /* ignore malformed frames */ }
-      };
-      ws.onerror = function () {};
-      ws.onclose = function () {
-        _adminIndexPendingWs = null;
-        if (!_adminIndexPendingWsStopped) {
-          setTimeout(setupAdminToolsPendingDbChangesWs, 5000);
-        }
-      };
+      const wsUrl = protocol + '//' + window.location.host + '/ws/db_changes';
+      _adminIndexPendingDbUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+        onlyDbStreams: ['master_users'],
+        onMessage: function (event) {
+          try {
+            const data =
+              typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+            if (!data) return;
+            if (data.type === 'db_change' && data.database === 'master_users') {
+              scheduleAdminToolsAttentionRefresh();
+            }
+          } catch (e) { /* ignore malformed frames */ }
+        },
+      });
     }
 
     function stopAdminToolsPendingIndicator() {
@@ -949,9 +945,11 @@
         clearTimeout(_adminIndexPendingRefreshTimer);
         _adminIndexPendingRefreshTimer = null;
       }
-      if (_adminIndexPendingWs) {
-        try { _adminIndexPendingWs.close(); } catch (e) {}
-        _adminIndexPendingWs = null;
+      if (_adminIndexPendingDbUnsub) {
+        try {
+          _adminIndexPendingDbUnsub();
+        } catch (e) {}
+        _adminIndexPendingDbUnsub = null;
       }
       const icon = document.getElementById('adminToolsIcon');
       if (icon) icon.src = ADMIN_TOOLS_ICON_DEFAULT;

@@ -8,7 +8,7 @@ is independent of the host OS timezone.
 from __future__ import annotations
 
 from datetime import date, datetime, timezone
-from typing import Any, Dict, Mapping
+from typing import Any, Dict, Mapping, Optional
 from zoneinfo import ZoneInfo
 
 # Canonical IANA zone for Kalshi / US market conventions (avoid US/Eastern alias in code).
@@ -35,6 +35,37 @@ def eastern_wall_naive(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         return dt
     return dt.astimezone(EST).replace(tzinfo=None)
+
+
+def timestamptz_wire_iso_et(dt: Any) -> Optional[str]:
+    """ISO string with **America/New_York** offset for API clients (not host-local tz).
+
+    ``TIMESTAMPTZ`` rows read via psycopg2 often use the client connection tz; naive values
+    from legacy paths are treated as Eastern wall.
+    """
+    if dt is None:
+        return None
+    if isinstance(dt, str):
+        return dt
+    if not isinstance(dt, datetime):
+        return str(dt)
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=EST).isoformat()
+    return dt.astimezone(EST).isoformat()
+
+
+def timestamptz_bind_utc(dt: datetime) -> datetime:
+    """UTC-aware instant for ``TIMESTAMPTZ`` query parameters (psycopg2).
+
+    Naive datetimes are treated as **US Eastern wall** (same as trade logs). Using an
+    explicit offset avoids PostgreSQL interpreting naive values in the wrong session
+    or client timezone (e.g. host set to Pacific).
+    """
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=EST)
+    else:
+        dt = dt.astimezone(EST)
+    return dt.astimezone(timezone.utc)
 
 
 def merge_psycopg2_connect_kwargs(base: Mapping[str, Any]) -> Dict[str, Any]:

@@ -7,6 +7,7 @@
   <title>Admin Tools - REC.IO</title>
   <link rel="stylesheet" href="/styles/global.css">
   <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
   <style>
     body {
       box-sizing: border-box;
@@ -388,7 +389,7 @@
       }
 
       var _adminToolsPaused = false;
-      var _adminDbChangesWs = null;
+      var _adminDbChangesUnsub = null;
       var _adminDbRefreshTimer = null;
       var _ADMIN_WS_DEBOUNCE_MS = 600;
 
@@ -403,38 +404,33 @@
 
       function setupAdminToolsDbChangesWs() {
         if (_adminToolsPaused) return;
-        if (_adminDbChangesWs) {
-          try { _adminDbChangesWs.close(); } catch (e) {}
-          _adminDbChangesWs = null;
+        if (_adminDbChangesUnsub) return;
+        if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+          return;
         }
         var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-        var ws = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
-        _adminDbChangesWs = ws;
-        ws.onmessage = function (event) {
-          try {
-            var raw = event.data;
-            if (typeof recDbChangeRawMentionsAny === 'function') {
-              if (!recDbChangeRawMentionsAny(raw, ['master_users', 'monitor_list'])) return;
-            } else if (typeof recDbChangeRawMentionsStream === 'function') {
-              if (!recDbChangeRawMentionsStream(raw, 'master_users') &&
-                  !recDbChangeRawMentionsStream(raw, 'monitor_list')) {
-                return;
+        var wsUrl = protocol + '//' + window.location.host + '/ws/db_changes';
+        _adminDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+          onlyDbStreams: ['master_users', 'monitor_list'],
+          onMessage: function (event) {
+            try {
+              var data =
+                typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+              if (!data) return;
+              if (data.type === 'db_change' &&
+                  (data.database === 'master_users' || data.database === 'monitor_list')) {
+                scheduleAdminToolsRefetchFromDbChange();
               }
-            }
-            var data = JSON.parse(raw);
-            if (data.type === 'db_change' &&
-                (data.database === 'master_users' || data.database === 'monitor_list')) {
-              scheduleAdminToolsRefetchFromDbChange();
-            }
-          } catch (e) { /* ignore malformed frames */ }
-        };
-        ws.onerror = function () {};
-        ws.onclose = function () {
-          _adminDbChangesWs = null;
-          if (!_adminToolsPaused) {
-            setTimeout(setupAdminToolsDbChangesWs, 5000);
-          }
-        };
+            } catch (e) { /* ignore malformed frames */ }
+          },
+        });
+      }
+
+      function teardownAdminToolsDbChangesWs() {
+        if (_adminDbChangesUnsub) {
+          try { _adminDbChangesUnsub(); } catch (e) {}
+          _adminDbChangesUnsub = null;
+        }
       }
 
       window.addEventListener('message', function (event) {
@@ -450,10 +446,7 @@
           setupAdminToolsDbChangesWs();
           load({ quiet: true });
         } else {
-          if (_adminDbChangesWs) {
-            try { _adminDbChangesWs.close(); } catch (e) {}
-            _adminDbChangesWs = null;
-          }
+          teardownAdminToolsDbChangesWs();
           if (_adminDbRefreshTimer) {
             clearTimeout(_adminDbRefreshTimer);
             _adminDbRefreshTimer = null;

@@ -505,6 +505,7 @@
     </div>
 
     <script src="/js/db_changes_prefilter.js"></script>
+    <script src="/js/realtime-ws-coordinator.js"></script>
     <script>
         let REC_TRADING_MODE = "live";
         window.__recTradingModeAmMobile = "live";
@@ -648,20 +649,25 @@
             });
         }
 
+        let _ammPreferencesUnsub = null;
         function setupAccountManagerPreferencesWsMobile() {
+            if (_ammPreferencesUnsub) return;
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== "function") {
+                return;
+            }
             const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
-            ws.onmessage = function (event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.trading_mode === "live" || data.trading_mode === "paper") {
-                        void fetchTradingModeForAccountManagerMobile().then(function () { return loadAccountData(); });
-                    }
-                } catch (_) {}
-            };
-            ws.onclose = function () {
-                setTimeout(setupAccountManagerPreferencesWsMobile, 5000);
-            };
+            const url = `${protocol}//${window.location.host}/ws/preferences`;
+            _ammPreferencesUnsub = window.recRealtimeWsCoordinator.subscribe(url, {
+                onMessage: function (event) {
+                    try {
+                        const data =
+                            typeof recRealtimeWsJson === "function" ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                        if (data && (data.trading_mode === "live" || data.trading_mode === "paper")) {
+                            void fetchTradingModeForAccountManagerMobile().then(function () { return loadAccountData(); });
+                        }
+                    } catch (_) {}
+                },
+            });
         }
 
         // Tab switching function
@@ -1101,43 +1107,57 @@
             }, _AMM_DB_CHANGE_DEBOUNCE_MS);
         }
 
+        let _ammDbChangesUnsub = null;
+        function teardownAccountManagerMobileDbWs() {
+            if (_ammDbChangesUnsub) {
+                try { _ammDbChangesUnsub(); } catch (e) {}
+                _ammDbChangesUnsub = null;
+            }
+            window._ammDbChangesWs = null;
+        }
         // WebSocket connection for database change notifications (paused when tab hidden)
         function setupDatabaseChangeListener() {
             if (window.ACCOUNT_MOBILE_PAUSED) return;
+            if (_ammDbChangesUnsub) return;
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== "function") {
+                return;
+            }
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
-            window._ammDbChangesWs = ws;
-            
-            ws.onopen = function() {
-                _ammWsConnected = true;
-                stopAccountManagerMobilePolling();
-            };
-            
-            ws.onmessage = function(event) {
-                try {
-                    const raw = event.data;
-                    const streams = ['fills', 'positions', 'settlements', 'subaccounts', 'transfers', 'transfers_paper', 'account_balance', 'account_balance_paper'];
-                    if (!recDbChangeRawMentionsAny(raw, streams)) return;
-                    const data = JSON.parse(raw);
-                    if (data.type !== 'db_change') return;
-                    if (streams.indexOf(data.database) !== -1) {
-                        _ammScheduleLoadAccountDataFromWs();
+            const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
+            const streams = [
+                'fills',
+                'positions',
+                'settlements',
+                'subaccounts',
+                'transfers',
+                'transfers_paper',
+                'account_balance',
+                'account_balance_paper',
+            ];
+            window._ammDbChangesWs = true;
+            _ammDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+                onlyDbStreams: streams,
+                onOpen: function () {
+                    _ammWsConnected = true;
+                    stopAccountManagerMobilePolling();
+                },
+                onClose: function () {
+                    _ammWsConnected = false;
+                    startAccountManagerMobilePolling();
+                },
+                onMessage: function (event) {
+                    try {
+                        const data =
+                            typeof recRealtimeWsJson === "function" ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                        if (!data || data.type !== 'db_change') return;
+                        if (streams.indexOf(data.database) !== -1) {
+                            _ammScheduleLoadAccountDataFromWs();
+                        }
+                    } catch (error) {
+                        console.error('Error parsing database change notification (account manager mobile):', error);
                     }
-                } catch (error) {
-                    console.error('Error parsing database change notification (account manager mobile):', error);
-                }
-            };
-            
-            ws.onerror = function() {};
-            
-            ws.onclose = function() {
-                window._ammDbChangesWs = null;
-                _ammWsConnected = false;
-                startAccountManagerMobilePolling();
-                if (!window.ACCOUNT_MOBILE_PAUSED) {
-                    setTimeout(() => setupDatabaseChangeListener(), 5000);
-                }
-            };
+                },
+            });
         }
         
         setupDatabaseChangeListener();
@@ -1177,7 +1197,7 @@
                     setupDatabaseChangeListener();
                 } else {
                     if (window._ammRefreshInterval) { clearInterval(window._ammRefreshInterval); window._ammRefreshInterval = null; }
-                    if (window._ammDbChangesWs) { try { window._ammDbChangesWs.close(); } catch (e) {} window._ammDbChangesWs = null; }
+                    teardownAccountManagerMobileDbWs();
                 }
             }
         });

@@ -104,7 +104,7 @@ from backend.core.port_config import (
 from backend.core.config.database import get_postgresql_connection as get_db_connection
 from backend.core.symbol_wide_loss_prevention import (
     recompute_monitor_loss_prevention,
-    startup_reconcile_symbol_wide_for_tenant,
+    startup_reconcile_simulated_trade_for_tenant,
 )
 from backend.core.strike_pipeline_health import (
     evaluate_pipeline_gate_conn,
@@ -2476,11 +2476,18 @@ def get_loss_prevention_state():
             if result:
                 loss_prevention, lp_toggle = result[0], result[1]
                 toggle_on = bool(lp_toggle) if lp_toggle is not None else True
-                if loss_prevention == "symbol_one_contract":
-                    log_debug(
-                        f"[AUTO ENTRY] Symbol-wide loss prevention active for monitor {ctx_mid()}"
-                    )
-                    return "symbol_one_contract"
+                if isinstance(loss_prevention, str):
+                    lpn = loss_prevention.strip().lower()
+                    if lpn in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
+                        log_debug(
+                            f"[AUTO ENTRY] Simulated-trade loss prevention tier {lpn} for monitor {ctx_mid()}"
+                        )
+                        return lpn
+                    if lpn == "symbol_one_contract":
+                        log_debug(
+                            f"[AUTO ENTRY] Legacy symbol_one_contract LP active for monitor {ctx_mid()}"
+                        )
+                        return "symbol_one_contract"
                 if not toggle_on:
                     log_debug(
                         f"[AUTO ENTRY] Loss prevention toggle off for monitor {ctx_mid()}; "
@@ -2665,9 +2672,23 @@ def trigger_auto_entry_trade(strike_data):
         
         # Check loss prevention state and override position size if needed
         loss_prevention = get_loss_prevention_state()
-        if loss_prevention in ("one_contract", "symbol_one_contract"):
+        if loss_prevention in (
+            "one_contract",
+            "win_streak_one_contract",
+            "symbol_one_contract",
+            "sim_loss_1c",
+            "live_loss_1c",
+        ):
             log(f"[AUTO ENTRY] 🛡️ Loss prevention active - overriding position size from {position_size} to 1 contract")
             position_size = 1
+        elif loss_prevention == "sim_loss_25":
+            new_sz = max(1, int(round(position_size * 0.25)))
+            log(f"[AUTO ENTRY] 🛡️ Sim loss 25% tier — position size {position_size} -> {new_sz}")
+            position_size = new_sz
+        elif loss_prevention == "sim_loss_50":
+            new_sz = max(1, int(round(position_size * 0.5)))
+            log(f"[AUTO ENTRY] 🛡️ Sim loss 50% tier — position size {position_size} -> {new_sz}")
+            position_size = new_sz
         else:
             log(f"[AUTO ENTRY] Loss prevention is '{loss_prevention}' - using configured position size: {position_size}")
         
@@ -2750,7 +2771,16 @@ def trigger_auto_entry_trade(strike_data):
             "monitor": f"mon_{ctx_user()}_{ctx_mid()}",
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",
-            "loss_prevention": loss_prevention in ("one_contract", "symbol_one_contract"),
+            "loss_prevention": loss_prevention
+            in (
+                "one_contract",
+                "win_streak_one_contract",
+                "symbol_one_contract",
+                "sim_loss_1c",
+                "live_loss_1c",
+                "sim_loss_25",
+                "sim_loss_50",
+            ),
             "multiplier": get_current_multiplier(),
             "paper_trade": paper_trade
         }
@@ -5526,7 +5556,7 @@ def _aes_iter_unique_tenant_first_monitor():
 
 
 def _aes_run_symbol_wide_startup_once() -> None:
-    """Reconcile symbol_wide_cooldown_start_time + loss_prevention from trades (once per process)."""
+    """Reconcile simulated-trade LP ledger + monitor columns from trades (once per process)."""
     global _symbol_wide_startup_done
     with _symbol_wide_startup_lock:
         if _symbol_wide_startup_done:
@@ -5538,21 +5568,23 @@ def _aes_run_symbol_wide_startup_once() -> None:
                 conn = get_db_connection()
                 try:
                     with conn.cursor() as cur:
-                        startup_reconcile_symbol_wide_for_tenant(
+                        startup_reconcile_simulated_trade_for_tenant(
                             cur,
                             _aes_trades_table(),
+                            _aes_trades_simulated_table(),
                             _aes_monitor_list_table(),
+                            str(u),
                         )
                     conn.commit()
                 finally:
                     conn.close()
-        log("✅ [SYMBOL-WIDE LP] Startup reconcile completed")
+        log("✅ [SIM TRADE LP] Startup reconcile completed")
     except Exception as e:
-        log(f"⚠️ [SYMBOL-WIDE LP] Startup reconcile failed: {e}")
+        log(f"⚠️ [SIM TRADE LP] Startup reconcile failed: {e}")
 
 
 def _aes_tick_symbol_wide_recompute() -> None:
-    """Expire symbol-wide cooldown windows (recompute loss_prevention) for tenants with active anchors."""
+    """Expire simulated-trade cooldown windows (recompute loss_prevention) for tenants with active anchors."""
     try:
         for u, m in _aes_iter_unique_tenant_first_monitor():
             with aes_monitor_bind(u, m):
@@ -5562,8 +5594,8 @@ def _aes_tick_symbol_wide_recompute() -> None:
                         cur.execute(
                             f"""
                             SELECT id FROM {_aes_monitor_list_table()}
-                            WHERE symbol_wide_loss_prevention IS TRUE
-                              AND symbol_wide_cooldown_start_time IS NOT NULL
+                            WHERE COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
+                              AND simulated_trade_cooldown_start_time IS NOT NULL
                             """
                         )
                         ids = [str(r[0]) for r in (cur.fetchall() or [])]
@@ -5575,7 +5607,7 @@ def _aes_tick_symbol_wide_recompute() -> None:
                 finally:
                     conn.close()
     except Exception as e:
-        log_debug(f"[SYMBOL-WIDE LP] tick recompute: {e}")
+        log_debug(f"[SIM TRADE LP] tick recompute: {e}")
 
 
 def start_monitoring_loop():

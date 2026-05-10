@@ -7430,7 +7430,9 @@
      */
     function handleDashboardPreferencesWebSocketMessage(event) {
       try {
-        const data = JSON.parse(event.data);
+        const data =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+        if (!data) return;
         console.log('WebSocket message received:', data);
 
         if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
@@ -7686,7 +7688,9 @@
           ? recDbChangeRawMentionsAny(raw, monitorListNames) : false;
         if (typeof recDbChangeRawMentionsAny === 'function' && !careBankroll && !careHealth && !careMonitorList) return;
 
-        const msg = JSON.parse(raw);
+        const msg =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(raw);
+        if (!msg) return;
         if (msg.type !== 'db_change') {
           return;
         }

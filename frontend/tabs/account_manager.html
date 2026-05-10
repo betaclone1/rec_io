@@ -7,6 +7,7 @@
   <title>Account Overview</title>
   <link rel="stylesheet" href="/styles/global.css" />
   <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
   <style>
     table {
       width: 100%;
@@ -573,21 +574,26 @@
       });
     }
 
+    let _amPreferencesUnsub = null;
     function setupAccountManagerPreferencesWs() {
+      if (_amPreferencesUnsub) return;
+      if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== "function") {
+        return;
+      }
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws/preferences`);
-      ws.onmessage = function (event) {
-        try {
-          const data = JSON.parse(event.data);
-          if (data.trading_mode === "live" || data.trading_mode === "paper") {
-            void fetchTradingModeForAccountManager();
-            void loadAccountData();
-          }
-        } catch (_) {}
-      };
-      ws.onclose = function () {
-        setTimeout(setupAccountManagerPreferencesWs, 5000);
-      };
+      const url = `${protocol}//${window.location.host}/ws/preferences`;
+      _amPreferencesUnsub = window.recRealtimeWsCoordinator.subscribe(url, {
+        onMessage: function (event) {
+          try {
+            const data =
+              typeof recRealtimeWsJson === "function" ? recRealtimeWsJson(event) : JSON.parse(event.data);
+            if (data && (data.trading_mode === "live" || data.trading_mode === "paper")) {
+              void fetchTradingModeForAccountManager();
+              void loadAccountData();
+            }
+          } catch (_) {}
+        },
+      });
     }
 
     fetchTradingModeForAccountManager()
@@ -804,44 +810,48 @@
       }, _AM_DB_CHANGE_DEBOUNCE_MS);
     }
     
+    let _amDbChangesUnsub = null;
     // WebSocket connection for database change notifications
     function setupDatabaseChangeListener() {
+      if (_amDbChangesUnsub) return;
+      if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== "function") {
+        return;
+      }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
-      
-      ws.onopen = function() {
-        _amWsConnected = true;
-        _amStopFallbackPolling();
-      };
-      
-      ws.onmessage = function(event) {
-        try {
-          const raw = event.data;
-          const streams = ['fills', 'positions', 'settlements', 'account_balance', 'account_balance_paper', 'subaccounts', 'transfers', 'transfers_paper'];
-          if (typeof recDbChangeRawMentionsAny === 'function' &&
-              !recDbChangeRawMentionsAny(raw, streams)) {
-            return;
+      const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
+      const streams = [
+        'fills',
+        'positions',
+        'settlements',
+        'account_balance',
+        'account_balance_paper',
+        'subaccounts',
+        'transfers',
+        'transfers_paper',
+      ];
+      _amDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+        onlyDbStreams: streams,
+        onOpen: function () {
+          _amWsConnected = true;
+          _amStopFallbackPolling();
+        },
+        onClose: function () {
+          _amWsConnected = false;
+          _amStartFallbackPolling();
+        },
+        onMessage: function (event) {
+          try {
+            const data =
+              typeof recRealtimeWsJson === "function" ? recRealtimeWsJson(event) : JSON.parse(event.data);
+            if (!data || data.type !== 'db_change') return;
+            if (streams.indexOf(data.database) !== -1) {
+              _amScheduleLoadAccountDataFromWs();
+            }
+          } catch (error) {
+            console.error('Error parsing database change notification (account manager):', error);
           }
-          const data = JSON.parse(raw);
-          if (data.type !== 'db_change') return;
-          if (streams.indexOf(data.database) !== -1) {
-            _amScheduleLoadAccountDataFromWs();
-          }
-        } catch (error) {
-          console.error('Error parsing database change notification (account manager):', error);
-        }
-      };
-      
-      ws.onerror = function() {};
-      
-      ws.onclose = function() {
-        _amWsConnected = false;
-        _amStartFallbackPolling();
-        // Attempt to reconnect after a delay
-        setTimeout(() => {
-          setupDatabaseChangeListener();
-        }, 5000);
-      };
+        },
+      });
     }
     
     document.getElementById('account-sync-icon')?.addEventListener('click', async function() {

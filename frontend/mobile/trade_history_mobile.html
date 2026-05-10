@@ -14,6 +14,7 @@
     <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-daterangepicker@3.1.0/daterangepicker.css" />
     <script src="https://cdn.jsdelivr.net/npm/bootstrap-daterangepicker@3.1.0/daterangepicker.min.js"></script>
     <script src="/js/db_changes_prefilter.js"></script>
+    <script src="/js/realtime-ws-coordinator.js"></script>
     <script src="/js/rec_trades_fetch.js"></script>
     <script>
         // Mobile-specific port configuration
@@ -2122,11 +2123,15 @@
             }
         }
 
-        /** Same monitor list + ordering as desktop trade history: GET /api/monitors, active only, dashboard_order. */
+        /** Same monitor list + ordering as desktop trade history: GET /api/monitors, non-archived, dashboard_order. */
         function normalizeActiveMonitorsForTradeHistory(data) {
             if (!data || data.status !== 'ok' || !Array.isArray(data.monitors)) return [];
             return data.monitors
-                .filter(m => m && m.id && m.id !== 'NEW_MONITOR' && m.status === 'active')
+                .filter(m => {
+                    if (!m || !m.id || m.id === 'NEW_MONITOR') return false;
+                    const st = String(m.status || '').trim().toLowerCase();
+                    return st !== 'archived';
+                })
                 .sort((a, b) => {
                     const oa = (a.dashboard_order != null ? Number(a.dashboard_order) : 999999);
                     const ob = (b.dashboard_order != null ? Number(b.dashboard_order) : 999999);
@@ -3247,7 +3252,22 @@
                     : {};
             try {
                 const response = await fetch('/api/monitors?t=' + Date.now());
-                const data = await response.json();
+                let data;
+                try {
+                    data = await response.json();
+                } catch (parseErr) {
+                    console.error('[Trade history mobile] GET /api/monitors: response is not JSON', parseErr);
+                    return;
+                }
+                if (!response.ok) {
+                    const detail = data && (data.detail != null ? data.detail : data.message);
+                    console.error(
+                        '[Trade history mobile] GET /api/monitors HTTP',
+                        response.status,
+                        detail != null ? detail : data,
+                    );
+                    return;
+                }
                 const monitors = normalizeActiveMonitorsForTradeHistory(data);
 
                 const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
@@ -3787,41 +3807,38 @@
             }, 800);
         }
 
+        let _thmDbChangesUnsub = null;
+        function teardownTradeHistoryMobileDbWs() {
+            if (_thmDbChangesUnsub) {
+                try { _thmDbChangesUnsub(); } catch (e) {}
+                _thmDbChangesUnsub = null;
+            }
+            window._thmDbChangesWs = null;
+        }
         // /ws/db_changes: stream "trades" for legacy users.trades_<slot> (rewritten per tenant; no interval polling)
         function setupTradeHistoryWebSocket() {
             if (window.TRADE_HISTORY_MOBILE_PAUSED) return;
-            if (window._thmDbChangesWs) {
-                try { window._thmDbChangesWs.close(); } catch (e) {}
-                window._thmDbChangesWs = null;
+            if (_thmDbChangesUnsub) return;
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+                return;
             }
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
-            window._thmDbChangesWs = ws;
-
-            ws.onmessage = function(event) {
-                try {
-                    const raw = event.data;
-                    if (typeof recDbChangeRawMentionsStream === 'function' &&
-                        !recDbChangeRawMentionsStream(raw, 'trades')) {
-                      return;
+            const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
+            window._thmDbChangesWs = true;
+            _thmDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+                onlyDbStreams: ['trades'],
+                onMessage: function (event) {
+                    try {
+                        const data =
+                            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                        if (data && data.type === 'db_change' && data.database === 'trades') {
+                            scheduleTradeHistoryMobileRefetchFromWs();
+                        }
+                    } catch (error) {
+                        console.error('Error parsing WebSocket message (trade history mobile):', error);
                     }
-                    const data = JSON.parse(raw);
-                    if (data.type === 'db_change' && data.database === 'trades') {
-                        scheduleTradeHistoryMobileRefetchFromWs();
-                    }
-                } catch (error) {
-                    console.error('Error parsing WebSocket message (trade history mobile):', error);
-                }
-            };
-
-            ws.onerror = function() {};
-
-            ws.onclose = function() {
-                window._thmDbChangesWs = null;
-                if (!window.TRADE_HISTORY_MOBILE_PAUSED) {
-                    setTimeout(() => setupTradeHistoryWebSocket(), 5000);
-                }
-            };
+                },
+            });
         }
         
         setupTradeHistoryWebSocket();
@@ -3842,7 +3859,7 @@
                         clearTimeout(_thmTradeDbRefreshTimer);
                         _thmTradeDbRefreshTimer = null;
                     }
-                    if (window._thmDbChangesWs) { try { window._thmDbChangesWs.close(); } catch (e) {} window._thmDbChangesWs = null; }
+                    teardownTradeHistoryMobileDbWs();
                 }
             }
         });

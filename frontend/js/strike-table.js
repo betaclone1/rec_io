@@ -1181,14 +1181,12 @@ function connectDbChangeWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
   dbChangeWebSocketUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+    onlyDbStreams: ['trades'],
     onMessage: function(event) {
       try {
-        const raw = event.data;
-        if (typeof recDbChangeRawMentionsStream === 'function' && !recDbChangeRawMentionsStream(raw, 'trades')) {
-          return;
-        }
-        const data = JSON.parse(raw);
-        if (data.type === 'db_change' && data.database === 'trades') {
+        const data =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+        if (data && data.type === 'db_change' && data.database === 'trades') {
           if (strikeTableTradesWsDebounceTimer) clearTimeout(strikeTableTradesWsDebounceTimer);
           strikeTableTradesWsDebounceTimer = setTimeout(function() {
             strikeTableTradesWsDebounceTimer = null;

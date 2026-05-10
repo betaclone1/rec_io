@@ -29,7 +29,12 @@ from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
-from backend.core.time_eastern import merge_psycopg2_connect_kwargs, now_est, today_est
+from backend.core.time_eastern import (
+    merge_psycopg2_connect_kwargs,
+    now_est,
+    timestamptz_wire_iso_et,
+    today_est,
+)
 from backend.core.port_config import get_port, default_pool_user_number
 from backend.trading_mode import (
     account_balance_table_for_user,
@@ -2367,9 +2372,13 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "regime_window": (result[39] if result[39] is not None else "30d"),
         "time_in_force": (result[40] if result[40] is not None else "fill_or_kill"),
         "order_type": (result[41] if result[41] is not None else "market"),
-        "symbol_wide_loss_prevention": bool(result[42]) if result[42] is not None else False,
-        "symbol_wide_cooldown_duration": int(result[43]) if result[43] is not None else 4,
-        "symbol_wide_cooldown_start_time": result[44],
+        "simulated_trade_loss_prevention": bool(result[42]) if result[42] is not None else False,
+        "simulated_trade_cooldown_duration": int(result[43]) if result[43] is not None else 4,
+        "simulated_trade_cooldown_start_time": (
+            timestamptz_wire_iso_et(result[44])
+            if hasattr(result[44], "isoformat")
+            else result[44]
+        ),
         "flip_sell_prob": bool(result[45]) if result[45] is not None else False,
         "flip_sell_floor": bool(result[46]) if result[46] is not None else False,
         "flip_sell_prob_mult": result[47],
@@ -2422,9 +2431,9 @@ def _code_fallback_strategy_defaults() -> Dict[str, Any]:
         "regime_window": "30d",
         "time_in_force": "fill_or_kill",
         "order_type": "market",
-        "symbol_wide_loss_prevention": False,
-        "symbol_wide_cooldown_duration": 4,
-        "symbol_wide_cooldown_start_time": None,
+        "simulated_trade_loss_prevention": False,
+        "simulated_trade_cooldown_duration": 4,
+        "simulated_trade_cooldown_start_time": None,
         "flip_sell_prob": False,
         "flip_sell_floor": False,
         "flip_sell_prob_mult": None,
@@ -2457,7 +2466,7 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             min_cooldown_timer, max_cooldown_timer,
             regime_monitor_enabled, regime_window,
             time_in_force, order_type,
-            symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time,
+            simulated_trade_loss_prevention, simulated_trade_cooldown_duration, simulated_trade_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
         FROM {}
         WHERE name = %s
@@ -2487,7 +2496,7 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             min_cooldown_timer, max_cooldown_timer,
             regime_monitor_enabled, regime_window,
             time_in_force, order_type,
-            symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time,
+            simulated_trade_loss_prevention, simulated_trade_cooldown_duration, simulated_trade_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
         FROM {}
         WHERE LOWER(name) = LOWER(%s)
@@ -2778,13 +2787,15 @@ def create_monitor():
                  min_cooldown_timer, max_cooldown_timer,
                  regime_monitor_enabled, regime_window,
                  time_in_force, order_type,
-                 symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time,
+                 simulated_trade_loss_prevention, simulated_trade_cooldown_duration, simulated_trade_cooldown_start_time,
+                 original_simulated_trade_cooldown_start_time, simulated_trade_cooldown_loss_count,
+                 live_trade_cooldown_start_time,
                  flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -2856,9 +2867,12 @@ def create_monitor():
                 strategy_defaults.get('regime_window') or '30d',
                 strategy_defaults.get('time_in_force') or 'fill_or_kill',
                 strategy_defaults.get('order_type') or 'market',
-                strategy_defaults.get('symbol_wide_loss_prevention', False),
-                int(strategy_defaults.get('symbol_wide_cooldown_duration', 4)),
-                None,  # symbol_wide_cooldown_start_time: always NULL on new monitor
+                strategy_defaults.get('simulated_trade_loss_prevention', False),
+                int(strategy_defaults.get('simulated_trade_cooldown_duration', 4)),
+                None,  # simulated_trade_cooldown_start_time (sliding): NULL on new monitor
+                None,  # original_simulated_trade_cooldown_start_time
+                0,  # simulated_trade_cooldown_loss_count
+                None,  # live_trade_cooldown_start_time
                 strategy_defaults.get('flip_sell_prob', False),
                 strategy_defaults.get('flip_sell_floor', False),
                 strategy_defaults.get('flip_sell_prob_mult'),

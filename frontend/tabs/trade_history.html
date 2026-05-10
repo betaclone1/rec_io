@@ -11,6 +11,7 @@
   <script src="/js/globals.js"></script>
   <script src="/js/rec_trades_fetch.js"></script>
   <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
   <script src="https://d3js.org/d3.v7.min.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/jquery@3.7.1/dist/jquery.min.js"></script>
@@ -3553,42 +3554,36 @@
       }, _TH_WS_TRADES_DEBOUNCE_MS);
     }
 
+    let _thDbChangesUnsub = null;
+    function teardownTradeHistoryDbWs() {
+      if (_thDbChangesUnsub) {
+        try { _thDbChangesUnsub(); } catch (e) {}
+        _thDbChangesUnsub = null;
+      }
+    }
     // WebSocket: same-origin /ws/db_changes (see docs/REALTIME_BACKBONE.md). Paused when History iframe is hidden.
     function setupDatabaseChangeListener() {
       if (window.TRADE_HISTORY_PAUSED) return;
-      if (window._thDbChangesWs) {
-        try { window._thDbChangesWs.close(); } catch (e) {}
-        window._thDbChangesWs = null;
+      if (_thDbChangesUnsub) return;
+      if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+        return;
       }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-      const ws = new WebSocket(`${protocol}//${window.location.host}/ws/db_changes`);
-      window._thDbChangesWs = ws;
-
-      ws.onmessage = function(event) {
-        try {
-          const raw = event.data;
-          if (typeof recDbChangeRawMentionsStream === 'function' && !recDbChangeRawMentionsStream(raw, 'trades')) {
-            return;
+      const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
+      _thDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+        onlyDbStreams: ['trades'],
+        onMessage: function (event) {
+          try {
+            const data =
+              typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+            if (data && data.type === 'db_change' && data.database === 'trades') {
+              scheduleTradesRefetchFromDbChange();
+            }
+          } catch (error) {
+            console.error('Error parsing database change notification (trade history):', error);
           }
-          const data = JSON.parse(raw);
-          if (data.type === 'db_change' && data.database === 'trades') {
-            scheduleTradesRefetchFromDbChange();
-          }
-        } catch (error) {
-          console.error('Error parsing database change notification (trade history):', error);
-        }
-      };
-
-      ws.onerror = function() {
-        // Browsers give little detail; onclose handles reconnect. Avoid spamming the console.
-      };
-
-      ws.onclose = function() {
-        window._thDbChangesWs = null;
-        if (!window.TRADE_HISTORY_PAUSED) {
-          setTimeout(() => setupDatabaseChangeListener(), 5000);
-        }
-      };
+        },
+      });
     }
 
     window.addEventListener('message', function(event) {
@@ -3604,10 +3599,7 @@
         setupDatabaseChangeListener();
         fetchAllTrades('tab-visible');
       } else {
-        if (window._thDbChangesWs) {
-          try { window._thDbChangesWs.close(); } catch (e) {}
-          window._thDbChangesWs = null;
-        }
+        teardownTradeHistoryDbWs();
         if (_tradeHistoryDbRefreshTimer) {
           clearTimeout(_tradeHistoryDbRefreshTimer);
           _tradeHistoryDbRefreshTimer = null;
@@ -3998,11 +3990,15 @@
         };
       }
 
-      /** Same monitor list as dashboard: GET /api/monitors, active rows only (monitor_manager drives refresh via Redis → /ws/preferences). */
+      /** Same monitor list as dashboard: GET /api/monitors, non-archived rows (align with dashboard tiles; inactive still selectable). */
       function normalizeActiveMonitorsForTradeHistory(data) {
         if (!data || data.status !== 'ok' || !Array.isArray(data.monitors)) return [];
         return data.monitors
-          .filter(m => m && m.id && m.id !== 'NEW_MONITOR' && m.status === 'active')
+          .filter(m => {
+            if (!m || !m.id || m.id === 'NEW_MONITOR') return false;
+            const st = String(m.status || '').trim().toLowerCase();
+            return st !== 'archived';
+          })
           .sort((a, b) => {
             const oa = (a.dashboard_order != null ? Number(a.dashboard_order) : 999999);
             const ob = (b.dashboard_order != null ? Number(b.dashboard_order) : 999999);
@@ -4049,7 +4045,18 @@
         try {
           tradeHistoryClearMonitorPreview();
           const response = await fetch('/api/monitors?t=' + Date.now());
-          const data = await response.json();
+          let data;
+          try {
+            data = await response.json();
+          } catch (parseErr) {
+            console.error('[Trade history] GET /api/monitors: response is not JSON', parseErr);
+            return;
+          }
+          if (!response.ok) {
+            const detail = data && (data.detail != null ? data.detail : data.message);
+            console.error('[Trade history] GET /api/monitors HTTP', response.status, detail != null ? detail : data);
+            return;
+          }
           const monitors = normalizeActiveMonitorsForTradeHistory(data);
 
             if (!monitorCheckboxesHost) return;

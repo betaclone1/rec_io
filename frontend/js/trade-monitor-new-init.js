@@ -1667,7 +1667,10 @@
     tmNewPrefsWsUnsub = window.recRealtimeWsCoordinator.subscribe(url, {
       onMessage: function (event) {
         try {
-          var data = tmNewNormalizePreferencesWsMessage(JSON.parse(event.data));
+          var rawParsed =
+            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+          var data = tmNewNormalizePreferencesWsMessage(rawParsed);
+          if (!data || typeof data !== 'object') return;
           if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
             window.__recTradingMode = data.trading_mode;
             window.globalPaperMode =

@@ -2657,7 +2657,14 @@
       }
       
       // STEP 5: NOW render everything with correct values
-      applyCurrentSort();
+      try {
+        applyCurrentSort();
+      } catch (sortErr) {
+        console.error(
+          '[Dashboard] applyCurrentSort threw; showing monitors in API order (check null symbols / sort mode)',
+          sortErr,
+        );
+      }
       initializeMonitors();
       if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         window.monitorHistoryDisplay.updateMonitorTiles();
@@ -2856,12 +2863,16 @@
                 badge.textContent = badgeState.text;
                 if (badgeState.title) badge.title = badgeState.title;
                 else badge.removeAttribute('title');
+                if (badgeState.dataTooltip) badge.dataset.tooltip = badgeState.dataTooltip;
+                else delete badge.dataset.tooltip;
                 statusParent.insertBefore(badge, statusElement);
               } else {
                 existingBadge.className = badgeState.className;
                 existingBadge.textContent = badgeState.text;
                 if (badgeState.title) existingBadge.title = badgeState.title;
                 else existingBadge.removeAttribute('title');
+                if (badgeState.dataTooltip) existingBadge.dataset.tooltip = badgeState.dataTooltip;
+                else delete existingBadge.dataset.tooltip;
               }
             } else if (existingBadge) {
               existingBadge.remove();
@@ -2997,10 +3008,33 @@
       return Number.isFinite(ms) ? ms : NaN;
     }
 
+    function isLiveTradeCooldownLiveFlag(monitor) {
+      const v = monitor.live_trade_cooldown_live ?? monitor.liveTradeCooldownLive;
+      return v === true || v === 'true' || v === 1;
+    }
+
+    /** Cooldown window start: live-loss throttle uses its own anchor when active, else simulated-trade sliding start. */
+    function effectiveSimLpCooldownStartIso(monitor) {
+      if (isLiveTradeCooldownLiveFlag(monitor)) {
+        return (
+          monitor.live_trade_cooldown_start_time ??
+          monitor.liveTradeCooldownStartTime ??
+          null
+        );
+      }
+      return (
+        monitor.simulated_trade_cooldown_start_time ??
+        monitor.simulatedTradeCooldownStartTime ??
+        monitor.symbol_wide_cooldown_start_time ??
+        monitor.symbolWideCooldownStartTime ??
+        null
+      );
+    }
+
     function getSymbolWideCooldownEndMs(monitor) {
-      const start =
-        monitor.symbol_wide_cooldown_start_time ?? monitor.symbolWideCooldownStartTime;
+      const start = effectiveSimLpCooldownStartIso(monitor);
       const durHrs =
+        monitor.simulated_trade_cooldown_duration ?? monitor.simulatedTradeCooldownDuration ??
         monitor.symbol_wide_cooldown_duration ?? monitor.symbolWideCooldownDuration;
       if (!start || durHrs == null || durHrs === '') return null;
       const startMs = parseApiIsoTimestampMs(start);
@@ -3010,13 +3044,26 @@
       return startMs + hrs * 3600000;
     }
 
-    /** True when symbol-wide LP is enabled and local clock is still inside [start, start+duration). */
+    /** True when simulated-trade LP window is active (server: last loss start + duration). */
     function isSymbolWideCooldownLive(monitor) {
-      const apiLive = monitor.symbol_wide_cooldown_live ?? monitor.symbolWideCooldownLive;
+      const apiLive =
+        monitor.live_trade_cooldown_live ??
+        monitor.liveTradeCooldownLive ??
+        monitor.simulated_trade_cooldown_live ??
+        monitor.simulatedTradeCooldownLive ??
+        monitor.symbol_wide_cooldown_live ??
+        monitor.symbolWideCooldownLive;
       if (apiLive === true || apiLive === 'true' || apiLive === 1) {
         return true;
       }
-      if (!isTruthyFlag(monitor.symbol_wide_loss_prevention ?? monitor.symbolWideLossPrevention)) {
+      if (
+        !isTruthyFlag(
+          monitor.simulated_trade_loss_prevention ??
+            monitor.simulatedTradeLossPrevention ??
+            monitor.symbol_wide_loss_prevention ??
+            monitor.symbolWideLossPrevention,
+        )
+      ) {
         return false;
       }
       const endMs = getSymbolWideCooldownEndMs(monitor);
@@ -3025,9 +3072,9 @@
     }
 
     function formatSymbolWideCooldownEndEtRounded(monitor) {
-      const start =
-        monitor.symbol_wide_cooldown_start_time ?? monitor.symbolWideCooldownStartTime;
+      const start = effectiveSimLpCooldownStartIso(monitor);
       const durHrs =
+        monitor.simulated_trade_cooldown_duration ?? monitor.simulatedTradeCooldownDuration ??
         monitor.symbol_wide_cooldown_duration ?? monitor.symbolWideCooldownDuration;
       if (!start || durHrs == null || durHrs === '') return '';
       const startMs = parseApiIsoTimestampMs(start);
@@ -3078,23 +3125,92 @@
       }).format(end);
     }
 
+    /** Matches backend ``tier_from_sim_loss_count`` (simulated_trade_cooldown_loss_count). */
+    function simCooldownTierLabelFromLossCount(rawCount) {
+      const c = Math.max(0, parseInt(rawCount, 10) || 0);
+      if (c >= 3) return '1c';
+      if (c === 2) return '25%';
+      return '50%';
+    }
+
+    function simCooldownTierLabelFromLpKey(lpKey) {
+      if (lpKey === 'sim_loss_50' || lpKey === 'symbol_one_contract') return '50%';
+      if (lpKey === 'sim_loss_25') return '25%';
+      if (lpKey === 'sim_loss_1c') return '1c';
+      if (lpKey === 'live_loss_1c') return 'Live 1c';
+      return '';
+    }
+
+    /** Last sim loss anchor for cooldown window (ET), tooltip line. */
+    function formatOriginalSimCooldownStartSimple(monitor) {
+      const raw = effectiveSimLpCooldownStartIso(monitor);
+      if (raw == null || raw === '') return '—';
+      const ms = parseApiIsoTimestampMs(raw);
+      if (!Number.isFinite(ms)) return String(raw).trim() || '—';
+      return new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+        hour12: true,
+      }).format(new Date(ms));
+    }
+
+    function simCooldownTooltipStateLabel(monitor, swLive, lpKey, lossPreventionRaw) {
+      if (swLive) {
+        if (isLiveTradeCooldownLiveFlag(monitor)) {
+          return 'Live 1c';
+        }
+        const lossCnt =
+          monitor.simulated_trade_cooldown_loss_count ?? monitor.simulatedTradeCooldownLossCount ?? 0;
+        return simCooldownTierLabelFromLossCount(lossCnt);
+      }
+      const fromKey = simCooldownTierLabelFromLpKey(lpKey);
+      if (fromKey) return fromKey;
+      const raw =
+        lossPreventionRaw == null || lossPreventionRaw === ''
+          ? ''
+          : String(lossPreventionRaw).trim();
+      if (!raw) return '—';
+      return raw.replace(/_/g, ' ');
+    }
+
+    /** Multi-line string for ``data-tooltip`` on sim cooldown badges (custom hover, not native ``title``). */
+    function buildSimCooldownTooltipText(monitor, swLive, lpKey) {
+      const lossPreventionRaw =
+        monitor.loss_prevention ?? monitor.lossPrevention ?? monitor.loss_prevention_mode ?? monitor.lossPreventionMode;
+      const lossCnt = Math.max(
+        0,
+        parseInt(
+          monitor.simulated_trade_cooldown_loss_count ?? monitor.simulatedTradeCooldownLossCount ?? 0,
+          10,
+        ) || 0,
+      );
+      const state = simCooldownTooltipStateLabel(monitor, swLive, lpKey, lossPreventionRaw);
+      const anchor = formatOriginalSimCooldownStartSimple(monitor);
+      return [`State: ${state}`, `Last loss: ${anchor}`, `Losses: ${lossCnt}`].join('\n');
+    }
+
     function resolveAllocationBadgeState(monitor) {
       const lossPreventionValue = monitor.loss_prevention ?? monitor.lossPrevention ?? monitor.loss_prevention_mode ?? monitor.lossPreventionMode;
       const lpKey = normalizeLossPreventionKey(lossPreventionValue);
       const swLive = isSymbolWideCooldownLive(monitor);
-      const swBackend = lpKey === 'symbol_one_contract';
-      if (swLive || swBackend) {
+      const simTier =
+        lpKey === 'symbol_one_contract' ||
+        lpKey === 'sim_loss_50' ||
+        lpKey === 'sim_loss_25' ||
+        lpKey === 'sim_loss_1c' ||
+        lpKey === 'live_loss_1c';
+      if (swLive || simTier) {
         const timeText = formatSymbolWideCooldownEndEtRounded(monitor);
-        const text = timeText || 'SW';
-        const tip =
-          'Symbol-wide loss prevention: sizing capped until ' +
-          (symbolWideCooldownTooltipEt(monitor) || timeText || 'end') +
-          ' ET (from monitor settings duration).';
+        const text = timeText || 'SIM';
         return {
           visible: true,
           text,
           className: 'allocation-status-badge lp lp-symbol-wide',
-          title: tip,
+          dataTooltip: buildSimCooldownTooltipText(monitor, swLive, lpKey),
         };
       }
       const lossPreventionActive =
@@ -3158,7 +3274,8 @@
         return '';
       }
       const t = badge.title ? ` title="${escapeHtmlAttr(badge.title)}"` : '';
-      return `<div class="${badge.className}"${t}>${badge.text}</div>`;
+      const dt = badge.dataTooltip ? ` data-tooltip="${escapeHtmlAttr(badge.dataTooltip)}"` : '';
+      return `<div class="${badge.className}"${t}${dt}>${badge.text}</div>`;
     }
 
     function escapeHtmlAttr(s) {
@@ -3389,13 +3506,26 @@
       }
     }
 
+    /** Backend stores archived as ARCHIVED; compare case-insensitively everywhere we filter. */
+    function isMonitorArchivedRow(m) {
+      return String(m && m.status != null ? m.status : '').trim().toLowerCase() === 'archived';
+    }
+
     // Load monitors from API
     async function loadMonitors() {
       try {
         const response = await fetch('/api/monitors?t=' + Date.now());
         const data = await response.json();
-        
-        if (data.status === 'ok') {
+        if (!response.ok) {
+          const detail = data && (data.detail != null ? data.detail : data.message);
+          console.error(
+            '[Dashboard] GET /api/monitors HTTP',
+            response.status,
+            detail != null ? detail : '(no detail)',
+          );
+          throw new Error('monitors_http_' + response.status);
+        }
+        if (data.status === 'ok' && Array.isArray(data.monitors)) {
           monitors = data.monitors;
           if (typeof data.global_paper_mode === 'boolean') {
             window.globalPaperMode = data.global_paper_mode;
@@ -3413,7 +3543,14 @@
           console.log(`Loaded ${data.count} monitors from API`);
           console.log(`[DEBUG] First monitor data:`, monitors[0]);
         } else {
-          console.error('Failed to load monitors:', data.message);
+          console.error(
+            'Failed to load monitors:',
+            data && data.message != null ? data.message : data,
+            'status field:',
+            data && data.status,
+            'monitors is array:',
+            data && Array.isArray(data.monitors),
+          );
           // Fallback to empty array with NEW_MONITOR
           monitors = [{
             "id": "NEW_MONITOR",
@@ -3479,7 +3616,7 @@
       if (grid) {
         // Filter out archived monitors - only show active and inactive
         const visibleMonitors = monitors.filter(monitor => 
-          monitor.status !== 'archived' && monitor.id !== 'NEW_MONITOR'
+          !isMonitorArchivedRow(monitor) && monitor.id !== 'NEW_MONITOR'
         );
         
         // Add NEW_MONITOR back at the end
@@ -3598,7 +3735,7 @@
     function applyCurrentSort() {
       // Separate the new monitor from regular monitors and filter out archived
       const newMonitor = monitors.find(m => m.id === 'NEW_MONITOR');
-      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR' && m.status !== 'archived');
+      const regularMonitors = monitors.filter(m => m.id !== 'NEW_MONITOR' && !isMonitorArchivedRow(m));
       
       let sortedMonitors;
       
@@ -3614,11 +3751,11 @@
         sortedMonitors = [...regularMonitors].sort((a, b) => {
           switch (currentSortBy) {
             case 'name':
-              return a.id.localeCompare(b.id);
+              return String(a.id || '').localeCompare(String(b.id || ''));
             case 'symbol':
-              return a.symbol.localeCompare(b.symbol);
+              return String(a.symbol || '').localeCompare(String(b.symbol || ''));
             case 'strategy':
-              return a.strategy.localeCompare(b.strategy);
+              return String(a.strategy || '').localeCompare(String(b.strategy || ''));
             case 'win_streak':
               return monitorTileTradesCountForSort(b) - monitorTileTradesCountForSort(a);
             case 'winRate':
@@ -6517,7 +6654,7 @@
         }
         
         // Filter out NEW_MONITOR and archived monitors for comparison
-        const newVisibleMonitors = monitors.filter(m => m.status !== 'archived' && m.id !== 'NEW_MONITOR');
+        const newVisibleMonitors = monitors.filter(m => !isMonitorArchivedRow(m) && m.id !== 'NEW_MONITOR');
         const newMonitorIds = newVisibleMonitors.map(m => m.id);
         
         // Only full re-render when monitors were added or removed (rebuilds DOM and reloads icons).
@@ -7584,7 +7721,9 @@
      */
     function handleDashboardPreferencesWebSocketMessage(event) {
       try {
-        const data = JSON.parse(event.data);
+        const data =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+        if (!data) return;
         console.log('WebSocket message received:', data);
 
         if (data.trading_mode === 'live' || data.trading_mode === 'paper') {
@@ -7828,7 +7967,8 @@
         const raw = event.data;
         if (typeof raw === 'string' && raw.indexOf('performance_rollups_snapshot') !== -1) {
           try {
-            const snapMsg = JSON.parse(raw);
+            const snapMsg =
+              typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(raw);
             if (snapMsg.type === 'performance_rollups_snapshot') {
               handlePerformanceRollupsDbSnapshot(snapMsg);
               return;
@@ -7851,7 +7991,9 @@
           ? recDbChangeRawMentionsAny(raw, monitorListNames) : false;
         if (typeof recDbChangeRawMentionsAny === 'function' && !careBankroll && !careHealth && !careMonitorList) return;
 
-        const msg = JSON.parse(raw);
+        const msg =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(raw);
+        if (!msg) return;
         if (msg.type !== 'db_change') {
           return;
         }
@@ -8026,7 +8168,7 @@
   </div>
 
   <script>
-    // Fast custom tooltip for disabled LIVE/PAPER toggle.
+    // Fast custom tooltip: LIVE/PAPER toggle + sim cooldown allocation badges (multi-line OK).
     (function initFastTooltipForPaperToggle(){
       let tooltipEl = null;
       let activeAnchor = null;
@@ -8046,7 +8188,9 @@
         tooltipEl.style.boxShadow = '0 4px 12px rgba(0,0,0,0.3)';
         tooltipEl.style.opacity = '0';
         tooltipEl.style.transition = 'opacity 90ms ease';
-        tooltipEl.style.whiteSpace = 'nowrap';
+        tooltipEl.style.whiteSpace = 'pre-line';
+        tooltipEl.style.maxWidth = 'min(320px, calc(100vw - 24px))';
+        tooltipEl.style.lineHeight = '1.35';
         document.body.appendChild(tooltipEl);
         return tooltipEl;
       };
@@ -8074,7 +8218,12 @@
       };
 
       document.addEventListener('mouseover', (evt) => {
-        const anchor = evt.target && evt.target.closest ? evt.target.closest('.paper-trading-toggle[data-tooltip]') : null;
+        const anchor =
+          evt.target && evt.target.closest
+            ? evt.target.closest(
+                '.paper-trading-toggle[data-tooltip], .allocation-status-badge.lp-symbol-wide[data-tooltip]',
+              )
+            : null;
         if (!anchor || !anchor.dataset.tooltip) {
           hideTooltip();
           return;

@@ -33,6 +33,19 @@
   let refreshPending = false;
   let refreshTimer = null;
 
+  /** Coalesce high-frequency `/ws/db_changes` so we do not refetch the ladder on every orderbook tick. */
+  const STRIKE_TABLE_WS_MIN_INTERVAL_MS = 900;
+  let strikeTableWsRefreshTimer = null;
+  let lastStrikeTableWsRefreshRun = 0;
+
+  /** Debounce ATM row DOM work on rapid `live_symbol_spot` frames. */
+  const STRIKE_TABLE_ATM_SYNC_MIN_MS = 120;
+  let strikeTableAtmSyncTimer = null;
+  let strikeTableAtmSyncLast = 0;
+
+  const EXPANDED_ORDERBOOK_WS_DEBOUNCE_MS = 200;
+  let expandedOrderbookWsTimer = null;
+
   function setMode(event, next) {
     if (event && typeof event.stopPropagation === 'function') {
       event.stopPropagation();
@@ -853,7 +866,79 @@
     return null;
   }
 
+  function scheduleStrikeTableRefreshFromWs() {
+    const now = Date.now();
+    const elapsed = now - lastStrikeTableWsRefreshRun;
+    if (strikeTableWsRefreshTimer != null) return;
+    const delay = elapsed >= STRIKE_TABLE_WS_MIN_INTERVAL_MS ? 0 : STRIKE_TABLE_WS_MIN_INTERVAL_MS - elapsed;
+    strikeTableWsRefreshTimer = setTimeout(() => {
+      strikeTableWsRefreshTimer = null;
+      lastStrikeTableWsRefreshRun = Date.now();
+      requestDataRefresh();
+    }, delay);
+  }
+
+  async function refreshExpandedHourlyOrderbookIfOpen() {
+    if (!expandedHourlyTicker) return;
+    const mount = document.querySelector(
+      '[data-hourly-expanded="' + expandedHourlyTicker + '"]'
+    );
+    if (!mount) return;
+    const expandedTicker = expandedHourlyTicker;
+    let hrRes;
+    try {
+      hrRes = await fetch(orderbookUrlForTicker(expandedTicker), { cache: 'no-store' });
+    } catch (e) {
+      return;
+    }
+    let hrData;
+    try {
+      hrData = await hrRes.json();
+    } catch (e2) {
+      return;
+    }
+    if (expandedTicker !== expandedHourlyTicker) return;
+    if (hrData && !hrData.error) {
+      const mth = (hrData.market_ticker || '').trim();
+      if (mth) {
+        armExpirationFromTicker(mth);
+      }
+      const expandedSig = JSON.stringify({
+        ticker: hrData.market_ticker || '',
+        mode: mode,
+        yes: hrData.trade_yes || {},
+        no: hrData.trade_no || {},
+        last: hrData.last_trade || {},
+      });
+      if (expandedSig !== lastExpandedOrderbookSignature) {
+        lastExpandedOrderbookSignature = expandedSig;
+        renderOrderbookInto(mount, hrData, expandedHourlyTicker);
+      }
+    }
+  }
+
+  function scheduleExpandedOrderbookRefreshFromWs() {
+    if (!expandedHourlyTicker) return;
+    if (expandedOrderbookWsTimer != null) clearTimeout(expandedOrderbookWsTimer);
+    expandedOrderbookWsTimer = setTimeout(() => {
+      expandedOrderbookWsTimer = null;
+      void refreshExpandedHourlyOrderbookIfOpen();
+    }, EXPANDED_ORDERBOOK_WS_DEBOUNCE_MS);
+  }
+
   function syncStrikeTableAtmMarker() {
+    const now = Date.now();
+    if (now - strikeTableAtmSyncLast < STRIKE_TABLE_ATM_SYNC_MIN_MS) {
+      if (strikeTableAtmSyncTimer == null) {
+        strikeTableAtmSyncTimer = setTimeout(() => {
+          strikeTableAtmSyncTimer = null;
+          syncStrikeTableAtmMarker();
+        }, STRIKE_TABLE_ATM_SYNC_MIN_MS - (now - strikeTableAtmSyncLast));
+      }
+      return;
+    }
+    strikeTableAtmSyncLast = Date.now();
+
     const root = document.getElementById('hourlyStrikeList');
     if (!root || !hourlyStrikeRows.length) return;
     const scrollRoot = root.querySelector('[data-hourly-strike-scroll]') || root;
@@ -1392,25 +1477,39 @@
     disconnectStrikeTableDbWs();
     const wsUrl = dbChangesWebSocketUrl();
     hourlyStrikeTableDbWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+      includeLiveSymbolSpot: true,
+      onlyDbStreams: [
+        'strike_table_hourly',
+        'strike_table_15m',
+        'market_kalshi_hourly',
+        'market_kalshi_15m',
+        'orderbook_kalshi',
+        'monitor_list',
+      ],
       onOpen: function () {
         void fetchLiveSymbolSpotBootstrap();
       },
       onMessage: function (event) {
         try {
-          const msg = JSON.parse(event.data);
+          const parse =
+            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+          const msg = parse;
           if (msg && msg.type === 'live_symbol_spot') {
             applyLiveSymbolSpotMessage(msg);
             return;
           }
           if (msg && msg.type === 'db_change') {
+            if (msg.database === 'orderbook_kalshi') {
+              scheduleExpandedOrderbookRefreshFromWs();
+              return;
+            }
             if (
               msg.database === 'strike_table_hourly' ||
               msg.database === 'strike_table_15m' ||
               msg.database === 'market_kalshi_hourly' ||
-              msg.database === 'market_kalshi_15m' ||
-              msg.database === 'orderbook_kalshi'
+              msg.database === 'market_kalshi_15m'
             ) {
-              requestDataRefresh();
+              scheduleStrikeTableRefreshFromWs();
             }
             if (msg.database === 'monitor_list') {
               try {
@@ -1526,32 +1625,7 @@
       errEl.textContent = 'No strike table data';
     }
     if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
-    if (!expandedHourlyTicker) return;
-    const mount = document.querySelector(
-      '[data-hourly-expanded="' + expandedHourlyTicker + '"]'
-    );
-    if (!mount) return;
-    const expandedTicker = expandedHourlyTicker;
-    const hrRes = await fetch(orderbookUrlForTicker(expandedTicker), { cache: 'no-store' });
-    const hrData = await hrRes.json();
-    if (expandedTicker !== expandedHourlyTicker) return;
-    if (hrData && !hrData.error) {
-      const mth = (hrData.market_ticker || '').trim();
-      if (mth) {
-        armExpirationFromTicker(mth);
-      }
-      const expandedSig = JSON.stringify({
-        ticker: hrData.market_ticker || '',
-        mode: mode,
-        yes: hrData.trade_yes || {},
-        no: hrData.trade_no || {},
-        last: hrData.last_trade || {},
-      });
-      if (expandedSig !== lastExpandedOrderbookSignature) {
-        lastExpandedOrderbookSignature = expandedSig;
-        renderOrderbookInto(mount, hrData, expandedHourlyTicker);
-      }
-    }
+    await refreshExpandedHourlyOrderbookIfOpen();
   }
 
   try {

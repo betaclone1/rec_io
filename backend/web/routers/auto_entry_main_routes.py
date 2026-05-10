@@ -9,6 +9,7 @@ import requests
 from fastapi import APIRouter, Request
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.time_eastern import timestamptz_wire_iso_et
 from backend.core.port_config import get_port
 from backend.core.tenant_context import (
     effective_tenant_context_for_sql_rewrite,
@@ -55,7 +56,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
             """
                 + (sel_flip if has_flip else "")
                 + """
-                       , symbol_wide_loss_prevention, symbol_wide_cooldown_duration, symbol_wide_cooldown_start_time
+                       , simulated_trade_loss_prevention, simulated_trade_cooldown_duration, simulated_trade_cooldown_start_time
             """
                 + f"""
                 FROM {ml} WHERE id = %s
@@ -118,16 +119,20 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     row["flip_sell_floor"] = False
                     row["flip_sell_floor_mult"] = None
                     _sw_i = 37
-                row["symbol_wide_loss_prevention"] = (
-                    bool(result[_sw_i]) if result[_sw_i] is not None else False
+                st_on = bool(result[_sw_i]) if result[_sw_i] is not None else False
+                st_dur = int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else 4
+                st_start = result[_sw_i + 2]
+                st_start_iso = (
+                    timestamptz_wire_iso_et(st_start)
+                    if hasattr(st_start, "isoformat")
+                    else st_start
                 )
-                row["symbol_wide_cooldown_duration"] = (
-                    int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else 4
-                )
-                sw_start = result[_sw_i + 2]
-                row["symbol_wide_cooldown_start_time"] = (
-                    sw_start.isoformat() if hasattr(sw_start, "isoformat") else sw_start
-                )
+                row["simulated_trade_loss_prevention"] = st_on
+                row["simulated_trade_cooldown_duration"] = st_dur
+                row["simulated_trade_cooldown_start_time"] = st_start_iso
+                row["symbol_wide_loss_prevention"] = st_on
+                row["symbol_wide_cooldown_duration"] = st_dur
+                row["symbol_wide_cooldown_start_time"] = st_start_iso
                 return row
             else:
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}

@@ -69,7 +69,10 @@ class TestTriggerFlipSellOpen(unittest.TestCase):
     @patch("backend.active_trade_supervisor._ats_get_bankroll_allotment", return_value=1000.0)
     @patch("backend.active_trade_supervisor._ats_get_paper_trade_from_monitor", return_value=False)
     @patch("backend.active_trade_supervisor._ats_get_multiplier_from_monitor", return_value=1.0)
-    @patch("backend.active_trade_supervisor._ats_get_loss_prevention_one_contract_flag", return_value=False)
+    @patch(
+        "backend.active_trade_supervisor._ats_flip_sell_position_after_loss_prevention",
+        side_effect=lambda c: (c, False),
+    )
     @patch("backend.active_trade_supervisor._ats_trade_log_entry_method", return_value="auto_entry")
     @patch("backend.active_trade_supervisor._ats_fetch_flip_sell_monitor_row")
     @patch("backend.active_trade_supervisor.ctx_user", return_value="0001")

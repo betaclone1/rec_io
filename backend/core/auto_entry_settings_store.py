@@ -17,8 +17,9 @@ from backend.core.kalshi_execution_settings import (
 _log = logging.getLogger(__name__)
 
 # Aligns with trade_manager.update_win_streak_for_cycle: when toggle is on,
-# loss_prevention is 'off' iff win_streak >= threshold, else 'one_contract'.
-# Monitors may also be in ``new`` (bootstrap) — see symbol_wide_loss_prevention.resolve_monitor_loss_prevention_value.
+# loss_prevention is 'off' iff win_streak >= threshold, else ``win_streak_one_contract``
+# (distinct from simulated-trade tiers ``sim_loss_*``).
+# Monitors may also be in ``new`` (bootstrap) — see simulated_trade_loss_prevention.resolve_monitor_loss_prevention_value.
 def loss_prevention_value_for_streak(
     win_streak: int, loss_prevention_toggle_on: bool, win_streak_threshold: int
 ) -> str:
@@ -26,7 +27,7 @@ def loss_prevention_value_for_streak(
         return "off"
     if int(win_streak or 0) >= int(win_streak_threshold):
         return "off"
-    return "one_contract"
+    return "win_streak_one_contract"
 
 
 def trigger_regime_reconcile_after_auto_entry_save(
@@ -220,20 +221,26 @@ def apply_auto_entry_settings(
     if "max_ask" in data:
         update_fields.append("max_ask = %s")
         update_values.append(float(data["max_ask"]))
-    if "symbol_wide_loss_prevention" in data:
-        sw_raw = data["symbol_wide_loss_prevention"]
-        if isinstance(sw_raw, str):
-            sw_raw = sw_raw.lower() in ("true", "1", "yes")
-        sw_b = bool(sw_raw)
-        update_fields.append("symbol_wide_loss_prevention = %s")
+    def _boolish(v):
+        if isinstance(v, str):
+            return v.lower() in ("true", "1", "yes")
+        return bool(v)
+
+    sim_lp_in = "simulated_trade_loss_prevention" in data or "symbol_wide_loss_prevention" in data
+    if sim_lp_in:
+        sw_raw = data.get("simulated_trade_loss_prevention", data.get("symbol_wide_loss_prevention"))
+        sw_b = _boolish(sw_raw)
+        update_fields.append("simulated_trade_loss_prevention = %s")
         update_values.append(sw_b)
         if sw_b:
             eff_dur = None
-            if "symbol_wide_cooldown_duration" in data:
+            if "simulated_trade_cooldown_duration" in data:
+                eff_dur = int(data["simulated_trade_cooldown_duration"])
+            elif "symbol_wide_cooldown_duration" in data:
                 eff_dur = int(data["symbol_wide_cooldown_duration"])
             else:
                 cursor.execute(
-                    f"SELECT COALESCE(symbol_wide_cooldown_duration, 0) FROM {ml} WHERE id = %s",
+                    f"SELECT COALESCE(simulated_trade_cooldown_duration, 0) FROM {ml} WHERE id = %s",
                     (monitor_id,),
                 )
                 dr = cursor.fetchone()
@@ -241,17 +248,18 @@ def apply_auto_entry_settings(
             if eff_dur < 1:
                 return {
                     "status": "error",
-                    "message": "symbol_wide_cooldown_duration must be at least 1 hour when symbol-wide loss prevention is enabled",
+                    "message": "simulated_trade_cooldown_duration must be at least 1 hour when simulated trade loss prevention is enabled",
                 }
 
-    if "symbol_wide_cooldown_duration" in data:
-        hrs = int(data["symbol_wide_cooldown_duration"])
+    if "simulated_trade_cooldown_duration" in data or "symbol_wide_cooldown_duration" in data:
+        raw_dur = data.get("simulated_trade_cooldown_duration", data.get("symbol_wide_cooldown_duration"))
+        hrs = int(raw_dur)
         if hrs < 1:
             return {
                 "status": "error",
-                "message": "symbol_wide_cooldown_duration must be at least 1",
+                "message": "simulated_trade_cooldown_duration must be at least 1",
             }
-        update_fields.append("symbol_wide_cooldown_duration = %s")
+        update_fields.append("simulated_trade_cooldown_duration = %s")
         update_values.append(hrs)
 
     if "loss_prevention_toggle" in data:
@@ -385,8 +393,8 @@ def apply_auto_entry_settings(
                 str(m).strip() if m is not None and str(m).strip() != "" else None
             )
 
-    # loss_prevention is derived in sync_symbol_wide_after_monitor_settings_save via
-    # recompute_monitor_loss_prevention (symbol-wide window overrides win-streak LP).
+    # loss_prevention is derived in sync_simulated_trade_after_monitor_settings_save via
+    # recompute_monitor_loss_prevention (simulated-trade window overrides win-streak LP).
 
     if not update_fields:
         return {"status": "error", "message": "No valid fields to update"}
@@ -396,13 +404,16 @@ def apply_auto_entry_settings(
     cursor.execute(query, update_values)
 
     trades_tbl = ctx.qualify_raw_table(f"trades_{ctx.user_no}")
-    # Local import avoids circular import: symbol_wide_loss_prevention imports
+    trades_sim_tbl = ctx.qualify_raw_table(f"trades_simulated_{ctx.user_no}")
+    # Local import avoids circular import: simulated_trade_loss_prevention imports
     # loss_prevention_value_for_streak from this module.
     from backend.core.symbol_wide_loss_prevention import (
-        sync_symbol_wide_after_monitor_settings_save,
+        sync_simulated_trade_after_monitor_settings_save,
     )
 
-    sync_symbol_wide_after_monitor_settings_save(cursor, ml, trades_tbl, monitor_id)
+    sync_simulated_trade_after_monitor_settings_save(
+        cursor, ml, trades_tbl, trades_sim_tbl, str(ctx.user_no), monitor_id
+    )
 
     sel_base = """
         SELECT min_probability, min_differential, min_time, max_time, allow_re_entry,

@@ -47,6 +47,7 @@
   <div class="diag mono" id="diag">—</div>
 
   <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
   <script>
     /*
       Database Monitor template notes:
@@ -184,54 +185,35 @@
       }
     }
 
-    let ws = null;
-    let wsPingTimer = null;
-    let wsReconnectTimer = null;
+    let _dbMonWsUnsub = null;
 
     function connectWs() {
-      if (wsReconnectTimer) {
-        clearTimeout(wsReconnectTimer);
-        wsReconnectTimer = null;
+      if (_dbMonWsUnsub) {
+        try { _dbMonWsUnsub(); } catch (e) {}
+        _dbMonWsUnsub = null;
+      }
+      if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== "function") {
+        document.getElementById("ws").textContent = "no coordinator";
+        return;
       }
       const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
       const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
-      ws = new WebSocket(wsUrl);
-
-      ws.onopen = () => {
-        document.getElementById("ws").textContent = "connected";
-        if (wsPingTimer) clearInterval(wsPingTimer);
-        wsPingTimer = setInterval(() => {
-          try {
-            if (ws && ws.readyState === WebSocket.OPEN) ws.send("ping");
-          } catch {
-            // reconnect path handled by onclose
-          }
-        }, 15000);
-      };
-      ws.onclose = () => {
-        document.getElementById("ws").textContent = "closed";
-        if (wsPingTimer) {
-          clearInterval(wsPingTimer);
-          wsPingTimer = null;
-        }
-        wsReconnectTimer = setTimeout(connectWs, 1500);
-      };
-      ws.onerror = () => {
-        document.getElementById("ws").textContent = "error";
-      };
-      ws.onmessage = (ev) => {
-        const raw = ev.data;
-        const names = Array.from(WATCH_DATABASES);
-        if (typeof recDbChangeRawMentionsAny === 'function' && names.length > 0 &&
-            !recDbChangeRawMentionsAny(raw, names)) {
-          return;
-        }
-        let d = null;
-        try { d = JSON.parse(raw); } catch { return; }
-        if (!d || d.type !== "db_change") return;
-        if (!WATCH_DATABASES.has(d.database)) return;
-        fetchAll();
-      };
+      const names = Array.from(WATCH_DATABASES);
+      _dbMonWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+        onlyDbStreams: names,
+        onOpen: () => {
+          document.getElementById("ws").textContent = "connected";
+        },
+        onClose: () => {
+          document.getElementById("ws").textContent = "closed";
+        },
+        onMessage: (ev) => {
+          const d = typeof recRealtimeWsJson === "function" ? recRealtimeWsJson(ev) : null;
+          if (!d || d.type !== "db_change") return;
+          if (!WATCH_DATABASES.has(d.database)) return;
+          fetchAll();
+        },
+      });
     }
 
     window.addEventListener("DOMContentLoaded", () => {

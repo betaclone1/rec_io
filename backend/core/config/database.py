@@ -401,6 +401,7 @@ def init_database():
                 high_price DECIMAL(10,4),
                 low_price DECIMAL(10,4),
                 loss_prevention BOOLEAN DEFAULT FALSE,
+                loss_prevention_state VARCHAR(64),
                 multiplier DECIMAL(10,2),
                 price_spread DECIMAL(6,4),
                 yes_ask_min_15m NUMERIC(18,4),
@@ -519,6 +520,15 @@ def init_database():
                       AND column_name = 'loss_prevention'
                 ) THEN
                     ALTER TABLE users.trades_0001 ADD COLUMN loss_prevention BOOLEAN DEFAULT FALSE;
+                END IF;
+
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users'
+                      AND table_name = 'trades_0001'
+                      AND column_name = 'loss_prevention_state'
+                ) THEN
+                    ALTER TABLE users.trades_0001 ADD COLUMN loss_prevention_state VARCHAR(64);
                 END IF;
 
                 IF NOT EXISTS (
@@ -1216,9 +1226,12 @@ def init_database():
                 paper_trade BOOLEAN DEFAULT FALSE,
                 test_filter BOOLEAN DEFAULT FALSE,
                 prob_adj NUMERIC(5,2) DEFAULT 5.00,
-                symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
-                symbol_wide_cooldown_duration INTEGER DEFAULT 4,
-                symbol_wide_cooldown_start_time TIMESTAMPTZ,
+                simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE,
+                simulated_trade_cooldown_duration INTEGER DEFAULT 4,
+                simulated_trade_cooldown_start_time TIMESTAMPTZ,
+                original_simulated_trade_cooldown_start_time TIMESTAMPTZ,
+                simulated_trade_cooldown_loss_count INTEGER NOT NULL DEFAULT 0,
+                live_trade_cooldown_start_time TIMESTAMPTZ,
                 created TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
         """))
@@ -2190,6 +2203,14 @@ def init_database():
                     ) THEN
                         ALTER TABLE archive.{arch_tn} ADD COLUMN order_type TEXT;
                     END IF;
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = 'archive'
+                          AND table_name = '{arch_tn}'
+                          AND column_name = 'loss_prevention_state'
+                    ) THEN
+                        ALTER TABLE archive.{arch_tn} ADD COLUMN loss_prevention_state VARCHAR(64);
+                    END IF;
                 END
                 $$;
                 """
@@ -2247,9 +2268,12 @@ def init_database():
                 regime_window TEXT DEFAULT '30d',
                 time_in_force TEXT NOT NULL DEFAULT 'fill_or_kill',
                 order_type TEXT NOT NULL DEFAULT 'market',
-                symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
-                symbol_wide_cooldown_duration INTEGER DEFAULT 4,
-                symbol_wide_cooldown_start_time TIMESTAMPTZ,
+                simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE,
+                simulated_trade_cooldown_duration INTEGER DEFAULT 4,
+                simulated_trade_cooldown_start_time TIMESTAMPTZ,
+                original_simulated_trade_cooldown_start_time TIMESTAMPTZ,
+                simulated_trade_cooldown_loss_count INTEGER NOT NULL DEFAULT 0,
+                live_trade_cooldown_start_time TIMESTAMPTZ,
                 flip_sell_prob BOOLEAN NOT NULL DEFAULT FALSE,
                 flip_sell_floor BOOLEAN NOT NULL DEFAULT FALSE,
                 flip_sell_prob_mult VARCHAR(32),
@@ -2824,38 +2848,101 @@ def init_database():
                         EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_floor_mult VARCHAR(32)', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
-                    IF NOT EXISTS (
+                    IF EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_ml_schema}'
                           AND table_name = '{_ml_table}'
                           AND column_name = 'symbol_wide_loss_prevention'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'simulated_trade_loss_prevention'
                     ) THEN
-                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
-                        EXECUTE format('UPDATE %I.%I SET symbol_wide_loss_prevention = FALSE WHERE symbol_wide_loss_prevention IS NULL', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN symbol_wide_loss_prevention TO simulated_trade_loss_prevention', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN symbol_wide_cooldown_duration TO simulated_trade_cooldown_duration', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN symbol_wide_cooldown_start_time TO simulated_trade_cooldown_start_time', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_ml_schema}'
                           AND table_name = '{_ml_table}'
-                          AND column_name = 'symbol_wide_cooldown_duration'
+                          AND column_name = 'simulated_trade_loss_prevention'
                     ) THEN
-                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_duration INTEGER DEFAULT 4', '{_ml_schema}', '{_ml_table}');
-                        EXECUTE format('UPDATE %I.%I SET symbol_wide_cooldown_duration = 4 WHERE symbol_wide_cooldown_duration IS NULL', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET simulated_trade_loss_prevention = FALSE WHERE simulated_trade_loss_prevention IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_ml_schema}'
                           AND table_name = '{_ml_table}'
-                          AND column_name = 'symbol_wide_cooldown_start_time'
+                          AND column_name = 'simulated_trade_cooldown_duration'
                     ) THEN
-                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_start_time TIMESTAMPTZ', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_cooldown_duration INTEGER DEFAULT 4', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET simulated_trade_cooldown_duration = 4 WHERE simulated_trade_cooldown_duration IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'simulated_trade_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_cooldown_start_time TIMESTAMPTZ', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'original_simulated_trade_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN original_simulated_trade_cooldown_start_time TIMESTAMPTZ', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'simulated_trade_cooldown_loss_count'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_cooldown_loss_count INTEGER NOT NULL DEFAULT 0', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'live_trade_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN live_trade_cooldown_start_time TIMESTAMPTZ', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    EXECUTE format(
+                        'UPDATE %I.%I SET loss_prevention = %L WHERE loss_prevention IS NOT NULL AND lower(trim(loss_prevention::text)) = %L',
+                        '{_ml_schema}', '{_ml_table}', 'win_streak_one_contract', 'one_contract'
+                    );
                 END
                 $$;
                 """
                 )
+                if _ml_table.startswith("monitor_list_"):
+                    _ledger_slot = _ml_table.replace("monitor_list_", "", 1)
+                    cursor.execute(
+                        _us(
+                            f"""
+                        CREATE TABLE IF NOT EXISTS users.sim_trade_lp_cycle_ledger_{_ledger_slot} (
+                            monitor_id INTEGER NOT NULL,
+                            cycle_date DATE NOT NULL,
+                            weekly_cycle NUMERIC(10, 1) NOT NULL,
+                            applied_units INTEGER NOT NULL DEFAULT 0,
+                            PRIMARY KEY (monitor_id, cycle_date, weekly_cycle)
+                        );
+                        """
+                        )
+                    )
 
         # strategy_list_* + system.strategy_list_default: keep auto-trade / UAT columns aligned with monitor_list_*.
         _sl_targets: list[tuple[str, str]] = []
@@ -2960,33 +3047,76 @@ def init_database():
                         );
                     END IF;
 
-                    IF NOT EXISTS (
+                    IF EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_sl_schema}'
                           AND table_name = '{_sl_table}'
                           AND column_name = 'symbol_wide_loss_prevention'
+                    ) AND NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'simulated_trade_loss_prevention'
                     ) THEN
-                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE', '{_sl_schema}', '{_sl_table}');
-                        EXECUTE format('UPDATE %I.%I SET symbol_wide_loss_prevention = FALSE WHERE symbol_wide_loss_prevention IS NULL', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN symbol_wide_loss_prevention TO simulated_trade_loss_prevention', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN symbol_wide_cooldown_duration TO simulated_trade_cooldown_duration', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('ALTER TABLE %I.%I RENAME COLUMN symbol_wide_cooldown_start_time TO simulated_trade_cooldown_start_time', '{_sl_schema}', '{_sl_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_sl_schema}'
                           AND table_name = '{_sl_table}'
-                          AND column_name = 'symbol_wide_cooldown_duration'
+                          AND column_name = 'simulated_trade_loss_prevention'
                     ) THEN
-                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_duration INTEGER DEFAULT 4', '{_sl_schema}', '{_sl_table}');
-                        EXECUTE format('UPDATE %I.%I SET symbol_wide_cooldown_duration = 4 WHERE symbol_wide_cooldown_duration IS NULL', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('UPDATE %I.%I SET simulated_trade_loss_prevention = FALSE WHERE simulated_trade_loss_prevention IS NULL', '{_sl_schema}', '{_sl_table}');
                     END IF;
 
                     IF NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_sl_schema}'
                           AND table_name = '{_sl_table}'
-                          AND column_name = 'symbol_wide_cooldown_start_time'
+                          AND column_name = 'simulated_trade_cooldown_duration'
                     ) THEN
-                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN symbol_wide_cooldown_start_time TIMESTAMPTZ', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_cooldown_duration INTEGER DEFAULT 4', '{_sl_schema}', '{_sl_table}');
+                        EXECUTE format('UPDATE %I.%I SET simulated_trade_cooldown_duration = 4 WHERE simulated_trade_cooldown_duration IS NULL', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'simulated_trade_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_cooldown_start_time TIMESTAMPTZ', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'original_simulated_trade_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN original_simulated_trade_cooldown_start_time TIMESTAMPTZ', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'simulated_trade_cooldown_loss_count'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_cooldown_loss_count INTEGER NOT NULL DEFAULT 0', '{_sl_schema}', '{_sl_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_sl_schema}'
+                          AND table_name = '{_sl_table}'
+                          AND column_name = 'live_trade_cooldown_start_time'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN live_trade_cooldown_start_time TIMESTAMPTZ', '{_sl_schema}', '{_sl_table}');
                     END IF;
 
                     IF NOT EXISTS (
@@ -3024,6 +3154,11 @@ def init_database():
                     ) THEN
                         EXECUTE format('ALTER TABLE %I.%I ADD COLUMN flip_sell_floor_mult VARCHAR(32)', '{_sl_schema}', '{_sl_table}');
                     END IF;
+
+                    EXECUTE format(
+                        'UPDATE %I.%I SET loss_prevention = %L WHERE loss_prevention IS NOT NULL AND lower(trim(loss_prevention::text)) = %L',
+                        '{_sl_schema}', '{_sl_table}', 'win_streak_one_contract', 'one_contract'
+                    );
                 END
                 $$;
                 """
@@ -3059,7 +3194,27 @@ def init_database():
                     """
                 )
             )
-        
+            cursor.execute(
+                _us(
+                    f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (
+                            SELECT 1 FROM information_schema.columns
+                            WHERE table_schema = 'users' AND table_name = '{_tn}'
+                              AND column_name = 'loss_prevention_state'
+                        ) THEN
+                            EXECUTE format(
+                                'ALTER TABLE %I.%I ADD COLUMN loss_prevention_state VARCHAR(64)',
+                                'users', '{_tn}'
+                            );
+                        END IF;
+                    END
+                    $$;
+                    """
+                )
+            )
+
         # Grant privileges
         cursor.execute(_us("GRANT ALL PRIVILEGES ON SCHEMA users TO rec_io_user;"))
         cursor.execute("GRANT ALL PRIVILEGES ON SCHEMA live_data TO rec_io_user;")

@@ -8,14 +8,18 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Tuple
 
 from backend.core.config.database import get_postgresql_connection
+from backend.core.simulated_trade_loss_prevention import (
+    _sql_live_trade_cooldown_live_expr,
+    _sql_sim_cooldown_live_expr,
+)
 from backend.core.strike_pipeline_health import (
-    evaluate_symbol_pipeline_gate_conn,
+    evaluate_pipeline_gate_conn,
     strike_pipeline_health_strict_mode_enabled,
 )
-from backend.core.time_eastern import EST, now_est
+from backend.core.time_eastern import EST, now_est, timestamptz_wire_iso_et
 from backend.trading_mode import is_paper_trading
 
 _log = logging.getLogger(__name__)
@@ -51,20 +55,14 @@ def _monitor_list_select_sql(user_number: str) -> str:
                     regime_monitor_enabled,
                     regime_window,
                     market,
-                    symbol_wide_loss_prevention,
-                    symbol_wide_cooldown_duration,
-                    symbol_wide_cooldown_start_time,
-                    (
-                        COALESCE(symbol_wide_loss_prevention, FALSE)
-                        AND symbol_wide_cooldown_start_time IS NOT NULL
-                        AND COALESCE(symbol_wide_cooldown_duration, 0) > 0
-                        AND (
-                            symbol_wide_cooldown_start_time
-                            + (
-                                COALESCE(symbol_wide_cooldown_duration, 0) || ' hours'
-                            )::interval
-                        ) > NOW()
-                    ) AS symbol_wide_cooldown_live
+                    simulated_trade_loss_prevention,
+                    simulated_trade_cooldown_duration,
+                    simulated_trade_cooldown_start_time,
+                    original_simulated_trade_cooldown_start_time,
+                    simulated_trade_cooldown_loss_count,
+                    live_trade_cooldown_start_time,
+                    {_sql_sim_cooldown_live_expr()} AS simulated_trade_cooldown_live,
+                    {_sql_live_trade_cooldown_live_expr()} AS live_trade_cooldown_live
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -89,18 +87,32 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
         results: List[Any] = cursor.fetchall()
 
         strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
-        health_by_symbol: Dict[str, Any] = {}
+        # Per (symbol, market): hourly monitors must not inherit 15m pipeline failures (and vice versa).
+        health_by_symbol_market: Dict[Tuple[str, str], Dict[str, Any]] = {}
         if strict_pipeline_health:
-            symbols = sorted(
+            sym_mkt_pairs = sorted(
                 {
-                    str(r[2]).upper()
+                    (str(r[2]).upper(), str(r[26] or "").strip().lower())
                     for r in results
-                    if r[2] and ((str(r[27] or "").strip().lower()) in ("15m", "hourly"))
+                    if r[2] and (str(r[26] or "").strip().lower() in ("15m", "hourly"))
                 }
             )
-            for sym in symbols:
-                ok, rsn = evaluate_symbol_pipeline_gate_conn(conn, exchange="kalshi", symbol=sym)
-                health_by_symbol[sym] = {
+            for sym, mkt in sym_mkt_pairs:
+                try:
+                    ok, rsn = evaluate_pipeline_gate_conn(
+                        conn, exchange="kalshi", market=mkt, symbol=sym
+                    )
+                except Exception as exc:
+                    # Never fail GET /api/monitors because pipeline-health or spot-gate SQL errored
+                    # (tenant search_path, missing table/column, permissions, etc.).
+                    _log.exception(
+                        "monitor_list pipeline_gate_conn failed sym=%s mkt=%s: %s",
+                        sym,
+                        mkt,
+                        exc,
+                    )
+                    ok, rsn = False, f"pipeline_gate_exception:{exc}"
+                health_by_symbol_market[(sym, mkt)] = {
                     "healthy": ok,
                     "state": "healthy" if ok else "degraded",
                     "reason": "ok" if ok else rsn,
@@ -139,14 +151,18 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             regime_monitor_enabled,
             regime_window,
             market,
-            symbol_wide_loss_prevention,
-            symbol_wide_cooldown_duration,
-            symbol_wide_cooldown_start_time,
-            symbol_wide_cooldown_live,
+            simulated_trade_loss_prevention,
+            simulated_trade_cooldown_duration,
+            simulated_trade_cooldown_start_time,
+            original_simulated_trade_cooldown_start_time,
+            simulated_trade_cooldown_loss_count,
+            live_trade_cooldown_start_time,
+            simulated_trade_cooldown_live,
+            live_trade_cooldown_live,
         ) = row
 
-        sw_live = bool(symbol_wide_cooldown_live)
-        loss_prevention_out = "symbol_one_contract" if sw_live else loss_prevention
+        sw_live = bool(simulated_trade_cooldown_live) or bool(live_trade_cooldown_live)
+        loss_prevention_out = loss_prevention
 
         uptime_str = "0d 0h 0m"
         if created:
@@ -199,16 +215,41 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             "regime_monitor_enabled": regime_monitor_enabled or False,
             "regime_window": regime_window or "30d",
             "market": (market or "").strip().lower() if market else None,
-            "symbol_wide_loss_prevention": bool(symbol_wide_loss_prevention)
-            if symbol_wide_loss_prevention is not None
+            "simulated_trade_loss_prevention": bool(simulated_trade_loss_prevention)
+            if simulated_trade_loss_prevention is not None
             else False,
-            "symbol_wide_cooldown_duration": int(symbol_wide_cooldown_duration)
-            if symbol_wide_cooldown_duration is not None
+            "simulated_trade_cooldown_duration": int(simulated_trade_cooldown_duration)
+            if simulated_trade_cooldown_duration is not None
+            else 4,
+            "simulated_trade_cooldown_start_time": (
+                timestamptz_wire_iso_et(simulated_trade_cooldown_start_time)
+                if hasattr(simulated_trade_cooldown_start_time, "isoformat")
+                else simulated_trade_cooldown_start_time
+            ),
+            "original_simulated_trade_cooldown_start_time": (
+                timestamptz_wire_iso_et(original_simulated_trade_cooldown_start_time)
+                if hasattr(original_simulated_trade_cooldown_start_time, "isoformat")
+                else original_simulated_trade_cooldown_start_time
+            ),
+            "simulated_trade_cooldown_loss_count": int(simulated_trade_cooldown_loss_count or 0),
+            "live_trade_cooldown_start_time": (
+                timestamptz_wire_iso_et(live_trade_cooldown_start_time)
+                if hasattr(live_trade_cooldown_start_time, "isoformat")
+                else live_trade_cooldown_start_time
+            ),
+            "simulated_trade_cooldown_live": bool(simulated_trade_cooldown_live),
+            "live_trade_cooldown_live": bool(live_trade_cooldown_live),
+            # Backward-compatible aliases (same values as simulated_trade_*)
+            "symbol_wide_loss_prevention": bool(simulated_trade_loss_prevention)
+            if simulated_trade_loss_prevention is not None
+            else False,
+            "symbol_wide_cooldown_duration": int(simulated_trade_cooldown_duration)
+            if simulated_trade_cooldown_duration is not None
             else 4,
             "symbol_wide_cooldown_start_time": (
-                symbol_wide_cooldown_start_time.isoformat()
-                if hasattr(symbol_wide_cooldown_start_time, "isoformat")
-                else symbol_wide_cooldown_start_time
+                timestamptz_wire_iso_et(simulated_trade_cooldown_start_time)
+                if hasattr(simulated_trade_cooldown_start_time, "isoformat")
+                else simulated_trade_cooldown_start_time
             ),
             "symbol_wide_cooldown_live": sw_live,
         }
@@ -222,7 +263,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 formatted_monitor["monitor_health_reason"] = "strict_mode_off"
                 formatted_monitor["monitor_health_age_sec"] = 0.0
             else:
-                h = health_by_symbol.get(monitor_symbol)
+                h = health_by_symbol_market.get((monitor_symbol, monitor_market))
                 if h:
                     formatted_monitor["monitor_healthy"] = bool(h["healthy"])
                     formatted_monitor["monitor_health_state"] = h["state"]

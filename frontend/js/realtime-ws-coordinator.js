@@ -1,6 +1,10 @@
 /**
  * Shared websocket coordinator for same-origin realtime channels.
  * Ensures one socket per URL and fanout subscriptions for page modules.
+ *
+ * - Parses each frame at most once (fanout shares `recWsParsed`).
+ * - Optional `onlyDbStreams` + `includeLiveSymbolSpot`: skip JSON.parse entirely when no
+ *   subscriber cares about that frame (high-volume /ws/db_changes firehose → less CPU/OOM risk).
  */
 (function () {
   const socketsByUrl = new Map();
@@ -9,6 +13,32 @@
     try {
       fn(arg);
     } catch (e) {}
+  }
+
+  function rawMentionsLiveSymbolSpot(raw) {
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"live_symbol_spot"') !== -1 ||
+      raw.indexOf('"type": "live_symbol_spot"') !== -1
+    );
+  }
+
+  function subscriberWantsRawMessage(sub, raw) {
+    if (!sub || typeof sub.onMessage !== 'function') return false;
+    if (typeof raw !== 'string') return true;
+    const streams = sub.onlyDbStreams;
+    const hasStreamFilter = streams && streams.length > 0;
+    if (!hasStreamFilter && !sub.includeLiveSymbolSpot) return true;
+    if (sub.includeLiveSymbolSpot && rawMentionsLiveSymbolSpot(raw)) return true;
+    const win = typeof window !== 'undefined' ? window : globalThis;
+    if (
+      hasStreamFilter &&
+      typeof win.recDbChangeRawMentionsAny === 'function' &&
+      win.recDbChangeRawMentionsAny(raw, streams)
+    ) {
+      return true;
+    }
+    return false;
   }
 
   function ensureSocket(url) {
@@ -47,8 +77,26 @@
     }
     entry.ws = ws;
     ws.onmessage = function (event) {
+      const raw = event && event.data;
+      let anyInterested = false;
       entry.subscribers.forEach(function (sub) {
-        safeCall(sub.onMessage, event);
+        if (subscriberWantsRawMessage(sub, raw)) anyInterested = true;
+      });
+      if (!anyInterested) return;
+
+      let parsed = null;
+      if (typeof raw === 'string') {
+        try {
+          parsed = JSON.parse(raw);
+        } catch (e) {
+          parsed = null;
+        }
+      }
+
+      const fanout = { data: raw, recWsParsed: parsed };
+      entry.subscribers.forEach(function (sub) {
+        if (!subscriberWantsRawMessage(sub, raw)) return;
+        safeCall(sub.onMessage, fanout);
       });
     };
     ws.onopen = function (event) {
@@ -105,11 +153,26 @@
         onMessage: handlers && handlers.onMessage,
         onOpen: handlers && handlers.onOpen,
         onClose: handlers && handlers.onClose,
+        onlyDbStreams: handlers && handlers.onlyDbStreams,
+        includeLiveSymbolSpot: !!(handlers && handlers.includeLiveSymbolSpot),
       };
       entry.subscribers.add(sub);
       return function () {
         unsubscribe(entry, sub);
       };
     },
+  };
+
+  /** Use instead of JSON.parse(event.data) for coordinator-delivered frames (single shared parse). */
+  window.recRealtimeWsJson = function (event) {
+    if (event && Object.prototype.hasOwnProperty.call(event, 'recWsParsed')) {
+      return event.recWsParsed;
+    }
+    if (!event || typeof event.data !== 'string') return null;
+    try {
+      return JSON.parse(event.data);
+    } catch (e) {
+      return null;
+    }
   };
 })();

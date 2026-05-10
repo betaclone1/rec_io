@@ -4770,8 +4770,8 @@ def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any
             pass
 
 
-def _ats_get_loss_prevention_one_contract_flag() -> bool:
-    """True when monitor loss_prevention is one_contract and toggle allows it (same semantics as AES)."""
+def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int, bool]:
+    """Return (contracts, loss_prevention_trade_payload). Mirrors AES fractional sim tiers."""
     try:
         conn = get_db_connection()
         with conn.cursor() as cursor:
@@ -4786,21 +4786,26 @@ def _ats_get_loss_prevention_one_contract_flag() -> bool:
             result = cursor.fetchone()
         conn.close()
         if not result:
-            return False
+            return flip_count, False
         loss_prevention, lp_toggle = result[0], result[1]
         toggle_on = bool(lp_toggle) if lp_toggle is not None else True
-        if isinstance(loss_prevention, str):
-            lp = loss_prevention.strip().lower()
-            if lp == "symbol_one_contract":
-                return True
+        lp = (loss_prevention or "").strip().lower() if isinstance(loss_prevention, str) else ""
+        if lp in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
+            if lp in ("sim_loss_1c", "live_loss_1c"):
+                return 1, True
+            if lp == "sim_loss_25":
+                return max(1, int(round(flip_count * 0.25))), True
+            return max(1, int(round(flip_count * 0.5))), True
+        if lp == "symbol_one_contract":
+            return 1, True
         if not toggle_on:
-            return False
-        if isinstance(loss_prevention, str):
-            return loss_prevention.strip().lower() == "one_contract"
-        return False
+            return flip_count, False
+        if lp in ("one_contract", "win_streak_one_contract"):
+            return 1, True
+        return flip_count, False
     except Exception as e:
         log_debug(f"[FLIP SELL] loss_prevention read failed: {e}")
-        return False
+        return flip_count, False
 
 
 def _ats_get_multiplier_from_monitor() -> float:
@@ -4968,8 +4973,7 @@ def trigger_flip_sell_open_after_auto_stop(
     current_symbol = get_current_monitor_symbol()
     trade_strategy = get_trade_strategy()
     paper_trade = _ats_get_paper_trade_from_monitor()
-    loss_prevention_flag = _ats_get_loss_prevention_one_contract_flag()
-    position_out = 1 if loss_prevention_flag else flip_count
+    position_out, loss_prevention_flag = _ats_flip_sell_position_after_loss_prevention(flip_count)
     bankroll_allotment = _ats_get_bankroll_allotment()
     if bankroll_allotment is None:
         log(f"[FLIP SELL] skip trade_id={tid}: no bankroll_allotment_total on monitor")

@@ -23,6 +23,10 @@ def legacy_users_trades_simulated(tenant_slot: str) -> str:
     return f"users.trades_simulated_{_norm_slot(tenant_slot)}"
 
 
+def legacy_users_sim_trade_lp_cycle_ledger(tenant_slot: str) -> str:
+    return f"users.sim_trade_lp_cycle_ledger_{_norm_slot(tenant_slot)}"
+
+
 def legacy_users_orders(tenant_slot: str) -> str:
     return f"users.orders_{_norm_slot(tenant_slot)}"
 

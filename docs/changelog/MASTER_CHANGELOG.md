@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-10 — Release v3.5.1: Per-monitor simulated-trade loss prevention, live_loss_1c, migrations
+
+**Summary**
+- **Release: v3.5.1**
+- **Backend:** Per-monitor **simulated-trade loss prevention** (`simulated_trade_loss_prevention.py`): cycle ledger, tiered `loss_prevention` (`sim_loss_50` / `sim_loss_25` / `sim_loss_1c`), Eastern time anchors for cooldowns, startup reconcile + trade close hooks. **`live_loss_1c`**: real (non-paper) closed loss sets **`live_trade_cooldown_start_time`** and caps sizing for the same duration as sim cooldown; while live throttle is active, simulated losses may slide **`simulated_trade_cooldown_start_time`** but do **not** increment **`simulated_trade_cooldown_loss_count`** (tier cannot jump to sim tiers until live window ends or settings clear sim LP).
+- **API/UI:** `monitor_list_api` exposes **`live_trade_cooldown_start_time`**, **`live_trade_cooldown_live`**, combined **`symbol_wide_cooldown_live`**; dashboard + mobile cooldown math and tooltips.
+- **Consumers:** `trade_manager`, `auto_entry_supervisor`, `active_trade_supervisor`, `monitor_manager`, `read_api` / routers as staged; `symbol_wide_loss_prevention` remains a re-export shim.
+- **Database:** Reversible migrations **`20260509_2000_trades_loss_prevention_state_win_streak_lp`**, **`20260509_2100_monitor_strategy_simulated_trade_columns`**, **`20260509_2200_archive_trades_loss_prevention_state`**, **`20260510_1200_monitor_live_trade_cooldown_column`**, **`20260510_1215_trades_simulated_drop_market_result`**; `database.py` init / DO blocks aligned with **`docs/MASTER_DB_SCHEMA_REFERENCE.md`**.
+- **Tests:** `tests/unit/test_loss_prevention_new.py`, `test_simulated_contract_expiration.py`, `test_time_eastern.py`, flip_sell test touch-up.
+- **Plans:** Session work (sim LP + live throttle); no single canonical **`Status: done`** plan slug in-repo for this batch.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] **Migration pre-flight:** Confirm the commit on the server contains every file for slugs **`20260509_2000_trades_loss_prevention_state_win_streak_lp`**, **`20260509_2100_monitor_strategy_simulated_trade_columns`**, **`20260509_2200_archive_trades_loss_prevention_state`**, **`20260510_1200_monitor_live_trade_cooldown_column`**, **`20260510_1215_trades_simulated_drop_market_result`** (each `.up.sql` / `.down.sql` under `scripts/migrations/`).
+- [ ] Apply pending migrations (from repo root on production):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check (non-blocking if clean):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh` (from repo root on the server; wait until it finishes successfully).
+- [ ] Verify: `curl -sSf http://localhost:3000/health && curl -sSf http://localhost:8001/health && curl -sSf http://localhost:3050/health`; `venv/bin/supervisorctl -c backend/supervisord.conf status`; tail `trade_manager_0001`, `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for errors **after** process start (no `live_trade_cooldown_start_time` does not exist; no stuck aborted transactions from LP).
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.5.1`
+
+---
+
 ## 2026-05-08 — CPU load reduction (read paths, trading-safe)
 
 **Summary**

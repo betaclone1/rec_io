@@ -8,6 +8,8 @@
     <title>System - REC.IO</title>
     <link rel="stylesheet" href="/styles/global.css">
     <script src="/js/ny-timezone.js"></script>
+    <script src="/js/db_changes_prefilter.js"></script>
+    <script src="/js/realtime-ws-coordinator.js"></script>
     <style>
 
 
@@ -903,8 +905,8 @@
     </div>
 
     <script>
-        let systemReleasePrefsWs = null;
-        let systemHealthDbWs = null;
+        let _systemReleasePrefsUnsub = null;
+        let _systemHealthDbUnsub = null;
         let _systemHealthWsConnected = false;
         let _systemHealthFallbackTimer = null;
         let _systemHealthDbDebounce = null;
@@ -930,18 +932,25 @@
 
         function connectSystemReleaseVersionWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            if (systemReleasePrefsWs) {
-                try { systemReleasePrefsWs.close(); } catch (e) { /* ignore */ }
+            if (_systemReleasePrefsUnsub) {
+                try { _systemReleasePrefsUnsub(); } catch (e) { /* ignore */ }
+                _systemReleasePrefsUnsub = null;
             }
-            systemReleasePrefsWs = new WebSocket(protocol + '//' + window.location.host + '/ws/preferences');
-            systemReleasePrefsWs.onmessage = function(event) {
-                try {
-                    const data = JSON.parse(event.data);
-                    if (data.type === 'system_version' && data.version) {
-                        setSystemPanelReleaseVersion(data.version);
-                    }
-                } catch (e) { /* ignore */ }
-            };
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+                return;
+            }
+            const url = protocol + '//' + window.location.host + '/ws/preferences';
+            _systemReleasePrefsUnsub = window.recRealtimeWsCoordinator.subscribe(url, {
+                onMessage: function (event) {
+                    try {
+                        const data =
+                            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                        if (data && data.type === 'system_version' && data.version) {
+                            setSystemPanelReleaseVersion(data.version);
+                        }
+                    } catch (e) { /* ignore */ }
+                },
+            });
         }
 
         function _scheduleSystemHealthRefreshFromWs() {
@@ -955,37 +964,39 @@
 
         function connectSystemHealthWebSocket() {
             const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-            if (systemHealthDbWs) {
-                try { systemHealthDbWs.close(); } catch (e) { /* ignore */ }
+            if (_systemHealthDbUnsub) {
+                try { _systemHealthDbUnsub(); } catch (e) { /* ignore */ }
+                _systemHealthDbUnsub = null;
             }
-            systemHealthDbWs = new WebSocket(protocol + '//' + window.location.host + '/ws/db_changes');
-            systemHealthDbWs.onopen = function() {
-                _systemHealthWsConnected = true;
-                if (_systemHealthFallbackTimer) {
-                    clearInterval(_systemHealthFallbackTimer);
-                    _systemHealthFallbackTimer = null;
-                }
-            };
-            systemHealthDbWs.onmessage = function(event) {
-                try {
-                    const raw = event.data;
-                    if (typeof recDbChangeRawMentionsStream === 'function' &&
-                        !recDbChangeRawMentionsStream(raw, 'system_health')) {
-                        return;
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+                return;
+            }
+            const wsUrl = protocol + '//' + window.location.host + '/ws/db_changes';
+            _systemHealthDbUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+                onlyDbStreams: ['system_health'],
+                onOpen: function () {
+                    _systemHealthWsConnected = true;
+                    if (_systemHealthFallbackTimer) {
+                        clearInterval(_systemHealthFallbackTimer);
+                        _systemHealthFallbackTimer = null;
                     }
-                    const data = JSON.parse(raw);
-                    if (data.type === 'db_change' && data.database === 'system_health') {
-                        _scheduleSystemHealthRefreshFromWs();
+                },
+                onMessage: function (event) {
+                    try {
+                        const data =
+                            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                        if (data && data.type === 'db_change' && data.database === 'system_health') {
+                            _scheduleSystemHealthRefreshFromWs();
+                        }
+                    } catch (e) {
+                        // Ignore malformed frames.
                     }
-                } catch (e) {
-                    // Ignore malformed frames.
-                }
-            };
-            systemHealthDbWs.onclose = function() {
-                _systemHealthWsConnected = false;
-                startSystemHealthFallbackPolling();
-                setTimeout(connectSystemHealthWebSocket, 5000);
-            };
+                },
+                onClose: function () {
+                    _systemHealthWsConnected = false;
+                    startSystemHealthFallbackPolling();
+                },
+            });
         }
 
         function startSystemHealthFallbackPolling() {

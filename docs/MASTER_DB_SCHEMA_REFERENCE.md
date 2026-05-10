@@ -10272,6 +10272,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `symbol_wide_loss_prevention` | `boolean` | YES | false | Symbol-wide LP gate; **`GET /api/monitors`** depends on this column. Migration **`20260501_2200_monitor_list_symbol_wide_columns`**. |
 | `symbol_wide_cooldown_duration` | `integer(32)` | YES | 4 | Cooldown duration (hours) when symbol-wide LP is active. Same migration. |
 | `symbol_wide_cooldown_start_time` | `timestamp with time zone` | YES | - | When symbol-wide cooldown began. Same migration. |
+| `live_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Live (non–paper) loss-prevention cooldown anchor; **`GET /api/monitors`** and `simulated_trade_loss_prevention` use this. Migration **`20260510_1200_monitor_live_trade_cooldown_column`**. |
 
 #### Constraints
 
