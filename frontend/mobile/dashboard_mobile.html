@@ -881,6 +881,8 @@
 
     .th-monitor-trades-box {
       position: relative;
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
     .th-monitor-trades-box::after {
       visibility: hidden;
@@ -903,10 +905,21 @@
       z-index: 50;
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
     }
-    .th-monitor-trades-box:hover::after,
-    .th-monitor-trades-box:focus-visible::after {
+    .th-monitor-trades-box.th-monitor-trades-box--tip-open::after {
       visibility: visible;
       opacity: 1;
+    }
+
+    .monitor-name--tap-tip {
+      cursor: pointer;
+      text-decoration: underline dotted rgba(160, 174, 192, 0.55);
+      text-underline-offset: 2px;
+      -webkit-tap-highlight-color: transparent;
+    }
+
+    .allocation-status-badge[data-mobile-tip] {
+      cursor: pointer;
+      -webkit-tap-highlight-color: transparent;
     }
 
     /* Monitor Uptime */
@@ -1313,14 +1326,16 @@
 
     /* Tooltip */
     .monitor-tooltip {
-      position: absolute;
+      position: fixed;
       background: #2a3a4a;
       color: white;
       padding: 8px 12px;
       border-radius: 4px;
       font-size: 12px;
-      white-space: nowrap;
-      z-index: 1000;
+      white-space: pre-wrap;
+      word-break: break-word;
+      max-width: min(320px, 90vw);
+      z-index: 10000;
       box-shadow: 0 2px 8px rgba(0,0,0,0.3);
       opacity: 0;
       transition: opacity 0.2s ease;
@@ -2528,18 +2543,34 @@
                 const badge = document.createElement('div');
                 badge.className = badgeState.className;
                 badge.textContent = badgeState.text;
-                if (badgeState.title) badge.title = badgeState.title;
-                else badge.removeAttribute('title');
-                if (badgeState.dataTooltip) badge.dataset.tooltip = badgeState.dataTooltip;
-                else delete badge.dataset.tooltip;
+                const tipPoll = String(badgeState.mobileTip || badgeState.dataTooltip || badgeState.title || '').trim();
+                if (tipPoll) {
+                  badge.dataset.mobileTip = tipPoll;
+                  badge.removeAttribute('title');
+                  delete badge.dataset.tooltip;
+                } else {
+                  delete badge.dataset.mobileTip;
+                  if (badgeState.title) badge.title = badgeState.title;
+                  else badge.removeAttribute('title');
+                  if (badgeState.dataTooltip) badge.dataset.tooltip = badgeState.dataTooltip;
+                  else delete badge.dataset.tooltip;
+                }
                 statusParent.insertBefore(badge, statusElement);
               } else {
                 existingBadge.className = badgeState.className;
                 existingBadge.textContent = badgeState.text;
-                if (badgeState.title) existingBadge.title = badgeState.title;
-                else existingBadge.removeAttribute('title');
-                if (badgeState.dataTooltip) existingBadge.dataset.tooltip = badgeState.dataTooltip;
-                else delete existingBadge.dataset.tooltip;
+                const tipPollE = String(badgeState.mobileTip || badgeState.dataTooltip || badgeState.title || '').trim();
+                if (tipPollE) {
+                  existingBadge.dataset.mobileTip = tipPollE;
+                  existingBadge.removeAttribute('title');
+                  delete existingBadge.dataset.tooltip;
+                } else {
+                  delete existingBadge.dataset.mobileTip;
+                  if (badgeState.title) existingBadge.title = badgeState.title;
+                  else existingBadge.removeAttribute('title');
+                  if (badgeState.dataTooltip) existingBadge.dataset.tooltip = badgeState.dataTooltip;
+                  else delete existingBadge.dataset.tooltip;
+                }
               }
             } else if (existingBadge) {
               existingBadge.remove();
@@ -2866,11 +2897,13 @@
         const timeText = formatSymbolWideCooldownEndEtRounded(monitor);
         const text = timeText || 'SIM';
         const tipBody = buildSimCooldownTooltipText(monitor, swLive, lpKey);
+        const tipOneLine = tipBody.replace(/\n/g, ' · ');
         return {
           visible: true,
           text,
           className: 'allocation-status-badge lp lp-symbol-wide',
-          title: tipBody.replace(/\n/g, ' · '),
+          title: tipOneLine,
+          mobileTip: tipOneLine,
         };
       }
       const lossPreventionActive =
@@ -2937,9 +2970,11 @@
       if (!badge.visible) {
         return '';
       }
-      const t = badge.title ? ` title="${escapeHtmlAttr(badge.title)}"` : '';
-      const dt = badge.dataTooltip ? ` data-tooltip="${escapeHtmlAttr(badge.dataTooltip)}"` : '';
-      return `<div class="${badge.className}"${t}${dt}>${badge.text}</div>`;
+      const mobileTipText = String(badge.mobileTip || badge.dataTooltip || badge.title || '').trim();
+      const mt = mobileTipText ? ` data-mobile-tip="${escapeHtmlAttr(mobileTipText)}"` : '';
+      const t = badge.title && !mobileTipText ? ` title="${escapeHtmlAttr(badge.title)}"` : '';
+      const dt = badge.dataTooltip && !mobileTipText ? ` data-tooltip="${escapeHtmlAttr(badge.dataTooltip)}"` : '';
+      return `<div class="${badge.className}"${t}${dt}${mt}>${badge.text}</div>`;
     }
 
     function escapeHtmlAttr(s) {
@@ -3064,7 +3099,7 @@
             ${getAllocationBadgeMarkup(monitor)}
             <div class="monitor-status ${getMonitorStatusClass(monitor.auto_trade_status, monitor)}">${monitor.auto_trade_status === 'active' || monitor.auto_trade_status === 'ACTIVE' ? 'ACTIVE' : monitor.auto_trade_status === 'inactive' || monitor.auto_trade_status === 'INACTIVE' ? 'INACTIVE' : monitor.auto_trade_status === 'disabled' || monitor.auto_trade_status === 'DISABLED' ? 'DISABLED' : monitor.auto_trade_status === 'paused' || monitor.auto_trade_status === 'PAUSED' ? 'PAUSED' : monitor.auto_trade_status}</div>
             <div class="monitor-stats">
-              <div class="th-monitor-trades-box" style="text-align: center; min-width: 45px;" data-win-streak="${winStreakAttr}" tabindex="0">
+              <div class="th-monitor-trades-box" style="text-align: center; min-width: 45px;" data-win-streak="${winStreakAttr}">
                 <div class="stat-value stat-win-streak">${getMonitorStatValue(monitor, 'trades', '0')}</div>
                 <div class="stat-label">Trades</div>
               </div>
@@ -3081,7 +3116,7 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-bottom-row">
+              <div class="monitor-bottom-row">
               <div class="monitor-uptime">${monitor.uptime}</div>
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
@@ -3091,7 +3126,7 @@
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
               </div>
-              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+              <div class="monitor-name monitor-name--tap-tip" data-monitor-tip="${escapeHtmlAttr(String(monitor.id))}">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
             </div>
             <div class="monitor-controls">
               <div style="display: flex; align-items: center;">
@@ -3156,7 +3191,7 @@
               </div>
             </div>
             <div class="monitor-stats">
-              <div class="stat-panel th-monitor-trades-box" data-win-streak="${winStreakAttr}" tabindex="0">
+              <div class="stat-panel th-monitor-trades-box" data-win-streak="${winStreakAttr}">
                 <div class="stat-value stat-win-streak">${getMonitorStatValue(monitor, 'trades', '0')}</div>
                 <div class="stat-label">Trades</div>
               </div>
@@ -3183,7 +3218,7 @@
                 <div class="paper-trading-toggle-option">LIVE</div>
                 <div class="paper-trading-toggle-option">PAPER</div>
               </div>
-              <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
+              <div class="monitor-name monitor-name--tap-tip" data-monitor-tip="${escapeHtmlAttr(String(monitor.id))}">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
             </div>
           </div>
         `;
@@ -3312,8 +3347,11 @@
       }
     }
 
-    // Add cross-highlighting event listeners to monitor tiles
+    // Add cross-highlighting event listeners to monitor tiles (hover-capable only; phones use tap tooltips instead)
     function addMonitorTileHighlighting() {
+      if (!window.matchMedia('(hover: hover) and (pointer: fine)').matches) {
+        return;
+      }
       const monitorTiles = document.querySelectorAll('.monitor-tile[data-monitor-id]');
       monitorTiles.forEach(tile => {
         const monitorId = tile.getAttribute('data-monitor-id');
@@ -3417,35 +3455,104 @@
       }
     }
 
-    // Tooltip functionality
-    function initializeTooltips() {
-      const tooltip = document.createElement('div');
-      tooltip.className = 'monitor-tooltip';
-      document.body.appendChild(tooltip);
+    /** Tap-only tooltips for monitor tiles (no hover): win streak, allocation badge, monitor id on name. */
+    let mobileDashboardFloatingTipEl = null;
+    let mobileDashboardTipToggleEl = null;
 
-      let tooltipTimeout;
+    function ensureMobileDashboardFloatingTip() {
+      if (mobileDashboardFloatingTipEl) return mobileDashboardFloatingTipEl;
+      mobileDashboardFloatingTipEl = document.createElement('div');
+      mobileDashboardFloatingTipEl.id = 'mobile-dashboard-floating-tip';
+      mobileDashboardFloatingTipEl.className = 'monitor-tooltip';
+      mobileDashboardFloatingTipEl.setAttribute('role', 'tooltip');
+      document.body.appendChild(mobileDashboardFloatingTipEl);
+      return mobileDashboardFloatingTipEl;
+    }
 
-      document.addEventListener('mouseover', function(e) {
-        const monitorTile = e.target.closest('.monitor-tile');
-        if (monitorTile && monitorTile.classList.contains('list-view')) {
-          const monitorId = monitorTile.getAttribute('data-monitor-id');
-          if (monitorId) {
-            tooltipTimeout = setTimeout(() => {
-              const rect = monitorTile.getBoundingClientRect();
-              tooltip.textContent = monitorId;
-              tooltip.style.left = (rect.right + 10) + 'px';
-              tooltip.style.top = (rect.top + rect.height / 2 - tooltip.offsetHeight / 2) + 'px';
-              tooltip.classList.add('show');
-            }, 500);
-          }
-        }
+    function hideMobileDashboardFloatingTip() {
+      if (mobileDashboardFloatingTipEl) {
+        mobileDashboardFloatingTipEl.classList.remove('show');
+        mobileDashboardFloatingTipEl.textContent = '';
+      }
+      mobileDashboardTipToggleEl = null;
+    }
+
+    function layoutMobileDashboardFloatingTip(anchor) {
+      const el = mobileDashboardFloatingTipEl;
+      if (!el || !anchor) return;
+      const r = anchor.getBoundingClientRect();
+      const w = el.offsetWidth;
+      const h = el.offsetHeight;
+      let left = r.left + r.width / 2 - w / 2;
+      let top = r.top - h - 10;
+      left = Math.max(10, Math.min(left, window.innerWidth - w - 10));
+      if (top < 10) top = r.bottom + 10;
+      el.style.left = left + 'px';
+      el.style.top = top + 'px';
+    }
+
+    function showMobileDashboardFloatingTip(anchor, text) {
+      const el = ensureMobileDashboardFloatingTip();
+      el.textContent = text;
+      el.classList.add('show');
+      mobileDashboardTipToggleEl = anchor;
+      requestAnimationFrame(() => {
+        layoutMobileDashboardFloatingTip(anchor);
       });
+    }
 
-      document.addEventListener('mouseout', function(e) {
-        const monitorTile = e.target.closest('.monitor-tile');
-        if (monitorTile) {
-          clearTimeout(tooltipTimeout);
-          tooltip.classList.remove('show');
+    function mobileDashboardTipDocumentClick(e) {
+      const grid = document.getElementById('monitors-grid');
+      if (!grid || !grid.isConnected) {
+        hideMobileDashboardFloatingTip();
+        document.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
+        return;
+      }
+
+      const box = e.target.closest('.th-monitor-trades-box');
+      if (box && grid.contains(box)) {
+        const wasOpen = box.classList.contains('th-monitor-trades-box--tip-open');
+        grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
+        if (!wasOpen) box.classList.add('th-monitor-trades-box--tip-open');
+        hideMobileDashboardFloatingTip();
+        return;
+      }
+
+      const badge = e.target.closest('.allocation-status-badge');
+      if (badge && grid.contains(badge) && badge.dataset.mobileTip) {
+        const tip = badge.dataset.mobileTip;
+        grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
+        if (mobileDashboardTipToggleEl === badge) {
+          hideMobileDashboardFloatingTip();
+        } else {
+          showMobileDashboardFloatingTip(badge, tip);
+        }
+        return;
+      }
+
+      const nameTip = e.target.closest('.monitor-name--tap-tip');
+      if (nameTip && grid.contains(nameTip) && nameTip.dataset.monitorTip) {
+        const tid = nameTip.dataset.monitorTip;
+        grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
+        if (mobileDashboardTipToggleEl === nameTip) {
+          hideMobileDashboardFloatingTip();
+        } else {
+          showMobileDashboardFloatingTip(nameTip, tid);
+        }
+        return;
+      }
+
+      grid.querySelectorAll('.th-monitor-trades-box--tip-open').forEach((b) => b.classList.remove('th-monitor-trades-box--tip-open'));
+      hideMobileDashboardFloatingTip();
+    }
+
+    function initializeTooltips() {
+      if (window.__recMobileDashboardTipDocBound) return;
+      window.__recMobileDashboardTipDocBound = true;
+      document.addEventListener('click', mobileDashboardTipDocumentClick, true);
+      window.addEventListener('resize', () => {
+        if (mobileDashboardTipToggleEl && mobileDashboardFloatingTipEl && mobileDashboardFloatingTipEl.classList.contains('show')) {
+          layoutMobileDashboardFloatingTip(mobileDashboardTipToggleEl);
         }
       });
     }
