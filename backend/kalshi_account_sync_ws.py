@@ -768,7 +768,12 @@ def _upsert_account_history(conn, rows):
 
 
 def _ensure_external_transfers_from_account_history(conn):
-    """Create transfer rows for account_history entries that don't have one. Returns (inserted_count, new_deposit_amounts, new_withdrawal_amounts)."""
+    """Create transfer rows for account_history entries that don't have one.
+
+    Returns (inserted_count, new_deposit_events, new_withdrawal_events).
+    Each event includes the net amount, account_history id, and created_at so callers
+    can preserve pre-transfer bankroll state when deposits race balance updates.
+    """
     with conn.cursor() as cur:
         cur.execute("""
             SELECT id, entry_type, amount, fee, created_at, status, deposit_type
@@ -780,8 +785,8 @@ def _ensure_external_transfers_from_account_history(conn):
     if not rows:
         return 0, [], []
     inserted = 0
-    new_deposit_amounts = []
-    new_withdrawal_amounts = []
+    new_deposit_events = []
+    new_withdrawal_events = []
     for row in rows:
         ah_id, entry_type, amount, fee, created_at, status, deposit_type = row
         amount_net = int(amount) - int(fee or 0)
@@ -809,12 +814,17 @@ def _ensure_external_transfers_from_account_history(conn):
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
             """, (timestamp_str, "external", from_str, to_str, amount_for_transfer, "manual", status_str, ah_id))
         inserted += 1
+        event = {
+            "amount": amount_net,
+            "account_history_id": ah_id,
+            "created_at": created_at,
+        }
         if entry_type == "Deposit":
-            new_deposit_amounts.append(amount_net)
+            new_deposit_events.append(event)
         elif entry_type == "Withdrawal":
-            new_withdrawal_amounts.append(amount_net)
+            new_withdrawal_events.append(event)
     conn.commit()
-    return inserted, new_deposit_amounts, new_withdrawal_amounts
+    return inserted, new_deposit_events, new_withdrawal_events
 
 
 def _update_external_transfer_status_from_account_history(conn):
@@ -831,9 +841,102 @@ def _update_external_transfer_status_from_account_history(conn):
     conn.commit()
 
 
+def _event_amounts(events):
+    return [int(event["amount"]) for event in events or []]
+
+
+def _first_event_created_at(events):
+    created = [
+        event.get("created_at")
+        for event in events or []
+        if event.get("created_at") is not None
+    ]
+    return min(created) if created else None
+
+
+def _bankroll_current_before_deposit_events(cursor, account_balance_table, deposit_events):
+    first_created_at = _first_event_created_at(deposit_events)
+    if first_created_at is None:
+        return None
+    from backend.trading_mode import sql_ident_qualified_table
+
+    ab_ident = sql_ident_qualified_table(account_balance_table)
+    cursor.execute(
+        psql.SQL(
+            """
+            SELECT bankroll_current
+            FROM {}
+            WHERE created_at < %s
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).format(ab_ident),
+        (first_created_at,),
+    )
+    row = cursor.fetchone()
+    return int(row[0]) if row and row[0] is not None else None
+
+
+def _force_latest_balance_deposit_bankroll(
+    cursor,
+    *,
+    account_balance_table,
+    subaccounts_table,
+    user_no,
+    portfolio_value,
+    pre_deposit_bankroll_current,
+):
+    """After a deposit, keep sticky bankroll based on MTB, not the deposited cash."""
+    if pre_deposit_bankroll_current is None:
+        return False, False
+    from backend.balance_snapshot import (
+        compute_bankroll_current_ratchet_from_mtb,
+        get_mtb_snapshot_from_subaccounts,
+    )
+    from backend.core.system_settings_store import get_drawdown_trading_controls
+    from backend.trading_mode import sql_ident_qualified_table
+
+    mtb_balance, mtb_base = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+    if mtb_balance is None:
+        return False, False
+    drawdown_halt_on, drawdown_pct = get_drawdown_trading_controls(
+        cursor,
+        user_number=user_no,
+    )
+    bankroll_current, bankroll_stepped_down = compute_bankroll_current_ratchet_from_mtb(
+        int(mtb_balance),
+        int(pre_deposit_bankroll_current),
+        drawdown_halt_on=drawdown_halt_on,
+        drawdown_pct=drawdown_pct,
+    )
+    ab_ident = sql_ident_qualified_table(account_balance_table)
+    cursor.execute(
+        psql.SQL(
+            """
+            UPDATE {}
+            SET bankroll_current = %s,
+                master_trading_bankroll = %s,
+                mtb_base_value = %s,
+                updated_at = NOW()
+            WHERE id = (
+                SELECT id FROM {} ORDER BY id DESC LIMIT 1
+            )
+              AND portfolio = %s
+            """
+        ).format(ab_ident, ab_ident),
+        (
+            bankroll_current,
+            int(mtb_balance),
+            int(mtb_base) if mtb_base is not None else None,
+            int(portfolio_value),
+        ),
+    )
+    return cursor.rowcount > 0, bankroll_stepped_down
+
+
 def sync_account_history(conn, kalshi_user_id):
     """Fetch v1 /deposits and /withdrawals, upsert account_history_0001, create external transfers.
-    Returns (n_upserted, error_str, new_deposit_amounts, new_withdrawal_amounts).
+    Returns (n_upserted, error_str, new_deposit_events, new_withdrawal_events).
     Uses deposits and withdrawals endpoints only; v1 account/history is deprecated (404)."""
     page_size = 200
     all_deposits = []
@@ -939,8 +1042,8 @@ def sync_balance():
 
     pg_conn = None
     _slot = None
-    new_deposit_amounts = []
-    new_withdrawal_amounts = []
+    new_deposit_events = []
+    new_withdrawal_events = []
     try:
         pg_conn = get_postgresql_connection()
     except Exception as pg_err:
@@ -958,23 +1061,23 @@ def sync_balance():
             _slot = process_tenant_context().user_no
             kalshi_user_id_for_history = _kalshi_user_id_for_history()
             if kalshi_user_id_for_history:
-                n_upserted, sync_err, new_deposit_amounts, new_withdrawal_amounts = sync_account_history(
+                n_upserted, sync_err, new_deposit_events, new_withdrawal_events = sync_account_history(
                     pg_conn,
                     kalshi_user_id_for_history,
                 )
                 if sync_err:
                     logger.warning("Account history sync failed: %s", sync_err)
-                    new_deposit_amounts = []
-                    new_withdrawal_amounts = []
+                    new_deposit_events = []
+                    new_withdrawal_events = []
                 else:
                     logger.debug("Account history: %s entries synced to users.account_history_0001", n_upserted)
 
-                if new_deposit_amounts:
+                if new_deposit_events:
                     _sa_id = sql_ident_qualified_table(
                         subaccounts_table_for_user(_slot, force_live=True)
                     )
                     with pg_conn.cursor() as cur:
-                        for amount_net in new_deposit_amounts:
+                        for amount_net in _event_amounts(new_deposit_events):
                             cur.execute(
                                 psql.SQL(
                                     "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
@@ -984,12 +1087,12 @@ def sync_balance():
                     pg_conn.commit()
                     logger.debug(
                         "New deposit(s) pre-applied to Cash Transfer before balance snapshot: %s cents total",
-                        sum(new_deposit_amounts),
+                        sum(_event_amounts(new_deposit_events)),
                     )
         except Exception as sync_exc:
             logger.warning("Account history pre-sync error: %s", sync_exc)
-            new_deposit_amounts = []
-            new_withdrawal_amounts = []
+            new_deposit_events = []
+            new_withdrawal_events = []
     else:
         logger.warning("Skipping account history pre-sync - no PostgreSQL connection available")
 
@@ -1041,8 +1144,17 @@ def sync_balance():
                         _slot, force_live=True
                     )
                     _sa_fqn = subaccounts_table_for_user(_slot, force_live=True)
+                    pre_deposit_bankroll_current = (
+                        _bankroll_current_before_deposit_events(
+                            cursor,
+                            _ab_fqn,
+                            new_deposit_events,
+                        )
+                        if new_deposit_events
+                        else None
+                    )
 
-                    if new_deposit_amounts:
+                    if new_deposit_events:
                         _sa_id = sql_ident_qualified_table(_sa_fqn)
                         cursor.execute(
                             psql.SQL(
@@ -1066,6 +1178,27 @@ def sync_balance():
                         notify_db_name="account_balance",
                         record_internal_transfers=True,
                     )
+                    deposit_bankroll_stepped_down = False
+                    if new_deposit_events:
+                        cursor.execute(
+                            psql.SQL(
+                                "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
+                            ).format(sql_ident_qualified_table(_sa_fqn)),
+                            (portfolio_value,),
+                        )
+                        update_mtb_balance_from_primary_and_ct(cursor, _sa_fqn, portfolio_value)
+                        updated_latest, deposit_bankroll_stepped_down = _force_latest_balance_deposit_bankroll(
+                            cursor,
+                            account_balance_table=_ab_fqn,
+                            subaccounts_table=_sa_fqn,
+                            user_no=_slot,
+                            portfolio_value=portfolio_value,
+                            pre_deposit_bankroll_current=pre_deposit_bankroll_current,
+                        )
+                        if not updated_latest:
+                            logger.warning(
+                                "Deposit cycle: latest account_balance bankroll preservation skipped"
+                            )
                     pg_conn.commit()
                     if inserted:
                         logger.debug(
@@ -1073,12 +1206,12 @@ def sync_balance():
                             _ab_fqn,
                             portfolio_value,
                         )
-                if new_deposit_amounts:
+                if new_deposit_events:
                     notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
                     notify_frontend_db_change("transfers", {"source": "external_deposit"})
-                    notify_monitor_manager()
-                    logger.debug("New deposit(s) applied to Cash Transfer + PRIMARY: %s cents total", sum(new_deposit_amounts))
-                if new_withdrawal_amounts:
+                    notify_monitor_manager(bankroll_stepped_down=deposit_bankroll_stepped_down)
+                    logger.debug("New deposit(s) applied to Cash Transfer + PRIMARY: %s cents total", sum(_event_amounts(new_deposit_events)))
+                if new_withdrawal_events:
                     _sa_fqn = subaccounts_table_for_user(_slot, force_live=True)
                     _ab_fqn = account_balance_table_for_user(_slot, force_live=True)
                     _sa_id = sql_ident_qualified_table(_sa_fqn)
@@ -1089,7 +1222,7 @@ def sync_balance():
                     _ts_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
                     inserted_w, stepped = False, False
                     with pg_conn.cursor() as cur:
-                        for amount_net in new_withdrawal_amounts:
+                        for amount_net in _event_amounts(new_withdrawal_events):
                             cur.execute(
                                 psql.SQL(
                                     "UPDATE {} SET balance = balance - %s WHERE subaccount = 'Cash Transfer'"
@@ -1171,7 +1304,7 @@ def sync_balance():
                         notify_monitor_manager()
                     logger.debug(
                         "New withdrawal(s): CT reduced by net %s; MTB reconciled; drawdown row inserted=%s stepped=%s",
-                        sum(new_withdrawal_amounts),
+                        sum(_event_amounts(new_withdrawal_events)),
                         inserted_w,
                         stepped,
                     )

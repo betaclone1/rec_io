@@ -1364,38 +1364,6 @@
       line-height: 1;
     }
 
-    .portfolio-change-container {
-      display: flex;
-      flex-direction: row;
-      align-items: flex-end;
-    }
-
-    .change-element {
-      font-size: 9px;
-      font-weight: bold;
-      display: flex;
-      align-items: center;
-      gap: 5px;
-      color: #ffffff;
-      line-height: 1;
-    }
-
-    .change-element::before {
-      content: '';
-      width: 0;
-      height: 0;
-      border-left: 6px solid transparent;
-      border-right: 6px solid transparent;
-    }
-
-    .change-element.positive::before {
-      border-bottom: 8px solid #4caf50;
-    }
-
-    .change-element.negative::before {
-      border-top: 8px solid #f44336;
-    }
-
     .view-buttons {
       display: flex;
       gap: 5px;
@@ -1744,9 +1712,6 @@
           <div class="portfolio-controls">
             <div class="portfolio-info">
               <span class="portfolio-value" id="portfolio-value" style="padding-left: 10px; margin-right: 10px;">Loading...</span>
-              <div class="portfolio-change-container">
-                <div class="change-element" id="portfolio-change"></div>
-              </div>
             </div>
             <div class="portfolio-controls-right">
               <div class="perf-rollup-toggle" role="group" aria-label="Calendar TD vs rolling PREV (entire dashboard)">
@@ -4517,8 +4482,11 @@
     }
 
     function updatePortfolioChange() {
+      const changeElement = document.getElementById('portfolio-change');
+      if (!changeElement) return;
+
       if (allHistoryData.length < 2) {
-        document.getElementById('portfolio-change').textContent = '';
+        changeElement.textContent = '';
         return;
       }
 
@@ -4529,7 +4497,6 @@
       const percentChange = (firstValue != null && firstValue !== 0) ? (change / firstValue) * 100 : 0;
       
       // Format the consolidated change display
-      const changeElement = document.getElementById('portfolio-change');
       const isPositive = change >= 0;
       
       const changeText = `$${Math.abs(change).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${percentChange != null ? percentChange.toFixed(2) : "0.00"}%)`;
@@ -5057,12 +5024,14 @@
 
     function updateBankrollChange() {
       const changeEl = document.getElementById('portfolio-change');
+      if (!changeEl) return;
+
       if (allBankrollHistoryData.length < 2) {
-        if (changeEl) changeEl.textContent = '';
+        changeEl.textContent = '';
         return;
       }
       if (allBankrollHistoryData.length < 2) {
-        if (changeEl) changeEl.textContent = '';
+        changeEl.textContent = '';
         return;
       }
       const firstValue = allBankrollHistoryData[0].bankroll || 0;
@@ -5116,12 +5085,14 @@
 
     function updatePnlChange() {
       const changeEl = document.getElementById('portfolio-change');
+      if (!changeEl) return;
+
       if (allPnlHistoryData.length < 2) {
-        if (changeEl) changeEl.textContent = '';
+        changeEl.textContent = '';
         return;
       }
       if (allPnlHistoryData.length < 2) {
-        if (changeEl) changeEl.textContent = '';
+        changeEl.textContent = '';
         return;
       }
       const firstPnl = allPnlHistoryData[0].pnl != null ? allPnlHistoryData[0].pnl : 0;
