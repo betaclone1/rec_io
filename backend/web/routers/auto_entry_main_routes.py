@@ -39,7 +39,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
             sel_flip = """
                        , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
             """
-            ml = legacy_users_monitor_list(effective_tenant_context_for_sql_rewrite().user_no)
+            tenant_user_no = effective_tenant_context_for_sql_rewrite().user_no
+            ml = legacy_users_monitor_list(tenant_user_no)
             q = (
                 """
                 SELECT min_probability, max_probability, min_differential, max_differential, min_time, max_time, allow_re_entry,
@@ -52,12 +53,14 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
                        regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range,
-                       test_filter, time_in_force, order_type
+                       test_filter, time_in_force, order_type,
+                       name, symbol
             """
                 + (sel_flip if has_flip else "")
                 + """
                        , simulated_trade_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
-                         COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak')
+                         COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
+                         COALESCE(symbol_wide_loss_prevention, FALSE)
             """
                 + f"""
                 FROM {ml} WHERE id = %s
@@ -66,9 +69,30 @@ async def get_auto_entry_settings(monitor_id: str = None):
             cursor.execute(q, (monitor_id,))
             result = cursor.fetchone()
 
-            conn.close()
-
             if result:
+                monitor_name = str(result[37] or "").strip()
+                monitor_symbol = str(result[38] or "").strip().upper()
+                symbol_wide_hero = False
+                symbol_wide_monitor_follow = None
+                symbol_wide_monitor_follow_id = None
+                if str(tenant_user_no or "").zfill(4) == "0001" and monitor_name and monitor_symbol:
+                    cursor.execute(
+                        """
+                        SELECT monitor_follow, monitor_follow_id
+                        FROM live_data.live_symbol_status
+                        WHERE UPPER(symbol) = %s
+                        LIMIT 1
+                        """,
+                        (monitor_symbol,),
+                    )
+                    follow_row = cursor.fetchone()
+                    if follow_row:
+                        symbol_wide_monitor_follow = follow_row[0]
+                        symbol_wide_monitor_follow_id = follow_row[1]
+                        symbol_wide_hero = (
+                            str(symbol_wide_monitor_follow or "").strip() == monitor_name
+                        )
+
                 row = {
                     "min_probability": float(result[0]) if result[0] is not None else 95.00,
                     "max_probability": float(result[1]) if result[1] is not None else 100.00,
@@ -107,29 +131,35 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "test_filter": bool(result[34]) if result[34] is not None else False,
                     "time_in_force": str(result[35]) if result[35] is not None else "fill_or_kill",
                     "order_type": str(result[36]) if result[36] is not None else "market",
+                    "name": monitor_name,
+                    "symbol": monitor_symbol,
                 }
                 if has_flip:
-                    row["flip_sell_prob"] = bool(result[37]) if result[37] is not None else False
-                    row["flip_sell_prob_mult"] = str(result[38]) if result[38] is not None else None
-                    row["flip_sell_floor"] = bool(result[39]) if result[39] is not None else False
-                    row["flip_sell_floor_mult"] = str(result[40]) if result[40] is not None else None
-                    _sw_i = 41
+                    row["flip_sell_prob"] = bool(result[39]) if result[39] is not None else False
+                    row["flip_sell_prob_mult"] = str(result[40]) if result[40] is not None else None
+                    row["flip_sell_floor"] = bool(result[41]) if result[41] is not None else False
+                    row["flip_sell_floor_mult"] = str(result[42]) if result[42] is not None else None
+                    _sw_i = 43
                 else:
                     row["flip_sell_prob"] = False
                     row["flip_sell_prob_mult"] = None
                     row["flip_sell_floor"] = False
                     row["flip_sell_floor_mult"] = None
-                    _sw_i = 37
+                    _sw_i = 39
                 st_on = bool(result[_sw_i]) if result[_sw_i] is not None else False
                 st_dur = int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else 4
                 st_start = result[_sw_i + 2]
                 lp_method = str(result[_sw_i + 3]) if result[_sw_i + 3] is not None else "win_streak"
+                symbol_wide_on = bool(result[_sw_i + 4]) if result[_sw_i + 4] is not None else False
                 st_start_iso = (
                     timestamptz_wire_iso_et(st_start)
                     if hasattr(st_start, "isoformat")
                     else st_start
                 )
-                row["symbol_wide_loss_prevention"] = st_on
+                row["symbol_wide_loss_prevention"] = symbol_wide_on
+                row["symbol_wide_loss_prevention_hero"] = symbol_wide_hero
+                row["symbol_wide_monitor_follow"] = symbol_wide_monitor_follow
+                row["symbol_wide_monitor_follow_id"] = symbol_wide_monitor_follow_id
                 row["loss_prevention_method"] = lp_method
                 row["loss_prevention_duration"] = st_dur
                 row["simulated_trade_cooldown_duration"] = st_dur
@@ -138,8 +168,10 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 row["simulated_trade_loss_prevention"] = st_on
                 row["symbol_wide_cooldown_duration"] = st_dur
                 row["symbol_wide_cooldown_start_time"] = st_start_iso
+                conn.close()
                 return row
             else:
+                conn.close()
                 return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
 
     except Exception as e:

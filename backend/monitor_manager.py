@@ -2375,16 +2375,17 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "time_in_force": (result[41] if result[41] is not None else "fill_or_kill"),
         "order_type": (result[42] if result[42] is not None else "market"),
         "simulated_trade_loss_prevention": bool(result[43]) if result[43] is not None else False,
-        "loss_prevention_duration": int(result[44]) if result[44] is not None else 4,
+        "symbol_wide_loss_prevention": bool(result[44]) if result[44] is not None else False,
+        "loss_prevention_duration": int(result[45]) if result[45] is not None else 4,
         "simulated_loss_prevention_cooldown_start_time": (
-            timestamptz_wire_iso_et(result[45])
-            if hasattr(result[45], "isoformat")
-            else result[45]
+            timestamptz_wire_iso_et(result[46])
+            if hasattr(result[46], "isoformat")
+            else result[46]
         ),
-        "flip_sell_prob": bool(result[46]) if result[46] is not None else False,
-        "flip_sell_floor": bool(result[47]) if result[47] is not None else False,
-        "flip_sell_prob_mult": result[48],
-        "flip_sell_floor_mult": result[49],
+        "flip_sell_prob": bool(result[47]) if result[47] is not None else False,
+        "flip_sell_floor": bool(result[48]) if result[48] is not None else False,
+        "flip_sell_prob_mult": result[49],
+        "flip_sell_floor_mult": result[50],
     }
 
 
@@ -2436,6 +2437,7 @@ def _code_fallback_strategy_defaults() -> Dict[str, Any]:
         "time_in_force": "fill_or_kill",
         "order_type": "market",
         "simulated_trade_loss_prevention": False,
+        "symbol_wide_loss_prevention": False,
         "loss_prevention_duration": 4,
         "simulated_loss_prevention_cooldown_start_time": None,
         "flip_sell_prob": False,
@@ -2470,7 +2472,7 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             min_cooldown_timer, max_cooldown_timer,
             regime_monitor_enabled, regime_window,
             time_in_force, order_type,
-            simulated_trade_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
+            simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
         FROM {}
         WHERE name = %s
@@ -2500,7 +2502,7 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             min_cooldown_timer, max_cooldown_timer,
             regime_monitor_enabled, regime_window,
             time_in_force, order_type,
-            simulated_trade_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
+            simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
         FROM {}
         WHERE LOWER(name) = LOWER(%s)
@@ -2791,7 +2793,7 @@ def create_monitor():
                  min_cooldown_timer, max_cooldown_timer,
                  regime_monitor_enabled, regime_window,
                  time_in_force, order_type,
-                 simulated_trade_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
+                 simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
                  original_loss_prevention_cooldown_start_time, loss_prevention_cooldown_loss_count,
                  live_loss_prevention_cooldown_start_time,
                  flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult)
@@ -2799,7 +2801,7 @@ def create_monitor():
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -2873,6 +2875,7 @@ def create_monitor():
                 strategy_defaults.get('time_in_force') or 'fill_or_kill',
                 strategy_defaults.get('order_type') or 'market',
                 strategy_defaults.get('simulated_trade_loss_prevention', False),
+                strategy_defaults.get('symbol_wide_loss_prevention', False),
                 int(strategy_defaults.get('loss_prevention_duration', 4)),
                 None,  # simulated_loss_prevention_cooldown_start_time (sliding): NULL on new monitor
                 None,  # original_loss_prevention_cooldown_start_time

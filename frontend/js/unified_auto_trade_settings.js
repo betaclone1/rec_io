@@ -27,6 +27,24 @@
 
     var __uatModalMountPromise = null;
 
+    function uatBool(value) {
+      return value === true || value === 'true' || value === 1 || value === '1';
+    }
+
+    function uatSetSymbolWideHeroDisabled(isHero) {
+      var note = 'Hero monitors publish symbol-wide loss prevention and cannot follow it.';
+      ['symbolWideLossPreventionToggle', 'msSymbolWideLossPreventionToggle'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (!el) return;
+        var locked = !!isHero;
+        el.dataset.uatHeroMonitor = locked ? '1' : '0';
+        el.title = locked ? note : '';
+        if (locked) el.checked = false;
+        var row = el.closest ? el.closest('div') : null;
+        if (row) row.title = locked ? note : '';
+      });
+    }
+
     function uatWireFlipSellOnModal(modal) {
       if (!modal || modal.dataset.uatFlipSellWired === '1') return;
       modal.dataset.uatFlipSellWired = '1';
@@ -55,7 +73,8 @@
           method: 'lossPreventionMethodSelect',
           win: 'lossPreventionWinStreakGroup',
           time: 'lossPreventionTimeGroup',
-          includeSim: 'symbolWideLossPreventionToggle',
+          includeSim: 'includeSimulatedTradeLossPreventionToggle',
+          symbolWide: 'symbolWideLossPreventionToggle',
           duration: 'symbolWideCooldownDurationInput',
         },
         {
@@ -63,7 +82,8 @@
           method: 'msLossPreventionMethodSelect',
           win: 'msLossPreventionWinStreakGroup',
           time: 'msLossPreventionTimeGroup',
-          includeSim: 'msSymbolWideLossPreventionToggle',
+          includeSim: 'msIncludeSimulatedTradeLossPreventionToggle',
+          symbolWide: 'msSymbolWideLossPreventionToggle',
           duration: 'msSymbolWideCooldownDurationInput',
         },
       ].forEach(function (cfg) {
@@ -72,6 +92,7 @@
         var win = document.getElementById(cfg.win);
         var time = document.getElementById(cfg.time);
         var includeSim = document.getElementById(cfg.includeSim);
+        var symbolWide = document.getElementById(cfg.symbolWide);
         var duration = document.getElementById(cfg.duration);
         if (!tog || !method) return;
         var enabled = !!tog.checked;
@@ -85,6 +106,13 @@
           el.disabled = !(enabled && isTime);
           el.style.opacity = enabled && isTime ? '1' : '0.5';
         });
+        if (symbolWide) {
+          var heroLocked = symbolWide.dataset.uatHeroMonitor === '1';
+          if (heroLocked) symbolWide.checked = false;
+          symbolWide.disabled = !enabled || heroLocked;
+          symbolWide.style.opacity = enabled && !heroLocked ? '1' : '0.5';
+          symbolWide.style.cursor = enabled && !heroLocked ? 'pointer' : 'not-allowed';
+        }
       });
       var refreshLossPreventionBubbles = function () {
         var win = document.getElementById('autoEntryWinStreakThresholdSlider');
@@ -105,20 +133,13 @@
 
     function uatApplySymbolWideFromApi(data) {
       if (!data || typeof data !== 'object') return;
-      var includeSim =
-        data.simulated_trade_loss_prevention === true ||
-        data.simulated_trade_loss_prevention === 'true' ||
-        data.simulated_trade_loss_prevention === 1 ||
-        data.symbol_wide_loss_prevention === true ||
-        data.symbol_wide_loss_prevention === 'true' ||
-        data.symbol_wide_loss_prevention === 1;
+      var includeSim = uatBool(data.simulated_trade_loss_prevention);
+      var heroLocked = uatBool(data.symbol_wide_loss_prevention_hero);
+      var symbolWide = uatBool(data.symbol_wide_loss_prevention) && !heroLocked;
+      uatSetSymbolWideHeroDisabled(heroLocked);
       var on = data.loss_prevention_toggle !== undefined
-        ? (
-          data.loss_prevention_toggle === true ||
-          data.loss_prevention_toggle === 'true' ||
-          data.loss_prevention_toggle === 1
-        )
-        : includeSim;
+        ? uatBool(data.loss_prevention_toggle)
+        : (includeSim || symbolWide);
       var method = String(data.loss_prevention_method || (includeSim ? 'time' : 'win_streak')).trim().toLowerCase();
       if (method !== 'time') method = 'win_streak';
       var rawDur =
@@ -131,9 +152,11 @@
         rawDur != null && rawDur !== ''
           ? String(Math.max(1, parseInt(rawDur, 10) || 4))
           : '4';
-      var sw = document.getElementById('symbolWideLossPreventionToggle');
+      var includeSimEl = document.getElementById('includeSimulatedTradeLossPreventionToggle');
+      var symbolWideEl = document.getElementById('symbolWideLossPreventionToggle');
       var dur = document.getElementById('symbolWideCooldownDurationInput');
-      var msw = document.getElementById('msSymbolWideLossPreventionToggle');
+      var msIncludeSimEl = document.getElementById('msIncludeSimulatedTradeLossPreventionToggle');
+      var msSymbolWideEl = document.getElementById('msSymbolWideLossPreventionToggle');
       var mdur = document.getElementById('msSymbolWideCooldownDurationInput');
       var master = document.getElementById('autoEntryLossPreventionToggle');
       var msMaster = document.getElementById('msAutoEntryLossPreventionToggle');
@@ -143,24 +166,33 @@
       if (msMaster) msMaster.checked = on;
       if (methodEl) methodEl.value = method;
       if (msMethodEl) msMethodEl.value = method;
-      if (sw) sw.checked = includeSim;
+      if (includeSimEl) includeSimEl.checked = includeSim;
+      if (symbolWideEl) symbolWideEl.checked = symbolWide;
       if (dur) dur.value = hrs;
-      if (msw) msw.checked = includeSim;
+      if (msIncludeSimEl) msIncludeSimEl.checked = includeSim;
+      if (msSymbolWideEl) msSymbolWideEl.checked = symbolWide;
       if (mdur) mdur.value = hrs;
       uatLossPreventionSyncState();
     }
 
     function uatReadSymbolWideForPayload(isMomentumScalp) {
-      var swEl = isMomentumScalp
+      var includeSimEl = isMomentumScalp
+        ? document.getElementById('msIncludeSimulatedTradeLossPreventionToggle')
+        : document.getElementById('includeSimulatedTradeLossPreventionToggle');
+      var symbolWideEl = isMomentumScalp
         ? document.getElementById('msSymbolWideLossPreventionToggle')
         : document.getElementById('symbolWideLossPreventionToggle');
       var durEl = isMomentumScalp
         ? document.getElementById('msSymbolWideCooldownDurationInput')
         : document.getElementById('symbolWideCooldownDurationInput');
       var out = {};
-      if (swEl) {
-        out.simulated_trade_loss_prevention = swEl.checked;
-        out.symbol_wide_loss_prevention = swEl.checked;
+      if (includeSimEl) {
+        out.simulated_trade_loss_prevention = includeSimEl.checked;
+      }
+      if (symbolWideEl) {
+        out.symbol_wide_loss_prevention = symbolWideEl.dataset.uatHeroMonitor === '1'
+          ? false
+          : symbolWideEl.checked;
       }
       var masterEl = isMomentumScalp
         ? document.getElementById('msAutoEntryLossPreventionToggle')
@@ -189,6 +221,8 @@
         if (
           t.id !== 'symbolWideLossPreventionToggle' &&
           t.id !== 'msSymbolWideLossPreventionToggle' &&
+          t.id !== 'includeSimulatedTradeLossPreventionToggle' &&
+          t.id !== 'msIncludeSimulatedTradeLossPreventionToggle' &&
           t.id !== 'autoEntryLossPreventionToggle' &&
           t.id !== 'msAutoEntryLossPreventionToggle' &&
           t.id !== 'lossPreventionMethodSelect' &&

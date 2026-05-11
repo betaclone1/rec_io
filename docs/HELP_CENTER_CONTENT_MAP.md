@@ -98,8 +98,8 @@ Each Help Center article should carry:
 - id: `using-product-monitor-loss-prevention`
 - slug: `using-product/monitor-loss-prevention`
 - audience: `trader`
-- summary: How the monitor settings loss prevention toggle, method picker, win-streak threshold, time duration, and Include Simulated Trades controls affect automated entry sizing.
-- keywords: `loss prevention`, `monitor settings`, `win streak`, `cooldown`, `simulated trades`, `position sizing`
+- summary: How the monitor settings loss prevention toggle, method picker, win-streak threshold, time duration, Include Simulated Trades, and symbol-wide LP controls affect automated entry sizing.
+- keywords: `loss prevention`, `symbol-wide loss prevention`, `monitor settings`, `win streak`, `cooldown`, `simulated trades`, `position sizing`
 - related_docs:
   - `docs/SYSTEM_BIBLE.md`
   - `docs/MASTER_DB_SCHEMA_REFERENCE.md`
@@ -121,6 +121,7 @@ Each Help Center article should carry:
 - Which pages are real-time versus query-on-load
 - When should I choose Win Streak versus Time loss prevention
 - What does Include Simulated Trades change
+- What does Use symbol-wide loss prevention change
 
 #### Article: Help Center Search and Navigation
 - id: `using-product-help-center-navigation`

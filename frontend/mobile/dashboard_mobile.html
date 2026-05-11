@@ -2624,7 +2624,8 @@
       return String(value == null ? '' : value)
         .trim()
         .toLowerCase()
-        .replace(/-/g, '_');
+        .replace(/-/g, '_')
+        .replace(/_symbol_wide$/, '');
     }
 
     function parseApiIsoTimestampMs(raw) {
@@ -2822,7 +2823,18 @@
       );
       const state = simCooldownTooltipStateLabel(monitor, swLive, lpKey, lossPreventionRaw);
       const anchor = formatOriginalSimCooldownStartSimple(monitor);
-      return [`State: ${state}`, `Last loss: ${anchor}`, `Losses: ${lossCnt}`].join('\n');
+      const rawKey = String(lossPreventionRaw == null ? '' : lossPreventionRaw)
+        .trim()
+        .toLowerCase()
+        .replace(/-/g, '_');
+      const isSymbolWide =
+        rawKey.endsWith('_symbol_wide') ||
+        isTruthyFlag(monitor.symbol_wide_loss_prevention_active ?? monitor.symbolWideLossPreventionActive);
+      const lines = [`State: ${state}`, `Last loss: ${anchor}`, `Losses: ${lossCnt}`];
+      if (isSymbolWide) {
+        lines.push('Source: Symbol-wide loss prevention');
+      }
+      return lines.join('\n');
     }
 
     function resolveAllocationBadgeState(monitor) {

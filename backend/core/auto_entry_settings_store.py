@@ -233,9 +233,9 @@ def apply_auto_entry_settings(
         update_fields.append("loss_prevention_method = %s")
         update_values.append(method)
 
-    sim_lp_in = "simulated_trade_loss_prevention" in data or "symbol_wide_loss_prevention" in data
+    sim_lp_in = "simulated_trade_loss_prevention" in data
     if sim_lp_in:
-        sw_raw = data.get("simulated_trade_loss_prevention", data.get("symbol_wide_loss_prevention"))
+        sw_raw = data.get("simulated_trade_loss_prevention")
         sw_b = _boolish(sw_raw)
         update_fields.append("simulated_trade_loss_prevention = %s")
         update_values.append(sw_b)
@@ -259,6 +259,10 @@ def apply_auto_entry_settings(
                     "status": "error",
                     "message": "loss_prevention_duration must be at least 1 hour when simulated trade loss prevention is enabled",
                 }
+
+    if "symbol_wide_loss_prevention" in data:
+        update_fields.append("symbol_wide_loss_prevention = %s")
+        update_values.append(_boolish(data["symbol_wide_loss_prevention"]))
 
     if "loss_prevention_duration" in data or "symbol_wide_cooldown_duration" in data:
         raw_dur = data.get("loss_prevention_duration", data.get("symbol_wide_cooldown_duration"))
@@ -433,7 +437,7 @@ def apply_auto_entry_settings(
                min_volume, win_streak_threshold, performance_based_allocation,
                momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                regime_monitor_enabled, regime_window, stop_loss_price,
-               time_in_force, order_type
+               time_in_force, order_type, symbol_wide_loss_prevention
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -476,12 +480,13 @@ def apply_auto_entry_settings(
         "stop_loss_price": float(updated_result[23]) if updated_result[23] is not None else 0.0,
         "time_in_force": str(updated_result[24]) if updated_result[24] is not None else "fill_or_kill",
         "order_type": str(updated_result[25]) if updated_result[25] is not None else "market",
+        "symbol_wide_loss_prevention": bool(updated_result[26]) if updated_result[26] is not None else False,
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[26]) if updated_result[26] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[27]) if updated_result[27] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[28]) if updated_result[28] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[29]) if updated_result[29] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[27]) if updated_result[27] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[28]) if updated_result[28] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[29]) if updated_result[29] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[30]) if updated_result[30] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None

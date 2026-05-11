@@ -8639,7 +8639,7 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ### Table: `live_data.live_symbol_status`
 
-**Population:** Trigger-driven from `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp` (latest row per symbol via upsert on `symbol`).
+**Population:** Trigger-driven from `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp` (latest row per symbol via upsert on `symbol`). Symbol-wide loss prevention fields are synced from configured user `0001` hero monitors whose `name` matches `monitor_follow`.
 
 #### Columns
 
@@ -8674,6 +8674,15 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 | `prev_day_avg_volatility_percentile` | `numeric(5,1)` | YES | - | |
 | `prev_day_avg_movement_percentile` | `numeric(5,1)` | YES | - | |
 | `daily_update` | `text` | YES | - | |
+| `monitor_follow` | `text` | YES | - | Hero monitor name from `users_0001.monitor_list_0001.name` for symbol-wide LP sync. |
+| `monitor_follow_id` | `integer(32)` | YES | - | Resolved/cached hero monitor id for `monitor_follow`. |
+| `loss_prevention_state` | `character varying(50)` | YES | 'off'::character varying | Symbol-wide LP state copied from the hero monitor; non-`off` values carry `_symbol_wide` suffix for trade-log attribution. |
+| `loss_prevention_duration` | `integer(32)` | YES | 4 | Symbol-wide LP cooldown duration in hours, copied from the hero monitor. |
+| `simulated_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Symbol-wide simulated-loss cooldown anchor copied from the hero monitor. |
+| `original_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Symbol-wide original tier anchor copied from the hero monitor. |
+| `loss_prevention_cooldown_loss_count` | `integer(32)` | YES | 0 | Symbol-wide simulated-loss tier count copied from the hero monitor. |
+| `live_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Symbol-wide live-loss cooldown anchor copied from the hero monitor. |
+| `loss_prevention_updated_at` | `timestamp with time zone` | YES | CURRENT_TIMESTAMP | Last sync time for symbol-wide LP fields. |
 
 #### Constraints
 
@@ -10271,6 +10280,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `time_in_force` | `text` | NO | fill_or_kill | Kalshi **time in force** for auto-entry orders: `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled`. Migration `20260426_1600_monitor_trades_execution_settings`. |
 | `order_type` | `text` | NO | market | Execution pricing policy `limit` or `market` (Kalshi request still uses limit pricing where applicable). Same migration. |
 | `simulated_trade_loss_prevention` | `boolean` | YES | false | Time-method option for including simulated trades in LP tiering. |
+| `symbol_wide_loss_prevention` | `boolean` | YES | false | When true, monitor effective LP state follows `live_data.live_symbol_status` for its symbol whenever the symbol-wide state is not `off`. |
 | `loss_prevention_duration` | `integer(32)` | YES | 4 | Time-method cooldown duration in hours. |
 | `simulated_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Simulated cooldown anchor. |
 | `original_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Original tier anchor for LP window / counts. |
@@ -10492,6 +10502,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `time_in_force` | `text` | NO | 'fill_or_kill' | Kalshi TIF default for strategy-sourced monitor settings. CHECK per table: `{table}_time_in_force_chk`. Migration `20260501_1200_strategy_list_unified_auto_trade_columns`. |
 | `order_type` | `text` | NO | 'market' | `limit` or `market`. CHECK per table: `{table}_order_type_policy_chk`. Same migration. |
 | `simulated_trade_loss_prevention` | `boolean` | YES | false | Strategy Time-method default for including simulated trades in LP tiering. |
+| `symbol_wide_loss_prevention` | `boolean` | YES | false | Strategy default for whether new monitors follow symbol-wide LP state. |
 | `loss_prevention_duration` | `integer(32)` | YES | 4 | Strategy Time-method duration in hours. |
 | `simulated_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | |
 | `original_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | |

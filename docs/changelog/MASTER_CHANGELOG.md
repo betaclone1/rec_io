@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-11 — Release v3.5.3: Symbol-wide loss prevention
+
+**Summary**
+- **Release: v3.5.3**
+- **Behavior:** Adds symbol-wide loss prevention where `live_data.live_symbol_status` mirrors configured `user_0001` hero monitor LP state/cooldowns per symbol, and opted-in monitors use that state whenever it is not `off`.
+- **Trade attribution:** Symbol-wide effective states carry `_symbol_wide` in `loss_prevention_state` for trade logs while UI labels continue to display the normal LP state text; hover tooltips show the symbol-wide source.
+- **UI/API:** Monitor settings split Time-method `simulated_trade_loss_prevention` from the independent `symbol_wide_loss_prevention` checkbox.
+- **UI guardrails:** Hero monitors publish symbol-wide LP and cannot enable the follower checkbox; dashboard tooltips identify symbol-wide LP without exposing the followed monitor name.
+- **Database:** Reversible migration **`20260511_1455_symbol_wide_loss_prevention`** adds symbol-wide LP fields to `live_data.live_symbol_status` and adds independent `symbol_wide_loss_prevention` defaults to monitor/strategy tables.
+- **Realtime:** Hero monitor LP writes update `live_symbol_status`, using the existing DB-change / Redis / WebSocket stream to notify UIs and runtime readers.
+- **Plans:** `symbol-wide-lp_01a6b111.plan.md`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm `scripts/migrations/20260511_1455_symbol_wide_loss_prevention.up.sql` and `.down.sql` are present.
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `monitor_manager`, `auto_entry_supervisor`, `active_trade_supervisor`, and `trade_manager`; confirm no missing-column errors for `symbol_wide_loss_prevention` or `live_symbol_status.loss_prevention_state`.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.5.3`
+
+---
+
 ## 2026-05-11 — Release v3.5.2: Loss prevention consolidation
 
 **Summary**
@@ -19,16 +46,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** Session work (loss prevention consolidation and time-based LP rename); no single canonical `Status: done` `.cursor/plans/*.md` plan slug in-repo for this batch.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm `scripts/migrations/20260511_1035_loss_prevention_consolidation.up.sql` and `.down.sql` are present.
-- [ ] Apply pending migrations from repo root:  
+- [x] Migration pre-flight: confirm `scripts/migrations/20260511_1035_loss_prevention_consolidation.up.sql` and `.down.sql` are present.
+- [x] Apply pending migrations from repo root:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health and logs: health on `3000`, `8001`, and `3050`; `venv/bin/supervisorctl -c backend/supervisord.conf status`; review `trade_manager_0001`, `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for errors after process start.
-- [ ] Record release in DB:  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh`
+- [x] Verify health and logs: health on `3000`, `8001`, and `3050`; `venv/bin/supervisorctl -c backend/supervisord.conf status`; review `trade_manager_0001`, `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for errors after process start.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.5.2`
 
 ---

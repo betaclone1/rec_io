@@ -4773,25 +4773,21 @@ def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any
 def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int, bool]:
     """Return (contracts, loss_prevention_trade_payload). Mirrors AES fractional sim tiers."""
     try:
+        from backend.core.symbol_wide_loss_prevention import (
+            is_loss_prevention_sizing_state,
+            normalize_loss_prevention_state_for_sizing,
+            resolve_effective_loss_prevention_state,
+        )
+
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT loss_prevention_state, loss_prevention_toggle
-                FROM {legacy_users_monitor_list(ctx_user())}
-                WHERE id = %s
-                """,
-                (ctx_mid(),),
+            loss_prevention = resolve_effective_loss_prevention_state(
+                cursor,
+                legacy_users_monitor_list(ctx_user()),
+                str(ctx_mid()),
             )
-            result = cursor.fetchone()
         conn.close()
-        if not result:
-            return flip_count, False
-        loss_prevention, lp_toggle = result[0], result[1]
-        toggle_on = bool(lp_toggle) if lp_toggle is not None else True
-        if not toggle_on:
-            return flip_count, False
-        lp = (loss_prevention or "").strip().lower() if isinstance(loss_prevention, str) else ""
+        lp = normalize_loss_prevention_state_for_sizing(loss_prevention)
         if lp in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
             if lp in ("sim_loss_1c", "live_loss_1c"):
                 return 1, True
@@ -4802,7 +4798,7 @@ def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int,
             return 1, True
         if lp in ("one_contract", "win_streak_one_contract"):
             return 1, True
-        return flip_count, False
+        return flip_count, is_loss_prevention_sizing_state(loss_prevention)
     except Exception as e:
         log_debug(f"[FLIP SELL] loss_prevention read failed: {e}")
         return flip_count, False

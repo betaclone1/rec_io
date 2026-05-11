@@ -56,6 +56,10 @@ from backend.core.time_based_loss_prevention import (
     recompute_monitor_loss_prevention,
     startup_reconcile_simulated_trade_for_tenant,
 )
+from backend.core.symbol_wide_loss_prevention import (
+    is_loss_prevention_sizing_state,
+    resolve_effective_loss_prevention_state,
+)
 from backend.core.tenant_legacy_sql import legacy_users_sim_trade_lp_cycle_ledger
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 
@@ -397,9 +401,14 @@ def _fetch_monitor_state(cursor, monitor_key):
         )
         row = cursor.fetchone()
         if row:
+            loss_prevention = resolve_effective_loss_prevention_state(
+                cursor,
+                _tm_monitor_list_table(),
+                monitor_id,
+            )
             return {
-                "loss_prevention": row[0],
-                "loss_prevention_state": row[0],
+                "loss_prevention": loss_prevention,
+                "loss_prevention_state": loss_prevention,
                 "multiplier": row[1],
                 "test_filter": row[2],
                 "loss_prevention_toggle": row[3],
@@ -2462,7 +2471,13 @@ def insert_trade(trade):
                 # Handle loss_prevention (boolean) + loss_prevention_state (monitor string snapshot)
                 trade_loss_prevention = trade.get('loss_prevention')
                 loss_prevention_state_for_db = None
-                if monitor_state and monitor_state.get("loss_prevention") is not None:
+                _payload_lp_state = trade.get("loss_prevention_state")
+                if isinstance(_payload_lp_state, str) and _payload_lp_state.strip():
+                    loss_prevention_state_for_db = _payload_lp_state.strip()
+                elif _payload_lp_state is not None:
+                    _s = str(_payload_lp_state).strip()
+                    loss_prevention_state_for_db = _s if _s else None
+                if loss_prevention_state_for_db is None and monitor_state and monitor_state.get("loss_prevention") is not None:
                     _raw_lp = monitor_state.get("loss_prevention")
                     if isinstance(_raw_lp, str) and _raw_lp.strip():
                         loss_prevention_state_for_db = _raw_lp.strip()
@@ -2483,15 +2498,8 @@ def insert_trade(trade):
                             # Monitor stores loss_prevention as string (win_streak_one_contract, sim_loss_*, off, new, …)
                             monitor_loss_prevention = monitor_state.get('loss_prevention')
                             if isinstance(monitor_loss_prevention, str):
-                                lpv = monitor_loss_prevention.strip().lower()
-                                loss_prevention_flag = lpv in (
-                                    "one_contract",
-                                    "win_streak_one_contract",
-                                    "symbol_one_contract",
-                                    "sim_loss_50",
-                                    "sim_loss_25",
-                                    "sim_loss_1c",
-                                    "live_loss_1c",
+                                loss_prevention_flag = is_loss_prevention_sizing_state(
+                                    monitor_loss_prevention
                                 )
                             else:
                                 loss_prevention_flag = _normalize_boolean_flag(monitor_loss_prevention)

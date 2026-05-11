@@ -106,6 +106,11 @@ from backend.core.time_based_loss_prevention import (
     recompute_monitor_loss_prevention,
     startup_reconcile_simulated_trade_for_tenant,
 )
+from backend.core.symbol_wide_loss_prevention import (
+    is_loss_prevention_sizing_state,
+    normalize_loss_prevention_state_for_sizing,
+    resolve_effective_loss_prevention_state,
+)
 from backend.core.strike_pipeline_health import (
     evaluate_pipeline_gate_conn,
     floor_strike_vs_spot_check,
@@ -2462,43 +2467,19 @@ def get_current_multiplier():
             conn.close()
 
 def get_loss_prevention_state():
-    """Get loss_prevention state from monitor-specific configuration"""
+    """Get effective loss_prevention state from monitor configuration and symbol-wide override."""
     conn = None
     try:
         import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            cursor.execute(
-                f"SELECT loss_prevention_state, loss_prevention_toggle FROM {_aes_monitor_list_table()} WHERE id = %s",
-                (ctx_mid(),),
+            loss_prevention = resolve_effective_loss_prevention_state(
+                cursor,
+                _aes_monitor_list_table(),
+                str(ctx_mid()),
             )
-            result = cursor.fetchone()
-            if result:
-                loss_prevention, lp_toggle = result[0], result[1]
-                toggle_on = bool(lp_toggle) if lp_toggle is not None else True
-                if not toggle_on:
-                    log_debug(
-                        f"[AUTO ENTRY] Loss prevention toggle off for monitor {ctx_mid()}; "
-                        f"ignoring loss_prevention={loss_prevention!r}"
-                    )
-                    return "off"
-                if isinstance(loss_prevention, str):
-                    lpn = loss_prevention.strip().lower()
-                    if lpn in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
-                        log_debug(
-                            f"[AUTO ENTRY] Simulated-trade loss prevention tier {lpn} for monitor {ctx_mid()}"
-                        )
-                        return lpn
-                    if lpn == "symbol_one_contract":
-                        log_debug(
-                            f"[AUTO ENTRY] Legacy symbol_one_contract LP active for monitor {ctx_mid()}"
-                        )
-                        return "symbol_one_contract"
-                log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {ctx_mid()}: {loss_prevention}")
-                return loss_prevention
-            else:
-                log_debug(f"No monitor configuration found for monitor {ctx_mid()}")
-                return "off"  # Default to off if not found
+            log(f"[AUTO ENTRY] Effective loss prevention state for monitor {ctx_mid()}: {loss_prevention}")
+            return loss_prevention
     except Exception as e:
         log(f"[AUTO ENTRY] Error loading loss_prevention from monitor {ctx_mid()}: {e}")
         return "off"  # Default to off on error
@@ -2672,7 +2653,8 @@ def trigger_auto_entry_trade(strike_data):
         
         # Check loss prevention state and override position size if needed
         loss_prevention = get_loss_prevention_state()
-        if loss_prevention in (
+        loss_prevention_base = normalize_loss_prevention_state_for_sizing(loss_prevention)
+        if loss_prevention_base in (
             "one_contract",
             "win_streak_one_contract",
             "symbol_one_contract",
@@ -2681,11 +2663,11 @@ def trigger_auto_entry_trade(strike_data):
         ):
             log(f"[AUTO ENTRY] 🛡️ Loss prevention active - overriding position size from {position_size} to 1 contract")
             position_size = 1
-        elif loss_prevention == "sim_loss_25":
+        elif loss_prevention_base == "sim_loss_25":
             new_sz = max(1, int(round(position_size * 0.25)))
             log(f"[AUTO ENTRY] 🛡️ Sim loss 25% tier — position size {position_size} -> {new_sz}")
             position_size = new_sz
-        elif loss_prevention == "sim_loss_50":
+        elif loss_prevention_base == "sim_loss_50":
             new_sz = max(1, int(round(position_size * 0.5)))
             log(f"[AUTO ENTRY] 🛡️ Sim loss 50% tier — position size {position_size} -> {new_sz}")
             position_size = new_sz
@@ -2771,16 +2753,8 @@ def trigger_auto_entry_trade(strike_data):
             "monitor": f"mon_{ctx_user()}_{ctx_mid()}",
             "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "auto_entry",
-            "loss_prevention": loss_prevention
-            in (
-                "one_contract",
-                "win_streak_one_contract",
-                "symbol_one_contract",
-                "sim_loss_1c",
-                "live_loss_1c",
-                "sim_loss_25",
-                "sim_loss_50",
-            ),
+            "loss_prevention": is_loss_prevention_sizing_state(loss_prevention),
+            "loss_prevention_state": loss_prevention,
             "multiplier": get_current_multiplier(),
             "paper_trade": paper_trade
         }

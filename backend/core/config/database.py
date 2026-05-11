@@ -1228,6 +1228,7 @@ def init_database():
                 test_filter BOOLEAN DEFAULT FALSE,
                 prob_adj NUMERIC(5,2) DEFAULT 5.00,
                 simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE,
+                symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
                 loss_prevention_duration INTEGER DEFAULT 4,
                 simulated_loss_prevention_cooldown_start_time TIMESTAMPTZ,
                 original_loss_prevention_cooldown_start_time TIMESTAMPTZ,
@@ -1480,7 +1481,16 @@ def init_database():
                 prev_day_avg_momentum_percentile DECIMAL(5,1),
                 prev_day_avg_volatility_percentile DECIMAL(5,1),
                 prev_day_avg_movement_percentile DECIMAL(5,1),
-                daily_update TEXT
+                daily_update TEXT,
+                monitor_follow TEXT,
+                monitor_follow_id INTEGER,
+                loss_prevention_state VARCHAR(50) DEFAULT 'off',
+                loss_prevention_duration INTEGER DEFAULT 4,
+                simulated_loss_prevention_cooldown_start_time TIMESTAMPTZ,
+                original_loss_prevention_cooldown_start_time TIMESTAMPTZ,
+                loss_prevention_cooldown_loss_count INTEGER DEFAULT 0,
+                live_loss_prevention_cooldown_start_time TIMESTAMPTZ,
+                loss_prevention_updated_at TIMESTAMPTZ DEFAULT CURRENT_TIMESTAMP
             );
         """))
 
@@ -2271,6 +2281,7 @@ def init_database():
                 time_in_force TEXT NOT NULL DEFAULT 'fill_or_kill',
                 order_type TEXT NOT NULL DEFAULT 'market',
                 simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE,
+                symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
                 loss_prevention_duration INTEGER DEFAULT 4,
                 simulated_loss_prevention_cooldown_start_time TIMESTAMPTZ,
                 original_loss_prevention_cooldown_start_time TIMESTAMPTZ,
@@ -2995,7 +3006,7 @@ def init_database():
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_ml_schema}'
                           AND table_name = '{_ml_table}'
-                          AND column_name = 'symbol_wide_loss_prevention'
+                          AND column_name = 'simulated_trade_loss_prevention'
                     ) THEN
                         EXECUTE format('ALTER TABLE %I.%I ADD COLUMN simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
                         EXECUTE format('UPDATE %I.%I SET simulated_trade_loss_prevention = FALSE WHERE simulated_trade_loss_prevention IS NULL', '{_ml_schema}', '{_ml_table}');
@@ -3178,7 +3189,7 @@ def init_database():
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_sl_schema}'
                           AND table_name = '{_sl_table}'
-                          AND column_name = 'simulated_trade_loss_prevention'
+                          AND column_name = 'symbol_wide_loss_prevention'
                     ) AND NOT EXISTS (
                         SELECT 1 FROM information_schema.columns
                         WHERE table_schema = '{_sl_schema}'

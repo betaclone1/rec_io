@@ -69,6 +69,7 @@ This section is the canonical feature inventory for Help Center IA.
 - Create, activate/deactivate, and supervise monitor configurations.
 - Per-monitor process lifecycle under supervisor and monitor manager.
 - Per-monitor loss prevention settings use one master toggle, a method selector (`win_streak` or `time`), and method-specific controls.
+- Monitors can also opt into symbol-wide loss prevention, following the configured hero monitor state for their symbol when that state is active.
 - Related docs:
   - `docs/MONITORS_LIST_INFRASTRUCTURE.md`
   - `docs/ARCHITECTURE.md`
@@ -76,6 +77,7 @@ This section is the canonical feature inventory for Help Center IA.
 ### D. Automated trading lifecycle
 - Signal/condition evaluation to open trades.
 - Loss prevention can throttle sizing by win-streak threshold or by time-based cooldowns from live and optional simulated losses.
+- Symbol-wide loss prevention mirrors configured `user_0001` hero monitor cooldown state into `live_data.live_symbol_status`; opted-in monitors use that state for effective sizing and trade-log attribution.
 - Trade lifecycle management (open, manage, close).
 - Order execution path to external trading venue.
 - Related docs:
@@ -200,6 +202,7 @@ Recommended tags for future UI search indexing:
 - `monitor`
 - `auto-entry`
 - `loss prevention`
+- `symbol-wide loss prevention`
 - `win streak`
 - `cooldown`
 - `trade manager`

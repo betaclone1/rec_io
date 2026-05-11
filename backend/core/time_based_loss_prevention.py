@@ -14,6 +14,10 @@ from typing import Any, List, Optional, Sequence, Tuple
 from zoneinfo import ZoneInfo
 
 from backend.core.auto_entry_settings_store import loss_prevention_value_for_streak
+from backend.core.symbol_wide_loss_prevention import (
+    configured_symbol_wide_monitor_ids,
+    sync_symbol_wide_loss_prevention_from_monitor,
+)
 from backend.core.tenant_legacy_sql import legacy_users_sim_trade_lp_cycle_ledger
 _log = logging.getLogger(__name__)
 
@@ -187,7 +191,7 @@ def _expire_live_trade_cooldown_if_needed(
     cursor,
     monitor_list_qualified: str,
     monitor_id: str,
-) -> None:
+) -> bool:
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
@@ -205,6 +209,7 @@ def _expire_live_trade_cooldown_if_needed(
         """,
         (monitor_id,),
     )
+    return bool(getattr(cursor, "rowcount", 0) or 0)
 
 
 def _expire_simulated_trade_state_if_needed(
@@ -213,7 +218,7 @@ def _expire_simulated_trade_state_if_needed(
     monitor_id: str,
     *,
     now_est: datetime,
-) -> None:
+) -> bool:
     del now_est  # Expire using DB ``NOW()`` only (host OS / psycopg2 tz must not affect this).
     cursor.execute(
         f"""
@@ -235,6 +240,7 @@ def _expire_simulated_trade_state_if_needed(
         """,
         (monitor_id,),
     )
+    return bool(getattr(cursor, "rowcount", 0) or 0)
 
 
 def recompute_monitor_loss_prevention(
@@ -290,6 +296,7 @@ def recompute_monitor_loss_prevention(
         """,
         (new_lp, monitor_id),
     )
+    sync_symbol_wide_loss_prevention_from_monitor(cursor, monitor_list_qualified, monitor_id)
     return new_lp
 
 
@@ -397,8 +404,8 @@ def apply_sim_trade_cycle_loss(
     if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time" and bool(row[2])):
         return False
 
-    _expire_live_trade_cooldown_if_needed(cursor, monitor_list_qualified, mid_str)
-    _expire_simulated_trade_state_if_needed(
+    live_expired = _expire_live_trade_cooldown_if_needed(cursor, monitor_list_qualified, mid_str)
+    sim_expired = _expire_simulated_trade_state_if_needed(
         cursor, monitor_list_qualified, mid_str, now_est=datetime.now(EST)
     )
 
@@ -406,6 +413,8 @@ def apply_sim_trade_cycle_loss(
         cursor, trades_simulated_qualified, trades_qualified, monitor_key, cycle_date, weekly_cycle
     )
     if contribution <= 0:
+        if live_expired or sim_expired:
+            recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid_str)
         return False
 
     cursor.execute(
@@ -706,6 +715,7 @@ def full_replay_monitor_sim_lp_state(
             loss_anchor_ts=anch,
             from_replay=True,
         )
+    recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
 
 
 def startup_reconcile_simulated_trade_for_tenant(
@@ -739,6 +749,12 @@ def startup_reconcile_simulated_trade_for_tenant(
                 tenant_slot,
                 mid,
             )
+
+        replayed = set(ids)
+        for mid in configured_symbol_wide_monitor_ids(cursor, monitor_list_qualified):
+            if mid in replayed:
+                continue
+            recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid)
     finally:
         cursor.execute("SELECT pg_advisory_unlock(%s)", (adv_key,))
 
