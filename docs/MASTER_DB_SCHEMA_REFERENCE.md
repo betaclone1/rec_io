@@ -10241,7 +10241,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_volume` | `integer(32)` | YES | 1000 | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `win_streak` | `integer(32)` | YES | 0 | |
-| `loss_prevention` | `character varying(50)` | YES | 'none'::character varying | |
+| `loss_prevention_state` | `character varying(50)` | YES | 'none'::character varying | Monitor LP state token; renamed from `loss_prevention` by migration `20260511_1035_loss_prevention_consolidation`. |
 | `win_streak_threshold` | `integer(32)` | YES | 22 | |
 | `last_processed_cycle` | `character varying(100)` | YES | - | |
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |
@@ -10250,7 +10250,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
-| `loss_prevention_toggle` | `boolean` | YES | true | |
+| `loss_prevention_toggle` | `boolean` | YES | true | Master enable for any monitor loss-prevention method. |
+| `loss_prevention_method` | `text` | YES | win_streak | Loss-prevention algorithm: `win_streak` or `time`. |
 | `max_probability` | `numeric(5,2)` | YES | 100.00 | |
 | `current_contract` | `text` | YES | - | |
 | `current_weekly_cycle` | `smallint(16)` | YES | - | |
@@ -10269,12 +10270,12 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `flip_sell_floor_mult` | `character varying(32)` | YES | - | Same for floor stops. |
 | `time_in_force` | `text` | NO | fill_or_kill | Kalshi **time in force** for auto-entry orders: `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled`. Migration `20260426_1600_monitor_trades_execution_settings`. |
 | `order_type` | `text` | NO | market | Execution pricing policy `limit` or `market` (Kalshi request still uses limit pricing where applicable). Same migration. |
-| `simulated_trade_loss_prevention` | `boolean` | YES | false | Per-monitor **paper/UAT** symbol-wide loss prevention (canonical name after migration **`20260509_2100`**; supersedes `symbol_wide_loss_prevention`). Greenfield shape in **`database.py`** `CREATE TABLE users.monitor_list_0001`. |
-| `simulated_trade_cooldown_duration` | `integer(32)` | YES | 4 | Cooldown duration when simulated LP is active. |
-| `simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Simulated cooldown anchor. |
-| `original_simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Original tier anchor for LP window / counts. |
-| `simulated_trade_cooldown_loss_count` | `integer(32)` | NO | 0 | Loss count within LP tier. |
-| `live_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Live (non–paper) loss-prevention cooldown anchor. Migration **`20260510_1200`** on legacy catalogs; greenfield **`database.py` CREATE**. |
+| `simulated_trade_loss_prevention` | `boolean` | YES | false | Time-method option for including simulated trades in LP tiering. |
+| `loss_prevention_duration` | `integer(32)` | YES | 4 | Time-method cooldown duration in hours. |
+| `simulated_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Simulated cooldown anchor. |
+| `original_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Original tier anchor for LP window / counts. |
+| `loss_prevention_cooldown_loss_count` | `integer(32)` | NO | 0 | Loss count within LP tier. |
+| `live_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Live (non–paper) loss-prevention cooldown anchor. Migration **`20260510_1200`** on legacy catalogs; greenfield **`database.py` CREATE**. |
 
 #### Constraints
 
@@ -10470,8 +10471,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_scalp_trailing_stop_amount` | `numeric(5,2)` | YES | 0.10 | |
 | `momentum_scalp_profit_target` | `numeric(5,2)` | YES | 0.99 | |
 | `win_streak_threshold` | `integer(32)` | YES | 22 | |
-| `loss_prevention` | `character varying(50)` | YES | 'none'::character varying | |
-| `loss_prevention_toggle` | `boolean` | YES | true | |
+| `loss_prevention_state` | `character varying(50)` | YES | 'none'::character varying | Strategy default LP state token; renamed from `loss_prevention` by migration `20260511_1035_loss_prevention_consolidation`. |
+| `loss_prevention_toggle` | `boolean` | YES | true | Master default for any monitor LP method. |
+| `loss_prevention_method` | `text` | YES | win_streak | Strategy default LP algorithm: `win_streak` or `time`. |
 | `performance_based_allocation` | `boolean` | NO | false | |
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
 | `paper_trade` | `boolean` | YES | false | |
@@ -10489,12 +10491,12 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `regime_window` | `text` | YES | '30d' | Regime evaluation window token (e.g. `30d`). |
 | `time_in_force` | `text` | NO | 'fill_or_kill' | Kalshi TIF default for strategy-sourced monitor settings. CHECK per table: `{table}_time_in_force_chk`. Migration `20260501_1200_strategy_list_unified_auto_trade_columns`. |
 | `order_type` | `text` | NO | 'market' | `limit` or `market`. CHECK per table: `{table}_order_type_policy_chk`. Same migration. |
-| `simulated_trade_loss_prevention` | `boolean` | YES | false | Strategy default; mirrors `monitor_list_*` (**`20260509_2100`**). Greenfield **`database.py`** `CREATE TABLE users.strategy_list_0001`. |
-| `simulated_trade_cooldown_duration` | `integer(32)` | YES | 4 | |
-| `simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | |
-| `original_simulated_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | |
-| `simulated_trade_cooldown_loss_count` | `integer(32)` | NO | 0 | |
-| `live_trade_cooldown_start_time` | `timestamp with time zone` | YES | - | Live-trade LP cooldown anchor; same as monitor list. |
+| `simulated_trade_loss_prevention` | `boolean` | YES | false | Strategy Time-method default for including simulated trades in LP tiering. |
+| `loss_prevention_duration` | `integer(32)` | YES | 4 | Strategy Time-method duration in hours. |
+| `simulated_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | |
+| `original_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | |
+| `loss_prevention_cooldown_loss_count` | `integer(32)` | NO | 0 | |
+| `live_loss_prevention_cooldown_start_time` | `timestamp with time zone` | YES | - | Live-trade LP cooldown anchor; same as monitor list. |
 | `flip_sell_prob` | `boolean` | NO | false | Flip-sell sizing for probability stops. |
 | `flip_sell_floor` | `boolean` | NO | false | Flip-sell sizing for floor stops. |
 | `flip_sell_prob_mult` | `character varying(32)` | YES | - | Flip-sell token for prob stops (e.g. `1x`). |

@@ -102,7 +102,7 @@ from backend.core.port_config import (
     unified_auto_entry_supervisor_service_name,
 )
 from backend.core.config.database import get_postgresql_connection as get_db_connection
-from backend.core.symbol_wide_loss_prevention import (
+from backend.core.time_based_loss_prevention import (
     recompute_monitor_loss_prevention,
     startup_reconcile_simulated_trade_for_tenant,
 )
@@ -2469,13 +2469,19 @@ def get_loss_prevention_state():
         conn = get_db_connection()
         with conn.cursor() as cursor:
             cursor.execute(
-                f"SELECT loss_prevention, loss_prevention_toggle FROM {_aes_monitor_list_table()} WHERE id = %s",
+                f"SELECT loss_prevention_state, loss_prevention_toggle FROM {_aes_monitor_list_table()} WHERE id = %s",
                 (ctx_mid(),),
             )
             result = cursor.fetchone()
             if result:
                 loss_prevention, lp_toggle = result[0], result[1]
                 toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+                if not toggle_on:
+                    log_debug(
+                        f"[AUTO ENTRY] Loss prevention toggle off for monitor {ctx_mid()}; "
+                        f"ignoring loss_prevention={loss_prevention!r}"
+                    )
+                    return "off"
                 if isinstance(loss_prevention, str):
                     lpn = loss_prevention.strip().lower()
                     if lpn in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
@@ -2488,12 +2494,6 @@ def get_loss_prevention_state():
                             f"[AUTO ENTRY] Legacy symbol_one_contract LP active for monitor {ctx_mid()}"
                         )
                         return "symbol_one_contract"
-                if not toggle_on:
-                    log_debug(
-                        f"[AUTO ENTRY] Loss prevention toggle off for monitor {ctx_mid()}; "
-                        f"ignoring loss_prevention={loss_prevention!r}"
-                    )
-                    return "off"
                 log(f"[AUTO ENTRY] Loss prevention state loaded from monitor {ctx_mid()}: {loss_prevention}")
                 return loss_prevention
             else:
@@ -5594,8 +5594,15 @@ def _aes_tick_symbol_wide_recompute() -> None:
                         cur.execute(
                             f"""
                             SELECT id FROM {_aes_monitor_list_table()}
-                            WHERE COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
-                              AND simulated_trade_cooldown_start_time IS NOT NULL
+                            WHERE COALESCE(loss_prevention_toggle, FALSE) IS TRUE
+                              AND COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak') = 'time'
+                              AND (
+                                live_loss_prevention_cooldown_start_time IS NOT NULL
+                                OR (
+                                  COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
+                                  AND simulated_loss_prevention_cooldown_start_time IS NOT NULL
+                                )
+                              )
                             """
                         )
                         ids = [str(r[0]) for r in (cur.fetchall() or [])]

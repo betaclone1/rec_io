@@ -3009,7 +3009,8 @@
     }
 
     function isLiveTradeCooldownLiveFlag(monitor) {
-      const v = monitor.live_trade_cooldown_live ?? monitor.liveTradeCooldownLive;
+      const v = monitor.live_loss_prevention_cooldown_live ?? monitor.liveLossPreventionCooldownLive ??
+        monitor.live_trade_cooldown_live ?? monitor.liveTradeCooldownLive;
       return v === true || v === 'true' || v === 1;
     }
 
@@ -3017,12 +3018,16 @@
     function effectiveSimLpCooldownStartIso(monitor) {
       if (isLiveTradeCooldownLiveFlag(monitor)) {
         return (
+          monitor.live_loss_prevention_cooldown_start_time ??
+          monitor.liveLossPreventionCooldownStartTime ??
           monitor.live_trade_cooldown_start_time ??
           monitor.liveTradeCooldownStartTime ??
           null
         );
       }
       return (
+        monitor.simulated_loss_prevention_cooldown_start_time ??
+        monitor.simulatedLossPreventionCooldownStartTime ??
         monitor.simulated_trade_cooldown_start_time ??
         monitor.simulatedTradeCooldownStartTime ??
         monitor.symbol_wide_cooldown_start_time ??
@@ -3034,6 +3039,7 @@
     function getSymbolWideCooldownEndMs(monitor) {
       const start = effectiveSimLpCooldownStartIso(monitor);
       const durHrs =
+        monitor.loss_prevention_duration ?? monitor.lossPreventionDuration ??
         monitor.simulated_trade_cooldown_duration ?? monitor.simulatedTradeCooldownDuration ??
         monitor.symbol_wide_cooldown_duration ?? monitor.symbolWideCooldownDuration;
       if (!start || durHrs == null || durHrs === '') return null;
@@ -3047,8 +3053,12 @@
     /** True when simulated-trade LP window is active (server: last loss start + duration). */
     function isSymbolWideCooldownLive(monitor) {
       const apiLive =
+        monitor.live_loss_prevention_cooldown_live ??
+        monitor.liveLossPreventionCooldownLive ??
         monitor.live_trade_cooldown_live ??
         monitor.liveTradeCooldownLive ??
+        monitor.simulated_loss_prevention_cooldown_live ??
+        monitor.simulatedLossPreventionCooldownLive ??
         monitor.simulated_trade_cooldown_live ??
         monitor.simulatedTradeCooldownLive ??
         monitor.symbol_wide_cooldown_live ??
@@ -3074,6 +3084,7 @@
     function formatSymbolWideCooldownEndEtRounded(monitor) {
       const start = effectiveSimLpCooldownStartIso(monitor);
       const durHrs =
+        monitor.loss_prevention_duration ?? monitor.lossPreventionDuration ??
         monitor.simulated_trade_cooldown_duration ?? monitor.simulatedTradeCooldownDuration ??
         monitor.symbol_wide_cooldown_duration ?? monitor.symbolWideCooldownDuration;
       if (!start || durHrs == null || durHrs === '') return '';
@@ -3125,7 +3136,7 @@
       }).format(end);
     }
 
-    /** Matches backend ``tier_from_sim_loss_count`` (simulated_trade_cooldown_loss_count). */
+    /** Matches backend ``tier_from_sim_loss_count`` (loss_prevention_cooldown_loss_count). */
     function simCooldownTierLabelFromLossCount(rawCount) {
       const c = Math.max(0, parseInt(rawCount, 10) || 0);
       if (c >= 3) return '1c';
@@ -3164,7 +3175,7 @@
           return 'Live 1c';
         }
         const lossCnt =
-          monitor.simulated_trade_cooldown_loss_count ?? monitor.simulatedTradeCooldownLossCount ?? 0;
+          monitor.loss_prevention_cooldown_loss_count ?? monitor.lossPreventionCooldownLossCount ?? 0;
         return simCooldownTierLabelFromLossCount(lossCnt);
       }
       const fromKey = simCooldownTierLabelFromLpKey(lpKey);
@@ -3184,7 +3195,7 @@
       const lossCnt = Math.max(
         0,
         parseInt(
-          monitor.simulated_trade_cooldown_loss_count ?? monitor.simulatedTradeCooldownLossCount ?? 0,
+          monitor.loss_prevention_cooldown_loss_count ?? monitor.lossPreventionCooldownLossCount ?? 0,
           10,
         ) || 0,
       );

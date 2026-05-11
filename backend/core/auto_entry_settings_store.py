@@ -19,7 +19,7 @@ _log = logging.getLogger(__name__)
 # Aligns with trade_manager.update_win_streak_for_cycle: when toggle is on,
 # loss_prevention is 'off' iff win_streak >= threshold, else ``win_streak_one_contract``
 # (distinct from simulated-trade tiers ``sim_loss_*``).
-# Monitors may also be in ``new`` (bootstrap) — see simulated_trade_loss_prevention.resolve_monitor_loss_prevention_value.
+# Monitors may also be in ``new`` (bootstrap) — see time_based_loss_prevention.resolve_monitor_loss_prevention_value.
 def loss_prevention_value_for_streak(
     win_streak: int, loss_prevention_toggle_on: bool, win_streak_threshold: int
 ) -> str:
@@ -226,21 +226,30 @@ def apply_auto_entry_settings(
             return v.lower() in ("true", "1", "yes")
         return bool(v)
 
+    if "loss_prevention_method" in data:
+        method = str(data["loss_prevention_method"] or "").strip().lower()
+        if method not in ("win_streak", "time"):
+            return {"status": "error", "message": "loss_prevention_method must be win_streak or time"}
+        update_fields.append("loss_prevention_method = %s")
+        update_values.append(method)
+
     sim_lp_in = "simulated_trade_loss_prevention" in data or "symbol_wide_loss_prevention" in data
     if sim_lp_in:
         sw_raw = data.get("simulated_trade_loss_prevention", data.get("symbol_wide_loss_prevention"))
         sw_b = _boolish(sw_raw)
         update_fields.append("simulated_trade_loss_prevention = %s")
         update_values.append(sw_b)
-        if sw_b:
+        method_in = str(data.get("loss_prevention_method", "") or "").strip().lower()
+        time_method_requested = method_in == "time"
+        if sw_b or time_method_requested:
             eff_dur = None
-            if "simulated_trade_cooldown_duration" in data:
-                eff_dur = int(data["simulated_trade_cooldown_duration"])
+            if "loss_prevention_duration" in data:
+                eff_dur = int(data["loss_prevention_duration"])
             elif "symbol_wide_cooldown_duration" in data:
                 eff_dur = int(data["symbol_wide_cooldown_duration"])
             else:
                 cursor.execute(
-                    f"SELECT COALESCE(simulated_trade_cooldown_duration, 0) FROM {ml} WHERE id = %s",
+                    f"SELECT COALESCE(loss_prevention_duration, 0) FROM {ml} WHERE id = %s",
                     (monitor_id,),
                 )
                 dr = cursor.fetchone()
@@ -248,22 +257,22 @@ def apply_auto_entry_settings(
             if eff_dur < 1:
                 return {
                     "status": "error",
-                    "message": "simulated_trade_cooldown_duration must be at least 1 hour when simulated trade loss prevention is enabled",
+                    "message": "loss_prevention_duration must be at least 1 hour when simulated trade loss prevention is enabled",
                 }
 
-    if "simulated_trade_cooldown_duration" in data or "symbol_wide_cooldown_duration" in data:
-        raw_dur = data.get("simulated_trade_cooldown_duration", data.get("symbol_wide_cooldown_duration"))
+    if "loss_prevention_duration" in data or "symbol_wide_cooldown_duration" in data:
+        raw_dur = data.get("loss_prevention_duration", data.get("symbol_wide_cooldown_duration"))
         hrs = int(raw_dur)
         if hrs < 1:
             return {
                 "status": "error",
-                "message": "simulated_trade_cooldown_duration must be at least 1",
+                "message": "loss_prevention_duration must be at least 1",
             }
-        update_fields.append("simulated_trade_cooldown_duration = %s")
+        update_fields.append("loss_prevention_duration = %s")
         update_values.append(hrs)
 
     if "loss_prevention_toggle" in data:
-        lp_tog = bool(data["loss_prevention_toggle"])
+        lp_tog = _boolish(data["loss_prevention_toggle"])
         update_fields.append("loss_prevention_toggle = %s")
         update_values.append(lp_tog)
     if "max_price_spread" in data:
@@ -405,9 +414,9 @@ def apply_auto_entry_settings(
 
     trades_tbl = ctx.qualify_raw_table(f"trades_{ctx.user_no}")
     trades_sim_tbl = ctx.qualify_raw_table(f"trades_simulated_{ctx.user_no}")
-    # Local import avoids circular import: simulated_trade_loss_prevention imports
+    # Local import avoids circular import: time_based_loss_prevention imports
     # loss_prevention_value_for_streak from this module.
-    from backend.core.symbol_wide_loss_prevention import (
+    from backend.core.time_based_loss_prevention import (
         sync_simulated_trade_after_monitor_settings_save,
     )
 

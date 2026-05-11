@@ -49,11 +49,10 @@ from backend.core.kalshi_execution_settings import (
     normalize_time_in_force_loose,
     limit_price_for_executor_payload,
 )
-from backend.core.simulated_trade_loss_prevention import (
+from backend.core.time_based_loss_prevention import (
     apply_sim_trade_cycle_loss,
     cycle_loss_contribution_and_anchor,
     on_trade_closed_live_loss_throttle,
-    on_trade_closed_simulated_trade_loss,
     recompute_monitor_loss_prevention,
     startup_reconcile_simulated_trade_for_tenant,
 )
@@ -375,7 +374,7 @@ _trade_manager_scheduler_shutdown = threading.Event()
 
 def _fetch_monitor_state(cursor, monitor_key):
     """
-    Fetch loss_prevention, multiplier, test_filter, loss_prevention_toggle from monitor_list.
+    Fetch loss_prevention_state, multiplier, test_filter, loss_prevention_toggle from monitor_list.
     Use the caller's cursor (no nested cursor). SQL uses users.monitor_list_<slot> as a legacy template;
     TenantConnection rewrites to the bound schema/table.
     """
@@ -389,7 +388,7 @@ def _fetch_monitor_state(cursor, monitor_key):
     try:
         cursor.execute(
             f"""
-            SELECT loss_prevention, multiplier, test_filter, loss_prevention_toggle,
+            SELECT loss_prevention_state, multiplier, test_filter, loss_prevention_toggle,
                    time_in_force, order_type
             FROM {_tm_monitor_list_table()}
             WHERE id = %s
@@ -400,6 +399,7 @@ def _fetch_monitor_state(cursor, monitor_key):
         if row:
             return {
                 "loss_prevention": row[0],
+                "loss_prevention_state": row[0],
                 "multiplier": row[1],
                 "test_filter": row[2],
                 "loss_prevention_toggle": row[3],
@@ -4893,7 +4893,7 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
         check_and_update_cycle_metrics(trade_id)
 
 def _symbol_wide_loss_after_close(trade_id: int) -> None:
-    """Event-driven simulated-trade LP: qualifying closed L (incl. paper) updates per-monitor ledger."""
+    """Event-driven time LP: real closed L triggers live_loss_1c cooldown."""
     try:
         pg_conn = get_postgresql_connection()
         if not pg_conn:
@@ -4901,15 +4901,6 @@ def _symbol_wide_loss_after_close(trade_id: int) -> None:
         try:
             tenant_slot = effective_tenant_context_for_sql_rewrite().user_no
             with pg_conn.cursor() as cursor:
-                ran_sim = on_trade_closed_simulated_trade_loss(
-                    cursor,
-                    _tm_trades_table(),
-                    _tm_monitor_list_table(),
-                    _tm_trades_simulated_table(),
-                    legacy_users_sim_trade_lp_cycle_ledger(tenant_slot),
-                    tenant_slot,
-                    trade_id,
-                )
                 ran_live = on_trade_closed_live_loss_throttle(
                     cursor,
                     _tm_trades_table(),
@@ -4917,7 +4908,7 @@ def _symbol_wide_loss_after_close(trade_id: int) -> None:
                     tenant_slot,
                     trade_id,
                 )
-            if ran_sim or ran_live:
+            if ran_live:
                 pg_conn.commit()
         finally:
             pg_conn.close()

@@ -94,6 +94,17 @@ Each Help Center article should carry:
   - `docs/ARCHITECTURE.md`
 - status: `stub`
 
+#### Article: Monitor Loss Prevention Settings
+- id: `using-product-monitor-loss-prevention`
+- slug: `using-product/monitor-loss-prevention`
+- audience: `trader`
+- summary: How the monitor settings loss prevention toggle, method picker, win-streak threshold, time duration, and Include Simulated Trades controls affect automated entry sizing.
+- keywords: `loss prevention`, `monitor settings`, `win streak`, `cooldown`, `simulated trades`, `position sizing`
+- related_docs:
+  - `docs/SYSTEM_BIBLE.md`
+  - `docs/MASTER_DB_SCHEMA_REFERENCE.md`
+- status: `stub`
+
 #### Article: Account and History
 - id: `using-product-account-history`
 - slug: `using-product/account-history`
@@ -108,6 +119,8 @@ Each Help Center article should carry:
 #### FAQ seed
 - Why a value in account history updates after refresh
 - Which pages are real-time versus query-on-load
+- When should I choose Win Streak versus Time loss prevention
+- What does Include Simulated Trades change
 
 #### Article: Help Center Search and Navigation
 - id: `using-product-help-center-navigation`

@@ -48,31 +48,84 @@
       });
     }
 
-    function uatSymbolWideSyncDisabledState() {
+    function uatLossPreventionSyncState() {
       [
-        ['symbolWideLossPreventionToggle', 'symbolWideCooldownDurationInput'],
-        ['msSymbolWideLossPreventionToggle', 'msSymbolWideCooldownDurationInput'],
-      ].forEach(function (pair) {
-        var sw = document.getElementById(pair[0]);
-        var dur = document.getElementById(pair[1]);
-        if (!sw || !dur) return;
-        dur.disabled = !sw.checked;
-        dur.style.opacity = sw.checked ? '1' : '0.5';
+        {
+          toggle: 'autoEntryLossPreventionToggle',
+          method: 'lossPreventionMethodSelect',
+          win: 'lossPreventionWinStreakGroup',
+          time: 'lossPreventionTimeGroup',
+          includeSim: 'symbolWideLossPreventionToggle',
+          duration: 'symbolWideCooldownDurationInput',
+        },
+        {
+          toggle: 'msAutoEntryLossPreventionToggle',
+          method: 'msLossPreventionMethodSelect',
+          win: 'msLossPreventionWinStreakGroup',
+          time: 'msLossPreventionTimeGroup',
+          includeSim: 'msSymbolWideLossPreventionToggle',
+          duration: 'msSymbolWideCooldownDurationInput',
+        },
+      ].forEach(function (cfg) {
+        var tog = document.getElementById(cfg.toggle);
+        var method = document.getElementById(cfg.method);
+        var win = document.getElementById(cfg.win);
+        var time = document.getElementById(cfg.time);
+        var includeSim = document.getElementById(cfg.includeSim);
+        var duration = document.getElementById(cfg.duration);
+        if (!tog || !method) return;
+        var enabled = !!tog.checked;
+        var isTime = method.value === 'time';
+        method.disabled = !enabled;
+        method.style.opacity = enabled ? '1' : '0.5';
+        if (win) win.style.display = enabled && !isTime ? '' : 'none';
+        if (time) time.style.display = enabled && isTime ? '' : 'none';
+        [includeSim, duration].forEach(function (el) {
+          if (!el) return;
+          el.disabled = !(enabled && isTime);
+          el.style.opacity = enabled && isTime ? '1' : '0.5';
+        });
       });
+      var refreshLossPreventionBubbles = function () {
+        var win = document.getElementById('autoEntryWinStreakThresholdSlider');
+        if (win) updateAutoEntryWinStreakThresholdDisplay(win.value);
+        var msWin = document.getElementById('msAutoEntryWinStreakThresholdSlider');
+        if (msWin) updateMSAutoEntryWinStreakThresholdDisplay(msWin.value);
+        var dur = document.getElementById('symbolWideCooldownDurationInput');
+        if (dur) updateSymbolWideCooldownDurationDisplay(dur.value);
+        var msDur = document.getElementById('msSymbolWideCooldownDurationInput');
+        if (msDur) updateMSSymbolWideCooldownDurationDisplay(msDur.value);
+      };
+      if (typeof window !== 'undefined' && typeof window.requestAnimationFrame === 'function') {
+        window.requestAnimationFrame(refreshLossPreventionBubbles);
+      } else {
+        setTimeout(refreshLossPreventionBubbles, 0);
+      }
     }
 
     function uatApplySymbolWideFromApi(data) {
       if (!data || typeof data !== 'object') return;
-      var on =
+      var includeSim =
         data.simulated_trade_loss_prevention === true ||
         data.simulated_trade_loss_prevention === 'true' ||
         data.simulated_trade_loss_prevention === 1 ||
         data.symbol_wide_loss_prevention === true ||
         data.symbol_wide_loss_prevention === 'true' ||
         data.symbol_wide_loss_prevention === 1;
+      var on = data.loss_prevention_toggle !== undefined
+        ? (
+          data.loss_prevention_toggle === true ||
+          data.loss_prevention_toggle === 'true' ||
+          data.loss_prevention_toggle === 1
+        )
+        : includeSim;
+      var method = String(data.loss_prevention_method || (includeSim ? 'time' : 'win_streak')).trim().toLowerCase();
+      if (method !== 'time') method = 'win_streak';
       var rawDur =
-        data.simulated_trade_cooldown_duration != null
-          ? data.simulated_trade_cooldown_duration
+        data.loss_prevention_duration != null
+          ? data.loss_prevention_duration
+          : data.simulated_trade_cooldown_duration != null
+            ? data.simulated_trade_cooldown_duration
           : data.symbol_wide_cooldown_duration;
       var hrs =
         rawDur != null && rawDur !== ''
@@ -82,11 +135,19 @@
       var dur = document.getElementById('symbolWideCooldownDurationInput');
       var msw = document.getElementById('msSymbolWideLossPreventionToggle');
       var mdur = document.getElementById('msSymbolWideCooldownDurationInput');
-      if (sw) sw.checked = on;
+      var master = document.getElementById('autoEntryLossPreventionToggle');
+      var msMaster = document.getElementById('msAutoEntryLossPreventionToggle');
+      var methodEl = document.getElementById('lossPreventionMethodSelect');
+      var msMethodEl = document.getElementById('msLossPreventionMethodSelect');
+      if (master) master.checked = on;
+      if (msMaster) msMaster.checked = on;
+      if (methodEl) methodEl.value = method;
+      if (msMethodEl) msMethodEl.value = method;
+      if (sw) sw.checked = includeSim;
       if (dur) dur.value = hrs;
-      if (msw) msw.checked = on;
+      if (msw) msw.checked = includeSim;
       if (mdur) mdur.value = hrs;
-      uatSymbolWideSyncDisabledState();
+      uatLossPreventionSyncState();
     }
 
     function uatReadSymbolWideForPayload(isMomentumScalp) {
@@ -101,9 +162,18 @@
         out.simulated_trade_loss_prevention = swEl.checked;
         out.symbol_wide_loss_prevention = swEl.checked;
       }
+      var masterEl = isMomentumScalp
+        ? document.getElementById('msAutoEntryLossPreventionToggle')
+        : document.getElementById('autoEntryLossPreventionToggle');
+      var methodEl = isMomentumScalp
+        ? document.getElementById('msLossPreventionMethodSelect')
+        : document.getElementById('lossPreventionMethodSelect');
+      if (masterEl) out.loss_prevention_toggle = masterEl.checked;
+      if (methodEl) out.loss_prevention_method = methodEl.value === 'time' ? 'time' : 'win_streak';
       if (durEl) {
         var n = parseInt(String(durEl.value).trim(), 10);
         var hrs = Number.isFinite(n) && n > 0 ? n : 4;
+        out.loss_prevention_duration = hrs;
         out.simulated_trade_cooldown_duration = hrs;
         out.symbol_wide_cooldown_duration = hrs;
       }
@@ -118,11 +188,15 @@
         if (!t || !t.id) return;
         if (
           t.id !== 'symbolWideLossPreventionToggle' &&
-          t.id !== 'msSymbolWideLossPreventionToggle'
+          t.id !== 'msSymbolWideLossPreventionToggle' &&
+          t.id !== 'autoEntryLossPreventionToggle' &&
+          t.id !== 'msAutoEntryLossPreventionToggle' &&
+          t.id !== 'lossPreventionMethodSelect' &&
+          t.id !== 'msLossPreventionMethodSelect'
         ) {
           return;
         }
-        uatSymbolWideSyncDisabledState();
+        uatLossPreventionSyncState();
       });
     }
 
@@ -964,6 +1038,17 @@
       const percent = (v - min) / (max - min);
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
     }
+    function updateSymbolWideCooldownDurationDisplay(value){
+      const display = document.getElementById('symbolWideCooldownDurationValueDisplay');
+      const slider = document.getElementById('symbolWideCooldownDurationInput');
+      if (!display || !slider) return;
+      const raw = parseInt(value, 10);
+      const v = Number.isFinite(raw) ? raw : 4;
+      display.textContent = `${v}h`;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (v - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+    }
     function updateSpikeAlertMomentumDisplay(value){
       const display = document.getElementById('spikeAlertMomentumValueDisplay');
       const slider = document.getElementById('spikeAlertMomentumSlider');
@@ -1089,6 +1174,17 @@
       display.textContent = value;
       const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+    }
+    function updateMSSymbolWideCooldownDurationDisplay(value){
+      const display = document.getElementById('msSymbolWideCooldownDurationValueDisplay');
+      const slider = document.getElementById('msSymbolWideCooldownDurationInput');
+      if (!display || !slider) return;
+      const raw = parseInt(value, 10);
+      const v = Number.isFinite(raw) ? raw : 4;
+      display.textContent = `${v}h`;
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (v - min) / (max - min);
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
     }
     function updateMSMomentumThresholdDisplay(value){
@@ -1705,6 +1801,7 @@
             const msPairs = [
               ['msAutoEntryMinVolumeSlider', updateMSAutoEntryMinVolumeDisplay],
               ['msAutoEntryWinStreakThresholdSlider', updateMSAutoEntryWinStreakThresholdDisplay],
+              ['msSymbolWideCooldownDurationInput', updateMSSymbolWideCooldownDurationDisplay],
               ['msMomentumScalpEntryThresholdSlider', updateMSMomentumThresholdDisplay],
               ['msMaxPriceSpreadSlider', function(value) {
                 const display = document.getElementById('msMaxPriceSpreadValueDisplay');
@@ -1732,6 +1829,7 @@
           ['autoEntryDifferentialSlider', updateAutoEntryDifferentialDisplay],
           ['autoEntryMaxDifferentialSlider', updateAutoEntryMaxDifferentialDisplay],
           ['autoEntryWinStreakThresholdSlider', updateAutoEntryWinStreakThresholdDisplay],
+          ['symbolWideCooldownDurationInput', updateSymbolWideCooldownDurationDisplay],
           ['spikeAlertMomentumSlider', updateSpikeAlertMomentumDisplay],
           ['spikeAlertCooldownSlider', updateSpikeAlertCooldownDisplay],
           ['spikeAlertTimeSlider', updateSpikeAlertTimeDisplay],
@@ -2163,4 +2261,5 @@
     window.closeUnifiedAutoTradeSettings = closeUnifiedAutoTradeSettings;
     window.uatApplySymbolWideFromApi = uatApplySymbolWideFromApi;
     window.uatReadSymbolWideForPayload = uatReadSymbolWideForPayload;
-    window.uatSymbolWideSyncDisabledState = uatSymbolWideSyncDisabledState;
+    window.uatLossPreventionSyncState = uatLossPreventionSyncState;
+    window.uatSymbolWideSyncDisabledState = uatLossPreventionSyncState;

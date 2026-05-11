@@ -452,19 +452,38 @@
           <div id="autoEntryMaxDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
 
-        <label for="autoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="autoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
-          <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-          <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
-        </div>
+        <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
 
-        <div class="uat-symbol-wide-block" style="margin-bottom:16px;">
+        <div class="uat-loss-prevention-block" style="margin-bottom:16px;">
           <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-            <input type="checkbox" id="symbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Simulated trade loss prevention" />
-            <span style="font-size:13px;color:#c4c4c4;">Simulated trade loss prevention (per monitor)</span>
+            <input type="checkbox" id="autoEntryLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Loss prevention" />
+            <span style="font-size:13px;color:#c4c4c4;">Loss prevention</span>
           </div>
-          <label for="symbolWideCooldownDurationInput" style="font-size:12px;color:#9ca3af;display:block;margin-bottom:4px;">Cooldown duration (hours, minimum 1 when enabled)</label>
-          <input type="number" id="symbolWideCooldownDurationInput" min="1" max="720" step="1" value="4" inputmode="numeric" style="width:100%;max-width:140px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;" />
+          <div class="uat-loss-prevention-controls">
+            <label for="lossPreventionMethodSelect" style="font-size:12px;color:#9ca3af;display:block;margin-bottom:4px;">Loss prevention method</label>
+            <select id="lossPreventionMethodSelect" style="width:100%;max-width:180px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;">
+              <option value="win_streak">Win Streak</option>
+              <option value="time">Time</option>
+            </select>
+            <div id="lossPreventionWinStreakGroup" style="margin-top:16px;">
+              <label for="autoEntryWinStreakThresholdSlider" style="display:block; font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
+              <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+                <input type="range" id="autoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="autoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
+            </div>
+            <div id="lossPreventionTimeGroup" style="display:none;margin-top:16px;">
+              <label for="symbolWideCooldownDurationInput" style="display:block; font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Duration (hours):</label>
+              <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+                <input type="range" id="symbolWideCooldownDurationInput" min="1" max="72" step="1" value="4" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="symbolWideCooldownDurationValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">4h</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+                <input type="checkbox" id="symbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Include simulated trades" />
+                <span style="font-size:13px;color:#c4c4c4;">Include Simulated Trades</span>
+              </div>
+            </div>
+          </div>
         </div>
 
         <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />
@@ -667,20 +686,39 @@
           <input type="range" id="msMaxPriceSpreadSlider" min="0" max="20" step="0.1" value="3" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="msMaxPriceSpreadValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
-        
-        <label for="msAutoEntryWinStreakThresholdSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="msAutoEntryLossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%;">
-          <input type="range" id="msAutoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
-          <div id="msAutoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
-        </div>
 
-        <div class="uat-symbol-wide-block" style="margin-bottom:16px;">
+        <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
+
+        <div class="uat-loss-prevention-block" style="margin-bottom:16px;">
           <div style="display:flex; align-items:center; gap:8px; margin-bottom:8px;">
-            <input type="checkbox" id="msSymbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Simulated trade loss prevention" />
-            <span style="font-size:13px;color:#c4c4c4;">Simulated trade loss prevention (per monitor)</span>
+            <input type="checkbox" id="msAutoEntryLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Loss prevention" />
+            <span style="font-size:13px;color:#c4c4c4;">Loss prevention</span>
           </div>
-          <label for="msSymbolWideCooldownDurationInput" style="font-size:12px;color:#9ca3af;display:block;margin-bottom:4px;">Cooldown duration (hours, minimum 1 when enabled)</label>
-          <input type="number" id="msSymbolWideCooldownDurationInput" min="1" max="720" step="1" value="4" inputmode="numeric" style="width:100%;max-width:140px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;" />
+          <div class="uat-loss-prevention-controls">
+            <label for="msLossPreventionMethodSelect" style="font-size:12px;color:#9ca3af;display:block;margin-bottom:4px;">Loss prevention method</label>
+            <select id="msLossPreventionMethodSelect" style="width:100%;max-width:180px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;">
+              <option value="win_streak">Win Streak</option>
+              <option value="time">Time</option>
+            </select>
+            <div id="msLossPreventionWinStreakGroup" style="margin-top:16px;">
+              <label for="msAutoEntryWinStreakThresholdSlider" style="display:block; font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
+              <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+                <input type="range" id="msAutoEntryWinStreakThresholdSlider" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="msAutoEntryWinStreakThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+              </div>
+            </div>
+            <div id="msLossPreventionTimeGroup" style="display:none;margin-top:16px;">
+              <label for="msSymbolWideCooldownDurationInput" style="display:block; font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Duration (hours):</label>
+              <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%;">
+                <input type="range" id="msSymbolWideCooldownDurationInput" min="1" max="72" step="1" value="4" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+                <div id="msSymbolWideCooldownDurationValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">4h</div>
+              </div>
+              <div style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+                <input type="checkbox" id="msSymbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Include simulated trades" />
+                <span style="font-size:13px;color:#c4c4c4;">Include Simulated Trades</span>
+              </div>
+            </div>
+          </div>
         </div>
         
         <hr class="uat-modal-hr uat-modal-hr--24" aria-hidden="true" />

@@ -68,12 +68,14 @@ This section is the canonical feature inventory for Help Center IA.
 ### C. Monitor management
 - Create, activate/deactivate, and supervise monitor configurations.
 - Per-monitor process lifecycle under supervisor and monitor manager.
+- Per-monitor loss prevention settings use one master toggle, a method selector (`win_streak` or `time`), and method-specific controls.
 - Related docs:
   - `docs/MONITORS_LIST_INFRASTRUCTURE.md`
   - `docs/ARCHITECTURE.md`
 
 ### D. Automated trading lifecycle
 - Signal/condition evaluation to open trades.
+- Loss prevention can throttle sizing by win-streak threshold or by time-based cooldowns from live and optional simulated losses.
 - Trade lifecycle management (open, manage, close).
 - Order execution path to external trading venue.
 - Related docs:
@@ -156,9 +158,10 @@ These are the anchor flows that Help Center topics should map to.
 ### Flow 2: Monitor to automated trade
 1. Monitor config is active.
 2. Entry supervisor evaluates market and strategy conditions.
-3. Trade manager opens/manages lifecycle.
-4. Executor places orders and sync services reconcile account/trade state.
-5. UI reflects updates through read APIs plus real-time signals.
+3. Loss prevention settings can adjust position sizing before entry, based on the monitor's selected method.
+4. Trade manager opens/manages lifecycle.
+5. Executor places orders and sync services reconcile account/trade state.
+6. UI reflects updates through read APIs plus real-time signals.
 
 ### Flow 3: User read/query path
 1. User opens dashboard, trade, or account view.
@@ -196,6 +199,9 @@ Recommended tags for future UI search indexing:
 - `dashboard`
 - `monitor`
 - `auto-entry`
+- `loss prevention`
+- `win streak`
+- `cooldown`
 - `trade manager`
 - `trade executor`
 - `active trade`

@@ -21,29 +21,32 @@ EST = ZoneInfo("America/New_York")
 
 
 def _sql_sim_cooldown_live_expr(prefix: str = "") -> str:
-    """Matches ``monitor_list_api`` / dashboard ``simulated_trade_cooldown_live`` (server ``NOW()``)."""
+    """Matches ``monitor_list_api`` / dashboard ``simulated_loss_prevention_cooldown_live`` (server ``NOW()``)."""
     p = prefix
     return f"""(
-    COALESCE({p}simulated_trade_loss_prevention, FALSE)
-    AND {p}simulated_trade_cooldown_start_time IS NOT NULL
-    AND COALESCE({p}simulated_trade_cooldown_duration, 0) > 0
+    COALESCE({p}loss_prevention_toggle, FALSE)
+    AND COALESCE(NULLIF({p}loss_prevention_method, ''), 'win_streak') = 'time'
+    AND COALESCE({p}simulated_trade_loss_prevention, FALSE)
+    AND {p}simulated_loss_prevention_cooldown_start_time IS NOT NULL
+    AND COALESCE({p}loss_prevention_duration, 0) > 0
     AND (
-        {p}simulated_trade_cooldown_start_time
-        + (COALESCE({p}simulated_trade_cooldown_duration, 0) || ' hours')::interval
+        {p}simulated_loss_prevention_cooldown_start_time
+        + (COALESCE({p}loss_prevention_duration, 0) || ' hours')::interval
     ) > NOW()
 )"""
 
 
-def _sql_live_trade_cooldown_live_expr(prefix: str = "") -> str:
-    """Live (non-paper) loss throttle window: same duration as ``simulated_trade_cooldown_duration``."""
+def _sql_live_loss_prevention_cooldown_live_expr(prefix: str = "") -> str:
+    """Live (non-paper) loss throttle window: same duration as ``loss_prevention_duration``."""
     p = prefix
     return f"""(
-    COALESCE({p}simulated_trade_loss_prevention, FALSE)
-    AND {p}live_trade_cooldown_start_time IS NOT NULL
-    AND COALESCE({p}simulated_trade_cooldown_duration, 0) > 0
+    COALESCE({p}loss_prevention_toggle, FALSE)
+    AND COALESCE(NULLIF({p}loss_prevention_method, ''), 'win_streak') = 'time'
+    AND {p}live_loss_prevention_cooldown_start_time IS NOT NULL
+    AND COALESCE({p}loss_prevention_duration, 0) > 0
     AND (
-        {p}live_trade_cooldown_start_time
-        + (COALESCE({p}simulated_trade_cooldown_duration, 0) || ' hours')::interval
+        {p}live_loss_prevention_cooldown_start_time
+        + (COALESCE({p}loss_prevention_duration, 0) || ' hours')::interval
     ) > NOW()
 )"""
 
@@ -153,20 +156,24 @@ def tier_from_sim_loss_count(count: int) -> str:
 
 def resolve_monitor_loss_prevention_value(
     *,
-    live_trade_cooldown_live: bool = False,
-    simulated_trade_cooldown_live: bool,
+    live_loss_prevention_cooldown_live: bool = False,
+    simulated_loss_prevention_cooldown_live: bool,
     sim_loss_count: int,
     loss_prevention_toggle: bool,
+    loss_prevention_method: str = "win_streak",
     win_streak: int,
     win_streak_threshold: int,
     current_loss_prevention: Optional[str],
     cycle_had_loss: Optional[bool] = None,
 ) -> str:
-    if live_trade_cooldown_live:
-        return "live_loss_1c"
-    if simulated_trade_cooldown_live:
-        return tier_from_sim_loss_count(sim_loss_count)
     if not loss_prevention_toggle:
+        return "off"
+    method = str(loss_prevention_method or "win_streak").strip().lower()
+    if method == "time":
+        if live_loss_prevention_cooldown_live:
+            return "live_loss_1c"
+        if simulated_loss_prevention_cooldown_live:
+            return tier_from_sim_loss_count(sim_loss_count)
         return "off"
     cur = str(current_loss_prevention or "").strip().lower()
     if cur == "new" and cycle_had_loss is not True:
@@ -184,14 +191,16 @@ def _expire_live_trade_cooldown_if_needed(
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
-        SET live_trade_cooldown_start_time = NULL,
+        SET live_loss_prevention_cooldown_start_time = NULL,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
-          AND live_trade_cooldown_start_time IS NOT NULL
-          AND COALESCE(simulated_trade_cooldown_duration, 0) > 0
+          AND live_loss_prevention_cooldown_start_time IS NOT NULL
+          AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
+          AND COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak') = 'time'
+          AND COALESCE(loss_prevention_duration, 0) > 0
           AND (
-            live_trade_cooldown_start_time
-            + (COALESCE(simulated_trade_cooldown_duration, 0) || ' hours')::interval
+            live_loss_prevention_cooldown_start_time
+            + (COALESCE(loss_prevention_duration, 0) || ' hours')::interval
           ) <= NOW()
         """,
         (monitor_id,),
@@ -209,17 +218,19 @@ def _expire_simulated_trade_state_if_needed(
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
-        SET original_simulated_trade_cooldown_start_time = NULL,
-            simulated_trade_cooldown_start_time = NULL,
-            simulated_trade_cooldown_loss_count = 0,
+        SET original_loss_prevention_cooldown_start_time = NULL,
+            simulated_loss_prevention_cooldown_start_time = NULL,
+            loss_prevention_cooldown_loss_count = 0,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
+          AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
+          AND COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak') = 'time'
           AND COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
-          AND simulated_trade_cooldown_start_time IS NOT NULL
-          AND COALESCE(simulated_trade_cooldown_duration, 0) > 0
+          AND simulated_loss_prevention_cooldown_start_time IS NOT NULL
+          AND COALESCE(loss_prevention_duration, 0) > 0
           AND (
-            simulated_trade_cooldown_start_time
-            + (COALESCE(simulated_trade_cooldown_duration, 0) || ' hours')::interval
+            simulated_loss_prevention_cooldown_start_time
+            + (COALESCE(loss_prevention_duration, 0) || ' hours')::interval
           ) <= NOW()
         """,
         (monitor_id,),
@@ -241,11 +252,12 @@ def recompute_monitor_loss_prevention(
     cursor.execute(
         f"""
         SELECT COALESCE(simulated_trade_loss_prevention, FALSE),
-               {_sql_live_trade_cooldown_live_expr()},
+               {_sql_live_loss_prevention_cooldown_live_expr()},
                {_sql_sim_cooldown_live_expr()},
-               COALESCE(simulated_trade_cooldown_loss_count, 0),
+               COALESCE(loss_prevention_cooldown_loss_count, 0),
                win_streak, COALESCE(win_streak_threshold, 22), COALESCE(loss_prevention_toggle, TRUE),
-               loss_prevention
+               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
+               loss_prevention_state
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -254,15 +266,16 @@ def recompute_monitor_loss_prevention(
     row = cursor.fetchone()
     if not row:
         return None
-    sim_flag, live_tl, sim_live, loss_cnt, ws, wthresh, lp_tog, current_lp = row
+    sim_flag, live_tl, sim_live, loss_cnt, ws, wthresh, lp_tog, lp_method, current_lp = row
 
     live_tl = bool(live_tl)
     sim_live = bool(sim_live)
     new_lp = resolve_monitor_loss_prevention_value(
-        live_trade_cooldown_live=live_tl,
-        simulated_trade_cooldown_live=sim_live,
+        live_loss_prevention_cooldown_live=live_tl,
+        simulated_loss_prevention_cooldown_live=sim_live,
         sim_loss_count=int(loss_cnt or 0),
         loss_prevention_toggle=bool(lp_tog),
+        loss_prevention_method=str(lp_method or "win_streak"),
         win_streak=int(ws or 0),
         win_streak_threshold=int(wthresh),
         current_loss_prevention=current_lp if isinstance(current_lp, str) else None,
@@ -272,7 +285,7 @@ def recompute_monitor_loss_prevention(
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
-        SET loss_prevention = %s, updated_at = CURRENT_TIMESTAMP
+        SET loss_prevention_state = %s, updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
         (new_lp, monitor_id),
@@ -294,10 +307,13 @@ def recompute_monitors_by_ids(
 
 
 def cycle_loss_contribution_units(sim_l: int, live_l: int) -> int:
-    """Single-cycle loss units: simulated losses win ties (no double-count with live)."""
+    """Single-cycle simulated loss units.
+
+    Live losses use ``live_loss_1c`` and do not advance the simulated tier count.
+    ``live_l`` remains for older callers/tests but is intentionally ignored.
+    """
     s = int(sim_l or 0)
-    l = int(live_l or 0)
-    return s if s > 0 else l
+    return s
 
 
 def cycle_loss_contribution_and_anchor(
@@ -331,26 +347,14 @@ def _cycle_contribution(
     )
     sim_l = int(cursor.fetchone()[0] or 0)
 
-    cursor.execute(
-        f"""
-        SELECT COUNT(*) FROM {trades_qualified} AS t
-        WHERE t.monitor = %s AND t.date = %s AND t.weekly_cycle = %s
-          AND t.status = 'closed' AND t.win_loss = 'L'
-          AND COALESCE(t.test_filter, FALSE) = FALSE
-        """,
-        (monitor_key, cycle_date, weekly_cycle),
-    )
-    live_l = int(cursor.fetchone()[0] or 0)
-
-    contribution = cycle_loss_contribution_units(sim_l, live_l)
+    contribution = cycle_loss_contribution_units(sim_l, 0)
     if contribution <= 0:
         return 0, None
 
-    src_table = trades_simulated_qualified if sim_l > 0 else trades_qualified
     cursor.execute(
         f"""
         SELECT MAX({_sql_close_anchor_epoch("s")})
-        FROM {src_table} AS s
+        FROM {trades_simulated_qualified} AS s
         WHERE s.monitor = %s AND s.date = %s AND s.weekly_cycle = %s
           AND s.status = 'closed' AND s.win_loss = 'L'
         """,
@@ -381,14 +385,16 @@ def apply_sim_trade_cycle_loss(
 
     cursor.execute(
         f"""
-        SELECT COALESCE(simulated_trade_loss_prevention, FALSE)
+        SELECT COALESCE(loss_prevention_toggle, FALSE),
+               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
+               COALESCE(simulated_trade_loss_prevention, FALSE)
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
         (mid_str,),
     )
     row = cursor.fetchone()
-    if not row or not row[0]:
+    if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time" and bool(row[2])):
         return False
 
     _expire_live_trade_cooldown_if_needed(cursor, monitor_list_qualified, mid_str)
@@ -427,9 +433,9 @@ def apply_sim_trade_cycle_loss(
 
     cursor.execute(
         f"""
-        SELECT original_simulated_trade_cooldown_start_time,
-               simulated_trade_cooldown_start_time,
-               COALESCE(simulated_trade_cooldown_loss_count, 0)
+        SELECT original_loss_prevention_cooldown_start_time,
+               simulated_loss_prevention_cooldown_start_time,
+               COALESCE(loss_prevention_cooldown_loss_count, 0)
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -441,7 +447,7 @@ def apply_sim_trade_cycle_loss(
     orig, _, cnt = st[0], st[1], int(st[2] or 0)
     cursor.execute(
         f"""
-        SELECT {_sql_live_trade_cooldown_live_expr()}
+        SELECT {_sql_live_loss_prevention_cooldown_live_expr()}
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -450,8 +456,8 @@ def apply_sim_trade_cycle_loss(
     live_row = cursor.fetchone()
     live_throttle_active = bool(live_row and live_row[0]) and not from_replay
     # While ``live_loss_1c`` is in effect, simulated losses may still slide
-    # ``simulated_trade_cooldown_start_time`` (cooldown clock) but must not change
-    # ``simulated_trade_cooldown_loss_count`` so tier cannot move (e.g. to sim_loss_25).
+    # ``simulated_loss_prevention_cooldown_start_time`` (cooldown clock) but must not change
+    # ``loss_prevention_cooldown_loss_count`` so tier cannot move (e.g. to sim_loss_25).
     # ``from_replay`` rebuilds ledger + counts from history and must not use this freeze.
     # ``to_timestamp(utc_epoch)``: never pass Python ``datetime`` into ``TIMESTAMPTZ`` (psycopg2 + host TZ).
     anchor_epoch = _loss_anchor_utc_epoch(loss_anchor_ts)
@@ -460,9 +466,9 @@ def apply_sim_trade_cycle_loss(
         cursor.execute(
             f"""
             UPDATE {monitor_list_qualified}
-            SET original_simulated_trade_cooldown_start_time = to_timestamp(%s),
-                simulated_trade_cooldown_start_time = to_timestamp(%s),
-                simulated_trade_cooldown_loss_count = %s,
+            SET original_loss_prevention_cooldown_start_time = to_timestamp(%s),
+                simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
+                loss_prevention_cooldown_loss_count = %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
@@ -472,7 +478,7 @@ def apply_sim_trade_cycle_loss(
         cursor.execute(
             f"""
             UPDATE {monitor_list_qualified}
-            SET simulated_trade_cooldown_start_time = to_timestamp(%s),
+            SET simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
@@ -482,8 +488,8 @@ def apply_sim_trade_cycle_loss(
         cursor.execute(
             f"""
             UPDATE {monitor_list_qualified}
-            SET simulated_trade_cooldown_start_time = to_timestamp(%s),
-                simulated_trade_cooldown_loss_count = simulated_trade_cooldown_loss_count + %s,
+            SET simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
+                loss_prevention_cooldown_loss_count = loss_prevention_cooldown_loss_count + %s,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
@@ -584,14 +590,15 @@ def on_trade_closed_live_loss_throttle(
         return False
     cursor.execute(
         f"""
-        SELECT COALESCE(simulated_trade_loss_prevention, FALSE)
+        SELECT COALESCE(loss_prevention_toggle, FALSE),
+               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak')
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
         (mid_str,),
     )
     flg = cursor.fetchone()
-    if not flg or not flg[0]:
+    if not flg or not (bool(flg[0]) and str(flg[1]).strip().lower() == "time"):
         return False
     anchor_dt = _parse_ts(anch_ep)
     if anchor_dt is None:
@@ -600,7 +607,7 @@ def on_trade_closed_live_loss_throttle(
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
-        SET live_trade_cooldown_start_time = to_timestamp(%s), updated_at = CURRENT_TIMESTAMP
+        SET live_loss_prevention_cooldown_start_time = to_timestamp(%s), updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
         (epoch, mid_str),
@@ -619,23 +626,15 @@ def _fetch_loss_cycles_for_monitor_since(
     hz = float(horizon_est.astimezone(timezone.utc).timestamp())
     cursor.execute(
         f"""
-        SELECT d, wc, MAX(epoch_ts) FROM (
-            SELECT s.date AS d, s.weekly_cycle AS wc,
-                   {_sql_close_anchor_epoch("s")} AS epoch_ts
-            FROM {trades_simulated_qualified} s
-            WHERE s.monitor = %s AND s.status = 'closed' AND s.win_loss = 'L'
-            UNION ALL
-            SELECT t.date AS d, t.weekly_cycle AS wc,
-                   {_sql_close_anchor_epoch("t")} AS epoch_ts
-            FROM {trades_qualified} t
-            WHERE t.monitor = %s AND t.status = 'closed' AND t.win_loss = 'L'
-              AND COALESCE(t.test_filter, FALSE) = FALSE
-        ) x
-        WHERE epoch_ts >= %s
-        GROUP BY d, wc
-        ORDER BY MAX(epoch_ts)
+        SELECT s.date AS d, s.weekly_cycle AS wc,
+               MAX({_sql_close_anchor_epoch("s")}) AS epoch_ts
+        FROM {trades_simulated_qualified} s
+        WHERE s.monitor = %s AND s.status = 'closed' AND s.win_loss = 'L'
+        GROUP BY s.date, s.weekly_cycle
+        HAVING MAX({_sql_close_anchor_epoch("s")}) >= %s
+        ORDER BY MAX({_sql_close_anchor_epoch("s")})
         """,
-        (monitor_key, monitor_key, hz),
+        (monitor_key, hz),
     )
     out: List[Tuple[Any, Any, datetime]] = []
     for r in cursor.fetchall() or []:
@@ -657,17 +656,19 @@ def full_replay_monitor_sim_lp_state(
     ensure_sim_trade_ledger_table(cursor, tenant_slot)
     cursor.execute(
         f"""
-        SELECT COALESCE(simulated_trade_loss_prevention, FALSE),
-               COALESCE(simulated_trade_cooldown_duration, 4)
+        SELECT COALESCE(loss_prevention_toggle, FALSE),
+               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
+               COALESCE(simulated_trade_loss_prevention, FALSE),
+               COALESCE(loss_prevention_duration, 4)
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
         (monitor_id,),
     )
     row = cursor.fetchone()
-    if not row or not row[0]:
+    if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time" and bool(row[2])):
         return
-    dur_h = float(row[1] or 4)
+    dur_h = float(row[3] or 4)
     now = datetime.now(EST)
     horizon = now - timedelta(hours=dur_h)
 
@@ -678,9 +679,9 @@ def full_replay_monitor_sim_lp_state(
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
-        SET original_simulated_trade_cooldown_start_time = NULL,
-            simulated_trade_cooldown_start_time = NULL,
-            simulated_trade_cooldown_loss_count = 0,
+        SET original_loss_prevention_cooldown_start_time = NULL,
+            simulated_loss_prevention_cooldown_start_time = NULL,
+            loss_prevention_cooldown_loss_count = 0,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
@@ -722,7 +723,9 @@ def startup_reconcile_simulated_trade_for_tenant(
         cursor.execute(
             f"""
             SELECT id FROM {monitor_list_qualified}
-            WHERE COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
+            WHERE COALESCE(loss_prevention_toggle, FALSE) IS TRUE
+              AND COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak') = 'time'
+              AND COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
             """
         )
         ids = [str(r[0]) for r in (cursor.fetchall() or [])]
@@ -752,7 +755,9 @@ def sync_simulated_trade_after_monitor_settings_save(
     ensure_sim_trade_ledger_table(cursor, tenant_slot)
     cursor.execute(
         f"""
-        SELECT COALESCE(simulated_trade_loss_prevention, FALSE)
+        SELECT COALESCE(loss_prevention_toggle, FALSE),
+               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
+               COALESCE(simulated_trade_loss_prevention, FALSE)
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -761,14 +766,36 @@ def sync_simulated_trade_after_monitor_settings_save(
     row = cursor.fetchone()
     if not row:
         return
-    if not row[0]:
+    toggle_on = bool(row[0])
+    method = str(row[1] or "win_streak").strip().lower()
+    include_sim = bool(row[2])
+    if not toggle_on or method != "time":
         cursor.execute(
             f"""
             UPDATE {monitor_list_qualified}
-            SET original_simulated_trade_cooldown_start_time = NULL,
-                simulated_trade_cooldown_start_time = NULL,
-                simulated_trade_cooldown_loss_count = 0,
-                live_trade_cooldown_start_time = NULL,
+            SET original_loss_prevention_cooldown_start_time = NULL,
+                simulated_loss_prevention_cooldown_start_time = NULL,
+                loss_prevention_cooldown_loss_count = 0,
+                live_loss_prevention_cooldown_start_time = NULL,
+                loss_prevention_state = 'off',
+                updated_at = CURRENT_TIMESTAMP
+            WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        cursor.execute(
+            f"DELETE FROM {ledger} WHERE monitor_id = %s",
+            (int(monitor_id),),
+        )
+        recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
+        return
+    if not include_sim:
+        cursor.execute(
+            f"""
+            UPDATE {monitor_list_qualified}
+            SET original_loss_prevention_cooldown_start_time = NULL,
+                simulated_loss_prevention_cooldown_start_time = NULL,
+                loss_prevention_cooldown_loss_count = 0,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,

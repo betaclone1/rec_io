@@ -56,7 +56,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
             """
                 + (sel_flip if has_flip else "")
                 + """
-                       , simulated_trade_loss_prevention, simulated_trade_cooldown_duration, simulated_trade_cooldown_start_time
+                       , simulated_trade_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
+                         COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak')
             """
                 + f"""
                 FROM {ml} WHERE id = %s
@@ -122,15 +123,19 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 st_on = bool(result[_sw_i]) if result[_sw_i] is not None else False
                 st_dur = int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else 4
                 st_start = result[_sw_i + 2]
+                lp_method = str(result[_sw_i + 3]) if result[_sw_i + 3] is not None else "win_streak"
                 st_start_iso = (
                     timestamptz_wire_iso_et(st_start)
                     if hasattr(st_start, "isoformat")
                     else st_start
                 )
-                row["simulated_trade_loss_prevention"] = st_on
-                row["simulated_trade_cooldown_duration"] = st_dur
-                row["simulated_trade_cooldown_start_time"] = st_start_iso
                 row["symbol_wide_loss_prevention"] = st_on
+                row["loss_prevention_method"] = lp_method
+                row["loss_prevention_duration"] = st_dur
+                row["simulated_trade_cooldown_duration"] = st_dur
+                row["simulated_loss_prevention_cooldown_start_time"] = st_start_iso
+                row["simulated_trade_cooldown_start_time"] = st_start_iso
+                row["simulated_trade_loss_prevention"] = st_on
                 row["symbol_wide_cooldown_duration"] = st_dur
                 row["symbol_wide_cooldown_start_time"] = st_start_iso
                 return row

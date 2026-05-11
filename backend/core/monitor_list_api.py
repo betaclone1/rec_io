@@ -11,8 +11,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Tuple
 
 from backend.core.config.database import get_postgresql_connection
-from backend.core.simulated_trade_loss_prevention import (
-    _sql_live_trade_cooldown_live_expr,
+from backend.core.time_based_loss_prevention import (
+    _sql_live_loss_prevention_cooldown_live_expr,
     _sql_sim_cooldown_live_expr,
 )
 from backend.core.strike_pipeline_health import (
@@ -42,7 +42,9 @@ def _monitor_list_select_sql(user_number: str) -> str:
                     status,
                     dashboard_order,
                     win_streak,
-                    loss_prevention,
+                    loss_prevention_state,
+                    COALESCE(loss_prevention_toggle, FALSE),
+                    COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
                     created,
                     cooldown_timer,
                     current_contract,
@@ -56,13 +58,13 @@ def _monitor_list_select_sql(user_number: str) -> str:
                     regime_window,
                     market,
                     simulated_trade_loss_prevention,
-                    simulated_trade_cooldown_duration,
-                    simulated_trade_cooldown_start_time,
-                    original_simulated_trade_cooldown_start_time,
-                    simulated_trade_cooldown_loss_count,
-                    live_trade_cooldown_start_time,
-                    {_sql_sim_cooldown_live_expr()} AS simulated_trade_cooldown_live,
-                    {_sql_live_trade_cooldown_live_expr()} AS live_trade_cooldown_live
+                    loss_prevention_duration,
+                    simulated_loss_prevention_cooldown_start_time,
+                    original_loss_prevention_cooldown_start_time,
+                    loss_prevention_cooldown_loss_count,
+                    live_loss_prevention_cooldown_start_time,
+                    {_sql_sim_cooldown_live_expr()} AS simulated_loss_prevention_cooldown_live,
+                    {_sql_live_loss_prevention_cooldown_live_expr()} AS live_loss_prevention_cooldown_live
                 FROM users.monitor_list_{user_number}
                 WHERE status != 'ARCHIVED'
                 ORDER BY dashboard_order, id
@@ -92,9 +94,9 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
         if strict_pipeline_health:
             sym_mkt_pairs = sorted(
                 {
-                    (str(r[2]).upper(), str(r[26] or "").strip().lower())
+                    (str(r[2]).upper(), str(r[28] or "").strip().lower())
                     for r in results
-                    if r[2] and (str(r[26] or "").strip().lower() in ("15m", "hourly"))
+                    if r[2] and (str(r[28] or "").strip().lower() in ("15m", "hourly"))
                 }
             )
             for sym, mkt in sym_mkt_pairs:
@@ -138,7 +140,9 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             status,
             dashboard_order,
             win_streak,
-            loss_prevention,
+            loss_prevention_state,
+            loss_prevention_toggle,
+            loss_prevention_method,
             created,
             cooldown_timer,
             current_contract,
@@ -152,17 +156,17 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             regime_window,
             market,
             simulated_trade_loss_prevention,
-            simulated_trade_cooldown_duration,
-            simulated_trade_cooldown_start_time,
-            original_simulated_trade_cooldown_start_time,
-            simulated_trade_cooldown_loss_count,
-            live_trade_cooldown_start_time,
-            simulated_trade_cooldown_live,
-            live_trade_cooldown_live,
+            loss_prevention_duration,
+            simulated_loss_prevention_cooldown_start_time,
+            original_loss_prevention_cooldown_start_time,
+            loss_prevention_cooldown_loss_count,
+            live_loss_prevention_cooldown_start_time,
+            simulated_loss_prevention_cooldown_live,
+            live_loss_prevention_cooldown_live,
         ) = row
 
-        sw_live = bool(simulated_trade_cooldown_live) or bool(live_trade_cooldown_live)
-        loss_prevention_out = loss_prevention
+        sw_live = bool(simulated_loss_prevention_cooldown_live) or bool(live_loss_prevention_cooldown_live)
+        loss_prevention_out = loss_prevention_state
 
         uptime_str = "0d 0h 0m"
         if created:
@@ -200,6 +204,9 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             "dashboard_order": dashboard_order or 0,
             "win_streak": win_streak or 0,
             "loss_prevention": loss_prevention_out,
+            "loss_prevention_state": loss_prevention_out,
+            "loss_prevention_toggle": bool(loss_prevention_toggle),
+            "loss_prevention_method": str(loss_prevention_method or "win_streak"),
             "cooldown_timer": cooldown_timer or 0,
             "current_contract": current_contract,
             "current_weekly_cycle": current_weekly_cycle,
@@ -215,41 +222,63 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             "regime_monitor_enabled": regime_monitor_enabled or False,
             "regime_window": regime_window or "30d",
             "market": (market or "").strip().lower() if market else None,
-            "simulated_trade_loss_prevention": bool(simulated_trade_loss_prevention)
-            if simulated_trade_loss_prevention is not None
-            else False,
-            "simulated_trade_cooldown_duration": int(simulated_trade_cooldown_duration)
-            if simulated_trade_cooldown_duration is not None
-            else 4,
-            "simulated_trade_cooldown_start_time": (
-                timestamptz_wire_iso_et(simulated_trade_cooldown_start_time)
-                if hasattr(simulated_trade_cooldown_start_time, "isoformat")
-                else simulated_trade_cooldown_start_time
-            ),
-            "original_simulated_trade_cooldown_start_time": (
-                timestamptz_wire_iso_et(original_simulated_trade_cooldown_start_time)
-                if hasattr(original_simulated_trade_cooldown_start_time, "isoformat")
-                else original_simulated_trade_cooldown_start_time
-            ),
-            "simulated_trade_cooldown_loss_count": int(simulated_trade_cooldown_loss_count or 0),
-            "live_trade_cooldown_start_time": (
-                timestamptz_wire_iso_et(live_trade_cooldown_start_time)
-                if hasattr(live_trade_cooldown_start_time, "isoformat")
-                else live_trade_cooldown_start_time
-            ),
-            "simulated_trade_cooldown_live": bool(simulated_trade_cooldown_live),
-            "live_trade_cooldown_live": bool(live_trade_cooldown_live),
-            # Backward-compatible aliases (same values as simulated_trade_*)
             "symbol_wide_loss_prevention": bool(simulated_trade_loss_prevention)
             if simulated_trade_loss_prevention is not None
             else False,
-            "symbol_wide_cooldown_duration": int(simulated_trade_cooldown_duration)
-            if simulated_trade_cooldown_duration is not None
+            "loss_prevention_duration": int(loss_prevention_duration)
+            if loss_prevention_duration is not None
+            else 4,
+            # Backward-compatible duration alias for clients that have not yet renamed.
+            "simulated_trade_cooldown_duration": int(loss_prevention_duration)
+            if loss_prevention_duration is not None
+            else 4,
+            "simulated_loss_prevention_cooldown_start_time": (
+                timestamptz_wire_iso_et(simulated_loss_prevention_cooldown_start_time)
+                if hasattr(simulated_loss_prevention_cooldown_start_time, "isoformat")
+                else simulated_loss_prevention_cooldown_start_time
+            ),
+            "simulated_trade_cooldown_start_time": (
+                timestamptz_wire_iso_et(simulated_loss_prevention_cooldown_start_time)
+                if hasattr(simulated_loss_prevention_cooldown_start_time, "isoformat")
+                else simulated_loss_prevention_cooldown_start_time
+            ),
+            "original_loss_prevention_cooldown_start_time": (
+                timestamptz_wire_iso_et(original_loss_prevention_cooldown_start_time)
+                if hasattr(original_loss_prevention_cooldown_start_time, "isoformat")
+                else original_loss_prevention_cooldown_start_time
+            ),
+            "original_simulated_trade_cooldown_start_time": (
+                timestamptz_wire_iso_et(original_loss_prevention_cooldown_start_time)
+                if hasattr(original_loss_prevention_cooldown_start_time, "isoformat")
+                else original_loss_prevention_cooldown_start_time
+            ),
+            "loss_prevention_cooldown_loss_count": int(loss_prevention_cooldown_loss_count or 0),
+            "simulated_trade_cooldown_loss_count": int(loss_prevention_cooldown_loss_count or 0),
+            "live_loss_prevention_cooldown_start_time": (
+                timestamptz_wire_iso_et(live_loss_prevention_cooldown_start_time)
+                if hasattr(live_loss_prevention_cooldown_start_time, "isoformat")
+                else live_loss_prevention_cooldown_start_time
+            ),
+            "live_trade_cooldown_start_time": (
+                timestamptz_wire_iso_et(live_loss_prevention_cooldown_start_time)
+                if hasattr(live_loss_prevention_cooldown_start_time, "isoformat")
+                else live_loss_prevention_cooldown_start_time
+            ),
+            "simulated_loss_prevention_cooldown_live": bool(simulated_loss_prevention_cooldown_live),
+            "live_loss_prevention_cooldown_live": bool(live_loss_prevention_cooldown_live),
+            "simulated_trade_cooldown_live": bool(simulated_loss_prevention_cooldown_live),
+            "live_trade_cooldown_live": bool(live_loss_prevention_cooldown_live),
+            # Backward-compatible aliases (same values as simulated_trade_*)
+            "simulated_trade_loss_prevention": bool(simulated_trade_loss_prevention)
+            if simulated_trade_loss_prevention is not None
+            else False,
+            "symbol_wide_cooldown_duration": int(loss_prevention_duration)
+            if loss_prevention_duration is not None
             else 4,
             "symbol_wide_cooldown_start_time": (
-                timestamptz_wire_iso_et(simulated_trade_cooldown_start_time)
-                if hasattr(simulated_trade_cooldown_start_time, "isoformat")
-                else simulated_trade_cooldown_start_time
+                timestamptz_wire_iso_et(simulated_loss_prevention_cooldown_start_time)
+                if hasattr(simulated_loss_prevention_cooldown_start_time, "isoformat")
+                else simulated_loss_prevention_cooldown_start_time
             ),
             "symbol_wide_cooldown_live": sw_live,
         }

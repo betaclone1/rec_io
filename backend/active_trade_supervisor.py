@@ -4777,7 +4777,7 @@ def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int,
         with conn.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT loss_prevention, loss_prevention_toggle
+                SELECT loss_prevention_state, loss_prevention_toggle
                 FROM {legacy_users_monitor_list(ctx_user())}
                 WHERE id = %s
                 """,
@@ -4789,6 +4789,8 @@ def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int,
             return flip_count, False
         loss_prevention, lp_toggle = result[0], result[1]
         toggle_on = bool(lp_toggle) if lp_toggle is not None else True
+        if not toggle_on:
+            return flip_count, False
         lp = (loss_prevention or "").strip().lower() if isinstance(loss_prevention, str) else ""
         if lp in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
             if lp in ("sim_loss_1c", "live_loss_1c"):
@@ -4798,8 +4800,6 @@ def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int,
             return max(1, int(round(flip_count * 0.5))), True
         if lp == "symbol_one_contract":
             return 1, True
-        if not toggle_on:
-            return flip_count, False
         if lp in ("one_contract", "win_streak_one_contract"):
             return 1, True
         return flip_count, False

@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-11 — Release v3.5.2: Loss prevention consolidation
+
+**Summary**
+- **Release: v3.5.2**
+- **Backend/API:** Consolidates monitor LP around master `loss_prevention_toggle`, `loss_prevention_method` (`win_streak` / `time`), and renamed `loss_prevention_state` plus generalized cooldown fields.
+- **Behavior:** Win-streak LP only runs when method is `win_streak`; Time LP uses `loss_prevention_duration`, live losses trigger `live_loss_1c`, and `simulated_trade_loss_prevention` now only controls whether simulated trades participate in Time-method tiering.
+- **Code organization:** Time-method LP implementation moved from `simulated_trade_loss_prevention.py` to `time_based_loss_prevention.py`.
+- **UI:** Monitor settings now show one LP checkbox, method dropdown, Win Streak controls for `win_streak`, and duration plus Include Simulated Trades for `time`; LP sliders use the same value-bubble layout and section spacing as the other modal sliders.
+- **Database:** Reversible migration **`20260511_1035_loss_prevention_consolidation`** renames monitor/strategy LP columns and migrates existing intent.
+- **Docs:** `docs/SYSTEM_BIBLE.md` and `docs/HELP_CENTER_CONTENT_MAP.md` include the consolidated monitor loss prevention controls for future manual/help-center surfaces.
+- **Plans:** Session work (loss prevention consolidation and time-based LP rename); no single canonical `Status: done` `.cursor/plans/*.md` plan slug in-repo for this batch.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm `scripts/migrations/20260511_1035_loss_prevention_consolidation.up.sql` and `.down.sql` are present.
+- [ ] Apply pending migrations from repo root:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health and logs: health on `3000`, `8001`, and `3050`; `venv/bin/supervisorctl -c backend/supervisord.conf status`; review `trade_manager_0001`, `trade_executor_0001`, `kalshi_account_sync_0001`, `main_app`, and one `market_watchdog_ws` log for errors after process start.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.5.2`
+
+---
+
 ## 2026-05-10 — Release v3.5.1: Per-monitor simulated-trade loss prevention, live_loss_1c, migrations
 
 **Summary**
