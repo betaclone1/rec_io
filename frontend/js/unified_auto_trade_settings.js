@@ -1960,6 +1960,14 @@
         try {
           modal.dataset.uatSaveInFlight = '1';
           saveBtn.disabled = true;
+          if (window.UatUnifiedModalPositionSize) {
+            window.UatUnifiedModalPositionSize.persistModalPosition(modal, apiId, { mirrorSidebar: false })
+              .catch(function (err) {
+                console.warn('persistModalPosition after save', err);
+              });
+          }
+          closeUnifiedAutoTradeSettings();
+
           const resp = await fetch('/api/set_auto_entry_settings', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify(payload)});
           const text = await resp.text();
           let j = {};
@@ -1988,15 +1996,6 @@
             if (typeof window.__uatAfterSaveSuccess === 'function') {
               try { window.__uatAfterSaveSuccess(tileId, payload, monitorObj); } catch (e2) {}
             }
-            // Do not await position persist: readFromEls runs synchronously first; a slow/hanging
-            // /api/update_monitor_position must not block closing the modal.
-            if (window.UatUnifiedModalPositionSize) {
-              window.UatUnifiedModalPositionSize.persistModalPosition(modal, apiId, { mirrorSidebar: false })
-                .catch(function (err) {
-                  console.warn('persistModalPosition after save', err);
-                });
-            }
-            closeUnifiedAutoTradeSettings();
           } else {
             const msg = (j && j.message) ? String(j.message) : 'Could not save monitor settings.';
             console.error('set_auto_entry_settings', j);

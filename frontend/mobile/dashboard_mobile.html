@@ -10106,6 +10106,8 @@
         const saveBtn = document.getElementById('m_unifiedSave');
         if (saveBtn) {
           saveBtn.onclick = async function() {
+            const uatModal = document.getElementById('mobileUnifiedAutoTradeModal');
+            if (uatModal && uatModal.dataset.uatSaveInFlight === '1') return;
             // Determine which strategy is active (reuse variables from outer scope)
             const saveIsMS = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
             
@@ -10281,6 +10283,17 @@
             }
 
             try {
+              if (uatModal) uatModal.dataset.uatSaveInFlight = '1';
+              saveBtn.disabled = true;
+              const apiIdForPos = mobileNormalizeMonitorId(tileId);
+              if (uatModal && window.UatUnifiedModalPositionSize && apiIdForPos) {
+                window.UatUnifiedModalPositionSize.persistModalPosition(uatModal, apiIdForPos, { mirrorSidebar: false })
+                  .catch(function (err) {
+                    console.warn('persistModalPosition after mobile save', err);
+                  });
+              }
+              hideModal();
+
               const response = await fetch('/api/set_auto_entry_settings', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -10312,15 +10325,17 @@
                     tileEl.classList.add('paper-mode');
                   }
                 }
-                const uatModal = document.getElementById('mobileUnifiedAutoTradeModal');
-                const apiIdForPos = mobileNormalizeMonitorId(tileId);
-                if (uatModal && window.UatUnifiedModalPositionSize && apiIdForPos) {
-                  await window.UatUnifiedModalPositionSize.persistModalPosition(uatModal, apiIdForPos, { mirrorSidebar: false });
-                }
-                hideModal();
+              } else {
+                const msg = json && json.message ? String(json.message) : 'Could not save monitor settings.';
+                console.error('Failed to save mobile auto entry settings:', json);
+                alert('Save failed: ' + msg);
               }
             } catch (error) {
               console.error('Failed to save mobile auto entry settings:', error);
+              alert('Save failed: ' + (error && error.message ? error.message : 'Network error'));
+            } finally {
+              if (uatModal) delete uatModal.dataset.uatSaveInFlight;
+              saveBtn.disabled = false;
             }
           };
         }
