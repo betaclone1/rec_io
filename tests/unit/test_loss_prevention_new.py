@@ -190,11 +190,15 @@ def test_live_loss_throttle_counts_paper_and_test_trades_log_rows(monkeypatch):
     first_query = cursor.executed[0][0]
     assert "paper_trade" not in first_query
     assert "test_filter" not in first_query
+    update_query, update_params = cursor.executed[2]
+    assert "original_loss_prevention_cooldown_start_time = COALESCE" in update_query
+    assert "loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + 1" in update_query
+    assert update_params[-1] == "99015"
     assert recomputed == [("users.monitor_list_0001", "99015")]
 
 
 def test_live_loss_replay_counts_all_trades_log_rows():
-    cursor = _LiveLossCursor([(1_779_000_000,)])
+    cursor = _LiveLossCursor([(1_779_000_000, 1_779_003_600, 2)])
 
     assert (
         replay_live_loss_throttle_from_trades_log(
@@ -211,7 +215,12 @@ def test_live_loss_replay_counts_all_trades_log_rows():
     replay_query = cursor.executed[0][0]
     assert "paper_trade" not in replay_query
     assert "test_filter" not in replay_query
-    assert cursor.executed[-1][1][1] == "99015"
+    assert "COUNT(*)" in replay_query
+    update_query, update_params = cursor.executed[-1]
+    assert "original_loss_prevention_cooldown_start_time = LEAST" in update_query
+    assert "loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + %s" in update_query
+    assert update_params[-2] == 2
+    assert update_params[-1] == "99015"
 
 
 def test_sim_loss_during_live_throttle_extends_live_cooldown_and_count(monkeypatch):

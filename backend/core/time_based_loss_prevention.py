@@ -490,11 +490,15 @@ def apply_sim_trade_cycle_loss(
             UPDATE {monitor_list_qualified}
             SET simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
                 loss_prevention_cooldown_loss_count = loss_prevention_cooldown_loss_count + %s,
+                original_loss_prevention_cooldown_start_time = LEAST(
+                    original_loss_prevention_cooldown_start_time,
+                    to_timestamp(%s)
+                ),
                 live_loss_prevention_cooldown_start_time = {live_extend_expr},
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (anchor_epoch, delta, anchor_epoch, anchor_epoch, mid_str),
+            (anchor_epoch, delta, anchor_epoch, anchor_epoch, anchor_epoch, mid_str),
         )
 
     recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid_str)
@@ -604,10 +608,19 @@ def on_trade_closed_live_loss_throttle(
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
-        SET live_loss_prevention_cooldown_start_time = to_timestamp(%s), updated_at = CURRENT_TIMESTAMP
+        SET live_loss_prevention_cooldown_start_time = GREATEST(
+                COALESCE(live_loss_prevention_cooldown_start_time, to_timestamp(%s)),
+                to_timestamp(%s)
+            ),
+            original_loss_prevention_cooldown_start_time = COALESCE(
+                original_loss_prevention_cooldown_start_time,
+                to_timestamp(%s)
+            ),
+            loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + 1,
+            updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
-        (epoch, mid_str),
+        (epoch, epoch, epoch, mid_str),
     )
     recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid_str)
     return True
@@ -648,7 +661,9 @@ def replay_live_loss_throttle_from_trades_log(
     )
     cursor.execute(
         f"""
-        SELECT MAX({_SQL_T_CLOSE_ANCHOR_EPOCH})
+        SELECT MIN({_SQL_T_CLOSE_ANCHOR_EPOCH}),
+               MAX({_SQL_T_CLOSE_ANCHOR_EPOCH}),
+               COUNT(*)
         FROM {trades_qualified} AS t
         WHERE t.monitor = %s
           AND t.status = 'closed'
@@ -658,20 +673,29 @@ def replay_live_loss_throttle_from_trades_log(
         (monitor_key, horizon_epoch),
     )
     row = cursor.fetchone()
-    if not row or row[0] is None:
+    if not row or row[1] is None:
         return False
 
-    anchor_dt = _parse_ts(row[0])
-    if anchor_dt is None:
+    first_anchor_dt = _parse_ts(row[0])
+    latest_anchor_dt = _parse_ts(row[1])
+    loss_count = int(row[2] or 0)
+    if first_anchor_dt is None or latest_anchor_dt is None or loss_count <= 0:
         return False
+    first_epoch = _loss_anchor_utc_epoch(first_anchor_dt)
+    latest_epoch = _loss_anchor_utc_epoch(latest_anchor_dt)
     cursor.execute(
         f"""
         UPDATE {monitor_list_qualified}
         SET live_loss_prevention_cooldown_start_time = to_timestamp(%s),
+            original_loss_prevention_cooldown_start_time = LEAST(
+                COALESCE(original_loss_prevention_cooldown_start_time, to_timestamp(%s)),
+                to_timestamp(%s)
+            ),
+            loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + %s,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
         """,
-        (_loss_anchor_utc_epoch(anchor_dt), monitor_id),
+        (latest_epoch, first_epoch, first_epoch, loss_count, monitor_id),
     )
     return True
 
@@ -729,17 +753,6 @@ def full_replay_monitor_sim_lp_state(
     if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time"):
         return
     dur_h = float(row[3] or 4)
-    replay_live_loss_throttle_from_trades_log(
-        cursor,
-        trades_qualified,
-        monitor_list_qualified,
-        tenant_slot,
-        str(monitor_id),
-        duration_hours=dur_h,
-    )
-    if not bool(row[2]):
-        recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
-        return
 
     now = datetime.now(EST)
     horizon = now - timedelta(hours=dur_h)
@@ -759,6 +772,18 @@ def full_replay_monitor_sim_lp_state(
         """,
         (monitor_id,),
     )
+
+    replay_live_loss_throttle_from_trades_log(
+        cursor,
+        trades_qualified,
+        monitor_list_qualified,
+        tenant_slot,
+        str(monitor_id),
+        duration_hours=dur_h,
+    )
+    if not bool(row[2]):
+        recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
+        return
 
     monitor_key = f"mon_{tenant_slot}_{monitor_id}"
     cycles = _fetch_loss_cycles_for_monitor_since(
