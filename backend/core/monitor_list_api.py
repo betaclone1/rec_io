@@ -16,6 +16,7 @@ from backend.core.time_based_loss_prevention import (
     _sql_sim_cooldown_live_expr,
 )
 from backend.core.symbol_wide_loss_prevention import (
+    more_serious_loss_prevention_state,
     normalize_loss_prevention_state_for_sizing,
     symbol_wide_loss_prevention_state,
 )
@@ -193,10 +194,19 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
 
         local_loss_prevention_state = loss_prevention_state
         symbol_state_out = symbol_wide_loss_prevention_state(symbol_wide_loss_prevention_raw_state)
+        effective_state_out = more_serious_loss_prevention_state(
+            local_loss_prevention_state,
+            symbol_state_out,
+        )
+        effective_base_state = normalize_loss_prevention_state_for_sizing(effective_state_out)
         symbol_base_state = normalize_loss_prevention_state_for_sizing(symbol_state_out)
-        symbol_wide_active = bool(symbol_wide_loss_prevention) and symbol_base_state != "off"
+        symbol_wide_active = (
+            bool(symbol_wide_loss_prevention)
+            and symbol_base_state != "off"
+            and effective_state_out == symbol_state_out
+        )
         if symbol_wide_active:
-            loss_prevention_out = symbol_state_out
+            loss_prevention_out = effective_state_out
             effective_loss_prevention_duration = (
                 symbol_wide_loss_prevention_duration or loss_prevention_duration
             )
@@ -214,6 +224,21 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             )
             effective_simulated_loss_prevention_cooldown_live = symbol_base_state.startswith("sim_loss_")
             effective_live_loss_prevention_cooldown_live = symbol_base_state == "live_loss_1c"
+        elif bool(symbol_wide_loss_prevention) and effective_base_state != "off":
+            loss_prevention_out = effective_state_out
+            effective_loss_prevention_duration = loss_prevention_duration
+            effective_simulated_loss_prevention_cooldown_start_time = (
+                simulated_loss_prevention_cooldown_start_time
+            )
+            effective_original_loss_prevention_cooldown_start_time = (
+                original_loss_prevention_cooldown_start_time
+            )
+            effective_loss_prevention_cooldown_loss_count = loss_prevention_cooldown_loss_count or 0
+            effective_live_loss_prevention_cooldown_start_time = (
+                live_loss_prevention_cooldown_start_time
+            )
+            effective_simulated_loss_prevention_cooldown_live = effective_base_state.startswith("sim_loss_")
+            effective_live_loss_prevention_cooldown_live = effective_base_state == "live_loss_1c"
         else:
             loss_prevention_out = local_loss_prevention_state
             effective_loss_prevention_duration = loss_prevention_duration

@@ -16,6 +16,7 @@ from zoneinfo import ZoneInfo
 from backend.core.auto_entry_settings_store import loss_prevention_value_for_streak
 from backend.core.symbol_wide_loss_prevention import (
     configured_symbol_wide_monitor_ids,
+    project_symbol_wide_loss_prevention_to_monitor,
     sync_symbol_wide_loss_prevention_from_monitor,
 )
 from backend.core.tenant_legacy_sql import legacy_users_sim_trade_lp_cycle_ledger
@@ -41,7 +42,7 @@ def _sql_sim_cooldown_live_expr(prefix: str = "") -> str:
 
 
 def _sql_live_loss_prevention_cooldown_live_expr(prefix: str = "") -> str:
-    """Live (non-paper) loss throttle window: same duration as ``loss_prevention_duration``."""
+    """Trades-log loss throttle window: same duration as ``loss_prevention_duration``."""
     p = prefix
     return f"""(
     COALESCE({p}loss_prevention_toggle, FALSE)
@@ -296,7 +297,9 @@ def recompute_monitor_loss_prevention(
         """,
         (new_lp, monitor_id),
     )
-    sync_symbol_wide_loss_prevention_from_monitor(cursor, monitor_list_qualified, monitor_id)
+    synced_hero = sync_symbol_wide_loss_prevention_from_monitor(cursor, monitor_list_qualified, monitor_id)
+    if not synced_hero:
+        project_symbol_wide_loss_prevention_to_monitor(cursor, monitor_list_qualified, monitor_id)
     return new_lp
 
 
@@ -404,7 +407,6 @@ def apply_sim_trade_cycle_loss(
     if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time" and bool(row[2])):
         return False
 
-    live_expired = _expire_live_trade_cooldown_if_needed(cursor, monitor_list_qualified, mid_str)
     sim_expired = _expire_simulated_trade_state_if_needed(
         cursor, monitor_list_qualified, mid_str, now_est=datetime.now(EST)
     )
@@ -413,6 +415,7 @@ def apply_sim_trade_cycle_loss(
         cursor, trades_simulated_qualified, trades_qualified, monitor_key, cycle_date, weekly_cycle
     )
     if contribution <= 0:
+        live_expired = _expire_live_trade_cooldown_if_needed(cursor, monitor_list_qualified, mid_str)
         if live_expired or sim_expired:
             recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid_str)
         return False
@@ -454,44 +457,32 @@ def apply_sim_trade_cycle_loss(
     if not st:
         return False
     orig, _, cnt = st[0], st[1], int(st[2] or 0)
-    cursor.execute(
-        f"""
-        SELECT {_sql_live_loss_prevention_cooldown_live_expr()}
-        FROM {monitor_list_qualified}
-        WHERE id = %s
-        """,
-        (mid_str,),
-    )
-    live_row = cursor.fetchone()
-    live_throttle_active = bool(live_row and live_row[0]) and not from_replay
-    # While ``live_loss_1c`` is in effect, simulated losses may still slide
-    # ``simulated_loss_prevention_cooldown_start_time`` (cooldown clock) but must not change
-    # ``loss_prevention_cooldown_loss_count`` so tier cannot move (e.g. to sim_loss_25).
-    # ``from_replay`` rebuilds ledger + counts from history and must not use this freeze.
+
     # ``to_timestamp(utc_epoch)``: never pass Python ``datetime`` into ``TIMESTAMPTZ`` (psycopg2 + host TZ).
     anchor_epoch = _loss_anchor_utc_epoch(loss_anchor_ts)
+    live_extend_expr = """CASE
+                WHEN live_loss_prevention_cooldown_start_time IS NOT NULL
+                 AND COALESCE(loss_prevention_duration, 0) > 0
+                 AND (
+                    live_loss_prevention_cooldown_start_time
+                    + (COALESCE(loss_prevention_duration, 0) || ' hours')::interval
+                 ) > to_timestamp(%s)
+                THEN GREATEST(live_loss_prevention_cooldown_start_time, to_timestamp(%s))
+                ELSE live_loss_prevention_cooldown_start_time
+            END"""
     if orig is None:
-        new_cnt = cnt if live_throttle_active else cnt + delta
+        new_cnt = cnt + delta
         cursor.execute(
             f"""
             UPDATE {monitor_list_qualified}
             SET original_loss_prevention_cooldown_start_time = to_timestamp(%s),
                 simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
                 loss_prevention_cooldown_loss_count = %s,
+                live_loss_prevention_cooldown_start_time = {live_extend_expr},
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (anchor_epoch, anchor_epoch, new_cnt, mid_str),
-        )
-    elif live_throttle_active:
-        cursor.execute(
-            f"""
-            UPDATE {monitor_list_qualified}
-            SET simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
-                updated_at = CURRENT_TIMESTAMP
-            WHERE id = %s
-            """,
-            (anchor_epoch, mid_str),
+            (anchor_epoch, anchor_epoch, new_cnt, anchor_epoch, anchor_epoch, mid_str),
         )
     else:
         cursor.execute(
@@ -499,10 +490,11 @@ def apply_sim_trade_cycle_loss(
             UPDATE {monitor_list_qualified}
             SET simulated_loss_prevention_cooldown_start_time = to_timestamp(%s),
                 loss_prevention_cooldown_loss_count = loss_prevention_cooldown_loss_count + %s,
+                live_loss_prevention_cooldown_start_time = {live_extend_expr},
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s
             """,
-            (anchor_epoch, delta, mid_str),
+            (anchor_epoch, delta, anchor_epoch, anchor_epoch, mid_str),
         )
 
     recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid_str)
@@ -569,12 +561,10 @@ def on_trade_closed_live_loss_throttle(
     tenant_slot: str,
     trade_id: int,
 ) -> bool:
-    """After a real (non-paper) closed loss, cap sizing at 1 contract for the cooldown window."""
+    """After any trades-log closed loss, cap sizing at 1 contract for the cooldown window."""
     cursor.execute(
         f"""
-        SELECT t.monitor, t.win_loss,
-               COALESCE(t.test_filter, FALSE), COALESCE(t.paper_trade, FALSE),
-               {_SQL_T_CLOSE_ANCHOR_EPOCH}
+        SELECT t.monitor, t.win_loss, {_SQL_T_CLOSE_ANCHOR_EPOCH}
         FROM {trades_qualified} AS t
         WHERE t.id = %s
         """,
@@ -583,14 +573,12 @@ def on_trade_closed_live_loss_throttle(
     row = cursor.fetchone()
     if not row:
         return False
-    monitor_key, win_loss, test_filter, paper_trade, anch_ep = (
+    monitor_key, win_loss, anch_ep = (
         row[0],
         row[1],
         row[2],
-        row[3],
-        row[4],
     )
-    if win_loss != "L" or test_filter or paper_trade:
+    if win_loss != "L":
         return False
     if not monitor_key:
         return False
@@ -622,6 +610,69 @@ def on_trade_closed_live_loss_throttle(
         (epoch, mid_str),
     )
     recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid_str)
+    return True
+
+
+def replay_live_loss_throttle_from_trades_log(
+    cursor,
+    trades_qualified: str,
+    monitor_list_qualified: str,
+    tenant_slot: str,
+    monitor_id: str,
+    *,
+    duration_hours: Optional[float] = None,
+) -> bool:
+    """Reconcile ``live_loss_1c`` from closed losses in ``users.trades_*``."""
+    monitor_key = f"mon_{tenant_slot}_{monitor_id}"
+    if duration_hours is None:
+        cursor.execute(
+            f"""
+            SELECT COALESCE(loss_prevention_duration, 4)
+            FROM {monitor_list_qualified}
+            WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        row = cursor.fetchone()
+        if not row:
+            return False
+        duration_hours = float(row[0] or 4)
+
+    if float(duration_hours or 0) <= 0:
+        return False
+
+    horizon_epoch = float(
+        (datetime.now(EST) - timedelta(hours=float(duration_hours)))
+        .astimezone(timezone.utc)
+        .timestamp()
+    )
+    cursor.execute(
+        f"""
+        SELECT MAX({_SQL_T_CLOSE_ANCHOR_EPOCH})
+        FROM {trades_qualified} AS t
+        WHERE t.monitor = %s
+          AND t.status = 'closed'
+          AND t.win_loss = 'L'
+        HAVING MAX({_SQL_T_CLOSE_ANCHOR_EPOCH}) >= %s
+        """,
+        (monitor_key, horizon_epoch),
+    )
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return False
+
+    anchor_dt = _parse_ts(row[0])
+    if anchor_dt is None:
+        return False
+    cursor.execute(
+        f"""
+        UPDATE {monitor_list_qualified}
+        SET live_loss_prevention_cooldown_start_time = to_timestamp(%s),
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        """,
+        (_loss_anchor_utc_epoch(anchor_dt), monitor_id),
+    )
     return True
 
 
@@ -675,9 +726,21 @@ def full_replay_monitor_sim_lp_state(
         (monitor_id,),
     )
     row = cursor.fetchone()
-    if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time" and bool(row[2])):
+    if not row or not (bool(row[0]) and str(row[1]).strip().lower() == "time"):
         return
     dur_h = float(row[3] or 4)
+    replay_live_loss_throttle_from_trades_log(
+        cursor,
+        trades_qualified,
+        monitor_list_qualified,
+        tenant_slot,
+        str(monitor_id),
+        duration_hours=dur_h,
+    )
+    if not bool(row[2]):
+        recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
+        return
+
     now = datetime.now(EST)
     horizon = now - timedelta(hours=dur_h)
 
@@ -735,7 +798,6 @@ def startup_reconcile_simulated_trade_for_tenant(
             SELECT id FROM {monitor_list_qualified}
             WHERE COALESCE(loss_prevention_toggle, FALSE) IS TRUE
               AND COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak') = 'time'
-              AND COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
             """
         )
         ids = [str(r[0]) for r in (cursor.fetchall() or [])]
@@ -820,6 +882,13 @@ def sync_simulated_trade_after_monitor_settings_save(
         cursor.execute(
             f"DELETE FROM {ledger} WHERE monitor_id = %s",
             (int(monitor_id),),
+        )
+        replay_live_loss_throttle_from_trades_log(
+            cursor,
+            trades_qualified,
+            monitor_list_qualified,
+            tenant_slot,
+            str(monitor_id),
         )
         recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
         return

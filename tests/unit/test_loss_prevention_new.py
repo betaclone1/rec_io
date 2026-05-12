@@ -1,7 +1,10 @@
 """Unit tests for monitor loss_prevention value ``new`` (bootstrap sizing) and sim-trade tiers."""
 
 from backend.core.time_based_loss_prevention import (
+    apply_sim_trade_cycle_loss,
     cycle_loss_contribution_units,
+    on_trade_closed_live_loss_throttle,
+    replay_live_loss_throttle_from_trades_log,
     resolve_monitor_loss_prevention_value,
     tier_from_sim_loss_count,
 )
@@ -139,3 +142,118 @@ def test_parse_ts_epoch_matches_utc_instant():
     want = utc.astimezone(EST)
     assert _parse_ts(utc.timestamp()) == want
     assert _parse_ts(Decimal(str(utc.timestamp()))) == want
+
+
+class _LiveLossCursor:
+    def __init__(self, rows):
+        self.rows = list(rows)
+        self.executed = []
+
+    def execute(self, query, params=None):
+        self.executed.append((query, params))
+
+    def fetchone(self):
+        if not self.rows:
+            return None
+        return self.rows.pop(0)
+
+
+def test_live_loss_throttle_counts_paper_and_test_trades_log_rows(monkeypatch):
+    from backend.core import time_based_loss_prevention as lp
+
+    recomputed = []
+    monkeypatch.setattr(
+        lp,
+        "recompute_monitor_loss_prevention",
+        lambda cursor, monitor_list, monitor_id: recomputed.append((monitor_list, monitor_id)),
+    )
+
+    cursor = _LiveLossCursor(
+        [
+            ("mon_0001_99015", "L", 1_779_000_000),
+            (True, "time"),
+            None,
+        ]
+    )
+
+    assert (
+        on_trade_closed_live_loss_throttle(
+            cursor,
+            "users.trades_0001",
+            "users.monitor_list_0001",
+            "0001",
+            39432,
+        )
+        is True
+    )
+
+    first_query = cursor.executed[0][0]
+    assert "paper_trade" not in first_query
+    assert "test_filter" not in first_query
+    assert recomputed == [("users.monitor_list_0001", "99015")]
+
+
+def test_live_loss_replay_counts_all_trades_log_rows():
+    cursor = _LiveLossCursor([(1_779_000_000,)])
+
+    assert (
+        replay_live_loss_throttle_from_trades_log(
+            cursor,
+            "users.trades_0001",
+            "users.monitor_list_0001",
+            "0001",
+            "99015",
+            duration_hours=72,
+        )
+        is True
+    )
+
+    replay_query = cursor.executed[0][0]
+    assert "paper_trade" not in replay_query
+    assert "test_filter" not in replay_query
+    assert cursor.executed[-1][1][1] == "99015"
+
+
+def test_sim_loss_during_live_throttle_extends_live_cooldown_and_count(monkeypatch):
+    from datetime import datetime
+
+    from backend.core import time_based_loss_prevention as lp
+
+    monkeypatch.setattr(lp, "ensure_sim_trade_ledger_table", lambda cursor, tenant_slot: None)
+    monkeypatch.setattr(
+        lp,
+        "_expire_simulated_trade_state_if_needed",
+        lambda cursor, monitor_list, monitor_id, now_est: False,
+    )
+    monkeypatch.setattr(lp, "_cycle_contribution", lambda *args: (2, None))
+    monkeypatch.setattr(lp, "recompute_monitor_loss_prevention", lambda *args: None)
+
+    cursor = _LiveLossCursor(
+        [
+            (True, "time", True),
+            (0,),
+            ("2026-05-12 10:00:15-04:00", "2026-05-12 11:00:15-04:00", 2),
+        ]
+    )
+
+    assert (
+        apply_sim_trade_cycle_loss(
+            cursor,
+            monitor_list_qualified="users.monitor_list_0001",
+            trades_qualified="users.trades_0001",
+            trades_simulated_qualified="users.trades_simulated_0001",
+            ledger_qualified="users.sim_trade_lp_cycle_ledger_0001",
+            tenant_slot="0001",
+            monitor_key="mon_0001_10002",
+            cycle_date="2026-05-12",
+            weekly_cycle="59.2",
+            loss_anchor_ts=datetime(2026, 5, 12, 11, 30, 14),
+        )
+        is True
+    )
+
+    update_query, update_params = cursor.executed[-1]
+    assert "live_loss_prevention_cooldown_start_time = CASE" in update_query
+    assert "loss_prevention_cooldown_loss_count = loss_prevention_cooldown_loss_count + %s" in update_query
+    assert update_params[1] == 2
+    assert update_params[-1] == "10002"
