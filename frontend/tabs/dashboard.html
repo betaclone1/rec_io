@@ -3228,10 +3228,12 @@
         lpKey === 'live_loss_1c';
       if (swLive || simTier) {
         const timeText = formatSymbolWideCooldownEndEtRounded(monitor);
-        const text = timeText || 'SIM';
+        if (!timeText) {
+          return { visible: false };
+        }
         return {
           visible: true,
-          text,
+          text: timeText,
           className: 'allocation-status-badge lp lp-symbol-wide',
           dataTooltip: buildSimCooldownTooltipText(monitor, swLive, lpKey),
         };

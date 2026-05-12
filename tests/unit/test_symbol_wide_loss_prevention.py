@@ -7,6 +7,7 @@ from backend.core.symbol_wide_loss_prevention import (
     project_symbol_wide_loss_prevention_to_monitor,
     resolve_effective_loss_prevention_state,
     symbol_wide_loss_prevention_state,
+    _symbol_wide_monitor_tables,
     sync_symbol_wide_loss_prevention_from_monitor,
     sync_symbol_wide_loss_prevention_followers,
 )
@@ -53,7 +54,7 @@ class FakeCursor:
             self.update_params = params
             self.last = "update"
             self.rowcount = 1 if self.update_returns else 0
-        elif q.startswith("UPDATE users.monitor_list_"):
+        elif q.startswith("UPDATE users.monitor_list_") or q.startswith("UPDATE users_"):
             self.follower_update_params.append(params)
             self.last = "follower_update"
             self.rowcount = 1
@@ -174,6 +175,19 @@ def test_configured_symbol_wide_monitor_ids_reads_follow_names_without_sim_flag(
     assert "simulated_trade_loss_prevention" not in query
 
 
+def test_symbol_wide_monitor_table_discovery_includes_tenant_schemas():
+    cur = FakeCursor(
+        monitor_row=_monitor_row(),
+        monitor_tables=[("users_0001", "monitor_list_0001")],
+    )
+
+    assert _symbol_wide_monitor_tables(cur) == ["users_0001.monitor_list_0001"]
+
+    query = cur.queries[-1]
+    assert "table_schema = 'users'" in query
+    assert "table_schema ~ '^users_[0-9]{4}$'" in query
+
+
 def test_project_symbol_wide_state_into_follower_monitor_row():
     cur = FakeCursor(
         monitor_row=_monitor_row(),
@@ -252,11 +266,12 @@ def test_follower_sync_when_symbol_wide_off_updates_prior_symbol_wide_rows_only(
     cur = FakeCursor(
         monitor_row=_monitor_row(),
         live_state="off",
-        monitor_tables=[("users", "monitor_list_0001")],
+        monitor_tables=[("users_0001", "monitor_list_0001")],
     )
 
     assert sync_symbol_wide_loss_prevention_followers(cur, "BTC") == 1
 
     update_query = cur.queries[-1]
+    assert update_query.startswith("UPDATE users_0001.monitor_list_0001")
     assert "RIGHT( LOWER(REPLACE(COALESCE(loss_prevention_state, ''), '-', '_'))" in update_query
     assert cur.follower_update_params[-1] == ("BTC", len("_symbol_wide"), "_symbol_wide")

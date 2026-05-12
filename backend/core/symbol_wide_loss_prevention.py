@@ -232,7 +232,7 @@ def _symbol_wide_monitor_tables(cursor) -> list[str]:
         """
         SELECT table_schema, table_name
         FROM information_schema.columns
-        WHERE table_schema = 'users'
+        WHERE (table_schema = 'users' OR table_schema ~ '^users_[0-9]{4}$')
           AND table_name LIKE 'monitor_list_%'
           AND column_name IN (
             'id',
