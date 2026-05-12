@@ -216,6 +216,8 @@ def test_live_loss_replay_counts_all_trades_log_rows():
     assert "paper_trade" not in replay_query
     assert "test_filter" not in replay_query
     assert "COUNT(*)" in replay_query
+    assert "HAVING" not in replay_query
+    assert ">= %s" in replay_query
     update_query, update_params = cursor.executed[-1]
     assert "original_loss_prevention_cooldown_start_time = LEAST" in update_query
     assert "loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + %s" in update_query

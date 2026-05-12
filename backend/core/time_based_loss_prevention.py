@@ -668,7 +668,7 @@ def replay_live_loss_throttle_from_trades_log(
         WHERE t.monitor = %s
           AND t.status = 'closed'
           AND t.win_loss = 'L'
-        HAVING MAX({_SQL_T_CLOSE_ANCHOR_EPOCH}) >= %s
+          AND {_SQL_T_CLOSE_ANCHOR_EPOCH} >= %s
         """,
         (monitor_key, horizon_epoch),
     )
