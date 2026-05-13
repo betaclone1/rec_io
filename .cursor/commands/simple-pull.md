@@ -14,4 +14,4 @@ Use for small pushes (e.g. frontend-only or config tweaks) where you've already 
 
 **Execute the workflow** in `.cursor/skills/simple-pull/SKILL.md`. Prefer from repo root: `./scripts/prod/simple_git_pull_on_prod.sh` (correct host resolution; avoids bash `VAR=value ssh root@$VAR` pitfall).
 
-**Target:** `root@$REC_PROD_SSH_HOST` (or canonical IP default in the script); project path `/opt/rec_io_server`.
+**Target:** `${REC_PROD_SSH_USER:-root}@$REC_PROD_SSH_HOST` (defaults in script); project path `/opt/rec_io_server`. See `docs/CURSOR_CLOUD_PROD_SSH_ACCESS_PROPOSAL.md` for Cursor Cloud SSH user and secrets.

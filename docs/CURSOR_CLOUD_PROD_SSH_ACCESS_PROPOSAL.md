@@ -38,10 +38,10 @@ Canonical production host details are in `docs/PRODUCTION_HOST.md`.
 - Repo path: `/opt/rec_io_server`
 - Expected env var: `REC_PROD_SSH_HOST`
 
-The current scripts assume SSH as `root`:
+The default SSH user is **`root`** (override with **`REC_PROD_SSH_USER`**). Example:
 
 ```bash
-ssh root@$REC_PROD_SSH_HOST '...'
+./scripts/prod/rec_prod_ssh.sh 'cd /opt/rec_io_server && git status -sb'
 ```
 
 ## Recommended path: dedicated deploy user
@@ -87,24 +87,20 @@ Run these on production from an already authorized admin session.
 
    Adjust paths after checking the actual command paths with `command -v`.
 
-5. Update repo scripts to support a configurable SSH user:
-
-   ```bash
-   REC_PROD_SSH_USER="${REC_PROD_SSH_USER:-root}"
-   ssh "${REC_PROD_SSH_USER}@${REC_PROD_SSH_HOST}" ...
-   ```
+5. **Repo scripts (done in tree):** `scripts/prod/rec_prod_ssh.sh` reads **`REC_PROD_SSH_USER`** (default **`root`**) and **`REC_PROD_SSH_BATCH_MODE`** (`1` / `true` / `yes` adds **`BatchMode=yes`** for non-interactive agents). All wrappers that `exec` this script inherit the same env.
 
 6. Set Cloud env:
 
    ```bash
    REC_PROD_SSH_HOST=165.22.13.146
    REC_PROD_SSH_USER=recio_deploy
+   REC_PROD_SSH_BATCH_MODE=1
    ```
 
 ## Least-change path: authorize root key
 
-This is fastest because current scripts already use `root`. It grants broader
-access, so use a dedicated key that can be revoked independently.
+This is fastest because scripts default to **`root`**. It grants broader
+access, so use a dedicated key that can be revoked independently. Override with **`REC_PROD_SSH_USER`** for a deploy user once the server is set up.
 
 ### Server-side steps
 
@@ -166,16 +162,11 @@ export REC_PROD_SSH_USER=recio_deploy
 
 ## Verification
 
-From a Cursor Cloud agent, run:
+From a Cursor Cloud agent (after `REC_PROD_SSH_HOST` and optional `REC_PROD_SSH_USER` / `REC_PROD_SSH_BATCH_MODE` are exported), run:
 
 ```bash
-ssh -o BatchMode=yes root@$REC_PROD_SSH_HOST 'hostname && cd /opt/rec_io_server && git status --short --branch'
-```
-
-For deploy-user access:
-
-```bash
-ssh -o BatchMode=yes "$REC_PROD_SSH_USER@$REC_PROD_SSH_HOST" 'hostname && cd /opt/rec_io_server && git status --short --branch'
+export REC_PROD_SSH_BATCH_MODE=1
+./scripts/prod/rec_prod_ssh.sh 'hostname && cd /opt/rec_io_server && git status --short --branch'
 ```
 
 Then verify the repo wrapper:

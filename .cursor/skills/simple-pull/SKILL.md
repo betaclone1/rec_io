@@ -2,7 +2,7 @@
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
-**Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
+**Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Optional: `export REC_PROD_SSH_USER=recio_deploy` (default **`root`**) and `export REC_PROD_SSH_BATCH_MODE=1` for non-interactive SSH. Canonical: `docs/PRODUCTION_HOST.md` and `docs/CURSOR_CLOUD_PROD_SSH_ACCESS_PROPOSAL.md`.
 
 Run when the user wants to **only** pull the latest commit on production—no snapshot, no restart, no migrations. For small pushes (e.g. frontend-only) that don't require the full backup/restart process.
 
@@ -17,7 +17,8 @@ Run when the user wants to **only** pull the latest commit on production—no sn
    **Alternative (manual):** export the host, then SSH:
    ```bash
    export REC_PROD_SSH_HOST=165.22.13.146   # or your DNS name; see PRODUCTION_HOST.md
-   ssh root@$REC_PROD_SSH_HOST 'cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main'
+   # optional: export REC_PROD_SSH_USER=recio_deploy REC_PROD_SSH_BATCH_MODE=1
+   ssh "${REC_PROD_SSH_USER:-root}@$REC_PROD_SSH_HOST" 'cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main'
    ```
 
 2. **Report outcome** — If the command succeeded, report the pull result (e.g. "Already up to date" or the commit that was pulled). If it failed (e.g. not fast-forward, SSH error), report the error and do not claim success.

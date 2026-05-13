@@ -7,6 +7,8 @@
 | **Public IPv4 (SSH + Postgres from your machine)** | `165.22.13.146` |
 | **Project root on the server** | `/opt/rec_io_server` |
 | **Env for SSH runbooks** | `REC_PROD_SSH_HOST` |
+| **SSH user (optional)** | `REC_PROD_SSH_USER` — defaults to **`root`**. Set to a deploy user (e.g. `recio_deploy`) when using a non-root key; see [CURSOR_CLOUD_PROD_SSH_ACCESS_PROPOSAL.md](CURSOR_CLOUD_PROD_SSH_ACCESS_PROPOSAL.md). |
+| **SSH batch mode (optional)** | `REC_PROD_SSH_BATCH_MODE=1` — adds `BatchMode=yes` so SSH exits immediately if key auth fails (automation / Cursor Cloud). |
 | **Env for local scripts connecting to prod Postgres** | `REC_PROD_DB_HOST` (optional if same as SSH target; often set to the same value as `REC_PROD_SSH_HOST`) |
 | **DigitalOcean droplet (name)** | **562337636** — `rec-io-server-new-york-1` (active). `prepare-update` / `scripts/do/snapshot_prod.sh` default; override with `DO_PROD_DROPLET_ID`. Prior prod droplet **513735057** (`137.184.224.94`) is retired/off — do not snapshot it for current prod. |
 
@@ -15,11 +17,14 @@
 ```bash
 export REC_PROD_SSH_HOST=165.22.13.146
 export REC_PROD_DB_HOST=165.22.13.146   # when a script needs DB_HOST pointed at prod
+# optional (Cursor Cloud / deploy user):
+# export REC_PROD_SSH_USER=recio_deploy
+# export REC_PROD_SSH_BATCH_MODE=1
 ```
 
 ## SSH from automation / agents
 
-- **Wrapper (recommended):** `scripts/prod/rec_prod_ssh.sh 'remote command'` and `scripts/prod/simple_git_pull_on_prod.sh` resolve `REC_PROD_SSH_HOST` inside the script (defaulting to the table above if unset). Run them from the repo root.
+- **Wrapper (recommended):** `scripts/prod/rec_prod_ssh.sh 'remote command'` and `scripts/prod/simple_git_pull_on_prod.sh` resolve `REC_PROD_SSH_HOST` and **`REC_PROD_SSH_USER`** inside the script (host defaults to the table above; user defaults to **`root`**). Run them from the repo root.
 - **Bash pitfall:** A single line like `REC_PROD_SSH_HOST=165.22.13.146 ssh root@$REC_PROD_SSH_HOST '…'` often breaks: the destination is expanded **before** the assignment applies to the current shell, so you get `root@` with an empty host. **Export first**, then `ssh root@$REC_PROD_SSH_HOST '…'`, or use the wrapper script.
 
 ## Cron: bookkeeper Kalshi reconcile
