@@ -2404,6 +2404,8 @@ body.tm-mobile-layout.trade-monitor-new-page .trade-monitor-new .hourly-strike-l
   </script>
   <script src="/js/uat_unified_modal_position_size.js"></script>
   <script src="/js/unified_auto_trade_settings.js"></script>
+  <!-- Required before realtime-ws-coordinator: TM uses onlyDbStreams; coordinator needs recDbChangeRawMentionsAny. -->
+  <script src="/js/db_changes_prefilter.js"></script>
   <script src="/js/realtime-ws-coordinator.js"></script>
   <script src="/js/rec_trades_fetch.js"></script>
   <script src="/js/trade-execution-controller.js"></script>

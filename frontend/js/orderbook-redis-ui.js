@@ -84,7 +84,22 @@
     return (window.location.origin || '').replace(/\/$/, '');
   }
 
-  /** Match ``tmMainApiBase`` host so WS hits the app that forwards Redis (not a static dev origin). */
+  /** True when the document origin and API base differ by hostname (e.g. 127.0.0.1 vs localhost). */
+  function dbChangesWebSocketHostsDiffer(pageOriginStr, apiBaseStr) {
+    try {
+      var p = new URL(pageOriginStr.endsWith('/') ? pageOriginStr : pageOriginStr + '/');
+      var a = new URL(String(apiBaseStr || '').replace(/\/?$/, '/') + 'x');
+      return p.hostname.toLowerCase() !== a.hostname.toLowerCase();
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * Match ``tmMainApiBase`` host so WS hits the app that forwards Redis (not a static dev origin).
+   * Cross-host static tabs (e.g. 127.0.0.1:8091 with API on localhost:3000) do not send cookies on the
+   * WS upgrade; append ``token`` so ``tenant_asgi`` can authenticate (same as HTTP query token).
+   */
   function dbChangesWebSocketUrl() {
     var base = tmMainApiBase();
     var u;
@@ -94,7 +109,21 @@
       u = new URL((window.location.origin || '') + '/');
     }
     var wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:';
-    return wsProto + '//' + u.host + '/ws/db_changes';
+    var url = wsProto + '//' + u.host + '/ws/db_changes';
+    try {
+      var pageOrigin = (window.location.origin || '').replace(/\/$/, '');
+      var apiBase = String(base || '').replace(/\/$/, '');
+      if (pageOrigin && apiBase && dbChangesWebSocketHostsDiffer(pageOrigin, apiBase)) {
+        var tok = '';
+        try {
+          tok = (localStorage.getItem('rec_auth_token') || '').trim();
+        } catch (e2) {}
+        if (tok) {
+          url += (url.indexOf('?') === -1 ? '?' : '&') + 'token=' + encodeURIComponent(tok);
+        }
+      }
+    } catch (e3) {}
+    return url;
   }
 
   function formatTmSpotUsd(val) {
