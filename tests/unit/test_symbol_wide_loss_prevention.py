@@ -28,7 +28,7 @@ class FakeCursor:
         self.live_state = live_state
         self.update_returns = update_returns
         self.configured_ids = configured_ids or []
-        self.project_monitor_row = project_monitor_row or ("BTC", True, True, "off")
+        self.project_monitor_row = project_monitor_row or ("BTC", True, True, "off", "off")
         self.monitor_tables = monitor_tables or [("users", "monitor_list_0001")]
         self.last = None
         self.update_params = None
@@ -80,7 +80,7 @@ class FakeCursor:
         return []
 
 
-def _monitor_row(*, local_state="off", symbol_wide=True):
+def _monitor_row(*, local_state="off", symbol_wide=True, computed_local_state=None):
     return (
         10001,
         "BTC Hourly Hero",
@@ -93,6 +93,7 @@ def _monitor_row(*, local_state="off", symbol_wide=True):
         None,
         True,
         symbol_wide,
+        computed_local_state if computed_local_state is not None else local_state,
     )
 
 
@@ -129,6 +130,20 @@ def test_more_serious_state_prefers_symbol_sim_50_over_local_sim_25():
     )
 
 
+def test_more_serious_state_does_not_treat_prior_symbol_wide_as_local():
+    assert (
+        more_serious_loss_prevention_state(
+            "live_loss_1c_symbol_wide",
+            "sim_loss_50_symbol_wide",
+        )
+        == "sim_loss_50_symbol_wide"
+    )
+
+
+def test_more_serious_state_clears_prior_symbol_wide_when_symbol_wide_off():
+    assert more_serious_loss_prevention_state("sim_loss_50_symbol_wide", "off") == "off"
+
+
 def test_effective_state_uses_symbol_wide_when_enabled_and_non_off():
     cur = FakeCursor(
         monitor_row=_monitor_row(local_state="off", symbol_wide=True),
@@ -148,6 +163,22 @@ def test_effective_state_falls_back_to_local_when_symbol_wide_off():
     assert (
         resolve_effective_loss_prevention_state(cur, "users.monitor_list_0002", "20001")
         == "live_loss_1c"
+    )
+
+
+def test_effective_state_recomputes_local_for_prior_symbol_wide_projection():
+    cur = FakeCursor(
+        monitor_row=_monitor_row(
+            local_state="live_loss_1c_symbol_wide",
+            computed_local_state="off",
+            symbol_wide=True,
+        ),
+        live_state="sim_loss_50_symbol_wide",
+    )
+
+    assert (
+        resolve_effective_loss_prevention_state(cur, "users.monitor_list_0002", "20001")
+        == "sim_loss_50_symbol_wide"
     )
 
 
@@ -192,7 +223,7 @@ def test_project_symbol_wide_state_into_follower_monitor_row():
     cur = FakeCursor(
         monitor_row=_monitor_row(),
         live_state="sim_loss_25_symbol_wide",
-        project_monitor_row=("BTC", True, True, "off"),
+        project_monitor_row=("BTC", True, True, "off", "off"),
     )
 
     assert project_symbol_wide_loss_prevention_to_monitor(
@@ -210,7 +241,7 @@ def test_project_keeps_more_serious_local_state_over_symbol_wide_state():
     cur = FakeCursor(
         monitor_row=_monitor_row(),
         live_state="sim_loss_25_symbol_wide",
-        project_monitor_row=("BTC", True, True, "live_loss_1c"),
+        project_monitor_row=("BTC", True, True, "live_loss_1c", "live_loss_1c"),
     )
 
     assert project_symbol_wide_loss_prevention_to_monitor(
@@ -224,11 +255,35 @@ def test_project_keeps_more_serious_local_state_over_symbol_wide_state():
     )
 
 
+def test_project_replaces_stale_prior_symbol_wide_state_with_current_symbol_state():
+    cur = FakeCursor(
+        monitor_row=_monitor_row(),
+        live_state="sim_loss_50_symbol_wide",
+        project_monitor_row=(
+            "BTC",
+            True,
+            True,
+            "live_loss_1c_symbol_wide",
+            "off",
+        ),
+    )
+
+    assert project_symbol_wide_loss_prevention_to_monitor(
+        cur, "users.monitor_list_0002", "20001"
+    )
+
+    assert cur.follower_update_params[-1] == (
+        "sim_loss_50_symbol_wide",
+        "20001",
+        "sim_loss_50_symbol_wide",
+    )
+
+
 def test_project_symbol_wide_off_restores_local_state_for_prior_symbol_wide_row():
     cur = FakeCursor(
         monitor_row=_monitor_row(),
         live_state="off",
-        project_monitor_row=("BTC", True, True, "sim_loss_25_symbol_wide"),
+        project_monitor_row=("BTC", True, True, "sim_loss_25_symbol_wide", "off"),
     )
 
     assert project_symbol_wide_loss_prevention_to_monitor(

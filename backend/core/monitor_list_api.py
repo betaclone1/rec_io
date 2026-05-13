@@ -16,6 +16,8 @@ from backend.core.time_based_loss_prevention import (
     _sql_sim_cooldown_live_expr,
 )
 from backend.core.symbol_wide_loss_prevention import (
+    _sql_local_loss_prevention_state_expr,
+    is_symbol_wide_loss_prevention_state,
     more_serious_loss_prevention_state,
     normalize_loss_prevention_state_for_sizing,
     symbol_wide_loss_prevention_state,
@@ -48,6 +50,7 @@ def _monitor_list_select_sql(user_number: str) -> str:
                     ml.dashboard_order,
                     ml.win_streak,
                     ml.loss_prevention_state,
+                    {_sql_local_loss_prevention_state_expr("ml.")} AS computed_local_loss_prevention_state,
                     COALESCE(ml.loss_prevention_toggle, FALSE),
                     COALESCE(NULLIF(ml.loss_prevention_method, ''), 'win_streak'),
                     ml.created,
@@ -111,9 +114,9 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
         if strict_pipeline_health:
             sym_mkt_pairs = sorted(
                 {
-                    (str(r[2]).upper(), str(r[28] or "").strip().lower())
+                    (str(r[2]).upper(), str(r[29] or "").strip().lower())
                     for r in results
-                    if r[2] and (str(r[28] or "").strip().lower() in ("15m", "hourly"))
+                    if r[2] and (str(r[29] or "").strip().lower() in ("15m", "hourly"))
                 }
             )
             for sym, mkt in sym_mkt_pairs:
@@ -158,6 +161,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             dashboard_order,
             win_streak,
             loss_prevention_state,
+            computed_local_loss_prevention_state,
             loss_prevention_toggle,
             loss_prevention_method,
             created,
@@ -192,7 +196,11 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             symbol_wide_loss_prevention_updated_at,
         ) = row
 
-        local_loss_prevention_state = loss_prevention_state
+        local_loss_prevention_state = (
+            computed_local_loss_prevention_state
+            if is_symbol_wide_loss_prevention_state(loss_prevention_state)
+            else loss_prevention_state
+        )
         symbol_state_out = symbol_wide_loss_prevention_state(symbol_wide_loss_prevention_raw_state)
         effective_state_out = more_serious_loss_prevention_state(
             local_loss_prevention_state,

@@ -8573,10 +8573,38 @@
           <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
 
-        <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Loss Prevention Win Streak Threshold: <input type="checkbox" id="m_lossPreventionToggle" style="margin-left:8px; vertical-align:middle;" /></label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
-          <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
-          <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
+        <div class="uat-loss-prevention-block" style="margin:16px 0;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+            <input type="checkbox" id="m_lossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Loss prevention" />
+            <span style="font-size:14px;color:#111;font-weight:500;">Loss prevention</span>
+          </div>
+          <label for="m_lossPreventionMethodSelect" style="font-size:12px;color:#555;display:block;margin-bottom:4px;">Loss prevention method</label>
+          <select id="m_lossPreventionMethodSelect" style="width:100%;max-width:190px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;">
+            <option value="win_streak">Win Streak</option>
+            <option value="time">Time</option>
+          </select>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+            <input type="checkbox" id="m_symbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Use symbol-wide loss prevention" />
+            <span style="font-size:13px;color:#333;">Use symbol-wide loss prevention</span>
+          </div>
+          <div id="m_lossPreventionWinStreakGroup" style="margin-top:16px;">
+            <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+              <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+              <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
+            </div>
+          </div>
+          <div id="m_lossPreventionTimeGroup" style="display:none;margin-top:16px;">
+            <label for="m_lossPreventionDuration" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Duration (hours):</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+              <input type="range" id="m_lossPreventionDuration" min="1" max="72" step="1" value="4" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+              <div id="m_lossPreventionDurationVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">4h</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+              <input type="checkbox" id="m_includeSimulatedTradeLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Include simulated trades" />
+              <span style="font-size:13px;color:#333;">Include simulated trades</span>
+            </div>
+          </div>
         </div>
 
         <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0;">
@@ -8739,6 +8767,41 @@
           <div id="m_msProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0%</div>
         </div>
         
+        <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0;">
+        <div class="uat-loss-prevention-block" style="margin:16px 0;">
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px;">
+            <input type="checkbox" id="m_msLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Loss prevention" />
+            <span style="font-size:14px;color:#111;font-weight:500;">Loss prevention</span>
+          </div>
+          <label for="m_msLossPreventionMethodSelect" style="font-size:12px;color:#555;display:block;margin-bottom:4px;">Loss prevention method</label>
+          <select id="m_msLossPreventionMethodSelect" style="width:100%;max-width:190px;padding:6px 8px;border-radius:4px;border:1px solid #4a5568;background:#2a3441;color:#e2e8f0;font-size:14px;box-sizing:border-box;">
+            <option value="win_streak">Win Streak</option>
+            <option value="time">Time</option>
+          </select>
+          <div style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+            <input type="checkbox" id="m_msSymbolWideLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Use symbol-wide loss prevention" />
+            <span style="font-size:13px;color:#333;">Use symbol-wide loss prevention</span>
+          </div>
+          <div id="m_msLossPreventionWinStreakGroup" style="margin-top:16px;">
+            <label for="m_msWinStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+              <input type="range" id="m_msWinStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+              <div id="m_msWinStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
+            </div>
+          </div>
+          <div id="m_msLossPreventionTimeGroup" style="display:none;margin-top:16px;">
+            <label for="m_msLossPreventionDuration" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Duration (hours):</label>
+            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+              <input type="range" id="m_msLossPreventionDuration" min="1" max="72" step="1" value="4" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+              <div id="m_msLossPreventionDurationVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">4h</div>
+            </div>
+            <div style="display:flex; align-items:center; gap:8px; margin-top:12px;">
+              <input type="checkbox" id="m_msIncludeSimulatedTradeLossPreventionToggle" style="width:16px;height:16px;accent-color:#007bff;flex-shrink:0;" aria-label="Include simulated trades" />
+              <span style="font-size:13px;color:#333;">Include simulated trades</span>
+            </div>
+          </div>
+        </div>
+
         <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0;">
         <div class="uat-section-title">Auto Stop</div>
         
@@ -9609,6 +9672,206 @@
         updateMobileStopLossBubblesFromInt(v);
       }
 
+      function mobileUatBool(value) {
+        return value === true || value === 'true' || value === 1 || value === '1';
+      }
+
+      function mobileUatSetSymbolWideHeroDisabled(isHero) {
+        const note = 'Hero monitors publish symbol-wide loss prevention and cannot follow it.';
+        ['m_symbolWideLossPreventionToggle', 'm_msSymbolWideLossPreventionToggle'].forEach((id) => {
+          const el = document.getElementById(id);
+          if (!el) return;
+          const locked = !!isHero;
+          el.dataset.uatHeroMonitor = locked ? '1' : '0';
+          el.title = locked ? note : '';
+          if (locked) el.checked = false;
+          const row = el.closest ? el.closest('div') : null;
+          if (row) row.title = locked ? note : '';
+        });
+      }
+
+      function mobileUatSyncLossPreventionState() {
+        [
+          {
+            toggle: 'm_lossPreventionToggle',
+            method: 'm_lossPreventionMethodSelect',
+            win: 'm_lossPreventionWinStreakGroup',
+            time: 'm_lossPreventionTimeGroup',
+            includeSim: 'm_includeSimulatedTradeLossPreventionToggle',
+            symbolWide: 'm_symbolWideLossPreventionToggle',
+            duration: 'm_lossPreventionDuration',
+          },
+          {
+            toggle: 'm_msLossPreventionToggle',
+            method: 'm_msLossPreventionMethodSelect',
+            win: 'm_msLossPreventionWinStreakGroup',
+            time: 'm_msLossPreventionTimeGroup',
+            includeSim: 'm_msIncludeSimulatedTradeLossPreventionToggle',
+            symbolWide: 'm_msSymbolWideLossPreventionToggle',
+            duration: 'm_msLossPreventionDuration',
+          },
+        ].forEach((cfg) => {
+          const toggle = document.getElementById(cfg.toggle);
+          const method = document.getElementById(cfg.method);
+          const win = document.getElementById(cfg.win);
+          const time = document.getElementById(cfg.time);
+          const includeSim = document.getElementById(cfg.includeSim);
+          const symbolWide = document.getElementById(cfg.symbolWide);
+          const duration = document.getElementById(cfg.duration);
+          if (!toggle || !method) return;
+
+          const enabled = !!toggle.checked;
+          const isTime = method.value === 'time';
+          method.disabled = !enabled;
+          method.style.opacity = enabled ? '1' : '0.5';
+          if (win) win.style.display = enabled && !isTime ? '' : 'none';
+          if (time) time.style.display = enabled && isTime ? '' : 'none';
+          [includeSim, duration].forEach((el) => {
+            if (!el) return;
+            el.disabled = !(enabled && isTime);
+            el.style.opacity = enabled && isTime ? '1' : '0.5';
+          });
+          if (symbolWide) {
+            const heroLocked = symbolWide.dataset.uatHeroMonitor === '1';
+            if (heroLocked) symbolWide.checked = false;
+            symbolWide.disabled = !enabled || heroLocked;
+            symbolWide.style.opacity = enabled && !heroLocked ? '1' : '0.5';
+            symbolWide.style.cursor = enabled && !heroLocked ? 'pointer' : 'not-allowed';
+          }
+        });
+        requestAnimationFrame(() => {
+          const dur = document.getElementById('m_lossPreventionDuration');
+          if (dur) positionBubble(dur, document.getElementById('m_lossPreventionDurationVal'), (value) => `${Math.round(value)}h`);
+          const msDur = document.getElementById('m_msLossPreventionDuration');
+          if (msDur) positionBubble(msDur, document.getElementById('m_msLossPreventionDurationVal'), (value) => `${Math.round(value)}h`);
+          const win = document.getElementById('m_winStreak');
+          if (win) positionBubble(win, document.getElementById('m_winStreakVal'), (value) => Math.round(value).toString());
+          const msWin = document.getElementById('m_msWinStreak');
+          if (msWin) positionBubble(msWin, document.getElementById('m_msWinStreakVal'), (value) => Math.round(value).toString());
+        });
+      }
+
+      function mobileUatWireLossPreventionControls() {
+        const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+        if (!modal || modal.dataset.mobileUatLossPreventionWired === '1') return;
+        modal.dataset.mobileUatLossPreventionWired = '1';
+        modal.addEventListener('change', (e) => {
+          const t = e.target;
+          if (!t || !t.id) return;
+          if ([
+            'm_lossPreventionToggle',
+            'm_msLossPreventionToggle',
+            'm_lossPreventionMethodSelect',
+            'm_msLossPreventionMethodSelect',
+            'm_symbolWideLossPreventionToggle',
+            'm_msSymbolWideLossPreventionToggle',
+            'm_includeSimulatedTradeLossPreventionToggle',
+            'm_msIncludeSimulatedTradeLossPreventionToggle',
+          ].includes(t.id)) {
+            mobileUatSyncLossPreventionState();
+          }
+        });
+      }
+
+      function mobileUatApplyLossPreventionFromApi(data) {
+        if (!data || typeof data !== 'object') return;
+        const includeSim = mobileUatBool(data.simulated_trade_loss_prevention);
+        const heroLocked = mobileUatBool(data.symbol_wide_loss_prevention_hero);
+        const symbolWide = mobileUatBool(data.symbol_wide_loss_prevention) && !heroLocked;
+        const on = data.loss_prevention_toggle !== undefined
+          ? mobileUatBool(data.loss_prevention_toggle)
+          : (includeSim || symbolWide);
+        let method = String(data.loss_prevention_method || (includeSim ? 'time' : 'win_streak')).trim().toLowerCase();
+        if (method !== 'time') method = 'win_streak';
+        const rawDur = data.loss_prevention_duration != null
+          ? data.loss_prevention_duration
+          : data.simulated_trade_cooldown_duration != null
+            ? data.simulated_trade_cooldown_duration
+            : data.symbol_wide_cooldown_duration;
+        const hrs = rawDur != null && rawDur !== ''
+          ? String(Math.max(1, parseInt(rawDur, 10) || 4))
+          : '4';
+        const win = data.win_streak_threshold != null ? String(data.win_streak_threshold) : '22';
+
+        mobileUatSetSymbolWideHeroDisabled(heroLocked);
+        [
+          {
+            toggle: 'm_lossPreventionToggle',
+            method: 'm_lossPreventionMethodSelect',
+            symbolWide: 'm_symbolWideLossPreventionToggle',
+            includeSim: 'm_includeSimulatedTradeLossPreventionToggle',
+            duration: 'm_lossPreventionDuration',
+            win: 'm_winStreak',
+          },
+          {
+            toggle: 'm_msLossPreventionToggle',
+            method: 'm_msLossPreventionMethodSelect',
+            symbolWide: 'm_msSymbolWideLossPreventionToggle',
+            includeSim: 'm_msIncludeSimulatedTradeLossPreventionToggle',
+            duration: 'm_msLossPreventionDuration',
+            win: 'm_msWinStreak',
+          },
+        ].forEach((cfg) => {
+          const toggle = document.getElementById(cfg.toggle);
+          const methodEl = document.getElementById(cfg.method);
+          const symbolWideEl = document.getElementById(cfg.symbolWide);
+          const includeSimEl = document.getElementById(cfg.includeSim);
+          const durationEl = document.getElementById(cfg.duration);
+          const winEl = document.getElementById(cfg.win);
+          if (toggle) toggle.checked = on;
+          if (methodEl) methodEl.value = method;
+          if (symbolWideEl) symbolWideEl.checked = symbolWide;
+          if (includeSimEl) includeSimEl.checked = includeSim;
+          if (durationEl) durationEl.value = hrs;
+          if (winEl) winEl.value = win;
+        });
+        mobileUatSyncLossPreventionState();
+      }
+
+      function mobileUatReadLossPreventionPayload(isMomentumScalp) {
+        const ids = isMomentumScalp
+          ? {
+              master: 'm_msLossPreventionToggle',
+              method: 'm_msLossPreventionMethodSelect',
+              symbolWide: 'm_msSymbolWideLossPreventionToggle',
+              includeSim: 'm_msIncludeSimulatedTradeLossPreventionToggle',
+              duration: 'm_msLossPreventionDuration',
+              win: 'm_msWinStreak',
+            }
+          : {
+              master: 'm_lossPreventionToggle',
+              method: 'm_lossPreventionMethodSelect',
+              symbolWide: 'm_symbolWideLossPreventionToggle',
+              includeSim: 'm_includeSimulatedTradeLossPreventionToggle',
+              duration: 'm_lossPreventionDuration',
+              win: 'm_winStreak',
+            };
+        const masterEl = document.getElementById(ids.master);
+        const methodEl = document.getElementById(ids.method);
+        const symbolWideEl = document.getElementById(ids.symbolWide);
+        const includeSimEl = document.getElementById(ids.includeSim);
+        const durationEl = document.getElementById(ids.duration);
+        const winEl = document.getElementById(ids.win);
+        const out = {};
+        if (masterEl) out.loss_prevention_toggle = masterEl.checked;
+        if (methodEl) out.loss_prevention_method = methodEl.value === 'time' ? 'time' : 'win_streak';
+        if (symbolWideEl) {
+          out.symbol_wide_loss_prevention = symbolWideEl.dataset.uatHeroMonitor === '1'
+            ? false
+            : symbolWideEl.checked;
+        }
+        if (includeSimEl) out.simulated_trade_loss_prevention = includeSimEl.checked;
+        if (durationEl) {
+          const n = parseInt(String(durationEl.value).trim(), 10);
+          const hrs = Number.isFinite(n) && n > 0 ? n : 4;
+          out.loss_prevention_duration = hrs;
+          out.simulated_trade_cooldown_duration = hrs;
+          out.symbol_wide_cooldown_duration = hrs;
+        }
+        if (winEl) out.win_streak_threshold = parseInt(winEl.value, 10);
+        return out;
+      }
+
       function refreshSliderDisplays() {
         bindSlider('m_autoEntryMinVolume', 'm_minVolVal', (value) => Math.round(Math.max(0, value)).toString());
         bindSlider('m_autoEntryDiff', 'm_diffVal', (value) => {
@@ -9621,6 +9884,7 @@
           return n >= 0 ? `+${s}` : s;
         });
         bindSlider('m_winStreak', 'm_winStreakVal', (value) => Math.round(value).toString());
+        bindSlider('m_lossPreventionDuration', 'm_lossPreventionDurationVal', (value) => `${Math.round(value)}h`);
         bindSlider('m_spikeMomentum', 'm_spikeMomentumVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_spikeCooldown', 'm_spikeCooldownVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_spikeTime', 'm_spikeTimeVal', (value) => `${Math.round(value)} min`);
@@ -9644,6 +9908,8 @@
         bindSlider('m_msAutoEntryMinVolume', 'm_msMinVolVal', (value) => Math.round(Math.max(0, value)).toString());
         bindSlider('m_msAutoEntryProb', 'm_msProbVal', (value) => `${Math.round(value)}%`);
         bindSlider('m_msMomentumScalpEntryThreshold', 'm_msMomentumThresholdVal', (value) => `±${Math.round(value)}`);
+        bindSlider('m_msWinStreak', 'm_msWinStreakVal', (value) => Math.round(value).toString());
+        bindSlider('m_msLossPreventionDuration', 'm_msLossPreventionDurationVal', (value) => `${Math.round(value)}h`);
         bindSlider('m_msTrailingStop', 'm_msTrailingStopVal', (value) => (parseFloat(value || 0) / 100).toFixed(2));
         bindSlider('m_msProfitTarget', 'm_msProfitTargetVal', (value) => (parseFloat(value || 0) / 100).toFixed(2));
       }
@@ -9748,6 +10014,7 @@
         modal.style.display = 'flex';
         document.body.style.overflow = 'hidden';
         modal.setAttribute('data-uat-tile-id', tileId);
+        mobileUatWireLossPreventionControls();
         mobileDashUatLoadMonitorPositionIntoModal(apiId);
         
         const cancelBtn = document.getElementById('m_unifiedCancel');
@@ -9855,6 +10122,7 @@
           const el = document.getElementById(id);
           if (el) el.checked = !!value;
         };
+        mobileUatApplyLossPreventionFromApi(data);
 
         // Regime Monitor settings (common across strategies)
         setChk('m_regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
@@ -9968,32 +10236,6 @@
           setVal('m_autoEntryDiff', data.min_differential ?? 0);
           setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
           setVal('m_winStreak', data.win_streak_threshold ?? 22);
-          
-          // Loss Prevention Toggle
-          const lossPreventionToggle = document.getElementById('m_lossPreventionToggle');
-          const winStreakSlider = document.getElementById('m_winStreak');
-          const winStreakValueDisplay = document.getElementById('m_winStreakVal');
-          if (lossPreventionToggle) {
-            lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
-            if (winStreakSlider) {
-              winStreakSlider.disabled = !lossPreventionToggle.checked;
-              winStreakSlider.style.opacity = lossPreventionToggle.checked ? '1' : '0.5';
-              winStreakSlider.style.cursor = lossPreventionToggle.checked ? 'pointer' : 'not-allowed';
-            }
-            if (winStreakValueDisplay) {
-              winStreakValueDisplay.style.display = lossPreventionToggle.checked ? 'block' : 'none';
-            }
-            lossPreventionToggle.addEventListener('change', function() {
-              if (winStreakSlider) {
-                winStreakSlider.disabled = !this.checked;
-                winStreakSlider.style.opacity = this.checked ? '1' : '0.5';
-                winStreakSlider.style.cursor = this.checked ? 'pointer' : 'not-allowed';
-              }
-              if (winStreakValueDisplay) {
-                winStreakValueDisplay.style.display = this.checked ? 'block' : 'none';
-              }
-            });
-          }
 
           setVal('m_probAdjSlider', data.prob_adj ?? 5.00);
         if (isRisingDevil) {
@@ -10253,6 +10495,8 @@
               payload.verification_period_seconds = parseInt(document.getElementById('m_verifySeconds').value, 10);
             }
 
+            Object.assign(payload, mobileUatReadLossPreventionPayload(saveIsMS));
+
             const stopLossSliderEl = document.getElementById(saveIsMS ? 'm_stopLossPriceSliderMs' : 'm_stopLossPriceSlider')
               || document.getElementById('m_stopLossPriceSlider');
             if (stopLossSliderEl) {
@@ -10305,6 +10549,11 @@
                   if (payload.test_filter) {
                     monitorObj.paper_trade = true;
                   }
+                  monitorObj.loss_prevention_toggle = payload.loss_prevention_toggle;
+                  monitorObj.loss_prevention_method = payload.loss_prevention_method;
+                  monitorObj.symbol_wide_loss_prevention = payload.symbol_wide_loss_prevention;
+                  monitorObj.simulated_trade_loss_prevention = payload.simulated_trade_loss_prevention;
+                  monitorObj.loss_prevention_duration = payload.loss_prevention_duration;
                   const toggleEl = document.querySelector(`[data-monitor-id="${tileId}"] .paper-trading-toggle`);
                   if (toggleEl) {
                     const regimeEnabled = monitorObj.regime_monitor_enabled === true || monitorObj.regime_monitor_enabled === 'true' || monitorObj.regime_monitor_enabled === 1;

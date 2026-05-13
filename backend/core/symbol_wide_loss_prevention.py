@@ -123,8 +123,11 @@ def more_serious_loss_prevention_state(local_value: Any, symbol_wide_value: Any)
     Ties prefer the current local value unless that value is already a symbol-wide
     projection, preserving attribution for persisted follower rows.
     """
-    local_state = normalize_loss_prevention_state_for_sizing(local_value)
     symbol_state = symbol_wide_loss_prevention_state(symbol_wide_value)
+    if is_symbol_wide_loss_prevention_state(local_value):
+        return symbol_state
+
+    local_state = normalize_loss_prevention_state_for_sizing(local_value)
     local_severity = loss_prevention_state_severity(local_state)
     symbol_severity = loss_prevention_state_severity(symbol_state)
     if symbol_severity > local_severity:
@@ -176,7 +179,8 @@ def _fetch_monitor_lp_row(
                COALESCE(loss_prevention_cooldown_loss_count, 0),
                live_loss_prevention_cooldown_start_time,
                COALESCE(loss_prevention_toggle, FALSE),
-               COALESCE(symbol_wide_loss_prevention, FALSE)
+               COALESCE(symbol_wide_loss_prevention, FALSE),
+               {_sql_local_loss_prevention_state_expr()} AS computed_local_loss_prevention_state
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -197,6 +201,7 @@ def _fetch_monitor_lp_row(
         "live_loss_prevention_cooldown_start_time": row[8],
         "loss_prevention_toggle": row[9],
         "symbol_wide_loss_prevention": row[10],
+        "computed_local_loss_prevention_state": row[11],
     }
 
 
@@ -283,7 +288,8 @@ def project_symbol_wide_loss_prevention_to_monitor(
         SELECT symbol,
                COALESCE(symbol_wide_loss_prevention, FALSE),
                COALESCE(loss_prevention_toggle, FALSE),
-               loss_prevention_state
+               loss_prevention_state,
+               {_sql_local_loss_prevention_state_expr()} AS computed_local_loss_prevention_state
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -293,14 +299,14 @@ def project_symbol_wide_loss_prevention_to_monitor(
     if not row:
         return False
 
-    symbol, follows_symbol_wide, lp_enabled, current_state = row
+    symbol, follows_symbol_wide, lp_enabled, current_state, local_state = row
     if not (bool(follows_symbol_wide) and bool(lp_enabled)):
         return False
 
     symbol_state = _symbol_wide_live_state_for_symbol(cursor, str(symbol or ""))
     symbol_base_state = normalize_loss_prevention_state_for_sizing(symbol_state)
     if symbol_base_state != "off":
-        projected_state = more_serious_loss_prevention_state(current_state, symbol_state)
+        projected_state = more_serious_loss_prevention_state(local_state, symbol_state)
         cursor.execute(
             f"""
             UPDATE {monitor_list_qualified}
@@ -491,7 +497,12 @@ def resolve_effective_loss_prevention_state(
     if not bool(monitor.get("loss_prevention_toggle")):
         return "off"
 
-    local_state = normalize_loss_prevention_state_for_sizing(monitor.get("loss_prevention_state"))
+    raw_local_state = monitor.get("loss_prevention_state")
+    local_state = normalize_loss_prevention_state_for_sizing(
+        monitor.get("computed_local_loss_prevention_state")
+        if is_symbol_wide_loss_prevention_state(raw_local_state)
+        else raw_local_state
+    )
     if not bool(monitor.get("symbol_wide_loss_prevention")):
         return local_state
 
