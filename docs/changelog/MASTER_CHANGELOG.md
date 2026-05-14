@@ -19,16 +19,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** Session work (account sync modernization + external-api v2 alignment); see `docs/kalshi_account_sync_preflight.md` for migration validation notes.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm `scripts/migrations/20260513120000_account_sync_direction_credits.up.sql` and `.down.sql` are present in the deployed commit.
-- [ ] Apply pending migrations from repo root before restart:  
+- [x] Migration pre-flight: confirm `scripts/migrations/20260513120000_account_sync_direction_credits.up.sql` and `.down.sql` are present in the deployed commit.
+- [x] Apply pending migrations from repo root before restart:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health/logs for `main_app`, `trade_manager`, `kalshi_account_sync`, `trade_executor`; confirm no missing-column errors for `outcome_side`, `orderbook_side`, or `credits_history_*`.
-- [ ] Record release in DB:  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh`
+- [x] Verify health/logs for `main_app`, `trade_manager`, `kalshi_account_sync`, `trade_executor`; confirm no missing-column errors for `outcome_side`, `orderbook_side`, or `credits_history_*`.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.6.0`
 
 ---
