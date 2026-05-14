@@ -3201,6 +3201,7 @@
     /** Matches backend ``tier_from_sim_loss_count`` (loss_prevention_cooldown_loss_count). */
     function simCooldownTierLabelFromLossCount(rawCount) {
       const c = Math.max(0, parseInt(rawCount, 10) || 0);
+      if (c < 1) return '';
       if (c >= 3) return '1c';
       if (c === 2) return '25%';
       return '50%';

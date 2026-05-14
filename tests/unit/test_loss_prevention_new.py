@@ -120,10 +120,28 @@ def test_live_trade_throttle_overrides_sim_tier():
 
 
 def test_tier_from_count():
+    assert tier_from_sim_loss_count(0) == "off"
     assert tier_from_sim_loss_count(1) == "sim_loss_50"
     assert tier_from_sim_loss_count(2) == "sim_loss_25"
     assert tier_from_sim_loss_count(3) == "sim_loss_1c"
     assert tier_from_sim_loss_count(99) == "sim_loss_1c"
+
+
+def test_resolve_sim_cooldown_with_zero_master_tally_is_off_not_sim_loss_50():
+    assert (
+        resolve_monitor_loss_prevention_value(
+            live_loss_prevention_cooldown_live=False,
+            simulated_loss_prevention_cooldown_live=True,
+            sim_loss_count=0,
+            loss_prevention_toggle=True,
+            loss_prevention_method="time",
+            win_streak=0,
+            win_streak_threshold=22,
+            current_loss_prevention="sim_loss_50",
+            cycle_had_loss=False,
+        )
+        == "off"
+    )
 
 
 def test_cycle_contribution_uses_simulated_losses_only():

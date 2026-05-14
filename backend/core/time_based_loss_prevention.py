@@ -1,6 +1,7 @@
 """
-Per-monitor simulated-trade loss prevention: cycle ledger, tiered loss_prevention, three-path
-parity with former symbol-wide (trade_manager events, AES startup, settings sync).
+Per-monitor time-based loss prevention: shared ``loss_prevention_cooldown_loss_count`` (master
+tally of realized + simulated losses in the episode), sim/live cooldown anchors, tiered
+``loss_prevention_state``, and symbol-wide / market-wide parity (trade_manager, AES startup, settings).
 """
 
 from __future__ import annotations
@@ -170,7 +171,10 @@ def ensure_sim_trade_ledger_table(cursor, tenant_slot: str) -> None:
 
 
 def tier_from_sim_loss_count(count: int) -> str:
+    """Sim tier from the shared ``loss_prevention_cooldown_loss_count`` while sim window is active."""
     c = int(count or 0)
+    if c < 1:
+        return "off"
     if c >= 3:
         return "sim_loss_1c"
     if c == 2:
@@ -197,7 +201,10 @@ def resolve_monitor_loss_prevention_value(
         if live_loss_prevention_cooldown_live:
             return "live_loss_1c"
         if simulated_loss_prevention_cooldown_live:
-            return tier_from_sim_loss_count(sim_loss_count)
+            tier = tier_from_sim_loss_count(sim_loss_count)
+            if tier == "off":
+                return "off"
+            return tier
         return "off"
     cur = str(current_loss_prevention or "").strip().lower()
     if cur == "new" and cycle_had_loss is not True:
@@ -239,15 +246,15 @@ def _expire_simulated_trade_state_if_needed(
     *,
     now_est: datetime,
 ) -> bool:
+    """Clear expired sim cooldown anchor.
+
+    ``loss_prevention_cooldown_loss_count`` is the master tally (live + sim). When the sim
+    window ends but the **live** throttle window is still open, only drop the sim timestamp
+    so live sizing and the tally stay consistent. When live is not in window, end the
+    whole episode: clear anchors and zero the tally.
+    """
     del now_est  # Expire using DB ``NOW()`` only (host OS / psycopg2 tz must not affect this).
-    cursor.execute(
-        f"""
-        UPDATE {monitor_list_qualified}
-        SET original_loss_prevention_cooldown_start_time = NULL,
-            simulated_loss_prevention_cooldown_start_time = NULL,
-            loss_prevention_cooldown_loss_count = 0,
-            updated_at = CURRENT_TIMESTAMP
-        WHERE id = %s
+    sim_expired = """
           AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
           AND COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak') = 'time'
           AND COALESCE(simulated_trade_loss_prevention, FALSE) IS TRUE
@@ -257,10 +264,50 @@ def _expire_simulated_trade_state_if_needed(
             simulated_loss_prevention_cooldown_start_time
             + (COALESCE(loss_prevention_duration, 0) || ' hours')::interval
           ) <= NOW()
+    """
+    live_window_open = """
+          AND live_loss_prevention_cooldown_start_time IS NOT NULL
+          AND COALESCE(loss_prevention_duration, 0) > 0
+          AND (
+            live_loss_prevention_cooldown_start_time
+            + (COALESCE(loss_prevention_duration, 0) || ' hours')::interval
+          ) > NOW()
+    """
+    cursor.execute(
+        f"""
+        UPDATE {monitor_list_qualified}
+        SET simulated_loss_prevention_cooldown_start_time = NULL,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        {sim_expired}
+        {live_window_open}
         """,
         (monitor_id,),
     )
-    return bool(getattr(cursor, "rowcount", 0) or 0)
+    n_a = int(getattr(cursor, "rowcount", 0) or 0)
+    cursor.execute(
+        f"""
+        UPDATE {monitor_list_qualified}
+        SET original_loss_prevention_cooldown_start_time = NULL,
+            simulated_loss_prevention_cooldown_start_time = NULL,
+            live_loss_prevention_cooldown_start_time = NULL,
+            loss_prevention_cooldown_loss_count = 0,
+            updated_at = CURRENT_TIMESTAMP
+        WHERE id = %s
+        {sim_expired}
+          AND NOT (
+            live_loss_prevention_cooldown_start_time IS NOT NULL
+            AND COALESCE(loss_prevention_duration, 0) > 0
+            AND (
+                live_loss_prevention_cooldown_start_time
+                + (COALESCE(loss_prevention_duration, 0) || ' hours')::interval
+            ) > NOW()
+          )
+        """,
+        (monitor_id,),
+    )
+    n_b = int(getattr(cursor, "rowcount", 0) or 0)
+    return bool(n_a or n_b)
 
 
 def recompute_monitor_loss_prevention(
@@ -786,6 +833,7 @@ def full_replay_monitor_sim_lp_state(
         UPDATE {monitor_list_qualified}
         SET original_loss_prevention_cooldown_start_time = NULL,
             simulated_loss_prevention_cooldown_start_time = NULL,
+            live_loss_prevention_cooldown_start_time = NULL,
             loss_prevention_cooldown_loss_count = 0,
             updated_at = CURRENT_TIMESTAMP
         WHERE id = %s
@@ -942,6 +990,7 @@ def sync_simulated_trade_after_monitor_settings_save(
             UPDATE {monitor_list_qualified}
             SET original_loss_prevention_cooldown_start_time = NULL,
                 simulated_loss_prevention_cooldown_start_time = NULL,
+                live_loss_prevention_cooldown_start_time = NULL,
                 loss_prevention_cooldown_loss_count = 0,
                 updated_at = CURRENT_TIMESTAMP
             WHERE id = %s

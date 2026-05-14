@@ -80,7 +80,8 @@ def _sql_local_loss_prevention_state_expr(prefix: str = "") -> str:
                 CASE
                     WHEN COALESCE({p}loss_prevention_cooldown_loss_count, 0) >= 3 THEN 'sim_loss_1c'
                     WHEN COALESCE({p}loss_prevention_cooldown_loss_count, 0) = 2 THEN 'sim_loss_25'
-                    ELSE 'sim_loss_50'
+                    WHEN COALESCE({p}loss_prevention_cooldown_loss_count, 0) >= 1 THEN 'sim_loss_50'
+                    ELSE 'off'
                 END
             WHEN COALESCE(NULLIF({p}loss_prevention_method, ''), 'win_streak') <> 'time'
              AND COALESCE({p}win_streak, 0) < COALESCE({p}win_streak_threshold, 22)
