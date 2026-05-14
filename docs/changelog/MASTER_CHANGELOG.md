@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-12 — Release v3.6.1: Market-wide loss prevention, sim-trade close anchor fix
+
+**Summary**
+- **Release: v3.6.1**
+- **Market-wide LP:** Per-user `system_settings` adds `market_wide_loss_prevention` (master toggle, default true), `hero_monitor_id`, and `stop_loss_count_threshold`; when enabled and the hero’s cooldown loss count meets the threshold, followers with `symbol_wide_loss_prevention` resolve to **`live_loss_market_wide_1c`** (`*_symbol_wide` persisted attribution). Merge order: local vs symbol-wide vs market-wide via existing seriousness ordering; follower sync clears stale market-wide suffixed rows when LSS is off and re-runs market-wide projection after symbol-wide fanout.
+- **Sizing / consumers:** `auto_entry_supervisor` and `active_trade_supervisor` treat `live_loss_market_wide_1c` like other full live-sizing LP states; `system_settings_store` and `/api/system_settings` expose the new fields with split transaction save and fleet reconcile where applicable.
+- **Monitor API:** `monitor_list_api` merges market-wide effective state and hero cooldown anchors for badges and tooltips; `main_misc_routes` wired for persistence.
+- **Replay / SQL:** `time_based_loss_prevention._sql_close_anchor_timestamptz` no longer prefixes a date literal when `closed_at` is already a full ISO instant (TEXT), fixing Postgres invalid timestamp input on symbol-wide and related saves.
+- **UI:** Desktop and mobile dashboard LP labels and tooltips for market-wide state, threshold line, and Eastern end time where surfaced.
+- **Database:** Reversible migration **`20260512_1600_system_settings_market_wide_loss_prevention`** adds the new columns across tenant `users*` `system_settings_*` tables; `database.py` init and **`docs/MASTER_DB_SCHEMA_REFERENCE.md`** aligned.
+- **Plans:** `market-wide-loss-prevention.plan.md`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm `scripts/migrations/20260512_1600_system_settings_market_wide_loss_prevention.up.sql` and `.down.sql` are present in the deployed commit.
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_executor`, `monitor_manager`, `auto_entry_supervisor`, `active_trade_supervisor`, `trade_manager`; confirm no missing-column errors for `market_wide_loss_prevention`, `hero_monitor_id`, or `stop_loss_count_threshold` on `system_settings_*`.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.6.1`
+
+---
+
 ## 2026-05-14 — Release v3.6.0: Kalshi external-api v2 account sync, direction fields, credits history
 
 **Summary**

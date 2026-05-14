@@ -10196,7 +10196,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 
 ### Table: `users.system_settings_0001`
 
-Singleton global/system settings for user `0001` (one row `id = 1`). Migrations `20260409_2100_system_settings_0001`, `20260410_1000_system_settings_trading_halt_active`, `20260411_1100_system_settings_drawdown_halt_monitor_snapshot`.
+Singleton global/system settings for user `0001` (one row `id = 1`). Migrations `20260409_2100_system_settings_0001`, `20260410_1000_system_settings_trading_halt_active`, `20260411_1100_system_settings_drawdown_halt_monitor_snapshot`, `20260512_1600_system_settings_market_wide_loss_prevention`.
 
 #### Columns
 
@@ -10207,6 +10207,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Percent drawdown from sticky `bankroll_current` that triggers step-down (exclusive 0–100). Equity at or below `(1 - pct/100) * sticky` triggers. |
 | `trading_halt_active` | `boolean` | NO | false | Set true when monitor_manager applies drawdown emergency halt; dashboard latch until cleared or full restore. |
 | `drawdown_halt_monitor_snapshot` | `jsonb` | YES | null | Pre-halt monitor `paper_trade` / `test_filter` snapshot (`schema_version` 1); set on emergency halt. Retained when the latch is cleared or monitors are restored; overwritten only on the next emergency halt. Raw JSON is not returned by `GET /api/system_settings`; the API includes `drawdown_halt_snapshot_present` only. |
+| `market_wide_loss_prevention` | `boolean` | NO | true | Master toggle for global hero loss-count gate affecting monitors with `symbol_wide_loss_prevention`. |
+| `hero_monitor_id` | `integer` | YES | null | `monitor_list` numeric id of the global volatility hero; NULL disables the gate. |
+| `stop_loss_count_threshold` | `integer` | YES | null | When set (>= 1), hero `loss_prevention_cooldown_loss_count` must reach this to apply `live_loss_market_wide_1c` to symbol-wide LP monitors. |
 | `updated_at` | `timestamp with time zone` | NO | now() | Last update. |
 
 #### Constraints

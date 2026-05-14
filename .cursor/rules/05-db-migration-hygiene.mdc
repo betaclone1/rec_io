@@ -1,5 +1,5 @@
 ---
-description: "Keep scripts/migrations lean: one pair per logical change, no abandoned drafts."
+description: "Keep scripts/migrations lean; plan implementations must run local run_migration.py up when schema changes."
 alwaysApply: true
 ---
 
@@ -22,10 +22,17 @@ When adding a table keyed by an instant and intended to align with **`historical
 4. **Same PR / same task:** Complete the full DB protocol (migration + apply where appropriate + schema reference + drift check per `AGENTS.md`). Half-finished migrations left in the tree are debt.
 5. **Do not delete** migration pairs that may already be in `system.schema_migrations` on prod (or you break `down` and confuse history). Cleanup of **applied** migrations is **archive/rename policy** only, and only when the user explicitly wants it and understands the runner implications.
 
+## Plan-driven implementation (migrations in scope)
+
+When you are implementing a **plan**, task todos, or any multi-step spec that includes **schema work** (new or changed `scripts/migrations/*.up.sql` / `*.down.sql`, or bringing an existing DB in line with new code that reads new columns):
+
+6. **Actually run local `up` before you call the work done:** After the migration pair is in the repo, run `python3 scripts/db/run_migration.py up <migration_id>` (or `.venv/bin/python scripts/db/run_migration.py up <migration_id>`) against the **local** database this workspace is configured to use (`AGENTS.md` / `get_system_postgresql_connection`). Say in the chat whether apply succeeded or failed (and paste the error if it failed). **Passing unit tests alone does not satisfy this** when tests mock the DB or omit integration paths that hit new catalog.
+7. **If local apply is impossible:** Say so explicitly (e.g. no `REC_DB_*` / no Postgres). Do not imply the migration was applied. The operator can run `up` elsewhere; your job is not to silently skip the step.
+
 ## Local DB changes → production path (non-negotiable)
 
-6. **No local-only schema drift:** If you change the database on your machine (manual `ALTER` in a GUI, ad-hoc SQL, or relying only on `init_database()` without a migration pair), you must **immediately** fold that change into `scripts/migrations/*.up.sql` / `*.down.sql`, run `python3 scripts/db/run_migration.py up <migration_id>` locally so `system.schema_migrations` matches the repo, and treat **that migration** as what production will run on deploy. **Definition of done:** local DB state is explained by applied migrations in the tree, not by uncommitted one-off DDL.
+8. **No local-only schema drift:** If you change the database on your machine (manual `ALTER` in a GUI, ad-hoc SQL, or relying only on `init_database()` without a migration pair), you must **immediately** fold that change into `scripts/migrations/*.up.sql` / `*.down.sql`, run `python3 scripts/db/run_migration.py up <migration_id>` locally so `system.schema_migrations` matches the repo, and treat **that migration** as what production will run on deploy. **Definition of done:** local DB state is explained by applied migrations in the tree, not by uncommitted one-off DDL.
 
 ## Summary
 
-Prefer **fewer, larger, coherent migrations** over many tiny timestamped files. Remove **unapplied** mistakes; never silently remove **applied** history.
+Prefer **fewer, larger, coherent migrations** over many tiny timestamped files. Remove **unapplied** mistakes; never silently remove **applied** history. Plan implementations that require migrations are not complete until **local `run_migration.py up`** has been run or explicitly skipped with reason.

@@ -2448,9 +2448,51 @@
           pctEl.value = String(Math.min(99, Math.max(1, Math.round(pct))));
         }
         updateTradingHaltUiFromSettingsPayload(j);
+        const mwlEl = document.getElementById('systemSettingsMarketWideLpEnabled');
+        const thEl = document.getElementById('systemSettingsMarketWideThreshold');
+        if (mwlEl) {
+          mwlEl.checked = j.market_wide_loss_prevention !== false;
+        }
+        if (thEl) {
+          const t = j.stop_loss_count_threshold;
+          thEl.value =
+            t != null && Number.isFinite(Number(t)) ? String(Math.max(1, parseInt(String(t), 10))) : '';
+        }
+        const hid = j.hero_monitor_id != null && Number.isFinite(Number(j.hero_monitor_id)) ? parseInt(String(j.hero_monitor_id), 10) : null;
+        await populateMarketWideHeroMonitorDropdown(hid);
       } catch (e) {
         console.warn('loadSystemSettingsIntoForm:', e);
       }
+    }
+
+    async function populateMarketWideHeroMonitorDropdown(heroId) {
+      const sel = document.getElementById('systemSettingsMarketWideHeroMonitor');
+      if (!sel) return;
+      let list = typeof monitors !== 'undefined' && Array.isArray(monitors) && monitors.length ? monitors : [];
+      if (!list.length) {
+        try {
+          const response = await fetch('/api/monitors?t=' + Date.now(), { credentials: 'same-origin' });
+          const data = await response.json();
+          if (data.status === 'ok' && Array.isArray(data.monitors)) list = data.monitors;
+        } catch (e) {
+          console.warn('populateMarketWideHeroMonitorDropdown:', e);
+        }
+      }
+      sel.innerHTML = '<option value="">— None —</option>';
+      for (const m of list) {
+        if (!m || m.id === 'NEW_MONITOR' || isMonitorArchivedRow(m)) continue;
+        const rawId = String(m.id || '');
+        const num = rawId.replace(/^mon_\d{4}_/, '');
+        if (!num || !/^\d+$/.test(num)) continue;
+        const opt = document.createElement('option');
+        opt.value = num;
+        const sym = m.symbol || '';
+        const n = m.name || '';
+        opt.textContent = n ? n + ' (' + sym + ')' : sym || rawId;
+        sel.appendChild(opt);
+      }
+      if (heroId != null && String(heroId) !== '') sel.value = String(heroId);
+      else sel.value = '';
     }
 
     function ensureSystemSettingsKeyHandler(root) {
@@ -2507,19 +2549,38 @@
       if (root) root.dataset.systemSettingsSaveInFlight = '1';
       if (saveBtn) saveBtn.disabled = true;
       try {
+        const payload = {
+          user_id: window.recSessionUserId(),
+          drawdown_trading_halt: !!haltEl.checked,
+          drawdown_reset_threshold_pct: v,
+        };
+        const mwlEl = document.getElementById('systemSettingsMarketWideLpEnabled');
+        const heroSel = document.getElementById('systemSettingsMarketWideHeroMonitor');
+        const thEl = document.getElementById('systemSettingsMarketWideThreshold');
+        if (mwlEl && heroSel && thEl) {
+          payload.market_wide_loss_prevention = !!mwlEl.checked;
+          payload.hero_monitor_id = heroSel.value ? parseInt(heroSel.value, 10) : null;
+          const rawTh = String(thEl.value || '').trim();
+          payload.stop_loss_count_threshold = rawTh === '' ? null : Math.max(1, parseInt(rawTh, 10));
+        }
         const r = await fetch(window.location.origin + '/api/system_settings', {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            user_id: window.recSessionUserId(),
-            drawdown_trading_halt: !!haltEl.checked,
-            drawdown_reset_threshold_pct: v,
-          }),
+          body: JSON.stringify(payload),
         });
         const j = await r.json();
         if (j.status !== 'ok') {
           alert('Save failed: ' + (j.message || 'unknown error'));
           return;
+        }
+        if (j.fleet_sim_trade_lp_reconcile_completed === true || j.fleet_sim_trade_lp_reconcile_completed === false) {
+          try {
+            await loadMonitors();
+            applyCurrentSort();
+            initializeMonitors();
+          } catch (refreshErr) {
+            console.error('saveSystemSettingsPopover: monitor refresh', refreshErr);
+          }
         }
         closeSystemSettingsPopover();
         await refreshTradingHaltIndicator();
@@ -3150,6 +3211,7 @@
       if (lpKey === 'sim_loss_25') return '25%';
       if (lpKey === 'sim_loss_1c') return '1c';
       if (lpKey === 'live_loss_1c') return 'Live 1c';
+      if (lpKey === 'live_loss_market_wide_1c') return 'Market-wide 1c';
       return '';
     }
 
@@ -3172,6 +3234,9 @@
 
     function simCooldownTooltipStateLabel(monitor, swLive, lpKey, lossPreventionRaw) {
       if (swLive) {
+        if (lpKey === 'live_loss_market_wide_1c') {
+          return 'Market-wide 1c';
+        }
         if (isLiveTradeCooldownLiveFlag(monitor)) {
           return 'Live 1c';
         }
@@ -3202,6 +3267,15 @@
       );
       const state = simCooldownTooltipStateLabel(monitor, swLive, lpKey, lossPreventionRaw);
       const anchor = formatOriginalSimCooldownStartSimple(monitor);
+      const mwTh =
+        monitor.market_wide_stop_loss_count_threshold ?? monitor.marketWideStopLossCountThreshold;
+      const lossLine =
+        lpKey === 'live_loss_market_wide_1c' &&
+        mwTh != null &&
+        mwTh !== '' &&
+        Number.isFinite(Number(mwTh))
+          ? `Losses (global hero): ${lossCnt} / ${mwTh} threshold`
+          : `Losses: ${lossCnt}`;
       const rawKey = String(lossPreventionRaw == null ? '' : lossPreventionRaw)
         .trim()
         .toLowerCase()
@@ -3209,8 +3283,14 @@
       const isSymbolWide =
         rawKey.endsWith('_symbol_wide') ||
         isTruthyFlag(monitor.symbol_wide_loss_prevention_active ?? monitor.symbolWideLossPreventionActive);
-      const lines = [`State: ${state}`, `Last loss: ${anchor}`, `Losses: ${lossCnt}`];
-      if (isSymbolWide) {
+      const lines = [`State: ${state}`, `Last loss: ${anchor}`, lossLine];
+      const endEt = symbolWideCooldownTooltipEt(monitor);
+      if (endEt) {
+        lines.push(`LP ends (ET): ${endEt}`);
+      }
+      if (lpKey === 'live_loss_market_wide_1c') {
+        lines.push('Source: Market-wide loss prevention (global hero)');
+      } else if (isSymbolWide) {
         lines.push('Source: Symbol-wide loss prevention');
       }
       return lines.join('\n');
@@ -3225,10 +3305,19 @@
         lpKey === 'sim_loss_50' ||
         lpKey === 'sim_loss_25' ||
         lpKey === 'sim_loss_1c' ||
-        lpKey === 'live_loss_1c';
+        lpKey === 'live_loss_1c' ||
+        lpKey === 'live_loss_market_wide_1c';
       if (swLive || simTier) {
         const timeText = formatSymbolWideCooldownEndEtRounded(monitor);
         if (!timeText) {
+          if (lpKey === 'live_loss_market_wide_1c') {
+            return {
+              visible: true,
+              text: 'MW',
+              className: 'allocation-status-badge lp lp-symbol-wide',
+              dataTooltip: buildSimCooldownTooltipText(monitor, swLive, lpKey),
+            };
+          }
           return { visible: false };
         }
         return {
@@ -8183,6 +8272,37 @@
             aria-label="Drawdown threshold percent"
           />
           <span class="system-settings-pct-suffix">%</span>
+        </div>
+      </div>
+      <div class="system-settings-field" style="margin-top: 12px;">
+        <span class="row-label" style="font-size: 12px; color: #c4c4c4;">Market-wide loss prevention</span>
+        <label style="display: block; margin-top: 6px;">
+          <input type="checkbox" id="systemSettingsMarketWideLpEnabled" />
+          Enable global hero loss-count gate (symbol-wide LP monitors)
+        </label>
+        <div style="margin-top: 8px;">
+          <span class="row-label" style="font-size: 11px; color: #aaa;">Global hero monitor</span>
+          <select
+            id="systemSettingsMarketWideHeroMonitor"
+            class="system-settings-number-input"
+            style="width: 100%; max-width: 320px; margin-top: 4px;"
+            title="Monitor whose cooldown loss count triggers market-wide 1c"
+            aria-label="Global hero monitor for market-wide loss prevention"
+          ></select>
+        </div>
+        <div class="system-settings-number-row" style="margin-top: 8px;">
+          <span class="row-label" style="font-size: 11px; color: #aaa; display: block; margin-bottom: 4px;">Stop loss count threshold</span>
+          <input
+            type="number"
+            id="systemSettingsMarketWideThreshold"
+            class="system-settings-number-input"
+            min="1"
+            step="1"
+            inputmode="numeric"
+            title="Hero loss_prevention_cooldown_loss_count must reach this value"
+            aria-label="Market-wide stop loss count threshold"
+            placeholder="—"
+          />
         </div>
       </div>
       <div class="uat-modal-actions">

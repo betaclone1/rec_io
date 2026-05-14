@@ -1178,6 +1178,30 @@ def init_database():
                     ALTER TABLE users.system_settings_0001
                         ADD COLUMN drawdown_halt_monitor_snapshot JSONB;
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'system_settings_0001'
+                      AND column_name = 'market_wide_loss_prevention'
+                ) THEN
+                    ALTER TABLE users.system_settings_0001
+                        ADD COLUMN market_wide_loss_prevention BOOLEAN NOT NULL DEFAULT TRUE;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'system_settings_0001'
+                      AND column_name = 'hero_monitor_id'
+                ) THEN
+                    ALTER TABLE users.system_settings_0001
+                        ADD COLUMN hero_monitor_id INTEGER;
+                END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'system_settings_0001'
+                      AND column_name = 'stop_loss_count_threshold'
+                ) THEN
+                    ALTER TABLE users.system_settings_0001
+                        ADD COLUMN stop_loss_count_threshold INTEGER;
+                END IF;
             END $$;
         """))
         cursor.execute(_us("""

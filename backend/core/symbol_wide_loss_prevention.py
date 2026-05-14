@@ -4,11 +4,16 @@ from __future__ import annotations
 
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
+
+from psycopg2 import sql
+
+from backend.core.system_settings_store import _settings_table_ident
 
 _log = logging.getLogger(__name__)
 
 SYMBOL_WIDE_SUFFIX = "_symbol_wide"
+MARKET_WIDE_LP_BASE = "live_loss_market_wide_1c"
 _MONITOR_LIST_RE = re.compile(r"(?:^|[.])monitor_list_(\d{4})$", re.IGNORECASE)
 _SIZING_STATES = {
     "one_contract",
@@ -18,6 +23,7 @@ _SIZING_STATES = {
     "sim_loss_25",
     "sim_loss_1c",
     "live_loss_1c",
+    "live_loss_market_wide_1c",
 }
 _STATE_SEVERITY = {
     "off": 0,
@@ -28,6 +34,8 @@ _STATE_SEVERITY = {
     "one_contract": 4,
     "win_streak_one_contract": 4,
     "symbol_one_contract": 4,
+    # Strictest: wins ties vs same-tier live / symbol-wide live states.
+    "live_loss_market_wide_1c": 5,
 }
 
 
@@ -94,6 +102,7 @@ def _sql_loss_prevention_severity_expr(state_sql: str) -> str:
     )"""
     return f"""(
         CASE
+            WHEN {base} = 'live_loss_market_wide_1c' THEN 5
             WHEN {base} IN ('live_loss_1c', 'one_contract', 'win_streak_one_contract', 'symbol_one_contract') THEN 4
             WHEN {base} = 'sim_loss_1c' THEN 3
             WHEN {base} = 'sim_loss_50' THEN 2
@@ -160,6 +169,198 @@ def is_loss_prevention_sizing_state(value: Any) -> bool:
 def _monitor_list_slot(monitor_list_qualified: str) -> Optional[str]:
     match = _MONITOR_LIST_RE.search(str(monitor_list_qualified or "").strip())
     return match.group(1) if match else None
+
+
+def read_market_wide_loss_prevention_settings(
+    cursor,
+    user_slot: str,
+) -> Tuple[bool, Optional[int], Optional[int]]:
+    """Return (market_wide_loss_prevention, hero_monitor_id, stop_loss_count_threshold)."""
+    u = str(user_slot or "").strip()
+    if not re.fullmatch(r"\d{4}", u):
+        return False, None, None
+    try:
+        ident = _settings_table_ident(u)
+        cursor.execute(
+            sql.SQL(
+                """
+                SELECT COALESCE(market_wide_loss_prevention, TRUE),
+                       hero_monitor_id,
+                       stop_loss_count_threshold
+                FROM {}
+                WHERE id = 1
+                """
+            ).format(ident)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return True, None, None
+        enabled = bool(row[0]) if row[0] is not None else True
+        hero = int(row[1]) if row[1] is not None else None
+        th = int(row[2]) if row[2] is not None else None
+        return enabled, hero, th
+    except Exception as exc:
+        _log.debug("market-wide LP settings read failed for slot=%s: %s", u, exc)
+        return True, None, None
+
+
+def compute_market_wide_loss_prevention_state(
+    cursor,
+    monitor_list_qualified: str,
+) -> str:
+    """Return 'off' or suffixed market-wide LP state for symbol_wide monitors."""
+    slot = _monitor_list_slot(monitor_list_qualified)
+    if not slot:
+        return "off"
+    enabled, hero_id, threshold = read_market_wide_loss_prevention_settings(cursor, slot)
+    if not enabled or hero_id is None or threshold is None or int(threshold) < 1:
+        return "off"
+    ml = str(monitor_list_qualified or "").strip()
+    if not re.match(r"^(?:users|users_\d{4})\.monitor_list_\d{4}$", ml, re.I):
+        return "off"
+    try:
+        cursor.execute(
+            f"""
+            SELECT COALESCE(loss_prevention_toggle, FALSE),
+                   COALESCE(loss_prevention_cooldown_loss_count, 0)
+            FROM {ml}
+            WHERE id = %s
+            """,
+            (int(hero_id),),
+        )
+        row = cursor.fetchone()
+    except Exception as exc:
+        _log.debug("market-wide LP hero read failed id=%s: %s", hero_id, exc)
+        return "off"
+    if not row or not bool(row[0]):
+        return "off"
+    if int(row[1] or 0) >= int(threshold):
+        return symbol_wide_loss_prevention_state(MARKET_WIDE_LP_BASE)
+    return "off"
+
+
+def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: str) -> int:
+    """Project market-wide LP into qualifying monitor rows (symbol_wide followers + configured global hero)."""
+    ml = str(monitor_list_qualified or "").strip()
+    if not re.match(r"^(?:users|users_\d{4})\.monitor_list_\d{4}$", ml, re.I):
+        _log.debug("market-wide LP sync skipped: invalid monitor_list %r", monitor_list_qualified)
+        return 0
+    mw = compute_market_wide_loss_prevention_state(cursor, ml)
+    mw_base = normalize_loss_prevention_state_for_sizing(mw)
+    mw_severity = loss_prevention_state_severity(mw)
+    updated = 0
+    if mw_base != "off":
+        local_state_expr = _sql_local_loss_prevention_state_expr()
+        local_severity_expr = _sql_loss_prevention_severity_expr(local_state_expr)
+        slot_mw = _monitor_list_slot(ml)
+        hero_id_for_row: Optional[int] = None
+        if slot_mw:
+            _en_h, hero_id_for_row, _th_h = read_market_wide_loss_prevention_settings(cursor, slot_mw)
+            if hero_id_for_row is not None:
+                try:
+                    hero_id_for_row = int(hero_id_for_row)
+                except (TypeError, ValueError):
+                    hero_id_for_row = None
+        hero_or_sql = ""
+        hero_params: Tuple[Any, ...] = ()
+        if hero_id_for_row is not None:
+            hero_or_sql = (
+                " OR (id = %s AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE)"
+            )
+            hero_params = (int(hero_id_for_row),)
+        try:
+            cursor.execute(
+                f"""
+                UPDATE {ml}
+                SET loss_prevention_state = (
+                    CASE
+                        WHEN {local_severity_expr} >= %s THEN {local_state_expr}
+                        ELSE %s
+                    END
+                ),
+                updated_at = CURRENT_TIMESTAMP
+                WHERE (
+                    (
+                        COALESCE(symbol_wide_loss_prevention, FALSE) IS TRUE
+                        AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
+                    )
+                    {hero_or_sql}
+                )
+                  AND loss_prevention_state IS DISTINCT FROM (
+                    CASE
+                        WHEN {local_severity_expr} >= %s THEN {local_state_expr}
+                        ELSE %s
+                    END
+                  )
+                """,
+                (mw_severity, mw) + hero_params + (mw_severity, mw),
+            )
+            updated += int(getattr(cursor, "rowcount", 0) or 0)
+        except Exception as exc:
+            _log.debug("market-wide LP follower active sync failed: %s", exc)
+        return updated
+
+    try:
+        slot_clr = _monitor_list_slot(ml)
+        hero_clr: Optional[int] = None
+        if slot_clr:
+            _e2, hero_clr, _t2 = read_market_wide_loss_prevention_settings(cursor, slot_clr)
+            if hero_clr is not None:
+                try:
+                    hero_clr = int(hero_clr)
+                except (TypeError, ValueError):
+                    hero_clr = None
+        hero_scan_sql = ""
+        scan_params: Tuple[Any, ...] = ()
+        if hero_clr is not None:
+            hero_scan_sql = (
+                " OR (id = %s AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE)"
+            )
+            scan_params = (int(hero_clr),)
+        cursor.execute(
+            f"""
+            SELECT id, loss_prevention_state
+            FROM {ml}
+            WHERE (
+                (
+                    COALESCE(symbol_wide_loss_prevention, FALSE) IS TRUE
+                    AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
+                )
+                {hero_scan_sql}
+            )
+            """,
+            scan_params,
+        )
+        rows = cursor.fetchall() or []
+    except Exception as exc:
+        _log.debug("market-wide LP follower clear scan failed: %s", exc)
+        return 0
+    for mid, st in rows:
+        base = normalize_loss_prevention_state_for_sizing(st)
+        if base == MARKET_WIDE_LP_BASE and is_symbol_wide_loss_prevention_state(st):
+            if project_symbol_wide_loss_prevention_to_monitor(cursor, ml, str(mid)):
+                updated += 1
+    return updated
+
+
+def try_sync_market_wide_after_hero_recompute(
+    cursor,
+    monitor_list_qualified: str,
+    monitor_id: str,
+) -> None:
+    """When the configured global hero monitor is recomputed, refresh market-wide follower rows."""
+    slot = _monitor_list_slot(monitor_list_qualified)
+    if not slot:
+        return
+    _enabled, hero_id, _th = read_market_wide_loss_prevention_settings(cursor, slot)
+    if hero_id is None:
+        return
+    if str(hero_id).strip() != str(monitor_id).strip():
+        return
+    try:
+        sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified)
+    except Exception as exc:
+        _log.debug("market-wide LP sync after hero recompute failed: %s", exc)
 
 
 def _fetch_monitor_lp_row(
@@ -391,10 +592,16 @@ def sync_symbol_wide_loss_prevention_followers(cursor, symbol: str) -> int:
                         LOWER(REPLACE(COALESCE(loss_prevention_state, ''), '-', '_')),
                         %s
                       ) = %s
+                      AND LOWER(REPLACE(TRIM(COALESCE(loss_prevention_state, '')), '-', '_'))
+                          NOT LIKE 'live_loss_market_wide_1c%%'
                     """,
                     (symbol_key, len(SYMBOL_WIDE_SUFFIX), SYMBOL_WIDE_SUFFIX),
                 )
             updated += int(getattr(cursor, "rowcount", 0) or 0)
+            try:
+                sync_market_wide_loss_prevention_followers(cursor, table)
+            except Exception as exc:
+                _log.debug("market-wide LP re-sync after symbol-wide fanout failed table=%s: %s", table, exc)
         except Exception as exc:
             _log.debug("symbol-wide LP follower projection failed for table=%s: %s", table, exc)
     return updated
@@ -484,7 +691,7 @@ def resolve_effective_loss_prevention_state(
     monitor_list_qualified: str,
     monitor_id: str,
 ) -> str:
-    """Return local LP state or the symbol-wide override when enabled."""
+    """Resolve LP state: local, optional per-symbol LSS merge, then optional global market-wide merge."""
     try:
         monitor = _fetch_monitor_lp_row(cursor, monitor_list_qualified, str(monitor_id))
     except Exception as exc:
@@ -503,32 +710,44 @@ def resolve_effective_loss_prevention_state(
         if is_symbol_wide_loss_prevention_state(raw_local_state)
         else raw_local_state
     )
-    if not bool(monitor.get("symbol_wide_loss_prevention")):
-        return local_state
 
-    symbol = str(monitor.get("symbol") or "").strip().upper()
-    if not symbol:
-        return local_state
+    slot = _monitor_list_slot(monitor_list_qualified)
+    mw_hero_id: Optional[int] = None
+    if slot:
+        _mw_en, mw_hero_raw, _mw_th = read_market_wide_loss_prevention_settings(cursor, slot)
+        if mw_hero_raw is not None:
+            try:
+                mw_hero_id = int(mw_hero_raw)
+            except (TypeError, ValueError):
+                mw_hero_id = None
+    is_global_mw_hero = mw_hero_id is not None and str(mw_hero_id) == str(monitor.get("id"))
 
-    try:
-        cursor.execute(
-            """
-            SELECT loss_prevention_state
-            FROM live_data.live_symbol_status
-            WHERE UPPER(symbol) = %s
-            LIMIT 1
-            """,
-            (symbol,),
-        )
-        row = cursor.fetchone()
-    except Exception as exc:
-        _log.debug("symbol-wide LP state read failed for symbol=%s: %s", symbol, exc)
-        return local_state
+    two_way = local_state
+    if bool(monitor.get("symbol_wide_loss_prevention")):
+        symbol = str(monitor.get("symbol") or "").strip().upper()
+        if symbol:
+            try:
+                cursor.execute(
+                    """
+                    SELECT loss_prevention_state
+                    FROM live_data.live_symbol_status
+                    WHERE UPPER(symbol) = %s
+                    LIMIT 1
+                    """,
+                    (symbol,),
+                )
+                row = cursor.fetchone()
+            except Exception as exc:
+                _log.debug("symbol-wide LP state read failed for symbol=%s: %s", symbol, exc)
+                row = None
+            if row:
+                symbol_state = row[0]
+                if normalize_loss_prevention_state_for_sizing(symbol_state) != "off":
+                    two_way = more_serious_loss_prevention_state(local_state, symbol_state)
 
-    if not row:
-        return local_state
-
-    symbol_state = row[0]
-    if normalize_loss_prevention_state_for_sizing(symbol_state) == "off":
-        return local_state
-    return more_serious_loss_prevention_state(local_state, symbol_state)
+    mw = compute_market_wide_loss_prevention_state(cursor, monitor_list_qualified)
+    if normalize_loss_prevention_state_for_sizing(mw) == "off":
+        return two_way
+    if bool(monitor.get("symbol_wide_loss_prevention")) or is_global_mw_hero:
+        return more_serious_loss_prevention_state(two_way, mw)
+    return two_way

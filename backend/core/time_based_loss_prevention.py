@@ -17,7 +17,9 @@ from backend.core.auto_entry_settings_store import loss_prevention_value_for_str
 from backend.core.symbol_wide_loss_prevention import (
     configured_symbol_wide_monitor_ids,
     project_symbol_wide_loss_prevention_to_monitor,
+    sync_market_wide_loss_prevention_followers,
     sync_symbol_wide_loss_prevention_from_monitor,
+    try_sync_market_wide_after_hero_recompute,
 )
 from backend.core.tenant_legacy_sql import legacy_users_sim_trade_lp_cycle_ledger
 _log = logging.getLogger(__name__)
@@ -57,11 +59,28 @@ def _sql_live_loss_prevention_cooldown_live_expr(prefix: str = "") -> str:
 
 
 def _sql_close_anchor_timestamptz(alias: str) -> str:
-    """``date`` + ``closed_at`` text as Eastern wall → absolute ``timestamptz`` (SQL fragment)."""
-    return (
-        f"(TRIM(BOTH FROM {alias}.date::text) || ' ' || "
-        f"TRIM(BOTH FROM {alias}.closed_at::text))::timestamp AT TIME ZONE 'America/New_York'"
-    )
+    """Absolute close instant as ``timestamptz`` for trade row ``alias`` (SQL fragment).
+
+    ``users.trades_*`` uses typed ``closed_at TIMESTAMP`` (legacy rows may be time-only).
+    ``users.trades_simulated_*`` uses ``closed_at TEXT``, often a full ISO-8601 string.
+    Concatenating ``date::text || ' ' || closed_at::text`` when ``closed_at`` already
+    contains a calendar date produces invalid timestamps (duplicate date prefix).
+    """
+    return f"""(
+        CASE
+            WHEN pg_typeof({alias}.closed_at)::regtype IN (
+                'timestamp without time zone'::regtype,
+                'timestamp with time zone'::regtype
+            )
+                THEN {alias}.closed_at::timestamptz
+            WHEN btrim(COALESCE({alias}.closed_at::text, ''))
+                ~ '^[0-9]{{4}}-[0-9]{{2}}-[0-9]{{2}}[Tt ]'
+                THEN btrim({alias}.closed_at::text)::timestamptz
+            ELSE (
+                btrim({alias}.date::text) || ' ' || btrim({alias}.closed_at::text)
+            )::timestamp AT TIME ZONE 'America/New_York'
+        END
+    )"""
 
 
 def _sql_close_anchor_epoch(alias: str) -> str:
@@ -300,6 +319,7 @@ def recompute_monitor_loss_prevention(
     synced_hero = sync_symbol_wide_loss_prevention_from_monitor(cursor, monitor_list_qualified, monitor_id)
     if not synced_hero:
         project_symbol_wide_loss_prevention_to_monitor(cursor, monitor_list_qualified, monitor_id)
+    try_sync_market_wide_after_hero_recompute(cursor, monitor_list_qualified, str(monitor_id))
     return new_lp
 
 
@@ -806,6 +826,25 @@ def full_replay_monitor_sim_lp_state(
     recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(monitor_id))
 
 
+def startup_reconcile_market_wide_loss_prevention_for_tenant(
+    cursor,
+    monitor_list_qualified: str,
+    tenant_slot: str,
+) -> None:
+    """After sim-trade LP replay, align global hero + market-wide follower projection."""
+    from backend.core.symbol_wide_loss_prevention import (
+        read_market_wide_loss_prevention_settings,
+        sync_market_wide_loss_prevention_followers,
+    )
+
+    enabled, hero_id, threshold = read_market_wide_loss_prevention_settings(cursor, tenant_slot)
+    if not enabled or hero_id is None or threshold is None or int(threshold) < 1:
+        sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified)
+        return
+    recompute_monitor_loss_prevention(cursor, monitor_list_qualified, str(hero_id))
+    sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified)
+
+
 def startup_reconcile_simulated_trade_for_tenant(
     cursor,
     trades_qualified: str,
@@ -842,6 +881,11 @@ def startup_reconcile_simulated_trade_for_tenant(
             if mid in replayed:
                 continue
             recompute_monitor_loss_prevention(cursor, monitor_list_qualified, mid)
+
+        startup_reconcile_market_wide_loss_prevention_for_tenant(
+            cursor, monitor_list_qualified, tenant_slot
+        )
+        _log.info("[MARKET WIDE LP] startup reconcile completed for tenant %s", tenant_slot)
     finally:
         cursor.execute("SELECT pg_advisory_unlock(%s)", (adv_key,))
 

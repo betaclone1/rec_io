@@ -4883,8 +4883,8 @@ def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int,
             )
         conn.close()
         lp = normalize_loss_prevention_state_for_sizing(loss_prevention)
-        if lp in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c"):
-            if lp in ("sim_loss_1c", "live_loss_1c"):
+        if lp in ("sim_loss_50", "sim_loss_25", "sim_loss_1c", "live_loss_1c", "live_loss_market_wide_1c"):
+            if lp in ("sim_loss_1c", "live_loss_1c", "live_loss_market_wide_1c"):
                 return 1, True
             if lp == "sim_loss_25":
                 return max(1, int(round(flip_count * 0.25))), True

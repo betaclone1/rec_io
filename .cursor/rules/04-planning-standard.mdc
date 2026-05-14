@@ -8,5 +8,6 @@ alwaysApply: false
 
 - **One plan per task:** For non-trivial work, create or use a single plan file in `.cursor/plans/`. Name by task (e.g. `add-login-api.md`). See `.cursor/plans/README.md` for template and usage.
 - **Plan contents:** Goal, scope, steps (ordered), completion criteria, and optionally blockers/decisions. Keep plans concise; update in place as work progresses.
+- **Migrations in the plan:** If steps include adding or changing `scripts/migrations/`, completion criteria must require **running** `python3 scripts/db/run_migration.py up <migration_id>` on the local dev database (or documenting that apply was impossible in this environment). Do not treat migration work as done from code + tests alone when the app reads new catalog at runtime.
 - **Lifecycle:** Create plan when starting a task (start-task); update during implement-plan; close or archive when done. Do not create multiple plan files for the same task or append rolling summaries to plans.
 - **No plan required:** One-off questions, quick edits, or verification-only work may skip creating a plan.

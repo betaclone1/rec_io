@@ -7,8 +7,8 @@ Keeps monitor-list SQL, symbol-wide cooldown projection, and row formatting out 
 from __future__ import annotations
 
 import logging
-from datetime import datetime
-from typing import Any, Dict, List, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional, Tuple
 
 from backend.core.config.database import get_postgresql_connection
 from backend.core.time_based_loss_prevention import (
@@ -17,9 +17,11 @@ from backend.core.time_based_loss_prevention import (
 )
 from backend.core.symbol_wide_loss_prevention import (
     _sql_local_loss_prevention_state_expr,
+    compute_market_wide_loss_prevention_state,
     is_symbol_wide_loss_prevention_state,
     more_serious_loss_prevention_state,
     normalize_loss_prevention_state_for_sizing,
+    read_market_wide_loss_prevention_settings,
     symbol_wide_loss_prevention_state,
 )
 from backend.core.strike_pipeline_health import (
@@ -30,6 +32,34 @@ from backend.core.time_eastern import EST, now_est, timestamptz_wire_iso_et
 from backend.trading_mode import is_paper_trading
 
 _log = logging.getLogger(__name__)
+
+
+def _loss_prevention_cooldown_window_open(
+    start: Any,
+    duration_hours: Any,
+    now: datetime,
+) -> bool:
+    """True when ``start + duration_hours`` is strictly after ``now`` (for LP badge windows)."""
+    if start is None or duration_hours is None:
+        return False
+    try:
+        hrs = float(duration_hours)
+    except (TypeError, ValueError):
+        return False
+    if hrs <= 0:
+        return False
+    if not hasattr(start, "__add__"):
+        return False
+    try:
+        s = start
+        n = now
+        if getattr(s, "tzinfo", None) is None and getattr(n, "tzinfo", None) is not None:
+            s = s.replace(tzinfo=n.tzinfo)
+        if getattr(n, "tzinfo", None) is None and getattr(s, "tzinfo", None) is not None:
+            n = n.replace(tzinfo=s.tzinfo)
+        return (s + timedelta(hours=hrs)) > n
+    except Exception:
+        return False
 
 
 def _monitor_list_select_sql(user_number: str) -> str:
@@ -107,6 +137,44 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
     with conn.cursor() as cursor:
         cursor.execute(_monitor_list_select_sql(user_number))
         results: List[Any] = cursor.fetchall()
+
+        mw_global = compute_market_wide_loss_prevention_state(
+            cursor, f"users.monitor_list_{user_number}"
+        )
+        _mw_en, mw_settings_hero_id, mw_stop_loss_threshold_raw = read_market_wide_loss_prevention_settings(
+            cursor, str(user_number).strip()
+        )
+        mw_stop_threshold: Optional[int] = None
+        if mw_stop_loss_threshold_raw is not None:
+            try:
+                mw_stop_threshold = int(mw_stop_loss_threshold_raw)
+            except (TypeError, ValueError):
+                mw_stop_threshold = None
+
+        hero_mw_lp_row: Optional[Tuple[Any, ...]] = None
+        if (
+            normalize_loss_prevention_state_for_sizing(mw_global) != "off"
+            and mw_settings_hero_id is not None
+        ):
+            try:
+                _mlq = f"users.monitor_list_{user_number}"
+                cursor.execute(
+                    f"""
+                    SELECT live_loss_prevention_cooldown_start_time,
+                           simulated_loss_prevention_cooldown_start_time,
+                           original_loss_prevention_cooldown_start_time,
+                           COALESCE(loss_prevention_duration, 4),
+                           COALESCE(loss_prevention_cooldown_loss_count, 0),
+                           {_sql_live_loss_prevention_cooldown_live_expr()},
+                           {_sql_sim_cooldown_live_expr()}
+                    FROM {_mlq}
+                    WHERE id = %s
+                    """,
+                    (int(mw_settings_hero_id),),
+                )
+                hero_mw_lp_row = cursor.fetchone()
+            except Exception as exc:
+                _log.debug("hero market-wide LP anchor read failed: %s", exc)
 
         strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
         # Per (symbol, market): hourly monitors must not inherit 15m pipeline failures (and vice versa).
@@ -206,6 +274,16 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             local_loss_prevention_state,
             symbol_state_out,
         )
+        mw_hero_matches = (
+            mw_settings_hero_id is not None and int(monitor_id) == int(mw_settings_hero_id)
+        )
+        apply_mw_merge = bool(symbol_wide_loss_prevention) or mw_hero_matches
+        if apply_mw_merge:
+            mw_raw = mw_global
+            if normalize_loss_prevention_state_for_sizing(mw_raw) != "off":
+                effective_state_out = more_serious_loss_prevention_state(
+                    effective_state_out, mw_raw
+                )
         effective_base_state = normalize_loss_prevention_state_for_sizing(effective_state_out)
         symbol_base_state = normalize_loss_prevention_state_for_sizing(symbol_state_out)
         symbol_wide_active = (
@@ -231,8 +309,11 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 symbol_wide_live_loss_prevention_cooldown_start_time
             )
             effective_simulated_loss_prevention_cooldown_live = symbol_base_state.startswith("sim_loss_")
-            effective_live_loss_prevention_cooldown_live = symbol_base_state == "live_loss_1c"
-        elif bool(symbol_wide_loss_prevention) and effective_base_state != "off":
+            effective_live_loss_prevention_cooldown_live = symbol_base_state in (
+                "live_loss_1c",
+                "live_loss_market_wide_1c",
+            )
+        elif apply_mw_merge and effective_base_state != "off":
             loss_prevention_out = effective_state_out
             effective_loss_prevention_duration = loss_prevention_duration
             effective_simulated_loss_prevention_cooldown_start_time = (
@@ -246,7 +327,10 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 live_loss_prevention_cooldown_start_time
             )
             effective_simulated_loss_prevention_cooldown_live = effective_base_state.startswith("sim_loss_")
-            effective_live_loss_prevention_cooldown_live = effective_base_state == "live_loss_1c"
+            effective_live_loss_prevention_cooldown_live = effective_base_state in (
+                "live_loss_1c",
+                "live_loss_market_wide_1c",
+            )
         else:
             loss_prevention_out = local_loss_prevention_state
             effective_loss_prevention_duration = loss_prevention_duration
@@ -264,6 +348,51 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 simulated_loss_prevention_cooldown_live
             )
             effective_live_loss_prevention_cooldown_live = bool(live_loss_prevention_cooldown_live)
+
+        if (
+            normalize_loss_prevention_state_for_sizing(loss_prevention_out) == "live_loss_market_wide_1c"
+            and hero_mw_lp_row is not None
+        ):
+            hl, hs, horig, hdur, hcnt, h_llive, h_slive = hero_mw_lp_row
+            effective_loss_prevention_cooldown_loss_count = int(hcnt or 0)
+            if hdur is not None:
+                effective_loss_prevention_duration = int(hdur)
+            h_llive = bool(h_llive)
+            h_slive = bool(h_slive)
+            now_lp = now_est()
+            chosen: Optional[Tuple[str, Any]] = None
+            if h_llive and hl is not None:
+                chosen = ("live", hl)
+            elif h_slive and hs is not None:
+                chosen = ("sim", hs)
+            elif hl is not None and _loss_prevention_cooldown_window_open(hl, hdur, now_lp):
+                chosen = ("live", hl)
+            elif hs is not None and _loss_prevention_cooldown_window_open(hs, hdur, now_lp):
+                chosen = ("sim", hs)
+            elif horig is not None and _loss_prevention_cooldown_window_open(horig, hdur, now_lp):
+                chosen = ("sim", horig)
+            elif hs is not None:
+                chosen = ("sim", hs)
+            elif hl is not None:
+                chosen = ("live", hl)
+            elif horig is not None:
+                chosen = ("sim", horig)
+
+            if chosen:
+                kind, ts = chosen
+                if kind == "live":
+                    effective_live_loss_prevention_cooldown_start_time = ts
+                    effective_live_loss_prevention_cooldown_live = True
+                    effective_simulated_loss_prevention_cooldown_live = False
+                    if horig is not None:
+                        effective_original_loss_prevention_cooldown_start_time = horig
+                else:
+                    effective_simulated_loss_prevention_cooldown_start_time = ts
+                    effective_simulated_loss_prevention_cooldown_live = True
+                    effective_live_loss_prevention_cooldown_live = False
+                    if horig is not None:
+                        effective_original_loss_prevention_cooldown_start_time = horig
+
         sw_live = (
             bool(effective_simulated_loss_prevention_cooldown_live)
             or bool(effective_live_loss_prevention_cooldown_live)
@@ -287,6 +416,12 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             hours = diff.seconds // 3600
             minutes = (diff.seconds % 3600) // 60
             uptime_str = f"{days}d {hours}h {minutes}m"
+
+        _symwide_cool_anchor = (
+            effective_live_loss_prevention_cooldown_start_time
+            if effective_live_loss_prevention_cooldown_live
+            else effective_simulated_loss_prevention_cooldown_start_time
+        )
 
         formatted_monitor: Dict[str, Any] = {
             "id": f"mon_{user_number}_{monitor_id}",
@@ -385,12 +520,18 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             if effective_loss_prevention_duration is not None
             else 4,
             "symbol_wide_cooldown_start_time": (
-                timestamptz_wire_iso_et(effective_simulated_loss_prevention_cooldown_start_time)
-                if hasattr(effective_simulated_loss_prevention_cooldown_start_time, "isoformat")
-                else effective_simulated_loss_prevention_cooldown_start_time
+                timestamptz_wire_iso_et(_symwide_cool_anchor)
+                if hasattr(_symwide_cool_anchor, "isoformat")
+                else _symwide_cool_anchor
             ),
             "symbol_wide_cooldown_live": symbol_wide_active or sw_live,
         }
+
+        if (
+            normalize_loss_prevention_state_for_sizing(loss_prevention_out) == "live_loss_market_wide_1c"
+            and mw_stop_threshold is not None
+        ):
+            formatted_monitor["market_wide_stop_loss_count_threshold"] = mw_stop_threshold
 
         monitor_market = formatted_monitor.get("market")
         monitor_symbol = str(symbol or "").upper()

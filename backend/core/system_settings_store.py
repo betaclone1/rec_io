@@ -12,7 +12,7 @@ import logging
 import re
 from datetime import datetime, timezone
 from decimal import Decimal
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from psycopg2 import sql
@@ -164,23 +164,46 @@ def fetch_system_settings_row(user_number: str) -> Optional[dict]:
     try:
         with conn.cursor() as cursor:
             ident = _settings_table_ident(u)
-            cursor.execute(
-                sql.SQL(
-                    """
-                    SELECT id, drawdown_trading_halt, drawdown_reset_threshold_pct,
-                           COALESCE(trading_halt_active, false), updated_at,
-                           drawdown_halt_monitor_snapshot
-                    FROM {}
-                    WHERE id = 1
-                    """
-                ).format(ident)
-            )
+            try:
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        SELECT id, drawdown_trading_halt, drawdown_reset_threshold_pct,
+                               COALESCE(trading_halt_active, false), updated_at,
+                               drawdown_halt_monitor_snapshot,
+                               COALESCE(market_wide_loss_prevention, true),
+                               hero_monitor_id,
+                               stop_loss_count_threshold
+                        FROM {}
+                        WHERE id = 1
+                        """
+                    ).format(ident)
+                )
+            except Exception:
+                cursor.execute(
+                    sql.SQL(
+                        """
+                        SELECT id, drawdown_trading_halt, drawdown_reset_threshold_pct,
+                               COALESCE(trading_halt_active, false), updated_at,
+                               drawdown_halt_monitor_snapshot
+                        FROM {}
+                        WHERE id = 1
+                        """
+                    ).format(ident)
+                )
             row = cursor.fetchone()
             if not row:
                 return None
             halt_active = bool(row[3])
             snap = row[5] if len(row) > 5 else None
             halt_meta = trading_halt_ui_fields_from_snapshot(halt_active, snap)
+            mwl = True
+            hero_id = None
+            th = None
+            if len(row) >= 9:
+                mwl = bool(row[6]) if row[6] is not None else True
+                hero_id = int(row[7]) if row[7] is not None else None
+                th = int(row[8]) if row[8] is not None else None
             return {
                 "id": int(row[0]),
                 "drawdown_trading_halt": bool(row[1]),
@@ -188,6 +211,9 @@ def fetch_system_settings_row(user_number: str) -> Optional[dict]:
                 "trading_halt_active": halt_active,
                 "updated_at": row[4].isoformat() if row[4] is not None else None,
                 "drawdown_halt_snapshot_present": snap is not None,
+                "market_wide_loss_prevention": mwl,
+                "hero_monitor_id": hero_id,
+                "stop_loss_count_threshold": th,
                 **halt_meta,
             }
     finally:
@@ -254,6 +280,148 @@ def update_system_settings_drawdown(
         return False, str(e)
     finally:
         conn.close()
+
+
+def update_system_settings_market_wide_loss_prevention(
+    user_number: str,
+    body: dict,
+) -> Tuple[bool, str, Optional[bool]]:
+    """Persist market-wide LP settings, then run fleet sim-trade LP reconcile on a separate transaction.
+
+    Returns ``(ok, message, reconcile_ok)`` where ``reconcile_ok`` is ``None`` for noop, ``True``/``False``
+    when settings were written (reconcile attempted on a fresh connection after commit).
+    """
+    u = str(user_number).strip()
+    if not _USER_SLOT_RE.match(u):
+        return False, "unsupported user", None
+    mw_keys = ("market_wide_loss_prevention", "hero_monitor_id", "stop_loss_count_threshold")
+    if not any(k in body for k in mw_keys):
+        return True, "noop", None
+
+    if "market_wide_loss_prevention" in body:
+        mwl = body.get("market_wide_loss_prevention")
+        if not isinstance(mwl, bool):
+            if str(mwl).lower() in ("true", "1", "yes"):
+                mwl = True
+            elif str(mwl).lower() in ("false", "0", "no"):
+                mwl = False
+            else:
+                return False, "market_wide_loss_prevention must be boolean", None
+    else:
+        mwl = None
+
+    hero_sql: Any = None
+    hero_in = "hero_monitor_id" in body
+    if hero_in:
+        hr = body.get("hero_monitor_id")
+        if hr is None or hr == "":
+            hero_sql = None
+        else:
+            try:
+                hero_sql = int(hr)
+            except (TypeError, ValueError):
+                return False, "hero_monitor_id must be an integer or null", None
+
+    th_sql: Any = None
+    th_in = "stop_loss_count_threshold" in body
+    if th_in:
+        tv = body.get("stop_loss_count_threshold")
+        if tv is None or tv == "":
+            th_sql = None
+        else:
+            try:
+                th_sql = int(tv)
+            except (TypeError, ValueError):
+                return False, "stop_loss_count_threshold must be an integer or null", None
+            if th_sql < 1:
+                return False, "stop_loss_count_threshold must be >= 1 or null", None
+
+    from backend.core.config.database import get_postgresql_connection
+    from backend.core.tenant_legacy_sql import (
+        legacy_users_monitor_list,
+        legacy_users_trades,
+        legacy_users_trades_simulated,
+    )
+    from backend.core.time_based_loss_prevention import (
+        startup_reconcile_simulated_trade_for_tenant,
+    )
+
+    conn = get_postgresql_connection(tenant_user_no=u)
+    if not conn:
+        return False, "database connection failed", None
+    settings_tbl = f"users_{u}.system_settings_{u}"
+    ml = legacy_users_monitor_list(u)
+    try:
+        with conn.cursor() as cursor:
+            if hero_in and hero_sql is not None:
+                cursor.execute(f"SELECT 1 FROM {ml} WHERE id = %s", (hero_sql,))
+                if cursor.fetchone() is None:
+                    conn.rollback()
+                    return False, "hero_monitor_id not found for this user", None
+
+            assignments: List[str] = []
+            params: List[Any] = []
+            if mwl is not None:
+                assignments.append("market_wide_loss_prevention = %s")
+                params.append(mwl)
+            if hero_in:
+                assignments.append("hero_monitor_id = %s")
+                params.append(hero_sql)
+            if th_in:
+                assignments.append("stop_loss_count_threshold = %s")
+                params.append(th_sql)
+            assignments.append("updated_at = NOW()")
+            cursor.execute(
+                f"UPDATE {settings_tbl} SET {', '.join(assignments)} WHERE id = 1",
+                tuple(params),
+            )
+            if cursor.rowcount == 0:
+                conn.rollback()
+                return False, "system_settings row missing", None
+        conn.commit()
+    except Exception as e:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        return False, str(e), None
+    finally:
+        conn.close()
+
+    # Reconcile on a new connection so one failed replay query cannot poison the settings commit.
+    rec_ok = False
+    conn2 = get_postgresql_connection(tenant_user_no=u)
+    if not conn2:
+        _LOG.warning(
+            "market-wide settings saved but fleet LP reconcile skipped (no DB) tenant=%s",
+            u,
+        )
+        return True, "ok", False
+    try:
+        with conn2.cursor() as cur:
+            startup_reconcile_simulated_trade_for_tenant(
+                cur,
+                legacy_users_trades(u),
+                legacy_users_trades_simulated(u),
+                ml,
+                u,
+            )
+        conn2.commit()
+        rec_ok = True
+    except Exception as e2:
+        try:
+            conn2.rollback()
+        except Exception:
+            pass
+        _LOG.exception(
+            "market-wide settings saved but fleet sim-trade LP reconcile failed tenant=%s: %s",
+            u,
+            e2,
+        )
+    finally:
+        conn2.close()
+
+    return True, "ok", rec_ok
 
 
 def set_drawdown_halt_monitor_snapshot_with_cursor(

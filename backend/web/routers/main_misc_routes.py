@@ -85,6 +85,11 @@ async def post_system_settings_endpoint(payload: dict):
 
     halt = body.get("drawdown_trading_halt")
     pct = body.get("drawdown_reset_threshold_pct")
+    mw_requested = any(
+        k in body for k in ("market_wide_loss_prevention", "hero_monitor_id", "stop_loss_count_threshold")
+    )
+    dd_requested = halt is not None or pct is not None
+
     if halt is not None and not isinstance(halt, bool):
         if str(halt).lower() in ("true", "1", "yes"):
             halt = True
@@ -97,15 +102,38 @@ async def post_system_settings_endpoint(payload: dict):
             pct = float(pct)
         except (TypeError, ValueError):
             return {"status": "error", "message": "drawdown_reset_threshold_pct must be a number"}
-    ok, msg = update_system_settings_drawdown(
-        num,
-        drawdown_trading_halt=halt,
-        drawdown_reset_threshold_pct=pct,
-    )
-    if not ok:
-        return {"status": "error", "message": msg}
+
+    if not dd_requested and not mw_requested:
+        return {"status": "error", "message": "no fields to update"}
+
+    if dd_requested:
+        ok, msg = update_system_settings_drawdown(
+            num,
+            drawdown_trading_halt=halt,
+            drawdown_reset_threshold_pct=pct,
+        )
+        if not ok:
+            return {"status": "error", "message": msg}
+
+    mw_reconcile_done = False
+    mw_reconcile_failed = False
+    if mw_requested:
+        from backend.core.system_settings_store import update_system_settings_market_wide_loss_prevention
+
+        ok_mw, msg_mw, rec_ok = update_system_settings_market_wide_loss_prevention(num, body)
+        if not ok_mw:
+            return {"status": "error", "message": msg_mw}
+        if msg_mw != "noop":
+            mw_reconcile_done = rec_ok is True
+            mw_reconcile_failed = rec_ok is False
+
     row = fetch_system_settings_row(num)
-    return {"status": "ok", "user_number": num, **(row or {})}
+    out: dict = {"status": "ok", "user_number": num, **(row or {})}
+    if mw_reconcile_done:
+        out["fleet_sim_trade_lp_reconcile_completed"] = True
+    elif mw_reconcile_failed:
+        out["fleet_sim_trade_lp_reconcile_completed"] = False
+    return out
 
 
 @main_misc_router.post("/api/paper/bankroll/seed")

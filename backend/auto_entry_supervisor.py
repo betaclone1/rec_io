@@ -2660,6 +2660,7 @@ def trigger_auto_entry_trade(strike_data):
             "symbol_one_contract",
             "sim_loss_1c",
             "live_loss_1c",
+            "live_loss_market_wide_1c",
         ):
             log(f"[AUTO ENTRY] 🛡️ Loss prevention active - overriding position size from {position_size} to 1 contract")
             position_size = 1
