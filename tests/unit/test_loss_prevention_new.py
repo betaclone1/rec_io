@@ -185,6 +185,12 @@ def test_live_loss_throttle_counts_paper_and_test_trades_log_rows(monkeypatch):
         "recompute_monitor_loss_prevention",
         lambda cursor, monitor_list, monitor_id: recomputed.append((monitor_list, monitor_id)),
     )
+    refreshed = []
+    monkeypatch.setattr(
+        lp,
+        "refresh_loss_prevention_tally_from_trades",
+        lambda *a, **kw: (refreshed.append(kw) or True),
+    )
 
     cursor = _LiveLossCursor(
         [
@@ -208,15 +214,20 @@ def test_live_loss_throttle_counts_paper_and_test_trades_log_rows(monkeypatch):
     first_query = cursor.executed[0][0]
     assert "paper_trade" not in first_query
     assert "test_filter" not in first_query
-    update_query, update_params = cursor.executed[2]
-    assert "original_loss_prevention_cooldown_start_time = COALESCE" in update_query
-    assert "loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + 1" in update_query
-    assert update_params[-1] == "99015"
+    assert len(cursor.executed) == 2
     assert recomputed == [("users.monitor_list_0001", "99015")]
+    assert refreshed and refreshed[0].get("monitor_id") == "99015"
 
 
-def test_live_loss_replay_counts_all_trades_log_rows():
-    cursor = _LiveLossCursor([(1_779_000_000, 1_779_003_600, 2)])
+def test_live_loss_replay_counts_all_trades_log_rows(monkeypatch):
+    from backend.core import time_based_loss_prevention as lp
+
+    monkeypatch.setattr(
+        lp,
+        "refresh_loss_prevention_tally_from_trades",
+        lambda *a, **kw: True,
+    )
+    cursor = _LiveLossCursor([(4.0,)])
 
     assert (
         replay_live_loss_throttle_from_trades_log(
@@ -225,22 +236,80 @@ def test_live_loss_replay_counts_all_trades_log_rows():
             "users.monitor_list_0001",
             "0001",
             "99015",
-            duration_hours=72,
         )
         is True
     )
 
-    replay_query = cursor.executed[0][0]
-    assert "paper_trade" not in replay_query
-    assert "test_filter" not in replay_query
-    assert "COUNT(*)" in replay_query
-    assert "HAVING" not in replay_query
-    assert ">= %s" in replay_query
-    update_query, update_params = cursor.executed[-1]
-    assert "original_loss_prevention_cooldown_start_time = LEAST" in update_query
-    assert "loss_prevention_cooldown_loss_count = COALESCE(loss_prevention_cooldown_loss_count, 0) + %s" in update_query
-    assert update_params[-2] == 2
-    assert update_params[-1] == "99015"
+    assert "users.monitor_list_0001" in cursor.executed[0][0]
+    assert cursor.executed[0][1] == ("99015",)
+
+
+def test_replay_live_uses_log_rebuild_ignores_anchor_floor(monkeypatch):
+    from datetime import datetime
+
+    from backend.core import time_based_loss_prevention as lp
+    from backend.core.time_based_loss_prevention import EST, replay_live_loss_throttle_from_trades_log
+
+    floor = datetime(2026, 5, 14, 8, 45, 0, tzinfo=EST)
+    calls = []
+
+    def fake_rebuild(cur, **kw):
+        calls.append(kw)
+        return True
+
+    monkeypatch.setattr(lp, "rebuild_monitor_time_lp_from_trade_logs_on_restart", fake_rebuild)
+
+    class _C:
+        def __init__(self):
+            self.executed = []
+
+        def execute(self, query, params=None):
+            self.executed.append((query, params))
+
+        def fetchone(self):
+            return (4.0,)
+
+    cur = _C()
+    assert (
+        replay_live_loss_throttle_from_trades_log(
+            cur,
+            "users.trades_0001",
+            "users.monitor_list_0001",
+            "0001",
+            "99015",
+            duration_hours=5,
+            loss_anchor_floor_est=floor,
+        )
+        is True
+    )
+    assert len(calls) == 1
+    assert calls[0].get("monitor_id") == "99015"
+
+
+def test_expire_live_trade_cooldown_issues_two_updates():
+    """Live window end: clear live only if sim still in window; else full episode reset."""
+    from backend.core.time_based_loss_prevention import _expire_live_trade_cooldown_if_needed
+
+    class _Cursor:
+        def __init__(self):
+            self.executed: list = []
+
+        def execute(self, query, params=None):
+            self.executed.append((query, params))
+
+    cur = _Cursor()
+    _expire_live_trade_cooldown_if_needed(cur, "users.monitor_list_0001", "7")
+    assert len(cur.executed) == 2
+    q0, p0 = cur.executed[0]
+    q1, p1 = cur.executed[1]
+    assert p0 == p1 == ("7",)
+    assert "SET live_loss_prevention_cooldown_start_time = NULL" in q0
+    assert "simulated_loss_prevention_cooldown_start_time" in q0
+    assert "loss_prevention_cooldown_loss_count = 0" not in q0
+    assert "SET live_loss_prevention_cooldown_start_time = NULL" in q1
+    assert "loss_prevention_cooldown_loss_count = 0" in q1
+    assert "original_loss_prevention_cooldown_start_time = NULL" in q1
+    assert "simulated_loss_prevention_cooldown_start_time = NULL" in q1
 
 
 def test_sim_loss_during_live_throttle_extends_live_cooldown_and_count(monkeypatch):
@@ -256,12 +325,16 @@ def test_sim_loss_during_live_throttle_extends_live_cooldown_and_count(monkeypat
     )
     monkeypatch.setattr(lp, "_cycle_contribution", lambda *args: (2, None))
     monkeypatch.setattr(lp, "recompute_monitor_loss_prevention", lambda *args: None)
+    refreshed = []
+    monkeypatch.setattr(
+        lp,
+        "refresh_loss_prevention_tally_from_trades",
+        lambda *a, **kw: (refreshed.append(kw) or True),
+    )
 
     cursor = _LiveLossCursor(
         [
             (True, "time", True),
-            (0,),
-            ("2026-05-12 10:00:15-04:00", "2026-05-12 11:00:15-04:00", 2),
         ]
     )
 
@@ -281,8 +354,32 @@ def test_sim_loss_during_live_throttle_extends_live_cooldown_and_count(monkeypat
         is True
     )
 
-    update_query, update_params = cursor.executed[-1]
-    assert "live_loss_prevention_cooldown_start_time = CASE" in update_query
-    assert "loss_prevention_cooldown_loss_count = loss_prevention_cooldown_loss_count + %s" in update_query
-    assert update_params[1] == 2
-    assert update_params[-1] == "10002"
+    assert refreshed and refreshed[0].get("monitor_id") == "10002"
+    assert len(cursor.executed) == 1
+
+
+def test_lp_episode_segments_when_gap_exceeds_duration():
+    from backend.core.time_based_loss_prevention import _segment_closed_loss_rows_by_cooldown_gap
+
+    dur_h = 5.0
+    base = 1_000_000.0
+    rows = [
+        ("live", "2026-05-14", 1.0, "A", base),
+        ("sim", "2026-05-14", 1.0, "A", base + 60.0),
+        ("live", "2026-05-15", 1.0, "B", base + (6 * 3600.0)),
+    ]
+    eps = _segment_closed_loss_rows_by_cooldown_gap(rows, dur_h)
+    assert len(eps) == 2
+    assert len(eps[0]) == 2
+    assert len(eps[1]) == 1
+
+
+def test_lp_dedupe_excludes_sim_when_live_shares_cycle_ticker():
+    from backend.core.time_based_loss_prevention import _deduped_loss_count_in_episode
+
+    ep = [
+        ("live", "2026-05-14", 1.0, "KX", 1.0),
+        ("sim", "2026-05-14", 1.0, "KX", 2.0),
+        ("sim", "2026-05-14", 2.0, "KY", 3.0),
+    ]
+    assert _deduped_loss_count_in_episode(ep) == 2
