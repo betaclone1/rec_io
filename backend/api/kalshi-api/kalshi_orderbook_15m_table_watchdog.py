@@ -44,8 +44,8 @@ from backend.core.kalshi_market_normalize import format_floor_strike_usd_comma_c
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 from backend.core.trading_redis_comms import redis_client_optional
 
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
-KALSHI_REST_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
+KALSHI_REST_BASE = "https://external-api.kalshi.com/trade-api/v2"
 KALSHI_REST_HEADERS = {"Accept": "application/json", "User-Agent": "rec-io-orderbook-ui/1.0"}
 ROLL_CHECK_SEC = 5.0
 REDIS_ORDERBOOK_KEY = "testing:orderbook_ui:current"

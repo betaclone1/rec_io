@@ -31,6 +31,10 @@ def legacy_users_orders(tenant_slot: str) -> str:
     return f"users.orders_{_norm_slot(tenant_slot)}"
 
 
+def legacy_users_fills(tenant_slot: str) -> str:
+    return f"users.fills_{_norm_slot(tenant_slot)}"
+
+
 def legacy_active_trades_pool_15m(worker_slot: str) -> str:
     return f"active_trades_15m_{_norm_slot(worker_slot)}"
 

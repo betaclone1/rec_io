@@ -21,7 +21,7 @@ import base64
 from backend.account_mode import get_account_mode
 
 # Configuration
-API_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 EST = ZoneInfo("America/New_York")
 
 class KalshiPositionsRestTest:

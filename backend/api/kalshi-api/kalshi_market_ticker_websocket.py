@@ -150,7 +150,7 @@ class KalshiMarketTickerWebSocket:
     def fetch_event_json(self, event_ticker):
         """Fetch event data from REST API"""
         try:
-            response = requests.get(f"https://api.elections.kalshi.com/trade-api/v2/events/{event_ticker}", timeout=10)
+            response = requests.get(f"https://external-api.kalshi.com/trade-api/v2/events/{event_ticker}", timeout=10)
             if response.status_code == 200:
                 data = response.json()
                 if "error" in data:
@@ -255,7 +255,7 @@ class KalshiMarketTickerWebSocket:
             }
             
             # Connect to WebSocket
-            uri = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+            uri = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
             self.websocket = await websockets.connect(
                 uri, 
                 additional_headers=headers,

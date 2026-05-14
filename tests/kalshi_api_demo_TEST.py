@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from cryptography.hazmat.backends import default_backend
 import requests
 
-API_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+API_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 class KalshiDemo:
     def __init__(self, credentials_dir):

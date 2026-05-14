@@ -40,7 +40,7 @@ _project_root = os.path.dirname(_script_dir)
 if _project_root not in sys.path:
     sys.path.insert(0, _project_root)
 
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0",

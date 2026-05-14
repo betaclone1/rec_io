@@ -17,7 +17,7 @@ email, api_key = read_kalshi_credentials(pem_path)
 
 # === CONFIG ===
 EST = pytz.timezone("America/New_York")
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 
 def get_current_event_ticker():
     now_est = datetime.now(EST)

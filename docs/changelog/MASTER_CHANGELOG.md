@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-14 — Release v3.6.0: Kalshi external-api v2 account sync, direction fields, credits history
+
+**Summary**
+- **Release: v3.6.0**
+- **Kalshi hosts:** REST and WS clients use Kalshi **external-api** trade-api **v2** base URLs; v1 user routes remain on elections API where required.
+- **Signing:** Trade-api v2 requests sign the path **without** query string (`?limit=`, `cursor=`, etc.) so deposits, withdrawals, account history, and paginated syncs authenticate correctly.
+- **Account sync:** WS-first writes for orders and fills where supported; periodic REST reconcile; v2 **deposits** / **withdrawals** sync; **credit_history** table per tenant plus poller on balance sync.
+- **Schema:** Migration **`20260513120000_account_sync_direction_credits`** adds **`outcome_side`** / **`orderbook_side`** on orders and fills (tenant tables), maps legacy **`side`**, and creates **`credits_history_<slot>`**; `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `docs/PORTFOLIO_ACCOUNT_SYNC.md` updated.
+- **Consumers:** `trade_manager`, `read_api`, `kalshi_historical_ingest`, account manager desktop/mobile (CSV and UI labels for outcome side).
+- **Runtime:** `active_trade_supervisor` refreshes active pool rows when trade_manager re-notifies open/partial after IOC top-up so position/fees match canonical trades.
+- **Plans:** Session work (account sync modernization + external-api v2 alignment); see `docs/kalshi_account_sync_preflight.md` for migration validation notes.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm `scripts/migrations/20260513120000_account_sync_direction_credits.up.sql` and `.down.sql` are present in the deployed commit.
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_manager`, `kalshi_account_sync`, `trade_executor`; confirm no missing-column errors for `outcome_side`, `orderbook_side`, or `credits_history_*`.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.6.0`
+
+---
+
 ## 2026-05-11 — Release v3.5.3: Symbol-wide loss prevention
 
 **Summary**

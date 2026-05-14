@@ -22,7 +22,7 @@ import websockets
 
 from backend.core.kalshi_ws_auth import kalshi_ws_connect_headers
 
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 
 
 async def drain_until_subscribed(ws, channel: str, timeout: float) -> None:

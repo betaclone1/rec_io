@@ -14,7 +14,7 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-_DEFAULT_BASE = "https://api.elections.kalshi.com/trade-api/v2"
+_DEFAULT_BASE = "https://external-api.kalshi.com/trade-api/v2"
 _HEADERS = {"Accept": "application/json", "User-Agent": "rec_io_trade_manager/1.0"}
 
 

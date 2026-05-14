@@ -35,7 +35,7 @@ flowchart LR
 
 ## WebSocket
 
-- **URL:** `wss://api.elections.kalshi.com/trade-api/ws/v2` (same host as docs; credentials via `KALSHI-ACCESS-*` headers on handshake).
+- **URL:** `wss://external-api-ws.kalshi.com/trade-api/ws/v2` (same host as docs; credentials via `KALSHI-ACCESS-*` headers on handshake).
 - **Channels (single subscribe):** `market_positions`, `fill`, `user_orders` (see Kalshi subscribe command).
 - **Behavior:** WS messages **trigger** debounced REST syncs; first N non-control messages for `fill` / `user_orders` are logged at INFO for PoC validation (compare to REST in logs).
 

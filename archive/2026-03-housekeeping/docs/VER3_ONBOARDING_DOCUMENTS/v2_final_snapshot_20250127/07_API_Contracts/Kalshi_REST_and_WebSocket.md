@@ -5,7 +5,7 @@ This document provides the complete API contract for Kalshi integration, includi
 
 **Last Verified**: 2025-01-27  
 **API Version**: v2  
-**Base URL**: https://api.elections.kalshi.com/trade-api/v2
+**Base URL**: https://external-api.kalshi.com/trade-api/v2
 
 ---
 

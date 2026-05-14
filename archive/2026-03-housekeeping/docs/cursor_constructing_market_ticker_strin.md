@@ -285,7 +285,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -580,7 +580,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -878,7 +878,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -1256,7 +1256,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -1550,7 +1550,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -2028,7 +2028,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -2335,7 +2335,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -2632,7 +2632,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -2927,7 +2927,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"
@@ -3737,7 +3737,7 @@ import psycopg2
 from psycopg2.extras import RealDictCursor
 
 # Config
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 API_HEADERS = {
     "Accept": "application/json",
     "User-Agent": "KalshiWatcher/1.0"

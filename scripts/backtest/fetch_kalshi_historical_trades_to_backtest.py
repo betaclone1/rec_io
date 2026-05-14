@@ -43,7 +43,7 @@ if str(_ROOT) not in sys.path:
 from backend.core.config.database import get_system_postgresql_connection
 from backend.util.paths import get_kalshi_credentials_dir
 
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 # Path suffix only; full sign path is /trade-api/v2 + path
 ENDPOINT_PATHS = {
     "markets": "/markets/trades",

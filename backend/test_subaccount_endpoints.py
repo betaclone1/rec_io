@@ -34,7 +34,7 @@ from backend.util.paths import get_kalshi_credentials_dir
 # Dynamically select API base URL based on account mode
 def get_base_url():
     BASE_URLS = {
-        "prod": "https://api.elections.kalshi.com/trade-api/v2",
+        "prod": "https://external-api.kalshi.com/trade-api/v2",
         "demo": "https://demo-api.kalshi.co/trade-api/v2"
     }
     return BASE_URLS.get(get_account_mode(), BASE_URLS["prod"])

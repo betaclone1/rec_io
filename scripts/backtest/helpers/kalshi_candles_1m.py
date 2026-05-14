@@ -156,7 +156,7 @@ class BacktestCandlesIngestResult:
     skip_reason: str | None = None
 
 
-KALSHI_TRADE_V2 = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_TRADE_V2 = "https://external-api.kalshi.com/trade-api/v2"
 _EASTERN = ZoneInfo("America/New_York")
 
 SCRATCH_TABLE_PREFIX = "kalshi_candles_1m_"

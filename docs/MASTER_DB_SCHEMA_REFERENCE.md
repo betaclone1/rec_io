@@ -9980,7 +9980,8 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `trade_id` | `text` | YES | - | |
 | `ticker` | `text` | YES | - | |
 | `order_id` | `text` | YES | - | |
-| `side` | `text` | YES | - | |
+| `outcome_side` | `text` | YES | - | Kalshi contract outcome (`yes` / `no`); migration **`20260513120000_account_sync_direction_credits`**. |
+| `orderbook_side` | `text` | YES | - | Bid/ask on the book (`bid` / `ask`); backfilled from `outcome_side` where unknown. Same migration. |
 | `action` | `text` | YES | - | |
 | `count` | `integer(32)` | YES | - | |
 | `count_fp` | `numeric(12,2)` | YES | - | Fixed-point contract count (Kalshi migration). |
@@ -10011,6 +10012,33 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
   ```sql
   CREATE INDEX idx_fills_0001_ticker ON users.fills_0001 USING btree (ticker)
   ```
+
+---
+
+### Table: `users.credits_history_0001` (and per-slot `credits_history_<NNNN>`)
+
+**Scope:** Migration **`20260513120000_account_sync_direction_credits`**. One table per tenant slot alongside `orders_<slot>`; populated from Kalshi v1 `GET /v1/users/{USERID}/credit_history` during balance sync (`kalshi_account_sync_ws.sync_credit_history`). Substitute **`users_<NNNN>`** / suffix per tenant parity rules.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `credit_id` | `text` | NO | - | Primary key from Kalshi |
+| `status` | `text` | YES | - | |
+| `type` | `text` | YES | - | |
+| `amount_cents` | `integer(32)` | YES | - | |
+| `reason` | `text` | YES | - | |
+| `created_at` | `timestamp with time zone` | YES | - | |
+| `raw_json` | `text` | YES | - | Full API object |
+| `synced_at` | `timestamp with time zone` | YES | `CURRENT_TIMESTAMP` | Last upsert time |
+
+#### Constraints
+
+- **Primary Key:** `credit_id`
+
+#### Indexes
+
+- **`idx_credits_history_<slot>_created`** on `(created_at DESC)` (per migration DDL)
 
 ---
 
@@ -10316,7 +10344,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `ticker` | `text` | YES | - | |
 | `status` | `text` | YES | - | |
 | `action` | `text` | YES | - | |
-| `side` | `text` | YES | - | |
+| `outcome_side` | `text` | YES | - | Kalshi outcome side; renamed from `side` in migration **`20260513120000_account_sync_direction_credits`**. |
+| `orderbook_side` | `text` | YES | - | Book bid/ask; same migration. |
 | `type` | `text` | YES | - | |
 | `created_time` | `text` | YES | - | |
 | `expiration_time` | `text` | YES | - | |

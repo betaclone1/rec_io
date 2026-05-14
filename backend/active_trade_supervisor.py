@@ -1872,10 +1872,105 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
             )
             already = cursor.fetchone()
             if already and str(already[0] or "").strip().lower() == "active":
+                # Second+ trade_manager "open"/"partial" notify after IOC top-up: pool row is
+                # already active but canonical trades.position / buy_price / fees advanced.
+                # Without this refresh, ATS keeps the partial-fill size for auto-stop closes.
+                if ATS_UNIFIED_POOL:
+                    cursor.execute(
+                        f"""
+                        UPDATE users.{active_trades_table}
+                        SET ticket_id = %s,
+                            date = %s,
+                            time = %s,
+                            strike = %s,
+                            side = %s,
+                            buy_price = %s,
+                            position = %s,
+                            contract = %s,
+                            ticker = %s,
+                            symbol = %s,
+                            exchange = %s,
+                            trade_strategy = %s,
+                            symbol_open = %s,
+                            momentum = %s,
+                            prob = %s,
+                            fees = %s,
+                            diff = %s
+                        WHERE trade_id = %s AND status = 'active' AND monitor_id = %s
+                        """,
+                        (
+                            ticket_id,
+                            date,
+                            time,
+                            strike,
+                            side,
+                            buy_price,
+                            position,
+                            contract,
+                            ticker,
+                            symbol,
+                            exchange,
+                            trade_strategy,
+                            symbol_open,
+                            momentum,
+                            prob,
+                            fees,
+                            diff,
+                            trade_id,
+                            ctx_mid(),
+                        ),
+                    )
+                else:
+                    cursor.execute(
+                        f"""
+                        UPDATE users.{active_trades_table}
+                        SET ticket_id = %s,
+                            date = %s,
+                            time = %s,
+                            strike = %s,
+                            side = %s,
+                            buy_price = %s,
+                            position = %s,
+                            contract = %s,
+                            ticker = %s,
+                            symbol = %s,
+                            exchange = %s,
+                            trade_strategy = %s,
+                            symbol_open = %s,
+                            momentum = %s,
+                            prob = %s,
+                            fees = %s,
+                            diff = %s
+                        WHERE trade_id = %s AND status = 'active'
+                        """,
+                        (
+                            ticket_id,
+                            date,
+                            time,
+                            strike,
+                            side,
+                            buy_price,
+                            position,
+                            contract,
+                            ticker,
+                            symbol,
+                            exchange,
+                            trade_strategy,
+                            symbol_open,
+                            momentum,
+                            prob,
+                            fees,
+                            diff,
+                            trade_id,
+                        ),
+                    )
+                conn.commit()
                 conn.close()
                 log_debug(
-                    f"Trade {trade_id} already active in pool (confirm idempotent) ({ctx_ident()})"
+                    f"Trade {trade_id} already active in pool; refreshed from trades "
+                    f"(idempotent confirm) ({ctx_ident()})"
                 )
+                invalidate_active_trades_cache()
                 return True
             log(f"No pending trade found in active_trades.db for trade_id {trade_id}")
             conn.close()

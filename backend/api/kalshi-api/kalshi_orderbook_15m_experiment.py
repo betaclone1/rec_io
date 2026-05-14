@@ -37,7 +37,7 @@ if str(ROOT) not in sys.path:
 from backend.core.kalshi_ws_auth import kalshi_ws_connect_headers
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 ROLL_CHECK_SEC = 5.0
 
 

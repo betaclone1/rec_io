@@ -431,6 +431,8 @@ async def get_fills(response: Response, trading_mode: Optional[str] = None):
             out = []
             for row in rows:
                 d = dict(row)
+                if d.get("outcome_side") is not None:
+                    d.setdefault("side", d["outcome_side"])
                 if d.get("count_fp") is not None:
                     try:
                         d["count"] = int(round(float(d["count_fp"])))

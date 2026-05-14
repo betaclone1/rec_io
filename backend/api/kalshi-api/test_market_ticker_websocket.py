@@ -21,7 +21,7 @@ import base64
 from backend.account_mode import get_account_mode
 
 # Configuration
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
 
 class KalshiMarketTickerTest:

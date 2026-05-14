@@ -138,7 +138,7 @@ class ConfigManager:
                     "timeout": 10
                 },
                 "kalshi": {
-                    "base_url": "https://api.elections.kalshi.com/trade-api/v2",
+                    "base_url": "https://external-api.kalshi.com/trade-api/v2",
                     "timeout": 10,
                     "credentials_path": "backend/data/users/user_0001/credentials/kalshi-credentials",
                     "security_note": "Credentials stored ONLY in user-based location for security"

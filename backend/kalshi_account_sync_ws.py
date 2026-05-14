@@ -5,8 +5,8 @@ Real-time account data synchronization using WebSocket triggers + REST API polli
 
 HYBRID APPROACH:
 1. Initial sync on startup (one-time polling cycle)
-2. WebSocket: market_positions, fill, user_orders (ACCOUNT_SYNC_WS_CHANNELS)
-3. Debounced per-resource REST syncs (ACCOUNT_SYNC_DEBOUNCE_MS); no direct DB writes from WS payloads
+2. WebSocket: market_positions, fill, user_orders (ACCOUNT_SYNC_WS_CHANNELS); fills and orders persist from WS payloads, debounced REST for balance alongside periodic reconcile
+3. Debounced REST syncs (ACCOUNT_SYNC_DEBOUNCE_MS) for positions/settlements and balance where not WS-primary
 4. Quick periodic: settlements + balance (ACCOUNT_SYNC_QUICK_PERIODIC_SEC, default 300s)
 5. Full reconcile: all five syncs (ACCOUNT_SYNC_FULL_RECONCILE_SEC, default 900s)
 6. Hourly balance checks on the hour + daily 1AM balance check
@@ -88,7 +88,7 @@ except ImportError:
 ensure_data_dirs()
 
 # Configuration
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
 
 # Logging: one formatter (EST), one line format; quiet by default (INFO = startup, errors, one-line outcome); flush after each line for real-time visibility
@@ -251,7 +251,10 @@ def use_websocket_fallback_for_fills():
     # This is a simplified approach - we create one fill entry per position update
     fill_data = {
         "ticker": ws_data.get("market_ticker"),
-        "side": "yes" if ws_data.get("position", 0) > 0 else "no",  # Simplified side detection
+        "trade_id": f"ws_fallback_{int(time.time() * 1000)}",
+        "outcome_side": "yes" if ws_data.get("position", 0) > 0 else "no",
+        "orderbook_side": "bid" if ws_data.get("position", 0) > 0 else "ask",
+        "side": "yes" if ws_data.get("position", 0) > 0 else "no",
         "action": "buy" if ws_data.get("position", 0) > 0 else "sell",
         "count": abs(ws_data.get("position", 0)),
         "yes_price": 1,  # Default values - would need more sophisticated logic
@@ -279,7 +282,7 @@ LAST_POSITIONS_HASH = None
 LATEST_WEBSOCKET_POSITION_DATA = None
 LATEST_WEBSOCKET_TIMESTAMP = None
 
-KALSHI_TRADE_API_V2 = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_TRADE_API_V2 = "https://external-api.kalshi.com/trade-api/v2"
 
 
 def get_base_url():
@@ -389,6 +392,18 @@ def generate_kalshi_signature(method, full_path, timestamp, key_path):
     )
 
     return base64.b64encode(signature).decode("utf-8")
+
+
+def _kalshi_trade_api_v2_signing_path(path_and_query: str) -> str:
+    """Path string for RSA-PSS auth: /trade-api/v2 + resource path only (omit ?query).
+
+    Kalshi rejects signatures built over ``...?limit=`` / ``&cursor=`` (INCORRECT_API_KEY_SIGNATURE).
+    The HTTP request URL still includes the full query string.
+    """
+    p = path_and_query if path_and_query.startswith("/") else f"/{path_and_query}"
+    path_only = p.split("?", 1)[0]
+    return f"/trade-api/v2{path_only}"
+
 
 # Config
 API_HEADERS = {
@@ -537,6 +552,32 @@ def fetch_v1_withdrawals_page(kalshi_user_id, page_number=1, page_size=200):
     return (body.get("withdrawals") or []), None
 
 
+def fetch_v1_credit_history_page(kalshi_user_id, cursor=None):
+    """GET v1 /credit_history (cursor pagination). Returns (credits list, next_cursor, None) or ([], None, error)."""
+    path = f"/v1/users/{kalshi_user_id}/credit_history"
+    url = KALSHI_V1_BASE_URL + path
+    timestamp = str(int(time.time() * 1000))
+    signature = generate_kalshi_signature("GET", path, timestamp, str(KEY_PATH))
+    headers = {
+        "Accept": "application/json",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    params = {}
+    if cursor:
+        params["cursor"] = cursor
+    try:
+        r = requests.get(url, params=params or None, headers=headers, timeout=30)
+        if r.status_code != 200:
+            return [], None, f"HTTP {r.status_code}"
+        body = r.json()
+        nxt = body.get("cursor")
+        return (body.get("credits") or []), nxt, None
+    except Exception as e:
+        return [], None, str(e)
+
+
 def _normalize_created_at(created_at):
     """Normalize API created_at to datetime for matching. Handles ISO string or datetime."""
     if created_at is None:
@@ -559,6 +600,112 @@ def _normalize_created_at(created_at):
         return None
 
 
+def _coerce_kalshi_datetime(val):
+    """API timestamps: ISO string, datetime, or unix seconds/milliseconds."""
+    if val is None:
+        return None
+    if isinstance(val, (int, float)):
+        try:
+            x = float(val)
+            if x > 1e12:
+                x = x / 1000.0
+            from datetime import timezone
+
+            return datetime.fromtimestamp(x, tz=timezone.utc)
+        except (OverflowError, OSError, ValueError, TypeError):
+            return None
+    return _normalize_created_at(val)
+
+
+def _direction_from_api_dict(raw: dict):
+    """Map Kalshi REST/WS payloads to (outcome_side, orderbook_side)."""
+    if not raw:
+        return None, None
+    outcome = (
+        raw.get("outcome_side")
+        or raw.get("side")
+        or raw.get("purchased_side")
+        or ""
+    )
+    outcome = str(outcome).strip().lower() or None
+    if outcome not in ("yes", "no"):
+        outcome = None
+    book = (raw.get("book_side") or raw.get("orderbook_side") or "")
+    book = str(book).strip().lower() or None
+    if not book and outcome in ("yes", "no"):
+        book = "bid" if outcome == "yes" else "ask"
+    return outcome, book
+
+
+def _legacy_orders_qualified() -> str:
+    from backend.core.tenant_legacy_sql import legacy_users_orders
+
+    return legacy_users_orders(_kas_process_user_no())
+
+
+def _legacy_fills_qualified() -> str:
+    from backend.core.tenant_legacy_sql import legacy_users_fills
+
+    return legacy_users_fills(_kas_process_user_no())
+
+
+def _credits_history_qualified() -> str:
+    from backend.trading_mode import _norm_slot
+
+    slot = _norm_slot(_kas_process_user_no())
+    return f"users.credits_history_{slot}"
+
+
+def _sql_qual_table(qualified: str):
+    sch, tbl = qualified.split(".", 1)
+    return psql.SQL("{}.{}").format(psql.Identifier(sch), psql.Identifier(tbl))
+
+
+def _kalshi_v2_get_json(path_and_query: str):
+    """GET signed Trade API v2. path_and_query starts with /portfolio/... and includes query string."""
+    if not path_and_query.startswith("/"):
+        path_and_query = "/" + path_and_query
+    method = "GET"
+    timestamp = str(int(time.time() * 1000))
+    full_path_for_signature = _kalshi_trade_api_v2_signing_path(path_and_query)
+    url = f"{get_base_url()}{path_and_query}"
+    signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "KalshiWatcher/1.0",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    try:
+        response = requests.get(url, headers=headers, timeout=30)
+        response.raise_for_status()
+        return response.json(), None
+    except Exception as e:
+        return None, str(e)
+
+
+def _fetch_v2_portfolio_array_all(rel_path: str, array_key: str, page_limit: int = 200):
+    """rel_path e.g. /portfolio/deposits — cursor-paginated."""
+    from urllib.parse import quote
+
+    acc = []
+    cursor = None
+    while True:
+        pq = f"{rel_path}?limit={page_limit}"
+        if cursor is not None:
+            pq += f"&cursor={quote(str(cursor), safe='')}"
+        data, err = _kalshi_v2_get_json(pq)
+        if err:
+            return acc, err
+        batch = data.get(array_key) or []
+        acc.extend(batch)
+        cursor = data.get("cursor")
+        if not cursor or not batch:
+            break
+    return acc, None
+
+
 def _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals):
     """Update existing account_history_0001 rows that have NULL kalshi_id/vendor/rail from API data.
     Matches by (entry_type, amount) and created_at within 2 seconds. Then refreshes transfer from/to."""
@@ -574,7 +721,7 @@ def _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals):
         return
     api_entries = []
     for item in all_deposits or []:
-        created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+        created_at = _coerce_kalshi_datetime(item.get("created_ts") or item.get("created_at"))
         amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
         if amount is not None and created_at is not None:
             try:
@@ -588,7 +735,7 @@ def _backfill_account_history_vendor_rail(conn, all_deposits, all_withdrawals):
                 (str(item.get("rail") or "").strip() or None),
             ))
     for item in all_withdrawals or []:
-        created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+        created_at = _coerce_kalshi_datetime(item.get("created_ts") or item.get("created_at"))
         amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
         if amount is not None and created_at is not None:
             try:
@@ -675,14 +822,21 @@ def _refresh_transfer_from_to_from_account_history(conn):
 
 
 def _deposit_item_to_row(item):
-    """Convert one v1 /deposits API item to a dict for account_history_0001."""
+    """Convert one v1/v2 deposits API item to a dict for account_history_0001."""
     amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
     if amount is None:
         return None
-    created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+    created_at = _coerce_kalshi_datetime(item.get("created_ts") or item.get("created_at"))
     if created_at is None:
         return None
-    updated_at = _normalize_created_at(item.get("updated_ts") or item.get("updated_at")) or created_at
+    updated_at = (
+        _coerce_kalshi_datetime(
+            item.get("finalized_ts")
+            or item.get("updated_ts")
+            or item.get("updated_at")
+        )
+        or created_at
+    )
     fee = item.get("fee") or item.get("fee_cents") or 0
     try:
         amount_int = int(amount)
@@ -697,21 +851,32 @@ def _deposit_item_to_row(item):
         "updated_at": updated_at,
         "status": (item.get("status") or "").strip() or None,
         "returned_amount": int(item.get("returned_amount") or item.get("returned_amount_cents") or 0),
-        "deposit_type": (item.get("deposit_type") or item.get("rail") or "").strip() or None,
+        "deposit_type": (
+            (item.get("deposit_type") or item.get("type") or item.get("rail") or "")
+            .strip()
+            or None
+        ),
         "immediate_amount": int(item["immediate_amount"]) if item.get("immediate_amount") is not None else None,
         "immediate_status": (item.get("immediate_status") or "").strip() or None,
     }
 
 
 def _withdrawal_item_to_row(item):
-    """Convert one v1 /withdrawals API item to a dict for account_history_0001."""
+    """Convert one v1/v2 withdrawals API item to a dict for account_history_0001."""
     amount = item.get("amount_cents") if item.get("amount_cents") is not None else item.get("amount")
     if amount is None:
         return None
-    created_at = _normalize_created_at(item.get("created_ts") or item.get("created_at"))
+    created_at = _coerce_kalshi_datetime(item.get("created_ts") or item.get("created_at"))
     if created_at is None:
         return None
-    updated_at = _normalize_created_at(item.get("updated_ts") or item.get("updated_at")) or created_at
+    updated_at = (
+        _coerce_kalshi_datetime(
+            item.get("finalized_ts")
+            or item.get("updated_ts")
+            or item.get("updated_at")
+        )
+        or created_at
+    )
     fee = item.get("fee") or item.get("fee_cents") or 0
     try:
         amount_int = int(amount)
@@ -934,31 +1099,17 @@ def _force_latest_balance_deposit_bankroll(
     return cursor.rowcount > 0, bankroll_stepped_down
 
 
-def sync_account_history(conn, kalshi_user_id):
-    """Fetch v1 /deposits and /withdrawals, upsert account_history_0001, create external transfers.
+def sync_account_history(conn):
+    """Fetch v2 /portfolio/deposits and /portfolio/withdrawals, upsert account_history_0001, create external transfers.
+
     Returns (n_upserted, error_str, new_deposit_events, new_withdrawal_events).
-    Uses deposits and withdrawals endpoints only; v1 account/history is deprecated (404)."""
-    page_size = 200
-    all_deposits = []
-    page_number = 1
-    while True:
-        deposits, err = fetch_v1_deposits_page(kalshi_user_id, page_number=page_number, page_size=page_size)
-        if err:
-            return 0, err, [], []
-        all_deposits.extend(deposits)
-        if len(deposits) < page_size:
-            break
-        page_number += 1
-    all_withdrawals = []
-    page_number = 1
-    while True:
-        withdrawals, err = fetch_v1_withdrawals_page(kalshi_user_id, page_number=page_number, page_size=page_size)
-        if err:
-            return 0, err, [], []
-        all_withdrawals.extend(withdrawals)
-        if len(withdrawals) < page_size:
-            break
-        page_number += 1
+    """
+    all_deposits, err = _fetch_v2_portfolio_array_all("/portfolio/deposits", "deposits")
+    if err:
+        return 0, err, [], []
+    all_withdrawals, err2 = _fetch_v2_portfolio_array_all("/portfolio/withdrawals", "withdrawals")
+    if err2:
+        return 0, err2, [], []
     rows = []
     for item in all_deposits:
         r = _deposit_item_to_row(item)
@@ -979,6 +1130,81 @@ def sync_account_history(conn, kalshi_user_id):
         return n, None, new_deposit_amounts, new_withdrawal_amounts
     except Exception as e:
         return 0, str(e), [], []
+
+
+def sync_credit_history(conn, kalshi_user_id: str) -> None:
+    """Poll v1 credit_history into users.credits_history_<slot>. Best-effort; caller commits."""
+    if not conn or not kalshi_user_id:
+        return
+    tbl = _credits_history_qualified()
+    sch, _t = tbl.split(".", 1)
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT 1 FROM information_schema.tables
+            WHERE table_schema = %s AND table_name = %s
+            LIMIT 1
+            """,
+            (sch, _t),
+        )
+        if not cur.fetchone():
+            return
+    credits_accum = []
+    cursor = None
+    while True:
+        batch, nxt, err = fetch_v1_credit_history_page(kalshi_user_id, cursor=cursor)
+        if err:
+            logger.warning("Credit history fetch failed: %s", err)
+            return
+        credits_accum.extend(batch or [])
+        cursor = nxt
+        if not cursor or not batch:
+            break
+    if not credits_accum:
+        return
+    tbl_ident = _sql_qual_table(tbl)
+    n = 0
+    with conn.cursor() as cur:
+        for c in credits_accum:
+            cid = str(c.get("credit_id") or "").strip()
+            if not cid:
+                continue
+            created_at = _coerce_kalshi_datetime(c.get("created_at"))
+            amt = c.get("amount_cents")
+            try:
+                amt_i = int(amt) if amt is not None else None
+            except (TypeError, ValueError):
+                amt_i = None
+            raw = json.dumps(c)
+            cur.execute(
+                psql.SQL(
+                    """
+                    INSERT INTO {} (credit_id, status, type, amount_cents, reason, created_at, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (credit_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        type = EXCLUDED.type,
+                        amount_cents = EXCLUDED.amount_cents,
+                        reason = EXCLUDED.reason,
+                        created_at = EXCLUDED.created_at,
+                        raw_json = EXCLUDED.raw_json,
+                        synced_at = CURRENT_TIMESTAMP
+                    """
+                ).format(tbl_ident),
+                (
+                    cid,
+                    (str(c.get("status") or "").strip() or None),
+                    (str(c.get("type") or "").strip() or None),
+                    amt_i,
+                    (str(c.get("reason") or "").strip() or None),
+                    created_at,
+                    raw,
+                ),
+            )
+            n += 1
+    conn.commit()
+    if n:
+        notify_frontend_db_change("credits_history", {"credits": n})
 
 
 def get_current_event_ticker():
@@ -1059,36 +1285,33 @@ def sync_balance():
             )
 
             _slot = process_tenant_context().user_no
-            kalshi_user_id_for_history = _kalshi_user_id_for_history()
-            if kalshi_user_id_for_history:
-                n_upserted, sync_err, new_deposit_events, new_withdrawal_events = sync_account_history(
-                    pg_conn,
-                    kalshi_user_id_for_history,
-                )
-                if sync_err:
-                    logger.warning("Account history sync failed: %s", sync_err)
-                    new_deposit_events = []
-                    new_withdrawal_events = []
-                else:
-                    logger.debug("Account history: %s entries synced to users.account_history_0001", n_upserted)
+            n_upserted, sync_err, new_deposit_events, new_withdrawal_events = sync_account_history(
+                pg_conn,
+            )
+            if sync_err:
+                logger.warning("Account history sync failed: %s", sync_err)
+                new_deposit_events = []
+                new_withdrawal_events = []
+            else:
+                logger.debug("Account history: %s entries synced to users.account_history_0001", n_upserted)
 
-                if new_deposit_events:
-                    _sa_id = sql_ident_qualified_table(
-                        subaccounts_table_for_user(_slot, force_live=True)
-                    )
-                    with pg_conn.cursor() as cur:
-                        for amount_net in _event_amounts(new_deposit_events):
-                            cur.execute(
-                                psql.SQL(
-                                    "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
-                                ).format(_sa_id),
-                                (amount_net,),
-                            )
-                    pg_conn.commit()
-                    logger.debug(
-                        "New deposit(s) pre-applied to Cash Transfer before balance snapshot: %s cents total",
-                        sum(_event_amounts(new_deposit_events)),
-                    )
+            if new_deposit_events:
+                _sa_id = sql_ident_qualified_table(
+                    subaccounts_table_for_user(_slot, force_live=True)
+                )
+                with pg_conn.cursor() as cur:
+                    for amount_net in _event_amounts(new_deposit_events):
+                        cur.execute(
+                            psql.SQL(
+                                "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
+                            ).format(_sa_id),
+                            (amount_net,),
+                        )
+                pg_conn.commit()
+                logger.debug(
+                    "New deposit(s) pre-applied to Cash Transfer before balance snapshot: %s cents total",
+                    sum(_event_amounts(new_deposit_events)),
+                )
         except Exception as sync_exc:
             logger.warning("Account history pre-sync error: %s", sync_exc)
             new_deposit_events = []
@@ -1318,7 +1541,16 @@ def sync_balance():
         return
     finally:
         if pg_conn:
-            pg_conn.close()
+            try:
+                ku = _kalshi_user_id_for_history()
+                if ku:
+                    sync_credit_history(pg_conn, ku)
+            except Exception as cred_exc:
+                logger.warning("Credit history sync error: %s", cred_exc)
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
     logger.info("Balance sync OK")
 
 
@@ -1384,7 +1616,7 @@ def sync_positions():
         url = f"{get_base_url()}{path}{query}"
         logger.debug("Requesting recent positions: %s", url)
 
-        full_path_for_signature = f"/trade-api/v2{path}"
+        full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
         headers = {
@@ -1580,7 +1812,7 @@ def sync_fills():
         url = f"{get_base_url()}{path}{query}"
         logger.debug("Requesting recent fills: %s", url)
 
-        full_path_for_signature = f"/trade-api/v2{path}"
+        full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
         headers = {
@@ -1665,13 +1897,14 @@ def sync_fills():
             if pg_conn:
                 with pg_conn.cursor() as cursor:
                     pg_new_count = 0
+                    fills_tbl = _legacy_fills_qualified()
                     for fill in all_fills:
                         trade_id = fill.get("trade_id")
                         if not trade_id:
                             continue
-                        ticker = fill.get("ticker")
+                        ticker = fill.get("ticker") or fill.get("market_ticker")
                         order_id = fill.get("order_id")
-                        side = fill.get("side")
+                        out_side, ob_side = _direction_from_api_dict(fill)
                         action = fill.get("action")
                         count_fp = _fp_to_numeric(fill.get("count_fp"))
                         # API: yes_price_dollars / no_price_dollars (Kalshi changelog Mar 2026); fallback to _fixed during rollout
@@ -1682,18 +1915,45 @@ def sync_fills():
                         raw_json = json.dumps(fill)
 
                         try:
-                            cursor.execute("""
-                                INSERT INTO users.fills_0001
-                                (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                                ON CONFLICT (trade_id) DO NOTHING
-                            """, (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                            cursor.execute(
+                                f"""
+                                INSERT INTO {fills_tbl}
+                                (trade_id, ticker, order_id, outcome_side, orderbook_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                                ON CONFLICT (trade_id) DO UPDATE SET
+                                    ticker = EXCLUDED.ticker,
+                                    order_id = EXCLUDED.order_id,
+                                    outcome_side = EXCLUDED.outcome_side,
+                                    orderbook_side = EXCLUDED.orderbook_side,
+                                    action = EXCLUDED.action,
+                                    count_fp = EXCLUDED.count_fp,
+                                    yes_price_dollars = EXCLUDED.yes_price_dollars,
+                                    no_price_dollars = EXCLUDED.no_price_dollars,
+                                    is_taker = EXCLUDED.is_taker,
+                                    created_time = EXCLUDED.created_time,
+                                    raw_json = EXCLUDED.raw_json
+                            """,
+                                (
+                                    trade_id,
+                                    ticker,
+                                    order_id,
+                                    out_side,
+                                    ob_side,
+                                    action,
+                                    count_fp,
+                                    yes_price_dollars,
+                                    no_price_dollars,
+                                    is_taker,
+                                    created_time,
+                                    raw_json,
+                                ),
+                            )
                             pg_new_count += 1
                         except Exception as e:
                             logger.error("Failed to insert fill %s to PostgreSQL: %s", trade_id, e)
 
                     pg_conn.commit()
-                    logger.debug("%s fills written to PostgreSQL users.fills_0001", pg_new_count)
+                    logger.debug("%s fills written to PostgreSQL %s", pg_new_count, fills_tbl)
                 pg_conn.close()
             else:
                 logger.warning("Skipping PostgreSQL write - no connection available")
@@ -1726,7 +1986,7 @@ def sync_settlements():
         url = f"{get_base_url()}{path}{query}"
         logger.debug("Requesting recent settlements: %s", url)
 
-        full_path_for_signature = f"/trade-api/v2{path}"
+        full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
         headers = {
@@ -1883,7 +2143,7 @@ def sync_orders():
         url = f"{get_base_url()}{path}{query}"
         logger.debug("Requesting recent orders: %s", url)
 
-        full_path_for_signature = f"/trade-api/v2{path}"
+        full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
         signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
 
         headers = {
@@ -1959,17 +2219,19 @@ def sync_orders():
     
     # ------------------------------------------------------------
     # Write to PostgreSQL with DELTA CHECKING and UPDATES
+    orders_tbl = _legacy_orders_qualified()
     try:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
                 # Get existing orders with key fields for delta comparison (use _fp for counts and *_dollars for prices/fees)
-                cursor.execute("""
+                cursor.execute(f"""
                     SELECT order_id, status, fill_count_fp, remaining_count_fp,
                            last_update_time,
                            taker_fees_dollars, maker_fees_dollars,
-                           taker_fill_cost_dollars, maker_fill_cost_dollars
-                    FROM users.orders_0001
+                           taker_fill_cost_dollars, maker_fill_cost_dollars,
+                           outcome_side, orderbook_side
+                    FROM {orders_tbl}
                 """)
                 existing_orders = {row[0]: {
                     'status': row[1],
@@ -1980,6 +2242,8 @@ def sync_orders():
                     'maker_fees_dollars': row[6],
                     'taker_fill_cost_dollars': row[7],
                     'maker_fill_cost_dollars': row[8],
+                    'outcome_side': row[9],
+                    'orderbook_side': row[10],
                 } for row in cursor.fetchall()}
                 
                 pg_new_count = 0
@@ -1989,6 +2253,7 @@ def sync_orders():
                     order_id = order.get("order_id")
                     if not order_id:
                         continue
+                    out_side, ob_side = _direction_from_api_dict(order)
                     
                     # Check if order exists
                     if order_id in existing_orders:
@@ -2013,20 +2278,24 @@ def sync_orders():
                             existing['taker_fees_dollars'] != api_taker_fees_dollars or
                             existing['maker_fees_dollars'] != api_maker_fees_dollars or
                             existing['taker_fill_cost_dollars'] != api_taker_fill_cost_dollars or
-                            existing['maker_fill_cost_dollars'] != api_maker_fill_cost_dollars):
+                            existing['maker_fill_cost_dollars'] != api_maker_fill_cost_dollars or
+                            (existing.get('outcome_side') or None) != (out_side or None) or
+                            (existing.get('orderbook_side') or None) != (ob_side or None)):
                             needs_update = True
                         
                         if needs_update:
                             try:
                                 # UPDATE existing order with new data (no legacy integer columns)
-                                cursor.execute("""
-                                    UPDATE users.orders_0001 SET
+                                cursor.execute(f"""
+                                    UPDATE {orders_tbl} SET
                                         status = %s,
                                         fill_count_fp = %s, remaining_count_fp = %s,
                                         last_update_time = %s,
                                         taker_fees_dollars = %s, maker_fees_dollars = %s,
                                         taker_fill_cost_dollars = %s, maker_fill_cost_dollars = %s,
                                         queue_position = %s,
+                                        outcome_side = %s,
+                                        orderbook_side = %s,
                                         raw_json = %s, updated_at = CURRENT_TIMESTAMP
                                     WHERE order_id = %s
                                 """, (
@@ -2039,6 +2308,8 @@ def sync_orders():
                                     api_taker_fill_cost_dollars,
                                     api_maker_fill_cost_dollars,
                                     order.get("queue_position"),
+                                    out_side,
+                                    ob_side,
                                     json.dumps(order),
                                     order_id
                                 ))
@@ -2049,15 +2320,15 @@ def sync_orders():
                     else:
                         # INSERT new order
                         try:
-                            cursor.execute("""
-                                INSERT INTO users.orders_0001
-                                (order_id, user_id, ticker, status, action, side, type, yes_price_dollars, no_price_dollars,
+                            cursor.execute(f"""
+                                INSERT INTO {orders_tbl}
+                                (order_id, user_id, ticker, status, action, outcome_side, orderbook_side, type, yes_price_dollars, no_price_dollars,
                                  initial_count_fp, remaining_count_fp, fill_count_fp,
                                  created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
                                  self_trade_prevention_type,
                                  maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
                                  raw_json)
-                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s,
+                                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                                         %s, %s, %s,
                                         %s, %s, %s, %s, %s, %s, %s,
                                         %s, %s, %s, %s, %s)
@@ -2067,7 +2338,8 @@ def sync_orders():
                                 order.get("ticker"),
                                 order.get("status"),
                                 order.get("action"),
-                                order.get("side"),
+                                out_side,
+                                ob_side,
                                 order.get("type"),
                                 order.get("yes_price_dollars"),
                                 order.get("no_price_dollars"),
@@ -2093,7 +2365,7 @@ def sync_orders():
                             logger.error("Failed to insert order %s: %s", order_id, e)
 
                 pg_conn.commit()
-                logger.debug("Orders sync complete: %s new, %s updated in PostgreSQL users.orders_0001", pg_new_count, pg_updated_count)
+                logger.debug("Orders sync complete: %s new, %s updated in PostgreSQL %s", pg_new_count, pg_updated_count, orders_tbl)
             pg_conn.close()
         else:
             logger.warning("Skipping PostgreSQL write - no connection available")
@@ -2143,6 +2415,163 @@ def _full_reconcile_sync() -> None:
     sync_orders()
     sync_settlements()
     sync_balance()
+
+
+def _ws_apply_fill_message(ws_outer: dict) -> None:
+    """Persist one fill from Kalshi portfolio WS (primary writer path)."""
+    try:
+        msg = ws_outer.get("msg") if isinstance(ws_outer, dict) else None
+        if not isinstance(msg, dict):
+            msg = ws_outer if isinstance(ws_outer, dict) else {}
+        trade_id = msg.get("trade_id")
+        if not trade_id:
+            return
+        ticker = msg.get("ticker") or msg.get("market_ticker")
+        order_id = msg.get("order_id")
+        out_side, ob_side = _direction_from_api_dict(msg)
+        action = msg.get("action")
+        count_fp = _fp_to_numeric(msg.get("count_fp"))
+        yes_price_dollars = msg.get("yes_price_dollars") or msg.get("yes_price_fixed")
+        no_price_dollars = msg.get("no_price_dollars") or msg.get("no_price_fixed")
+        is_taker = bool(msg.get("is_taker")) if msg.get("is_taker") is not None else None
+        created_time = msg.get("created_time")
+        raw_json = json.dumps(msg)
+        fills_tbl = _legacy_fills_qualified()
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        try:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {fills_tbl}
+                    (trade_id, ticker, order_id, outcome_side, orderbook_side, action, count_fp,
+                     yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (trade_id) DO UPDATE SET
+                        ticker = EXCLUDED.ticker,
+                        order_id = EXCLUDED.order_id,
+                        outcome_side = EXCLUDED.outcome_side,
+                        orderbook_side = EXCLUDED.orderbook_side,
+                        action = EXCLUDED.action,
+                        count_fp = EXCLUDED.count_fp,
+                        yes_price_dollars = EXCLUDED.yes_price_dollars,
+                        no_price_dollars = EXCLUDED.no_price_dollars,
+                        is_taker = EXCLUDED.is_taker,
+                        created_time = EXCLUDED.created_time,
+                        raw_json = EXCLUDED.raw_json
+                    """,
+                    (
+                        trade_id,
+                        ticker,
+                        order_id,
+                        out_side,
+                        ob_side,
+                        action,
+                        count_fp,
+                        yes_price_dollars,
+                        no_price_dollars,
+                        is_taker,
+                        created_time,
+                        raw_json,
+                    ),
+                )
+            pg_conn.commit()
+        finally:
+            pg_conn.close()
+        notify_frontend_db_change("fills", {"fills": 1})
+        _notify_trade_manager_positions_updated({"database": "fills"})
+    except Exception as e:
+        logger.error("WS fill write failed: %s", e)
+
+
+def _ws_apply_order_message(ws_outer: dict) -> None:
+    """Persist one order from Kalshi portfolio WS (primary writer path)."""
+    try:
+        msg = ws_outer.get("msg") if isinstance(ws_outer, dict) else None
+        if not isinstance(msg, dict):
+            msg = ws_outer if isinstance(ws_outer, dict) else {}
+        order_id = msg.get("order_id")
+        if not order_id:
+            return
+        out_side, ob_side = _direction_from_api_dict(msg)
+        orders_tbl = _legacy_orders_qualified()
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        try:
+            with pg_conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    INSERT INTO {orders_tbl}
+                    (order_id, user_id, ticker, status, action, outcome_side, orderbook_side, type, yes_price_dollars, no_price_dollars,
+                     initial_count_fp, remaining_count_fp, fill_count_fp,
+                     created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
+                     self_trade_prevention_type,
+                     maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
+                     raw_json)
+                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+                    ON CONFLICT (order_id) DO UPDATE SET
+                        status = EXCLUDED.status,
+                        action = EXCLUDED.action,
+                        outcome_side = EXCLUDED.outcome_side,
+                        orderbook_side = EXCLUDED.orderbook_side,
+                        ticker = EXCLUDED.ticker,
+                        type = EXCLUDED.type,
+                        yes_price_dollars = EXCLUDED.yes_price_dollars,
+                        no_price_dollars = EXCLUDED.no_price_dollars,
+                        initial_count_fp = EXCLUDED.initial_count_fp,
+                        remaining_count_fp = EXCLUDED.remaining_count_fp,
+                        fill_count_fp = EXCLUDED.fill_count_fp,
+                        created_time = EXCLUDED.created_time,
+                        expiration_time = EXCLUDED.expiration_time,
+                        last_update_time = EXCLUDED.last_update_time,
+                        client_order_id = EXCLUDED.client_order_id,
+                        order_group_id = EXCLUDED.order_group_id,
+                        queue_position = EXCLUDED.queue_position,
+                        self_trade_prevention_type = EXCLUDED.self_trade_prevention_type,
+                        maker_fees_dollars = EXCLUDED.maker_fees_dollars,
+                        taker_fees_dollars = EXCLUDED.taker_fees_dollars,
+                        maker_fill_cost_dollars = EXCLUDED.maker_fill_cost_dollars,
+                        taker_fill_cost_dollars = EXCLUDED.taker_fill_cost_dollars,
+                        raw_json = EXCLUDED.raw_json,
+                        updated_at = CURRENT_TIMESTAMP
+                    """,
+                    (
+                        order_id,
+                        msg.get("user_id"),
+                        msg.get("ticker"),
+                        msg.get("status"),
+                        msg.get("action"),
+                        out_side,
+                        ob_side,
+                        msg.get("type"),
+                        msg.get("yes_price_dollars"),
+                        msg.get("no_price_dollars"),
+                        _fp_to_numeric(msg.get("initial_count_fp")),
+                        _fp_to_numeric(msg.get("remaining_count_fp")),
+                        _fp_to_numeric(msg.get("fill_count_fp")),
+                        msg.get("created_time"),
+                        msg.get("expiration_time"),
+                        msg.get("last_update_time"),
+                        msg.get("client_order_id"),
+                        msg.get("order_group_id"),
+                        msg.get("queue_position"),
+                        msg.get("self_trade_prevention_type"),
+                        msg.get("maker_fees_dollars"),
+                        msg.get("taker_fees_dollars"),
+                        msg.get("maker_fill_cost_dollars"),
+                        msg.get("taker_fill_cost_dollars"),
+                        json.dumps(msg),
+                    ),
+                )
+            pg_conn.commit()
+        finally:
+            pg_conn.close()
+        notify_frontend_db_change("orders", {"orders": 1})
+        _notify_trade_manager_positions_updated({"database": "orders"})
+    except Exception as e:
+        logger.error("WS order write failed: %s", e)
 
 
 class KalshiWebSocketSync:
@@ -2332,13 +2761,17 @@ class KalshiWebSocketSync:
                 if self._poc_fill_count < max_poc:
                     self._poc_fill_count += 1
                     logger.info("PoC fill WS message (compare to REST): %s", json.dumps(data, default=str)[:3000])
-                await self._add_pending_and_debounce({"fills", "balance"})
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _ws_apply_fill_message, data)
+                await self._add_pending_and_debounce({"balance"})
 
             elif t in ("order", "user_order", "orders", "order_update"):
                 if self._poc_order_count < max_poc:
                     self._poc_order_count += 1
                     logger.info("PoC user_orders WS message (compare to REST): %s", json.dumps(data, default=str)[:3000])
-                await self._add_pending_and_debounce({"orders", "balance"})
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(None, _ws_apply_order_message, data)
+                await self._add_pending_and_debounce({"balance"})
 
             elif t == "subscribed":
                 logger.debug("Subscription confirmed: %s", data)

@@ -523,7 +523,7 @@ def test_database_connection():
 def test_kalshi_api_connection():
     try:
         response = requests.get(
-            "https://api.elections.kalshi.com/trade-api/v2/markets",
+            "https://external-api.kalshi.com/trade-api/v2/markets",
             headers={'Authorization': f'Bearer {KALSHI_API_KEY}'},
             timeout=10
         )

@@ -94,7 +94,7 @@ from backend.market_watchdog import (
     next_15m_close_est,
 )
 
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 WS_TABLE = "live_data.market_kalshi_15m"
 WS_TABLE_HOURLY = "live_data.market_kalshi_hourly"
 KALSHI_HOURLY_SYMBOLS = ("BTC", "ETH", "SOL")

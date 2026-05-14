@@ -74,7 +74,7 @@ def get_current_event_ticker():
     
     # Verify this ticker exists via REST API
     try:
-        response = requests.get(f"https://api.elections.kalshi.com/trade-api/v2/events/{current_ticker}", timeout=10)
+        response = requests.get(f"https://external-api.kalshi.com/trade-api/v2/events/{current_ticker}", timeout=10)
         if response.status_code == 200:
             data = response.json()
             if "markets" in data:
@@ -127,7 +127,7 @@ async def debug_websocket_messages():
     }
     
     # Connect to WebSocket
-    uri = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+    uri = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
     
     try:
         async with websockets.connect(uri, additional_headers=headers) as websocket:

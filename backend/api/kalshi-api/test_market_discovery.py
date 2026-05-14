@@ -56,7 +56,7 @@ def get_current_event_ticker():
 
 def fetch_event_json(event_ticker):
     """Fetch event data from Kalshi REST API"""
-    base_url = "https://api.elections.kalshi.com/trade-api/v2"
+    base_url = "https://external-api.kalshi.com/trade-api/v2"
     api_headers = {
         "Accept": "application/json",
         "User-Agent": "KalshiWatcher/1.0"

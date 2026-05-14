@@ -51,7 +51,7 @@ from backend.core.kalshi_execution_settings import (
 app = Flask(__name__)
 
 def get_base_url():
-    return "https://api.elections.kalshi.com/trade-api/v2"
+    return "https://external-api.kalshi.com/trade-api/v2"
 
 
 # --- Credentials loading ---

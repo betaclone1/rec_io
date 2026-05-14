@@ -26,7 +26,7 @@ class KalshiOrderbookWebSocketTest:
         
         self.api_key_id = os.getenv('KALSHI_API_KEY_ID')
         self.private_key_path = cred_dir / "kalshi.pem"
-        self.ws_url = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+        self.ws_url = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
         
         # Use current near-the-money BTC markets (BTC is at ~$118,450)
         self.btc_markets = [

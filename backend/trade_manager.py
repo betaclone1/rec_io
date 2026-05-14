@@ -1896,7 +1896,7 @@ def _fetch_orderbook_for_projection(ticker: str) -> tuple[Optional[dict], str]:
     if ob is not None:
         return ob, "sidecar"
 
-    url = f"https://api.elections.kalshi.com/trade-api/v2/markets/{ticker}/orderbook"
+    url = f"https://external-api.kalshi.com/trade-api/v2/markets/{ticker}/orderbook"
     try:
         resp = requests.get(
             url,
@@ -3039,7 +3039,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                 # Check ORDERS table for our specific order_id (prefer _fp columns for counts and *_dollars for prices/fees)
                 with pg_conn.cursor() as cursor:
                     cursor.execute(f"""
-                        SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, side,
+                        SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, outcome_side,
                                taker_fees_dollars, maker_fees_dollars,
                                taker_fill_cost_dollars, maker_fill_cost_dollars
                         FROM {_tm_orders_table()} 
@@ -3048,7 +3048,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                     order_row = cursor.fetchone()
             
                 if order_row:
-                    (remaining_count_fp, fill_count_fp, initial_count_fp, order_status, side,
+                    (remaining_count_fp, fill_count_fp, initial_count_fp, order_status, outcome_side,
                      taker_fees_dollars, maker_fees_dollars,
                      taker_fill_cost_dollars, maker_fill_cost_dollars) = order_row
                     # Legacy integer counts were removed; use *_fp only.
@@ -3555,7 +3555,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         if pg_conn_close_order:
                             with pg_conn_close_order.cursor() as cursor:
                                 cursor.execute(f"""
-                                    SELECT side, taker_fill_cost_dollars, fill_count_fp
+                                    SELECT outcome_side, taker_fill_cost_dollars, fill_count_fp
                                     FROM {_tm_orders_table()} 
                                     WHERE order_id = %s
                                 """, (stored_order_id_close,))
@@ -3565,7 +3565,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                             close_order_data = None
                     
                         if close_order_data:
-                            close_side, close_fill_cost_dollars, close_fill_count_fp = close_order_data
+                            _close_outcome_side, close_fill_cost_dollars, close_fill_count_fp = close_order_data
                             close_fill_val = _order_count_val(None, close_fill_count_fp)
                             # Calculate sell price from close order (cost per share) using fixed-point dollars
                             total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
@@ -4446,7 +4446,8 @@ def init_trades_db():
                     trade_id TEXT UNIQUE,
                     ticker TEXT,
                     order_id TEXT,
-                    side TEXT,
+                    outcome_side TEXT,
+                    orderbook_side TEXT,
                     action TEXT,
                     count_fp NUMERIC(12,2),
                     yes_price_dollars TEXT,

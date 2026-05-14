@@ -32,11 +32,11 @@ from psycopg2.extras import RealDictCursor
 from backend.core.time_eastern import merge_psycopg2_connect_kwargs
 
 # Configuration
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
 EST = ZoneInfo("America/New_York")
 
 def get_base_url():
-    return "https://api.elections.kalshi.com/trade-api/v2"
+    return "https://external-api.kalshi.com/trade-api/v2"
 
 
 print(f"Using base URL: {get_base_url()} (prod)")

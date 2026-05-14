@@ -11,7 +11,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import dotenv_values
 
-KALSHI_TRADE_API_V2 = "https://api.elections.kalshi.com/trade-api/v2"
+KALSHI_TRADE_API_V2 = "https://external-api.kalshi.com/trade-api/v2"
 
 
 def _sign_request(method: str, path_for_sig: str, timestamp_ms: str, key_path: Path) -> str:

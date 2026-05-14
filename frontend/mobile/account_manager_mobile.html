@@ -816,14 +816,16 @@
             fillsBody.innerHTML = fills.length === 0
                 ? "<tr><td colspan=\"6\">No fills</td></tr>"
                 : fills.map(f => {
-                // Get price based on side with no formatting - use _fixed columns
-                const price = f.side === "yes" ? f.yes_price_dollars : f.no_price_dollars;
+                const outcomeSide = (f.outcome_side || f.side || '').toLowerCase();
+                const price = outcomeSide === "yes" ? f.yes_price_dollars : f.no_price_dollars;
+                const actionDisp = f.action ? String(f.action).toUpperCase() : "—";
+                const bookDisp = f.orderbook_side ? ` (${f.orderbook_side})` : "";
                 
                 return `
                     <tr>
                         <td>${f.ticker}</td>
-                        <td>${f.side === "yes" ? "Y" : "N"}</td>
-                        <td>${f.action.toUpperCase()}</td>
+                        <td>${outcomeSide === "yes" ? "Y" : "N"}${bookDisp}</td>
+                        <td>${actionDisp}</td>
                         <td>${f.count}</td>
                         <td>${price}</td>
                         <td>${new Date(f.created_time).toLocaleString("en-US", { timeZone: "America/New_York" })}</td>

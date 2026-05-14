@@ -51,6 +51,20 @@ def _fp_to_numeric(v):
         return None
 
 
+def _outcome_orderbook_from_api(obj: dict):
+    if not obj:
+        return None, None
+    outcome = (obj.get("outcome_side") or obj.get("side") or obj.get("purchased_side") or "")
+    outcome = str(outcome).strip().lower() or None
+    if outcome not in ("yes", "no"):
+        outcome = None
+    book = (obj.get("book_side") or obj.get("orderbook_side") or "")
+    book = str(book).strip().lower() or None
+    if not book and outcome in ("yes", "no"):
+        book = "bid" if outcome == "yes" else "ask"
+    return outcome, book
+
+
 def _dollars_to_cents(value):
     """
     Convert Kalshi *_dollars string/number fields to integer cents for storage in legacy columns.
@@ -97,7 +111,7 @@ def generate_kalshi_signature(method, full_path, timestamp, key_path):
 
     return base64.b64encode(signature).decode("utf-8")
 
-BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 print(f"Using base URL: {BASE_URL} (prod)")
 
 def sync_settlements():
@@ -346,7 +360,8 @@ def write_fills_to_db():
                 trade_id TEXT PRIMARY KEY,
                 ticker TEXT,
                 order_id TEXT,
-                side TEXT,
+                outcome_side TEXT,
+                orderbook_side TEXT,
                 action TEXT,
                 count_fp NUMERIC(12,2),
                 yes_price_dollars TEXT,
@@ -361,7 +376,7 @@ def write_fills_to_db():
             trade_id = fill.get("trade_id")
             ticker = fill.get("ticker")
             order_id = fill.get("order_id")
-            side = fill.get("side")
+            out_side, ob_side = _outcome_orderbook_from_api(fill)
             action = fill.get("action")
             count_fp = _fp_to_numeric(fill.get("count_fp"))
             yes_price_dollars = fill.get("yes_price_dollars") or fill.get("yes_price_fixed")
@@ -373,10 +388,10 @@ def write_fills_to_db():
             try:
                 c.execute("""
                     INSERT INTO users.fills_0001
-                    (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (trade_id, ticker, order_id, outcome_side, orderbook_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (trade_id) DO NOTHING
-                """, (trade_id, ticker, order_id, side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                """, (trade_id, ticker, order_id, out_side, ob_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert fill {trade_id}: {e}")
 
@@ -514,17 +529,18 @@ def write_orders_to_db():
             order_id = order.get("order_id")
             if not order_id:
                 continue
+            out_side, ob_side = _outcome_orderbook_from_api(order)
             try:
                 c.execute("""
                     INSERT INTO users.orders_0001
-                    (order_id, user_id, ticker, status, action, side, type,
+                    (order_id, user_id, ticker, status, action, outcome_side, orderbook_side, type,
                      yes_price_dollars, no_price_dollars,
                      initial_count_fp, remaining_count_fp, fill_count_fp,
                      created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
                      self_trade_prevention_type,
                      maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
                      raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s,
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s,
                             %s, %s,
                             %s, %s, %s,
                             %s, %s, %s, %s, %s, %s,
@@ -536,6 +552,8 @@ def write_orders_to_db():
                         fill_count_fp = EXCLUDED.fill_count_fp,
                         remaining_count_fp = EXCLUDED.remaining_count_fp,
                         last_update_time = EXCLUDED.last_update_time,
+                        outcome_side = EXCLUDED.outcome_side,
+                        orderbook_side = EXCLUDED.orderbook_side,
                         maker_fees_dollars = EXCLUDED.maker_fees_dollars,
                         taker_fees_dollars = EXCLUDED.taker_fees_dollars,
                         maker_fill_cost_dollars = EXCLUDED.maker_fill_cost_dollars,
@@ -548,7 +566,8 @@ def write_orders_to_db():
                     order.get("ticker"),
                     order.get("status"),
                     order.get("action"),
-                    order.get("side"),
+                    out_side,
+                    ob_side,
                     order.get("type"),
                     order.get("yes_price_dollars"),
                     order.get("no_price_dollars"),

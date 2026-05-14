@@ -31,8 +31,8 @@ from backend.core.config.feature_flags import (
 ensure_data_dirs()
 
 # Configuration
-WS_URL = "wss://api.elections.kalshi.com/trade-api/ws/v2"
-REST_BASE_URL = "https://api.elections.kalshi.com/trade-api/v2"
+WS_URL = "wss://external-api-ws.kalshi.com/trade-api/ws/v2"
+REST_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 EST = ZoneInfo("America/New_York")
 
 # Data paths

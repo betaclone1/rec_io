@@ -68,7 +68,7 @@ backend/api/kalshi-api/kalshi-credentials/prod/kalshi.pem
 
 ### WebSocket Connection
 1. **Authentication**: Uses Kalshi's RSA signature scheme
-2. **Connection**: Connects to `wss://api.elections.kalshi.com/trade-api/ws/v2`
+2. **Connection**: Connects to `wss://external-api-ws.kalshi.com/trade-api/ws/v2`
 3. **Subscription**: Subscribes to `ticker_v2` channel for real-time updates
 4. **Data Processing**: Receives and processes market updates in real-time
 
