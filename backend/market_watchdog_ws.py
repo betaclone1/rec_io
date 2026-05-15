@@ -15,11 +15,14 @@ inbound frame (otherwise ``recv`` could block up to ``MARKET_WATCHDOG_WS_RECV_PO
 
 When ``orderbook_sidecar_enabled()`` is true (``MARKET_WATCHDOG_WS_ORDERBOOK_TABLES`` and not
 ``MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE``), also subscribes to ``orderbook_delta`` on the
-same WebSocket as ``ticker``. The orderbook ``market_tickers`` list is **only** the current-event
-``cycle_tickers`` (the same Kalshi markets as the ``live_data.market_kalshi_*`` seed rows). ``ticker``
-still uses the broader ``ws_tickers`` union for lifecycle; we do **not** subscribe orderbook for
-lifecycle-only pending tickers (even for the same symbols), because that recreated hundreds of empty
-``live_data.orderbook_kalshi_*`` tables. Rollover prune and lifecycle drops keep the small set aligned.
+same WebSocket as ``ticker``. Books are kept **in memory** and projected to Redis keys
+``trade_monitor:orderbook_levels:v1:*`` for ``read_api`` / trade-monitor. Optional Postgres mirrors
+(``live_data.orderbook_kalshi_*``) require ``MARKET_WATCHDOG_WS_ORDERBOOK_PG=1``. The orderbook
+``market_tickers`` list is **only** the current-event ``cycle_tickers`` (same Kalshi markets as
+``live_data.market_kalshi_*`` seed rows). ``ticker`` still uses the broader ``ws_tickers`` union for
+lifecycle; we do **not** subscribe orderbook for lifecycle-only pending tickers (even for the same
+symbols), because that recreated hundreds of empty tables. Rollover prune and lifecycle clears keep
+the small set aligned.
 
 HTTP 429 on Kalshi is **REST quota**, not WebSocket. If we see it while only running this pipeline,
 treat it as our bug: parallel REST during rollover, tight refetch loops, or another client sharing

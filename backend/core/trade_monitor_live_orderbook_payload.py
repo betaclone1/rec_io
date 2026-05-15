@@ -1,10 +1,16 @@
 """
-Build the trade-monitor orderbook JSON payload from live_data (market_kalshi_* + per-ticker orderbook tables).
-Matches the shape consumed by frontend/js/orderbook-redis-ui.js (same as legacy Redis UI).
+Build the trade-monitor orderbook JSON payload from live_data.market_kalshi_* ticker rows plus YES/NO depth.
+
+Depth ladders prefer Redis projections written by ``kalshi_live_orderbook_sidecar`` (see
+``trade_monitor_orderbook_redis_key``). When Redis misses and ``TRADE_MONITOR_ORDERBOOK_PG_FALLBACK``
+is on (default), reads ``live_data.orderbook_kalshi_*``. Matches the shape consumed by
+frontend/js/orderbook-redis-ui.js (same as legacy Redis UI).
 """
 
 from __future__ import annotations
 
+import json
+import os
 import re
 from datetime import datetime, timedelta
 from decimal import Decimal
@@ -16,7 +22,12 @@ from psycopg2 import errors as pg_errors
 
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.kalshi_contract_settlement import kalshi_contract_settlement_end_est
-from backend.core.kalshi_live_orderbook_sidecar import physical_table_name, quoted_table
+from backend.core.kalshi_live_orderbook_sidecar import (
+    physical_table_name,
+    quoted_table,
+    trade_monitor_orderbook_redis_key,
+)
+from backend.core.trading_redis_comms import redis_client_optional
 from backend.core.kalshi_market_normalize import format_floor_strike_usd_comma_cents
 from backend.core.strike_ladder_fetch import fetch_strike_ladder_payload_from_db
 from backend.core.strike_snapshot_redis import get_strike_ladder_from_snapshot
@@ -74,23 +85,39 @@ def _fmt(v: Decimal, q: str = "0.0000") -> str:
 def _book_rows_near_touch(
     levels: dict[Decimal, Decimal], *, is_ask: bool, limit: Optional[int] = None
 ) -> list[dict[str, str]]:
+    """Kalshi-style ladders near touch with cumulative ``total_dollars`` from spread outward.
+
+    Display order matches Kalshi: asks show worst (highest) prices toward the top, bids show best
+    near the mid row first. ``total_dollars`` at each row is the running sum of ``price * size``
+    from the touch-adjacent level through that row (same semantics as Kalshi UI TOTAL column).
+    """
     prices = sorted([p for p, sz in levels.items() if sz > 0])
     if not prices:
         return []
     if is_ask:
         best = prices[:limit] if limit is not None else prices
         display = list(reversed(best))
+        touch_outward = sorted(best)
     else:
         best = prices[-limit:] if limit is not None else prices
         display = list(reversed(best))
+        touch_outward = sorted(best, reverse=True)
+
+    cumulative_by_price: dict[Decimal, Decimal] = {}
+    running = Decimal("0")
+    for price in touch_outward:
+        running += price * levels[price]
+        cumulative_by_price[price] = running
+
     out: list[dict[str, str]] = []
     for price in display:
         size = levels[price]
+        total_cum = cumulative_by_price[price]
         out.append(
             {
                 "price": _fmt(price),
                 "size_fp": _fmt(size, "0.01"),
-                "total_dollars": _fmt(price * size),
+                "total_dollars": _fmt(total_cum, "0.01"),
             }
         )
     return out
@@ -102,6 +129,62 @@ def _transform_complement_levels(levels: dict[Decimal, Decimal]) -> dict[Decimal
         cp = Decimal("1") - p
         transformed[cp] = transformed.get(cp, Decimal("0")) + sz
     return transformed
+
+
+def orderbook_levels_pg_fallback_enabled() -> bool:
+    """When False, depth ladders never hit Postgres (Redis-only)."""
+    return os.getenv("TRADE_MONITOR_ORDERBOOK_PG_FALLBACK", "1").strip().lower() not in (
+        "0",
+        "false",
+        "no",
+        "off",
+    )
+
+
+def try_load_yes_no_levels_from_redis(
+    market_ticker: str,
+) -> Optional[tuple[dict[Decimal, Decimal], dict[Decimal, Decimal]]]:
+    """Parse YES/NO price ladders from Redis snapshot; return None if missing or invalid."""
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None
+    r = redis_client_optional()
+    if not r:
+        return None
+    try:
+        raw = r.get(trade_monitor_orderbook_redis_key(mt))
+    except Exception:
+        return None
+    if not raw:
+        return None
+    if isinstance(raw, bytes):
+        raw = raw.decode("utf-8", errors="replace")
+    try:
+        data = json.loads(raw)
+    except Exception:
+        return None
+    if not isinstance(data, dict):
+        return None
+    rid = str(data.get("market_ticker") or "").strip()
+    if rid and rid != mt:
+        return None
+    yt = data.get("yes")
+    nt = data.get("no")
+    if not isinstance(yt, dict) or not isinstance(nt, dict):
+        return None
+    yes_levels: dict[Decimal, Decimal] = {}
+    no_levels: dict[Decimal, Decimal] = {}
+    for p_str, sz_str in yt.items():
+        try:
+            yes_levels[_d(p_str)] = _d(sz_str)
+        except Exception:
+            continue
+    for p_str, sz_str in nt.items():
+        try:
+            no_levels[_d(p_str)] = _d(sz_str)
+        except Exception:
+            continue
+    return yes_levels, no_levels
 
 
 def _rollback_connection_safe(cur) -> None:
@@ -334,18 +417,28 @@ def build_trade_monitor_orderbook_payload(
     if not row:
         return {"error": "no_market_row", "market_ticker": mt}
 
+    levels_from_redis = False
     orderbook_table_ready = True
-    try:
-        yes_levels, no_levels = _load_yes_no_levels(cur, mt)
-    except pg_errors.UndefinedTable:
-        # After rollover, ``market_kalshi_*`` updates before the first WS orderbook_snapshot
-        # creates ``live_data.orderbook_kalshi_*``. Return full UI shape with empty ladders.
+    yes_levels: dict[Decimal, Decimal] = {}
+    no_levels: dict[Decimal, Decimal] = {}
+    redis_hit = try_load_yes_no_levels_from_redis(mt)
+    if redis_hit is not None:
+        yes_levels, no_levels = redis_hit
+        levels_from_redis = True
+    elif orderbook_levels_pg_fallback_enabled():
+        try:
+            yes_levels, no_levels = _load_yes_no_levels(cur, mt)
+        except pg_errors.UndefinedTable:
+            # After rollover, ``market_kalshi_*`` may update before any Redis snapshot / PG table exists.
+            yes_levels, no_levels = {}, {}
+            orderbook_table_ready = False
+            _rollback_connection_safe(cur)
+        except psycopg2.Error:
+            _rollback_connection_safe(cur)
+            return {"error": "orderbook_read_failed", "market_ticker": mt}
+    else:
         yes_levels, no_levels = {}, {}
         orderbook_table_ready = False
-        _rollback_connection_safe(cur)
-    except psycopg2.Error:
-        _rollback_connection_safe(cur)
-        return {"error": "orderbook_read_failed", "market_ticker": mt}
 
     yes_bids = _book_rows_near_touch(yes_levels, is_ask=False)
     no_bids = _book_rows_near_touch(no_levels, is_ask=False)
@@ -433,6 +526,11 @@ def build_trade_monitor_orderbook_payload(
             ),
             "live_data_orderbook_table": physical_table_name(mt),
             "orderbook_table_ready": orderbook_table_ready,
+            "orderbook_levels_source": (
+                "redis"
+                if levels_from_redis
+                else ("postgres" if orderbook_levels_pg_fallback_enabled() else "none")
+            ),
         },
     }
 
@@ -457,14 +555,21 @@ def build_trade_monitor_orderbook_liquidity_map(
             continue
         if mt in out:
             continue
-        try:
-            yes_levels, no_levels = _load_yes_no_levels(cur, mt)
-        except pg_errors.UndefinedTable:
-            _rollback_connection_safe(cur)
-            out[mt] = False
-            continue
-        except psycopg2.Error:
-            _rollback_connection_safe(cur)
+        redis_hit = try_load_yes_no_levels_from_redis(mt)
+        if redis_hit is not None:
+            yes_levels, no_levels = redis_hit
+        elif orderbook_levels_pg_fallback_enabled():
+            try:
+                yes_levels, no_levels = _load_yes_no_levels(cur, mt)
+            except pg_errors.UndefinedTable:
+                _rollback_connection_safe(cur)
+                out[mt] = False
+                continue
+            except psycopg2.Error:
+                _rollback_connection_safe(cur)
+                out[mt] = False
+                continue
+        else:
             out[mt] = False
             continue
         yes_bids = _book_rows_near_touch(yes_levels, is_ask=False, limit=1)

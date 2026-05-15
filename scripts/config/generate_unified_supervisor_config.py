@@ -435,10 +435,14 @@ class SupervisorConfigGenerator:
                     "autostart": True,
                 }
             )
-        # Real-time orderbook_delta → live_data.orderbook_kalshi_* is off by default.
-        # Supervisor sets MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=1; remove it and set
-        # MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=1 to turn collection back on.
-        env_market_watchdog_ws = env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE="1"'
+        # Orderbook sidecar: Redis-backed depth from WS (see kalshi_live_orderbook_sidecar).
+        # Enable automatically when DB host is loopback/local; remote hosts stay disabled unless you set
+        # MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=1 and unset MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE manually.
+        _db_host = str(db_config.get("host") or "").strip().lower()
+        if _db_host in ("localhost", "127.0.0.1", "::1"):
+            env_market_watchdog_ws = env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_TABLES="1"'
+        else:
+            env_market_watchdog_ws = env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE="1"'
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi_hourly",

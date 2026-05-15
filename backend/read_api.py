@@ -12,8 +12,10 @@ Aside from auth/session, that activity touch, and trade-history prefs, avoids wr
 Also performs a single Redis **GET** of the cached release string
 (`redis_key_system_release_version`) for the System UI. **GET /api/orderbook** reads the Kalshi
 orderbook UI snapshot from Redis (``testing:orderbook_ui:current``). **GET /api/trade-monitor/orderbook**
-returns the trade-monitor orderbook JSON from ``live_data`` (``market_kalshi_*`` + per-ticker
-``orderbook_kalshi_*``), same shape as ``orderbook-redis-ui.js``. Trade monitor NEW sets
+returns the trade-monitor orderbook JSON using ``live_data.market_kalshi_*`` for ticker fields and
+Redis-backed YES/NO ladders (``trade_monitor:orderbook_levels:v1:*``, written by ``market_watchdog_ws``),
+with optional Postgres ``orderbook_kalshi_*`` fallback when ``TRADE_MONITOR_ORDERBOOK_PG_FALLBACK`` is on.
+Same shape as ``orderbook-redis-ui.js``. Trade monitor NEW sets
 ``__ORDERBOOK_API__`` to read_api (default port 3050) for that route. See docs/REDIS_ARCHITECTURE.md.
 **GET /api/live_symbol_spot_bootstrap** returns the same JSON as WebSocket ``live_symbol_spot``
 (``redis_switchboard.build_live_symbol_spot_payload``) so the NEW monitor can hydrate the price
@@ -707,7 +709,7 @@ async def get_trade_monitor_orderbook(
         description="Optional Kalshi market_ticker; default is latest row for symbol+market",
     ),
 ) -> JSONResponse:
-    """DB-backed orderbook for trade monitor NEW (``live_data`` sidecar tables)."""
+    """Trade-monitor orderbook JSON: ``market_kalshi_*`` row + Redis depth (PG fallback optional)."""
     from backend.core.trade_monitor_live_orderbook_payload import build_trade_monitor_orderbook_payload
 
     conn = get_system_postgresql_connection()

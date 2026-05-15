@@ -381,6 +381,7 @@ def _book_rows_near_touch(
     Return levels nearest the spread (Kalshi-style ordering).
     - Asks: pick lowest prices (best asks), display high->low.
     - Bids: pick highest prices (best bids), display high->low so best bid sits at the gap.
+    ``total_dollars`` is cumulative from touch outward (Kalshi TOTAL column).
     """
     prices = sorted([p for p, sz in levels.items() if sz > 0])
     if not prices:
@@ -388,17 +389,27 @@ def _book_rows_near_touch(
     if is_ask:
         best = prices[:limit] if limit is not None else prices
         display = list(reversed(best))
+        touch_outward = sorted(best)
     else:
         best = prices[-limit:] if limit is not None else prices
         display = list(reversed(best))
+        touch_outward = sorted(best, reverse=True)
+
+    cumulative_by_price: dict[Decimal, Decimal] = {}
+    running = Decimal("0")
+    for price in touch_outward:
+        running += price * levels[price]
+        cumulative_by_price[price] = running
+
     out: list[dict[str, str]] = []
     for price in display:
         size = levels[price]
+        total_cum = cumulative_by_price[price]
         out.append(
             {
                 "price": _fmt(price),
                 "size_fp": _fmt(size, "0.01"),
-                "total_dollars": _fmt(price * size),
+                "total_dollars": _fmt(total_cum, "0.01"),
             }
         )
     return out
