@@ -435,14 +435,15 @@ class SupervisorConfigGenerator:
                     "autostart": True,
                 }
             )
-        # Orderbook sidecar: Redis-backed depth from WS (see kalshi_live_orderbook_sidecar).
-        # Enable automatically when DB host is loopback/local; remote hosts stay disabled unless you set
-        # MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=1 and unset MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE manually.
-        _db_host = str(db_config.get("host") or "").strip().lower()
-        if _db_host in ("localhost", "127.0.0.1", "::1"):
-            env_market_watchdog_ws = env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_TABLES="1"'
-        else:
-            env_market_watchdog_ws = env_global + ',MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE="1"'
+        # Orderbook sidecar: Redis-backed depth from WS (kalshi_live_orderbook_sidecar).
+        # On by default for all hosts; set MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=1 in config.local.json
+        # (or env) to turn off without code changes.
+        env_market_watchdog_ws = env_global
+        if "MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=" not in env_market_watchdog_ws:
+            if "MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=" not in env_market_watchdog_ws:
+                env_market_watchdog_ws = (
+                    env_market_watchdog_ws + ',MARKET_WATCHDOG_WS_ORDERBOOK_TABLES="1"'
+                )
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi_hourly",

@@ -14,8 +14,8 @@ depth without touching PostgreSQL.
 
 Does not import market_watchdog_ws (avoid cycles); callers pass DB borrow/return hooks.
 
-Supervisor: remote DB hosts keep MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=1 by default;
-localhost generators enable TABLES without DISABLE so local stacks collect Redis-backed books.
+Supervisor: generate_unified_supervisor_config sets MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=1 by default.
+Set MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=1 to turn the sidecar off.
 """
 
 from __future__ import annotations
