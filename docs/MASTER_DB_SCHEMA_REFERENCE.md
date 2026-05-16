@@ -8865,7 +8865,7 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 
 Unified hourly strike snapshots for **BTC**, **ETH**, and any future symbols in one table; filter by **`exchange`** + **`symbol`**. **Column set, types, and physical order match `live_data.strike_table_15m`** (see that section for the full column list).
 
-**Migrations:** `20260402_2300_strike_table_yes_no_prob_columns`, `20260329_2359_unified_hourly_pipeline_health` (merge + drop `strike_table_hourly_btc` / `strike_table_hourly_eth`); `20260330_1000_hourly_tables_match_15m_shape` rebuilds from `LIKE` 15m where applied.
+**Migrations:** `20260402_2300_strike_table_yes_no_prob_columns`, `20260329_2359_unified_hourly_pipeline_health` (merge + drop `strike_table_hourly_btc` / `strike_table_hourly_eth`); `20260330_1000_hourly_tables_match_15m_shape` rebuilds from `LIKE` 15m where applied; `20260515_1430_live_data_strike_tables_fair_price` (**fair_price**, same semantics as `strike_table_15m`).
 
 #### Indexes
 
@@ -8879,7 +8879,7 @@ Unified hourly strike snapshots for **BTC**, **ETH**, and any future symbols in 
 
 Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (data-source key, e.g. `kalshi`, aligned with `live_data.market_kalshi_15m.exchange`). Populated by `backend/strike_table_generator.py --master-15m` and `backend/strike_table_generator_ws.py` (same table unless `STRIKE_TABLE_15M_TARGET` overrides). Legacy split-symbol `strike_table_15m_*` tables and **`strike_table_ws_15m`** were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`.
 
-Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`), `20260331_1200_live_data_drop_legacy_split_and_equity_tables` (drops `strike_table_ws_15m` and split-symbol `strike_table_15m_*`), `20260329_1800_strike_tables_volume_open_interest_fp_text` (Kalshi depth columns **`volume_fp` / `open_interest_fp` TEXT** only; drops `volume` / `open_interest`), `20260402_2300_strike_table_yes_no_prob_columns` (literal **yes_prob_hourly** / **no_prob_hourly** / **yes_prob_15m** / **no_prob_15m** lookup legs).
+Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`), `20260331_1200_live_data_drop_legacy_split_and_equity_tables` (drops `strike_table_ws_15m` and split-symbol `strike_table_15m_*`), `20260329_1800_strike_tables_volume_open_interest_fp_text` (Kalshi depth columns **`volume_fp` / `open_interest_fp` TEXT** only; drops `volume` / `open_interest`), `20260402_2300_strike_table_yes_no_prob_columns` (literal **yes_prob_hourly** / **no_prob_hourly** / **yes_prob_15m** / **no_prob_15m** lookup legs), `20260515_1430_live_data_strike_tables_fair_price` (**fair_price** on **`live_data`** strike tables only — YES fair in Kalshi dollars: positive lookup leg ÷ 100).
 
 #### Columns
 
@@ -8906,6 +8906,7 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 | `no_prob_hourly` | `decimal(5,2)` | YES | - | Lookup negative leg (hourly TTC); NULL on 15m rows. |
 | `yes_prob_15m` | `decimal(5,2)` | YES | - | Lookup positive leg for 15m TTC. |
 | `no_prob_15m` | `decimal(5,2)` | YES | - | Lookup negative leg for 15m TTC. |
+| `fair_price` | `numeric(12,8)` | YES | - | YES fair in Kalshi dollars (positive lookup leg ÷ 100). Hourly rows use hourly `pos_prob`; 15m rows use `pos_prob_15m`. |
 | `yes_ask_dollars` / `no_ask_dollars` | `text` | YES | - | |
 | `yes_bid_dollars` / `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` / `no_price_spread` | `numeric(6,4)` | YES | - | |

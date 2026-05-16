@@ -689,6 +689,7 @@ class StrikeTableGenerator:
                 no_prob_hourly DECIMAL(5,2),
                 yes_prob_15m DECIMAL(5,2),
                 no_prob_15m DECIMAL(5,2),
+                fair_price NUMERIC(12,8),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -850,6 +851,7 @@ class StrikeTableGenerator:
                 no_prob_hourly DECIMAL(5,2),
                 yes_prob_15m DECIMAL(5,2),
                 no_prob_15m DECIMAL(5,2),
+                fair_price NUMERIC(12,8),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -936,6 +938,7 @@ class StrikeTableGenerator:
                 no_prob_hourly DECIMAL(5,2),
                 yes_prob_15m DECIMAL(5,2),
                 no_prob_15m DECIMAL(5,2),
+                fair_price NUMERIC(12,8),
                 yes_ask_dollars TEXT,
                 no_ask_dollars TEXT,
                 yes_bid_dollars TEXT,
@@ -970,6 +973,7 @@ class StrikeTableGenerator:
                     ("market", "TEXT"),
                     ("ttc_15m", "INTEGER"),
                     ("probability_15m", "DECIMAL(5,2)"),
+                    ("fair_price", "NUMERIC(12,8)"),
                     ("yes_ask_dollars", "TEXT"),
                     ("no_ask_dollars", "TEXT"),
                     ("yes_bid_dollars", "TEXT"),
@@ -1463,7 +1467,19 @@ class StrikeTableGenerator:
                     no_prob_hourly_store = neg_prob if self.interval == "hourly" else None
                     yes_prob_15m_store = pos_prob_15m if pos_prob_15m is not None else None
                     no_prob_15m_store = neg_prob_15m if neg_prob_15m is not None else None
-                    
+                    if self.interval == "hourly":
+                        fair_price_store = (
+                            round(float(pos_prob) / 100.0, 8)
+                            if pos_prob is not None
+                            else None
+                        )
+                    else:
+                        fair_price_store = (
+                            round(float(pos_prob_15m) / 100.0, 8)
+                            if pos_prob_15m is not None
+                            else None
+                        )
+
                     # Get market data for this strike (Kalshi _dollars + fp-derived depth only)
                     yes_ask_dollars = None
                     no_ask_dollars = None
@@ -1561,7 +1577,7 @@ class StrikeTableGenerator:
                             no_ask_dollars=no_ask_dollars,
                             prev=prev_6,
                         )
-                    strike_archive_values = (
+                    strike_live_row = (
                         self.symbol.upper(),
                         self.data_exchange,
                         market_val,
@@ -1581,6 +1597,7 @@ class StrikeTableGenerator:
                         no_prob_hourly_store,
                         yes_prob_15m_store,
                         no_prob_15m_store,
+                        fair_price_store,
                         yes_ask_dollars,
                         no_ask_dollars,
                         yes_bid_dollars,
@@ -1616,15 +1633,15 @@ class StrikeTableGenerator:
                             INSERT INTO live_data.{table_name}
                             (symbol, exchange, market, current_price, ttc_hourly, ttc_15m, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
-                             yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
+                             yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m, fair_price,
                              yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                              yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
-                            strike_archive_values,
+                            strike_live_row,
                         )
                     else:
                         cursor.execute(
@@ -1632,13 +1649,13 @@ class StrikeTableGenerator:
                             INSERT INTO live_data.{table_name}
                             (symbol, market, current_price, ttc_hourly, ttc_15m, broker, event_ticker, market_title,
                              strike_tier, market_status, strike, buffer, buffer_pct, probability_hourly, probability_15m,
-                             yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m,
+                             yes_prob_hourly, no_prob_hourly, yes_prob_15m, no_prob_15m, fair_price,
                              yes_ask_dollars, no_ask_dollars, yes_bid_dollars, no_bid_dollars,
                              yes_price_spread, no_price_spread, yes_diff, no_diff, volume_fp, open_interest_fp, ticker, active_side,
                              momentum_weighted_score, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile,
                              yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m, yes_ask_range_15m, no_ask_range_15m,
                              timestamp, created_at)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                             """,
                             (
                                 self.symbol.upper(),
@@ -1660,6 +1677,7 @@ class StrikeTableGenerator:
                                 no_prob_hourly_store,
                                 yes_prob_15m_store,
                                 no_prob_15m_store,
+                                fair_price_store,
                                 yes_ask_dollars,
                                 no_ask_dollars,
                                 yes_bid_dollars,
@@ -1696,7 +1714,9 @@ class StrikeTableGenerator:
                             )
 
                             append_strike_archive_row_from_live_tuple(
-                                cursor, str(ticker).strip(), strike_archive_values
+                                cursor,
+                                str(ticker).strip(),
+                                strike_live_row[:19] + strike_live_row[20:],
                             )
                         except Exception as arch_exc:
                             logger.warning(
