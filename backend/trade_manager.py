@@ -307,6 +307,77 @@ def normalize_trade_spot_price(symbol: Optional[str], value):
     return d.quantize(step, rounding=ROUND_HALF_UP)
 
 
+def _symbol_close_from_close_request(symbol: Optional[str], raw) -> Optional[float]:
+    """Coerce ATS/close-request symbol_close into a DB-safe spot price, or None."""
+    if raw is None:
+        return None
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if v <= 0:
+        return None
+    out = normalize_trade_spot_price(symbol, v)
+    if out is None:
+        return None
+    return float(out)
+
+
+def _resolve_symbol_close_for_finalize(
+    trade_id: int,
+    symbol: Optional[str],
+    *,
+    ticket_id: Optional[str] = None,
+    as_of_est: Optional[datetime] = None,
+) -> Optional[float]:
+    """Prefer symbol_close on the trade row (set at close start), else 1m avg, else live spot."""
+    existing = None
+    pg_conn = get_postgresql_connection()
+    if pg_conn:
+        try:
+            with pg_conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT symbol_close FROM {_tm_trades_table()} WHERE id = %s",
+                    (trade_id,),
+                )
+                row = cursor.fetchone()
+            if row and row[0] is not None:
+                existing = _symbol_close_from_close_request(symbol, row[0])
+        except Exception as e:
+            log(f"⚠️ symbol_close read for trade {trade_id}: {e}")
+        finally:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
+    if existing is not None:
+        return existing
+
+    when = as_of_est or datetime.now(ZoneInfo("America/New_York"))
+    symbol_close = _fetch_one_minute_avg_at_or_before(
+        symbol, when, max_gap_seconds=120,
+    )
+    if symbol_close is not None:
+        try:
+            return float(symbol_close)
+        except (TypeError, ValueError):
+            pass
+
+    try:
+        from backend.core.tradeflow_live_reads import symbol_spot_price
+
+        spot = symbol_spot_price(str(symbol or "").strip().upper())
+        if spot is not None:
+            out = normalize_trade_spot_price(symbol, spot)
+            return float(out) if out is not None else None
+    except Exception:
+        pass
+
+    if ticket_id:
+        log_event(ticket_id, f"MANAGER: symbol_close unresolved for {symbol}")
+    return None
+
+
 def canonical_trade_strike_display(symbol: Optional[str], strike_raw):
     """
     Persist strike text without losing precision for low-priced underlyings.
@@ -1138,8 +1209,10 @@ def _contract_expiration_est(trade_date, contract, fallback_now_est):
     if mer == "am":
         if hour_raw == 12:
             hour24 = 0
-            # In this codebase, "12am" maps to cycle hour 24 (end-of-day).
-            day_shift = 1
+            # Hourly ``12am`` (00:00) maps to cycle hour 24 (end-of-day). Do not apply
+            # day_shift to 15m labels like ``12:15am`` (00:15 same calendar day).
+            if minutes == 0:
+                day_shift = 1
         else:
             hour24 = hour_raw
     else:
@@ -1493,46 +1566,72 @@ def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
         _settle_one_expired_paper_trade(now_est, tid, tkr, sym)
 
 
+def _tm_symbol_open_from_live_state(symbol: str):
+    """Spot for trade record-keeping from live_state (None if stale/miss)."""
+    try:
+        from backend.core.tradeflow_live_reads import symbol_spot_price
+
+        sym_u = str(symbol or "").strip().upper()
+        spot = symbol_spot_price(sym_u)
+        if spot is not None:
+            return normalize_trade_spot_price(symbol, spot)
+    except Exception:
+        pass
+    return None
+
+
 def _get_price_spread_from_strike_table(symbol, ticker, side, market=None):
-    """Get the price spread for a given ticker and side from the strike table.
-    
-    Args:
-        symbol: The symbol (e.g., 'BTC', 'ETH')
-        ticker: The ticker string (e.g., 'BTC-12345-Y')
-        side: The side ('Y' or 'N', or 'yes' or 'no')
-        market: 'hourly' or '15m'; if None, defaults to 'hourly'
-    
-    Returns:
-        float or None: The price spread (4 decimal places) or None if not found
-    """
+    """Price spread for ticker/side from live_state ladder (PG when cache off)."""
     if not symbol or not ticker or not side:
         return None
     mkt = (market or 'hourly').strip().lower()
     if mkt not in ('hourly', '15m'):
         mkt = 'hourly'
+
+    normalized_side = side.upper()
+    if normalized_side == 'Y':
+        side_column = 'yes_price_spread'
+    elif normalized_side == 'N':
+        side_column = 'no_price_spread'
+    else:
+        normalized_side = side.lower()
+        if normalized_side == 'yes':
+            side_column = 'yes_price_spread'
+        elif normalized_side == 'no':
+            side_column = 'no_price_spread'
+        else:
+            return None
+
+    try:
+        from backend.core.tradeflow_live_reads import (
+            find_ladder_strike_row,
+            strike_ladder,
+            tradeflow_requires_live_state,
+        )
+
+        ladder = strike_ladder(symbol, mkt, "kalshi")
+        row = find_ladder_strike_row(ladder, ticker)
+        if row is not None:
+            v = row.get(side_column)
+            if v is not None:
+                return float(v)
+        if tradeflow_requires_live_state():
+            return None
+    except Exception:
+        try:
+            from backend.core.tradeflow_live_reads import tradeflow_requires_live_state
+
+            if tradeflow_requires_live_state():
+                return None
+        except Exception:
+            return None
+
     table_name = f'strike_table_{mkt}_{symbol.lower()}'
-    
     try:
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return None
         
-        # Normalize side: 'Y' or 'yes' -> 'yes', 'N' or 'no' -> 'no'
-        normalized_side = side.upper()
-        if normalized_side == 'Y':
-            side_column = 'yes_price_spread'
-        elif normalized_side == 'N':
-            side_column = 'no_price_spread'
-        else:
-            normalized_side = side.lower()
-            if normalized_side == 'yes':
-                side_column = 'yes_price_spread'
-            elif normalized_side == 'no':
-                side_column = 'no_price_spread'
-            else:
-                return None
-        
-        # Use sql.Identifier for safe column and table name construction
         with pg_conn.cursor() as cursor:
             query = sql.SQL("""
                 SELECT {}
@@ -1588,6 +1687,37 @@ def _get_final_quarter_ask_snapshot_from_strike_table(symbol, ticker, market=Non
     ex = normalize_exchange(exchange or "kalshi")
     sym_lower = str(symbol).strip().lower()
     sym_upper = str(symbol).strip().upper()
+    try:
+        from backend.core.tradeflow_live_reads import (
+            find_ladder_strike_row,
+            strike_ladder,
+            tradeflow_requires_live_state,
+        )
+
+        ladder = strike_ladder(symbol, mkt, ex)
+        row = find_ladder_strike_row(ladder, ticker)
+        if row is not None:
+            vals = (
+                row.get("yes_ask_min_15m"),
+                row.get("yes_ask_max_15m"),
+                row.get("no_ask_min_15m"),
+                row.get("no_ask_max_15m"),
+                row.get("yes_ask_range_15m"),
+                row.get("no_ask_range_15m"),
+            )
+            if any(v is not None for v in vals):
+                return _row_to_float6(vals)
+        if tradeflow_requires_live_state():
+            return (None,) * 6
+    except Exception:
+        try:
+            from backend.core.tradeflow_live_reads import tradeflow_requires_live_state
+
+            if tradeflow_requires_live_state():
+                return (None,) * 6
+        except Exception:
+            return (None,) * 6
+
     pg_conn = None
     try:
         pg_conn = get_postgresql_connection()
@@ -2376,7 +2506,6 @@ def insert_trade(trade):
             except Exception as e:
                 log(f"⚠️ insert_trade ticket_id idempotency lookup failed: {e}")
     
-    # Get symbol price and all market-context fields from live_data (same source as momentum)
     symbol_open = None
     momentum_for_db = 0
     momentum_percentile_for_db = None
@@ -2386,35 +2515,74 @@ def insert_trade(trade):
     movement_for_db = None
     movement_percentile_for_db = None
     try:
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
-            with pg_conn.cursor() as cursor:
-                cursor.execute(f"""
-                    SELECT price, momentum, momentum_percentile, momentum_5s_avg,
-                           volatility, volatility_percentile, movement, movement_percentile
-                    FROM live_data.live_price_log_1s_{symbol_lower}
-                    ORDER BY timestamp DESC LIMIT 1
-                """)
-                result = cursor.fetchone()
+        from backend.core.tradeflow_live_reads import (
+            symbol_metrics,
+            symbol_spot_price,
+            tradeflow_requires_live_state,
+        )
+
+        sym_u = str(symbol or "").strip().upper()
+        metrics = symbol_metrics(sym_u)
+        if metrics:
+            spot = symbol_spot_price(sym_u)
+            if spot is not None:
+                symbol_open = normalize_trade_spot_price(symbol, spot)
+            momentum_val = metrics.get("momentum")
+            if momentum_val is not None:
+                momentum_for_db = round(float(momentum_val) * 100)
+            mp = metrics.get("momentum_percentile")
+            momentum_percentile_for_db = float(mp) if mp is not None else None
+            m5 = metrics.get("momentum_5s_avg")
+            momentum_5s_avg_for_db = float(m5) if m5 is not None else None
+            vol = metrics.get("volatility")
+            volatility_for_db = float(vol) if vol is not None else None
+            vp = metrics.get("volatility_percentile")
+            volatility_percentile_for_db = float(vp) if vp is not None else None
+            mov = metrics.get("movement")
+            movement_for_db = float(mov) if mov is not None else None
+            mvp = metrics.get("movement_percentile")
+            movement_percentile_for_db = float(mvp) if mvp is not None else None
+        elif not tradeflow_requires_live_state():
+            pg_conn = get_postgresql_connection()
             if pg_conn:
+                with pg_conn.cursor() as cursor:
+                    cursor.execute(
+                        f"""
+                        SELECT price, momentum, momentum_percentile, momentum_5s_avg,
+                               volatility, volatility_percentile, movement, movement_percentile
+                        FROM live_data.live_price_log_1s_{symbol_lower}
+                        ORDER BY timestamp DESC LIMIT 1
+                        """
+                    )
+                    result = cursor.fetchone()
                 pg_conn.close()
-
-            if result:
-                if result[0] is not None:
-                    symbol_open = normalize_trade_spot_price(symbol, result[0])
-                momentum_val = result[1]
-                if momentum_val is not None:
-                    momentum_for_db = round(float(momentum_val) * 100)
-                momentum_percentile_for_db = float(result[2]) if result[2] is not None else None
-                momentum_5s_avg_for_db = float(result[3]) if result[3] is not None else None
-                volatility_for_db = float(result[4]) if result[4] is not None else None
-                volatility_percentile_for_db = float(result[5]) if result[5] is not None else None
-                movement_for_db = float(result[6]) if result[6] is not None else None
-                movement_percentile_for_db = float(result[7]) if result[7] is not None else None
+                if result:
+                    if result[0] is not None:
+                        symbol_open = normalize_trade_spot_price(symbol, result[0])
+                    momentum_val = result[1]
+                    if momentum_val is not None:
+                        momentum_for_db = round(float(momentum_val) * 100)
+                    momentum_percentile_for_db = (
+                        float(result[2]) if result[2] is not None else None
+                    )
+                    momentum_5s_avg_for_db = (
+                        float(result[3]) if result[3] is not None else None
+                    )
+                    volatility_for_db = (
+                        float(result[4]) if result[4] is not None else None
+                    )
+                    volatility_percentile_for_db = (
+                        float(result[5]) if result[5] is not None else None
+                    )
+                    movement_for_db = (
+                        float(result[6]) if result[6] is not None else None
+                    )
+                    movement_percentile_for_db = (
+                        float(result[7]) if result[7] is not None else None
+                    )
     except Exception as e:
-            log(f"⚠️ insert_trade: live_price_log_1s_{symbol_lower} failed for symbol_open: {e}")
+        log(f"⚠️ insert_trade: symbol metrics failed for symbol_open: {e}")
 
-    # Fallback: if we still have no price, get it from the main app API (same source as confirm path)
     if symbol_open is None:
         try:
             main_port = get_port("main_app")
@@ -3213,20 +3381,27 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         except Exception as e:
                             log_event(ticket_id, f"MANAGER: symbol_open fetch failed: {e}")
                         if symbol_open is None:
+                            symbol_open = _tm_symbol_open_from_live_state(symbol)
+                        if symbol_open is None:
                             try:
-                                pg_conn_price = get_postgresql_connection()
-                                if pg_conn_price:
-                                    with pg_conn_price.cursor() as cur:
-                                        cur.execute(
-                                            f"""
-                                            SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
-                                            ORDER BY timestamp DESC LIMIT 1
-                                            """
-                                        )
-                                        row_sp = cur.fetchone()
-                                        if row_sp and row_sp[0] is not None:
-                                            symbol_open = normalize_trade_spot_price(symbol, row_sp[0])
-                                    pg_conn_price.close()
+                                from backend.core.tradeflow_live_reads import tradeflow_requires_live_state
+
+                                if not tradeflow_requires_live_state():
+                                    pg_conn_price = get_postgresql_connection()
+                                    if pg_conn_price:
+                                        with pg_conn_price.cursor() as cur:
+                                            cur.execute(
+                                                f"""
+                                                SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
+                                                ORDER BY timestamp DESC LIMIT 1
+                                                """
+                                            )
+                                            row_sp = cur.fetchone()
+                                            if row_sp and row_sp[0] is not None:
+                                                symbol_open = normalize_trade_spot_price(
+                                                    symbol, row_sp[0]
+                                                )
+                                        pg_conn_price.close()
                             except Exception as e:
                                 log_event(ticket_id, f"MANAGER: live_price_log symbol_open failed: {e}")
                         if symbol_open is None:
@@ -3343,43 +3518,68 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                         
                             diff_formatted = _format_diff_from_prob_and_buy(prob_value, buy_price)
                     
-                            # Get current symbol price for symbol_open (never overwrite existing with NULL)
-                            symbol_open = None
-                            try:
-                                main_port = get_port("main_app")
-                                response = requests.get(f"http://localhost:{main_port}/api/{symbol.lower()}_price", timeout=5)
-                                if response.ok:
-                                    symbol_data = response.json()
-                                    raw_price = symbol_data.get('price')
-                                    if raw_price is not None:
-                                        symbol_open = normalize_trade_spot_price(symbol, raw_price)
-                                        log_event(ticket_id, f"MANAGER: Retrieved current symbol price for open: {symbol_open}")
-                                    else:
-                                        log_event(ticket_id, f"MANAGER: No price data in unified endpoint response")
-                                        symbol_open = None
-                                else:
-                                    log_event(ticket_id, f"MANAGER: Unified price endpoint returned status {response.status_code}")
-                                    symbol_open = None
-                            except Exception as e:
-                                log_event(ticket_id, f"MANAGER: Failed to get current symbol price from unified endpoint: {e}")
-                                symbol_open = None
-
-                            # Fallback: try live_price_log_1s table (same as insert_trade)
+                            symbol_open = _tm_symbol_open_from_live_state(symbol)
+                            if symbol_open is not None:
+                                log_event(
+                                    ticket_id,
+                                    f"MANAGER: symbol_open from live_state: {symbol_open}",
+                                )
                             if symbol_open is None:
                                 try:
-                                    pg_conn_price = get_postgresql_connection()
-                                    if pg_conn_price:
-                                        with pg_conn_price.cursor() as cur:
-                                            cur.execute(f"""
-                                                SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
-                                                ORDER BY timestamp DESC LIMIT 1
-                                            """)
-                                            row = cur.fetchone()
-                                            if row and row[0] is not None:
-                                                symbol_open = normalize_trade_spot_price(symbol, row[0])
-                                        pg_conn_price.close()
+                                    main_port = get_port("main_app")
+                                    response = requests.get(
+                                        f"http://localhost:{main_port}/api/{symbol.lower()}_price",
+                                        timeout=5,
+                                    )
+                                    if response.ok:
+                                        symbol_data = response.json()
+                                        raw_price = symbol_data.get("price")
+                                        if raw_price is not None:
+                                            symbol_open = normalize_trade_spot_price(
+                                                symbol, raw_price
+                                            )
+                                            log_event(
+                                                ticket_id,
+                                                f"MANAGER: Retrieved symbol price for open: {symbol_open}",
+                                            )
+                                    else:
+                                        log_event(
+                                            ticket_id,
+                                            f"MANAGER: price API status {response.status_code}",
+                                        )
                                 except Exception as e:
-                                    log_event(ticket_id, f"MANAGER: live_price_log_1s fallback for symbol_open failed: {e}")
+                                    log_event(
+                                        ticket_id,
+                                        f"MANAGER: Failed to get symbol price from API: {e}",
+                                    )
+
+                            if symbol_open is None:
+                                try:
+                                    from backend.core.tradeflow_live_reads import (
+                                        tradeflow_requires_live_state,
+                                    )
+
+                                    if not tradeflow_requires_live_state():
+                                        pg_conn_price = get_postgresql_connection()
+                                        if pg_conn_price:
+                                            with pg_conn_price.cursor() as cur:
+                                                cur.execute(
+                                                    f"""
+                                                    SELECT price FROM live_data.live_price_log_1s_{symbol.lower()}
+                                                    ORDER BY timestamp DESC LIMIT 1
+                                                    """
+                                                )
+                                                row = cur.fetchone()
+                                                if row and row[0] is not None:
+                                                    symbol_open = normalize_trade_spot_price(
+                                                        symbol, row[0]
+                                                    )
+                                            pg_conn_price.close()
+                                except Exception as e:
+                                    log_event(
+                                        ticket_id,
+                                        f"MANAGER: live_price_log fallback failed: {e}",
+                                    )
 
                             # If we still have no price, keep existing symbol_open from DB (do not overwrite with NULL)
                             if symbol_open is None:
@@ -3577,18 +3777,18 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                             sell_price = None
                             log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
                     
-                        # symbol_close from 1m avg aligned to close-time with freshness guard.
-                        symbol_close = _fetch_one_minute_avg_at_or_before(
+                        symbol_close = _resolve_symbol_close_for_finalize(
+                            id,
                             symbol,
-                            now_est,
-                            max_gap_seconds=120,
+                            ticket_id=ticket_id,
+                            as_of_est=now_est,
                         )
                         if symbol_close is not None:
-                            log_event(ticket_id, f"MANAGER: Retrieved one_minute_avg for close: {symbol_close}")
+                            log_event(ticket_id, f"MANAGER: symbol_close for finalize: {symbol_close}")
                         else:
                             log_event(
                                 ticket_id,
-                                f"MANAGER: No fresh one_minute_avg near close for {symbol}; symbol_close left unset",
+                                f"MANAGER: symbol_close left unset for {symbol}",
                             )
                     
                         # Get trade data for PnL calculation including existing fees
@@ -3756,6 +3956,28 @@ def get_high_low_prices_from_active_trades(trade_id: int) -> tuple:
             log(f"⚠️ Monitor identifier doesn't start with 'mon_': {monitor_identifier}")
             return (None, None)
         
+        try:
+            from backend.core.live_state_active_trades import (
+                get_high_low_prices,
+                live_state_active_trades_enabled,
+            )
+
+            if live_state_active_trades_enabled():
+                hp, lp = get_high_low_prices(user_number, trade_id)
+                if hp is not None or lp is not None:
+                    log(
+                        f"📊 Retrieved high_price={hp}, low_price={lp} for trade {trade_id} (Redis)"
+                    )
+                    return (hp, lp)
+        except Exception as redis_e:
+            log_debug(f"Redis high/low lookup failed for trade {trade_id}: {redis_e}")
+
+        from backend.core.live_state_active_trades import active_trades_pg_dual_write
+
+        if not active_trades_pg_dual_write():
+            log(f"⚠️ Trade {trade_id} not found in Redis active_trades pool")
+            return (None, None)
+
         from backend.core.port_config import (
             monitor_suffix_uses_unified_15m_pool,
             monitor_suffix_uses_unified_hourly_pool,
@@ -3769,27 +3991,28 @@ def get_high_low_prices_from_active_trades(trade_id: int) -> tuple:
         else:
             active_trades_table = f"active_trades_{user_number}_{monitor_id}"
 
-        # Query active_trades table for high_price and low_price
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return (None, None)
 
         with pg_conn.cursor() as cursor:
-            cursor.execute(f"""
+            cursor.execute(
+                f"""
                 SELECT high_price, low_price
                 FROM users.{active_trades_table}
                 WHERE trade_id = %s
-            """, (trade_id,))
+                """,
+                (trade_id,),
+            )
             price_row = cursor.fetchone()
         pg_conn.close()
-        
+
         if price_row:
             high_price, low_price = price_row
             log(f"📊 Retrieved high_price={high_price}, low_price={low_price} for trade {trade_id}")
             return (high_price, low_price)
-        else:
-            log(f"⚠️ Trade {trade_id} not found in active_trades table {active_trades_table}")
-            return (None, None)
+        log(f"⚠️ Trade {trade_id} not found in active_trades table {active_trades_table}")
+        return (None, None)
             
     except Exception as e:
         log(f"❌ Error getting high/low prices from active_trades for trade {trade_id}: {e}")
@@ -4348,6 +4571,25 @@ def notify_ats_trade_open_with_ack(trade_id: int) -> None:
         )
 
 
+def _fanout_trade_log_lifecycle(trade_id: int, status: str) -> None:
+    """Trade history: invalidate insights cache + targeted refetch (not mark ticks)."""
+    try:
+        from backend.core.trades_history_insights_cache import bump_insights_cache_version
+        from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+        from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
+
+        slot = effective_tenant_context_for_sql_rewrite().user_no
+        bump_insights_cache_version(slot)
+        if use_trading_redis_comms():
+            publish_preferences_event(
+                "trade_log_changed",
+                {"trade_id": int(trade_id), "status": str(status)},
+                tenant_user_no=slot,
+            )
+    except Exception:
+        pass
+
+
 def notify_frontend_trade_change() -> None:
     """Send notification to frontend when trades are updated"""
     notify_frontend_trade_change_redis_or_http()
@@ -4748,6 +4990,8 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
             pg_conn.close()
     
     notify_frontend_trade_change()
+    if status in ("open", "closed", "pending", "partial", "closing"):
+        _fanout_trade_log_lifecycle(trade_id, status)
     
     # Notify Active Trade Supervisor when status changes to open (Redis ACK + HTTP fallback)
     if status in ('open', 'partial'):
@@ -4886,6 +5130,8 @@ def update_trade_status(trade_id, status, closed_at=None, sell_price=None, symbo
             pg_conn.close()
     
     notify_frontend_trade_change()
+    if status in ("open", "closed", "pending", "partial", "closing"):
+        _fanout_trade_log_lifecycle(trade_id, status)
     
     # Notify Active Trade Supervisor when status changes to open (Redis ACK + HTTP fallback)
     if status in ('open', 'partial'):
@@ -5358,7 +5604,7 @@ async def add_trade(request: Request):
             if pg_conn:
                 with pg_conn.cursor() as cursor:
                     cursor.execute(
-                        f"SELECT ticker, status, paper_trade, side, position FROM {_tm_trades_table()} WHERE id = %s",
+                        f"SELECT ticker, status, paper_trade, side, position, symbol FROM {_tm_trades_table()} WHERE id = %s",
                         (trade_id,),
                     )
                     row = cursor.fetchone()
@@ -5370,6 +5616,7 @@ async def add_trade(request: Request):
                 paper_trade = row[2] if len(row) > 2 else False
                 trade_side = _normalize_trade_side(row[3]) if len(row) > 3 else None
                 trade_position = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
+                trade_symbol = row[5] if len(row) > 5 else None
                 if isinstance(paper_trade, str):
                     paper_trade = paper_trade.lower() in ('true', '1', 'yes')
                 elif paper_trade is None:
@@ -5445,23 +5692,27 @@ async def add_trade(request: Request):
                     close_method = data.get("close_method", "manual")
                     ticket_id = data.get("ticket_id")
                     
-                    # Get symbol from trade to fetch one_minute_avg
-                    symbol = None
-                    try:
-                        pg_conn_symbol = get_postgresql_connection()
-                        if pg_conn_symbol:
-                            with pg_conn_symbol.cursor() as cursor:
-                                cursor.execute(f"SELECT symbol FROM {_tm_trades_table()} WHERE id = %s", (trade_id,))
-                                result = cursor.fetchone()
-                                if result and result[0]:
-                                    symbol = result[0]
-                            pg_conn_symbol.close()
-                    except Exception as e:
-                        log(f"⚠️ Failed to get symbol for paper trade close: {e}")
-                    
-                    # symbol_close from 1m avg aligned to close-time with freshness guard.
-                    symbol_close = None
-                    if symbol:
+                    symbol = trade_symbol
+                    if not symbol:
+                        try:
+                            pg_conn_symbol = get_postgresql_connection()
+                            if pg_conn_symbol:
+                                with pg_conn_symbol.cursor() as cursor:
+                                    cursor.execute(
+                                        f"SELECT symbol FROM {_tm_trades_table()} WHERE id = %s",
+                                        (trade_id,),
+                                    )
+                                    result = cursor.fetchone()
+                                    if result and result[0]:
+                                        symbol = result[0]
+                                pg_conn_symbol.close()
+                        except Exception as e:
+                            log(f"⚠️ Failed to get symbol for paper trade close: {e}")
+
+                    symbol_close = _symbol_close_from_close_request(
+                        symbol, data.get("symbol_close"),
+                    )
+                    if symbol_close is None and symbol:
                         now_est_close = datetime.now(ZoneInfo("America/New_York"))
                         symbol_close = _fetch_one_minute_avg_at_or_before(
                             symbol,
@@ -5598,7 +5849,9 @@ async def add_trade(request: Request):
                             "order_type": "market",
                             "time_in_force": "immediate_or_cancel",
                             "buy_price": data.get("buy_price"),
-                            "symbol_close": None,
+                            "symbol_close": _symbol_close_from_close_request(
+                                trade_symbol, data.get("symbol_close"),
+                            ),
                             "intent": "close",
                             "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
                         }
@@ -5607,7 +5860,9 @@ async def add_trade(request: Request):
                         log(f"CLOSE EXECUTOR ERROR: {e}")
                 
                     # Update database status
-                    symbol_close = None
+                    symbol_close = _symbol_close_from_close_request(
+                        trade_symbol, data.get("symbol_close"),
+                    )
                     sell_price = data.get("buy_price")
                     close_method = data.get("close_method", "manual")
                     
