@@ -240,8 +240,38 @@ def compute_market_wide_loss_prevention_state(
     return "off"
 
 
+def _market_wide_extra_recipient_sql(
+    global_hero_id: Optional[int],
+    symbol_publisher_ids: list[int],
+) -> Tuple[str, Tuple[Any, ...]]:
+    """OR-clauses for monitors that receive market-wide LP without symbol_wide follower flag."""
+    clauses: list[str] = []
+    params: list[Any] = []
+    seen: set[int] = set()
+
+    def _add(mid: Optional[int]) -> None:
+        if mid is None:
+            return
+        try:
+            i = int(mid)
+        except (TypeError, ValueError):
+            return
+        if i in seen:
+            return
+        seen.add(i)
+        clauses.append("(id = %s AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE)")
+        params.append(i)
+
+    _add(global_hero_id)
+    for pid in symbol_publisher_ids:
+        _add(pid)
+    if not clauses:
+        return "", ()
+    return " OR " + " OR ".join(clauses), tuple(params)
+
+
 def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: str) -> int:
-    """Project market-wide LP into qualifying monitor rows (symbol_wide followers + configured global hero)."""
+    """Project market-wide LP into symbol_wide followers, global MW hero, and symbol LP publishers."""
     ml = str(monitor_list_qualified or "").strip()
     if not re.match(r"^(?:users|users_\d{4})\.monitor_list_\d{4}$", ml, re.I):
         _log.debug("market-wide LP sync skipped: invalid monitor_list %r", monitor_list_qualified)
@@ -250,25 +280,27 @@ def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: s
     mw_base = normalize_loss_prevention_state_for_sizing(mw)
     mw_severity = loss_prevention_state_severity(mw)
     updated = 0
+    slot_mw = _monitor_list_slot(ml)
+    hero_id_for_row: Optional[int] = None
+    symbol_publishers: list[int] = []
+    if slot_mw == "0001":
+        try:
+            symbol_publishers = [int(x) for x in configured_symbol_wide_monitor_ids(cursor, ml)]
+        except (TypeError, ValueError):
+            symbol_publishers = []
+    if slot_mw:
+        _en_h, hero_id_for_row, _th_h = read_market_wide_loss_prevention_settings(cursor, slot_mw)
+        if hero_id_for_row is not None:
+            try:
+                hero_id_for_row = int(hero_id_for_row)
+            except (TypeError, ValueError):
+                hero_id_for_row = None
+    extra_or_sql, extra_params = _market_wide_extra_recipient_sql(
+        hero_id_for_row, symbol_publishers
+    )
     if mw_base != "off":
         local_state_expr = _sql_local_loss_prevention_state_expr()
         local_severity_expr = _sql_loss_prevention_severity_expr(local_state_expr)
-        slot_mw = _monitor_list_slot(ml)
-        hero_id_for_row: Optional[int] = None
-        if slot_mw:
-            _en_h, hero_id_for_row, _th_h = read_market_wide_loss_prevention_settings(cursor, slot_mw)
-            if hero_id_for_row is not None:
-                try:
-                    hero_id_for_row = int(hero_id_for_row)
-                except (TypeError, ValueError):
-                    hero_id_for_row = None
-        hero_or_sql = ""
-        hero_params: Tuple[Any, ...] = ()
-        if hero_id_for_row is not None:
-            hero_or_sql = (
-                " OR (id = %s AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE)"
-            )
-            hero_params = (int(hero_id_for_row),)
         try:
             cursor.execute(
                 f"""
@@ -285,7 +317,7 @@ def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: s
                         COALESCE(symbol_wide_loss_prevention, FALSE) IS TRUE
                         AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
                     )
-                    {hero_or_sql}
+                    {extra_or_sql}
                 )
                   AND loss_prevention_state IS DISTINCT FROM (
                     CASE
@@ -294,7 +326,7 @@ def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: s
                     END
                   )
                 """,
-                (mw_severity, mw) + hero_params + (mw_severity, mw),
+                (mw_severity, mw) + extra_params + (mw_severity, mw),
             )
             updated += int(getattr(cursor, "rowcount", 0) or 0)
         except Exception as exc:
@@ -302,22 +334,9 @@ def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: s
         return updated
 
     try:
-        slot_clr = _monitor_list_slot(ml)
-        hero_clr: Optional[int] = None
-        if slot_clr:
-            _e2, hero_clr, _t2 = read_market_wide_loss_prevention_settings(cursor, slot_clr)
-            if hero_clr is not None:
-                try:
-                    hero_clr = int(hero_clr)
-                except (TypeError, ValueError):
-                    hero_clr = None
-        hero_scan_sql = ""
-        scan_params: Tuple[Any, ...] = ()
-        if hero_clr is not None:
-            hero_scan_sql = (
-                " OR (id = %s AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE)"
-            )
-            scan_params = (int(hero_clr),)
+        extra_scan_sql, scan_params = _market_wide_extra_recipient_sql(
+            hero_id_for_row, symbol_publishers
+        )
         cursor.execute(
             f"""
             SELECT id, loss_prevention_state
@@ -327,7 +346,7 @@ def sync_market_wide_loss_prevention_followers(cursor, monitor_list_qualified: s
                     COALESCE(symbol_wide_loss_prevention, FALSE) IS TRUE
                     AND COALESCE(loss_prevention_toggle, FALSE) IS TRUE
                 )
-                {hero_scan_sql}
+                {extra_scan_sql}
             )
             """,
             scan_params,
@@ -405,6 +424,41 @@ def _fetch_monitor_lp_row(
         "symbol_wide_loss_prevention": row[10],
         "computed_local_loss_prevention_state": row[11],
     }
+
+
+def is_symbol_wide_loss_prevention_publisher(
+    cursor,
+    monitor_list_qualified: str,
+    monitor_id: str,
+) -> bool:
+    """True when this monitor publishes LP for its symbol via live_symbol_status.monitor_follow."""
+    slot = _monitor_list_slot(monitor_list_qualified)
+    if slot != "0001":
+        return False
+    mid = str(monitor_id or "").strip()
+    if not mid:
+        return False
+    ml = str(monitor_list_qualified or "").strip()
+    if not re.match(r"^(?:users|users_\d{4})\.monitor_list_\d{4}$", ml, re.I):
+        return False
+    try:
+        cursor.execute(
+            f"""
+            SELECT 1
+            FROM live_data.live_symbol_status AS lss
+            JOIN {ml} AS m
+              ON UPPER(m.symbol) = UPPER(lss.symbol)
+             AND BTRIM(COALESCE(m.name, '')) = BTRIM(COALESCE(lss.monitor_follow, ''))
+            WHERE m.id = %s
+              AND BTRIM(COALESCE(lss.monitor_follow, '')) <> ''
+            LIMIT 1
+            """,
+            (mid,),
+        )
+        return cursor.fetchone() is not None
+    except Exception as exc:
+        _log.debug("symbol-wide LP publisher check failed id=%s: %s", mid, exc)
+        return False
 
 
 def configured_symbol_wide_monitor_ids(
@@ -722,6 +776,9 @@ def resolve_effective_loss_prevention_state(
             except (TypeError, ValueError):
                 mw_hero_id = None
     is_global_mw_hero = mw_hero_id is not None and str(mw_hero_id) == str(monitor.get("id"))
+    is_symbol_lp_publisher = is_symbol_wide_loss_prevention_publisher(
+        cursor, monitor_list_qualified, str(monitor.get("id"))
+    )
 
     two_way = local_state
     if bool(monitor.get("symbol_wide_loss_prevention")):
@@ -749,6 +806,10 @@ def resolve_effective_loss_prevention_state(
     mw = compute_market_wide_loss_prevention_state(cursor, monitor_list_qualified)
     if normalize_loss_prevention_state_for_sizing(mw) == "off":
         return two_way
-    if bool(monitor.get("symbol_wide_loss_prevention")) or is_global_mw_hero:
+    if (
+        bool(monitor.get("symbol_wide_loss_prevention"))
+        or is_global_mw_hero
+        or is_symbol_lp_publisher
+    ):
         return more_serious_loss_prevention_state(two_way, mw)
     return two_way

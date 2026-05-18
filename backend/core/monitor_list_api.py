@@ -18,6 +18,7 @@ from backend.core.time_based_loss_prevention import (
 from backend.core.symbol_wide_loss_prevention import (
     _sql_local_loss_prevention_state_expr,
     compute_market_wide_loss_prevention_state,
+    configured_symbol_wide_monitor_ids,
     is_symbol_wide_loss_prevention_state,
     more_serious_loss_prevention_state,
     normalize_loss_prevention_state_for_sizing,
@@ -176,6 +177,17 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             except Exception as exc:
                 _log.debug("hero market-wide LP anchor read failed: %s", exc)
 
+        symbol_lp_publisher_ids: set[str] = set()
+        if str(user_number).strip() == "0001":
+            try:
+                symbol_lp_publisher_ids = set(
+                    configured_symbol_wide_monitor_ids(
+                        cursor, f"users.monitor_list_{user_number}"
+                    )
+                )
+            except Exception as exc:
+                _log.debug("symbol LP publisher id list failed: %s", exc)
+
         strict_pipeline_health = strike_pipeline_health_strict_mode_enabled()
         # Per (symbol, market): hourly monitors must not inherit 15m pipeline failures (and vice versa).
         health_by_symbol_market: Dict[Tuple[str, str], Dict[str, Any]] = {}
@@ -277,7 +289,10 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
         mw_hero_matches = (
             mw_settings_hero_id is not None and int(monitor_id) == int(mw_settings_hero_id)
         )
-        apply_mw_merge = bool(symbol_wide_loss_prevention) or mw_hero_matches
+        is_symbol_lp_publisher = str(monitor_id) in symbol_lp_publisher_ids
+        apply_mw_merge = (
+            bool(symbol_wide_loss_prevention) or mw_hero_matches or is_symbol_lp_publisher
+        )
         if apply_mw_merge:
             mw_raw = mw_global
             if normalize_loss_prevention_state_for_sizing(mw_raw) != "off":
