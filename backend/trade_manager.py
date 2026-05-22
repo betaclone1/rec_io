@@ -225,6 +225,18 @@ def _derive_clock_from_kalshi_suffix(dt_part: str) -> Optional[tuple]:
     return None
 
 
+def _derive_clock_from_kalshi_event_parts(parts: list) -> Optional[tuple]:
+    """Parse clock from event segments; 15m tickers use HHMM in penultimate segment (e.g. 26MAY211815-15)."""
+    if not parts:
+        return None
+    clock = _derive_clock_from_kalshi_suffix(parts[-1])
+    if clock is not None:
+        return clock
+    if len(parts) >= 3 and parts[-1].isdigit() and len(parts[-1]) <= 2:
+        return _derive_clock_from_kalshi_suffix(parts[-2])
+    return None
+
+
 def _derive_format_time_label(hour_24: int) -> str:
     if hour_24 == 0:
         return "12am"
@@ -255,7 +267,7 @@ def derive_contract_label_from_kalshi_ticker(symbol: Optional[str], ticker: Opti
     parts = ev.split("-")
     if len(parts) < 2:
         return None
-    clock = _derive_clock_from_kalshi_suffix(parts[-1])
+    clock = _derive_clock_from_kalshi_event_parts(parts)
     if not clock:
         return None
     h24, min_opt = clock
@@ -266,13 +278,17 @@ def derive_contract_label_from_kalshi_ticker(symbol: Optional[str], ticker: Opti
 
 def _coalesce_trade_contract(symbol: str, contract: Optional[str], ticker: Optional[str]) -> str:
     """Prefer explicit contract; else derive from ticker; else legacy segment label."""
+    sym = _trade_symbol_norm(symbol) or "BTC"
+    legacy = f"{sym} Market"
     c = str(contract).strip() if contract is not None else ""
-    if c:
-        return c
     d = derive_contract_label_from_kalshi_ticker(symbol, ticker)
+    if c and c != legacy:
+        return c
     if d:
         return d
-    return f"{_trade_symbol_norm(symbol) or 'BTC'} Market"
+    if c:
+        return c
+    return legacy
 
 
 # Spot/strike precision: BTC/ETH stay at 2dp for backward compatibility; SOL/XRP align with
@@ -1240,6 +1256,21 @@ def _trade_eligible_for_quarter_hour_expiry(trade_market: Optional[str]) -> bool
     Applies to every strategy.
     """
     return bool(trade_market and str(trade_market).strip().lower() == "15m")
+
+
+def _filter_trades_past_contract_expiration(trades, now_est):
+    """Keep only rows whose contract wall-clock expiration instant has passed (EST).
+
+    Matches ``check_expired_simulated_trades`` — without this, :00 sweeps mark every
+    open trade expired while ``one_minute_avg`` at/before expiry is just the latest tick.
+    """
+    past = []
+    for row in trades:
+        _trade_id, _ticker, _symbol, _strategy, contract, trade_date, _mkt = row
+        expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+        if now_est >= expiration_est:
+            past.append(row)
+    return past
 
 
 def _live_price_log_timestamp_cutoff_str(expiration_est: datetime) -> str:
@@ -4590,6 +4621,33 @@ def _fanout_trade_log_lifecycle(trade_id: int, status: str) -> None:
         pass
 
 
+def _fanout_trade_marks_closed(
+    trade_id: int,
+    *,
+    sell_price: Optional[float] = None,
+    pnl: Optional[float] = None,
+    ret_pct: Optional[float] = None,
+) -> None:
+    """Push final sell/pnl to trade history via WebSocket (no full /trades refetch)."""
+    mark: Dict[str, Any] = {"trade_id": int(trade_id)}
+    if sell_price is not None:
+        mark["sell_price"] = float(sell_price)
+    if pnl is not None:
+        mark["pnl"] = float(pnl)
+    if ret_pct is not None:
+        mark["ret_pct"] = float(ret_pct)
+    if len(mark) < 2:
+        return
+    try:
+        from backend.core.trading_redis_comms import publish_trade_marks_ws_message
+        from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
+
+        slot = effective_tenant_context_for_sql_rewrite().user_no
+        publish_trade_marks_ws_message([mark], tenant_user_no=slot)
+    except Exception:
+        pass
+
+
 def notify_frontend_trade_change() -> None:
     """Send notification to frontend when trades are updated"""
     notify_frontend_trade_change_redis_or_http()
@@ -4992,6 +5050,16 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
     notify_frontend_trade_change()
     if status in ("open", "closed", "pending", "partial", "closing"):
         _fanout_trade_log_lifecycle(trade_id, status)
+    if status == "closed":
+        _final_pnl = pnl
+        if _final_pnl is None and "calculated_pnl" in locals():
+            _final_pnl = calculated_pnl
+        _fanout_trade_marks_closed(
+            trade_id,
+            sell_price=sell_price,
+            pnl=_final_pnl,
+            ret_pct=ret_pct,
+        )
     
     # Notify Active Trade Supervisor when status changes to open (Redis ACK + HTTP fallback)
     if status in ('open', 'partial'):
@@ -7253,7 +7321,19 @@ def check_expired_trades():
         if not trades_to_process:
             log("[15-MIN CHECK] No eligible trades found for expiration")
             return
-        
+
+        before_expiry_filter = len(trades_to_process)
+        trades_to_process = _filter_trades_past_contract_expiration(trades_to_process, now_est)
+        skipped_early = before_expiry_filter - len(trades_to_process)
+        if skipped_early:
+            log(
+                f"[15-MIN CHECK] Skipped {skipped_early} trade(s) not yet past contract expiry"
+            )
+
+        if not trades_to_process:
+            log("[15-MIN CHECK] No trades past contract expiry for this run")
+            return
+
         # Closing prices: one_minute_avg at or before each trade's contract expiration tick.
         expiration_price_cache = {}
         for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
@@ -7276,6 +7356,8 @@ def check_expired_trades():
                 with pg_conn.cursor() as cursor:
                     for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
                         expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+                        if now_est < expiration_est:
+                            continue
                         cache_key = (symbol, expiration_est.replace(tzinfo=None))
                         symbol_close = expiration_price_cache.get(cache_key)
                         

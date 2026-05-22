@@ -15,7 +15,7 @@ import sys
 import time
 
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
-from backend.core.strike_ladder_fetch import fetch_strike_ladder_payload_from_db
+from backend.core.strike_ladder_fetch import fetch_strike_ladder_prefer_snapshot
 from backend.core.strike_snapshot_redis import publish_strike_snapshot, redis_client_optional
 
 logging.basicConfig(
@@ -93,7 +93,7 @@ def main() -> int:
         generation_seq += 1
         for sym in symbols:
             for mkt in markets:
-                payload = fetch_strike_ladder_payload_from_db(sym, mkt, ex)
+                payload = fetch_strike_ladder_prefer_snapshot(sym, mkt, ex)
                 if not payload:
                     continue
 

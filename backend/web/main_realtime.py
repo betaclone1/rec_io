@@ -27,6 +27,10 @@ from backend.web.tenant_asgi import resolve_session_user_no_from_asgi_scope
 _LOG = logging.getLogger("main_app")
 
 preferences_ws_by_user: Dict[str, set] = defaultdict(set)
+live_path_monitor_by_ws: Dict[int, tuple] = {}  # id(websocket) -> (WebSocket, LivePathMonitorSpec)
+_debug_last_trade_live: Dict[str, Dict[str, Dict[str, Dict[str, Any]]]] = defaultdict(
+    lambda: defaultdict(dict)
+)
 realtime_ws_router = APIRouter()
 
 
@@ -47,6 +51,147 @@ def prefs_ws_unregister(ws) -> None:
             if not sset:
                 del preferences_ws_by_user[un]
             return
+
+
+def live_path_monitor_ws_register(ws, spec) -> None:
+    from backend.core.live_path_cache_monitor import LivePathMonitorSpec
+
+    if not isinstance(spec, LivePathMonitorSpec):
+        raise TypeError("spec must be LivePathMonitorSpec")
+    live_path_monitor_by_ws[id(ws)] = (ws, spec)
+
+
+def live_path_monitor_ws_unregister(ws) -> None:
+    live_path_monitor_by_ws.pop(id(ws), None)
+
+
+def _iter_live_path_monitor_clients():
+    for ws, spec in list(live_path_monitor_by_ws.values()):
+        yield ws, spec
+
+
+def _slot_from_active_trades_redis_key(key: str) -> Optional[str]:
+    m = _main_re.search(r":tenant:(\d{4}):active_trades$", str(key or ""))
+    return m.group(1) if m else None
+
+
+async def _push_active_trades_patches_from_redis(slot: str) -> None:
+    """After Redis hot-path write: diff per-client patch scope and push."""
+    from backend.core import live_state_active_trades as ls_at
+    from backend.core.live_path_cache_monitor import (
+        SOURCE_ACTIVE_TRADES,
+        live_patch_fields_for_scope,
+    )
+
+    scopes: set = set()
+    for _, spec in live_path_monitor_by_ws.values():
+        if spec.source == SOURCE_ACTIVE_TRADES and _norm_slot(spec.user_no) == slot:
+            scopes.add(str(spec.patch_scope or "active_trades_ui"))
+    if not scopes:
+        return
+
+    records = ls_at.list_trades(slot, statuses=("active", "pending", "closing"))
+    for scope in scopes:
+        last = _debug_last_trade_live[slot][scope]
+        patches: List[Dict[str, Any]] = []
+        seen = set()
+        for rec in records:
+            tid = rec.get("trade_id")
+            if tid is None:
+                continue
+            tid_s = str(int(tid))
+            seen.add(tid_s)
+            live = live_patch_fields_for_scope(scope, rec)
+            prev = last.get(tid_s) or {}
+            changed: Dict[str, Any] = {}
+            for k, v in live.items():
+                if v is None:
+                    continue
+                if prev.get(k) != v:
+                    changed[k] = v
+            if changed:
+                patches.append({"trade_id": int(tid), **changed})
+            last[tid_s] = live
+        for tid_s in list(last.keys()):
+            if tid_s not in seen:
+                del last[tid_s]
+        if not patches:
+            continue
+        text = json.dumps(
+            {
+                "type": "cache_patch",
+                "patch_scope": scope,
+                "patches": patches,
+                "ts": time.time(),
+            },
+            default=str,
+        )
+        await _send_live_path_monitor_text_to_slot(slot, scope, text)
+
+
+async def _send_live_path_monitor_text_to_slot(slot: str, patch_scope: str, text: str) -> None:
+    """Send to active_trades WS clients for tenant slot + patch scope."""
+    from backend.core.live_path_cache_monitor import SOURCE_ACTIVE_TRADES
+
+    to_remove: set = set()
+    for client, spec in _iter_live_path_monitor_clients():
+        if spec.source != SOURCE_ACTIVE_TRADES or _norm_slot(spec.user_no) != slot:
+            continue
+        if str(spec.patch_scope or "") != str(patch_scope or ""):
+            continue
+        try:
+            await client.send_text(text)
+        except Exception:
+            to_remove.add(client)
+    for c in to_remove:
+        live_path_monitor_ws_unregister(c)
+
+
+async def _send_live_path_monitor_payload(ws, payload: Dict[str, Any]) -> None:
+    try:
+        await ws.send_text(json.dumps(payload, default=str))
+    except Exception:
+        live_path_monitor_ws_unregister(ws)
+
+
+async def _broadcast_live_state_debug(obj: dict) -> None:
+    if not live_path_monitor_by_ws:
+        return
+    from backend.core.live_path_cache_monitor import (
+        SOURCE_ACTIVE_TRADES,
+        build_cache_event_payload,
+    )
+
+    kind = str(obj.get("kind") or "")
+    if kind == "active_trades":
+        slot = _slot_from_active_trades_redis_key(str(obj.get("key") or ""))
+        if slot:
+            await _push_active_trades_patches_from_redis(slot)
+
+    for client, spec in _iter_live_path_monitor_clients():
+        if not spec.matches_live_state_message(obj):
+            continue
+        if spec.source == SOURCE_ACTIVE_TRADES:
+            continue
+        await _send_live_path_monitor_payload(
+            client, build_cache_event_payload(spec, obj)
+        )
+
+
+async def _live_path_monitor_send_init(websocket: WebSocket, spec) -> None:
+    from backend.core.live_path_cache_monitor import (
+        SOURCE_ACTIVE_TRADES,
+        build_cache_init_payload,
+    )
+
+    if spec.source == SOURCE_ACTIVE_TRADES:
+        slot = _norm_slot(spec.user_no)
+        scope = str(spec.patch_scope or "")
+        if scope in _debug_last_trade_live[slot]:
+            _debug_last_trade_live[slot][scope].clear()
+    await _send_live_path_monitor_payload(websocket, build_cache_init_payload(spec))
+    if spec.source == SOURCE_ACTIVE_TRADES:
+        await _push_active_trades_patches_from_redis(_norm_slot(spec.user_no))
 
 
 def prefs_recipient_slots_for_redis_message(obj: dict) -> Optional[set]:
@@ -121,6 +266,37 @@ async def prefs_ws_send_json_to_slot(message: dict, tenant_slot: str) -> None:
 
 
 db_change_clients: set = set()
+live_market_clients: set = set()
+
+# Global live_data fanout (strike ladder, orderbook, spot) — not tenant-scoped.
+LIVE_MARKET_WS_TYPES = frozenset(
+    {
+        "live_strike_ladder",
+        "live_orderbook",
+        "live_symbol_spot",
+    }
+)
+
+
+def _is_live_market_ws_message(text: str) -> bool:
+    if not text or not text.lstrip().startswith("{"):
+        return False
+    try:
+        return json.loads(text).get("type") in LIVE_MARKET_WS_TYPES
+    except Exception:
+        return False
+
+
+async def _broadcast_live_market_message_text(message: str) -> None:
+    if not live_market_clients or not _is_live_market_ws_message(message):
+        return
+    to_remove = set()
+    for client in list(live_market_clients):
+        try:
+            await client.send_text(message)
+        except Exception:
+            to_remove.add(client)
+    live_market_clients.difference_update(to_remove)
 
 
 async def broadcast_account_mode(mode: str):
@@ -155,6 +331,7 @@ async def broadcast_trading_mode(mode: str):
 
 async def _broadcast_db_change_message_text(message: str) -> None:
     """Send a pre-built db_change JSON string to all /ws/db_changes subscribers."""
+    await _broadcast_live_market_message_text(message)
     if not db_change_clients:
         return
     to_remove = set()
@@ -275,6 +452,99 @@ def redis_db_changes_subscriber_thread(queue: asyncio.Queue, loop: asyncio.Abstr
                 pass
 
 
+def redis_live_state_debug_subscriber_thread(
+    queue: asyncio.Queue, loop: asyncio.AbstractEventLoop
+) -> None:
+    import redis.exceptions as redis_exc
+
+    from backend.core.live_state_cache import UPDATED_CHANNEL
+
+    channel = UPDATED_CHANNEL
+    get_timeout_s = float(os.getenv("REDIS_DB_FORWARDER_GET_TIMEOUT", "30"))
+    backoff = 5.0
+    while True:
+        r = None
+        pubsub = None
+        try:
+            r = _redis_client_for_db_changes_forwarder()
+            pubsub = r.pubsub()
+            pubsub.subscribe(channel)
+            _LOG.info(
+                "Main app: subscribed to Redis channel %s for live-path debug WS",
+                channel,
+            )
+            backoff = 5.0
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=get_timeout_s,
+                )
+                if message is None:
+                    try:
+                        r.ping()
+                    except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as ping_e:
+                        _log = _LOG.debug if is_probably_startup_connect_refused(ping_e) else _LOG.warning
+                        _log(
+                            "Redis live_state debug forwarder: ping failed (%s); reconnecting",
+                            ping_e,
+                        )
+                        break
+                    continue
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data")
+                if data is None:
+                    continue
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                asyncio.run_coroutine_threadsafe(queue.put(data), loop)
+        except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as e:
+            _log = _LOG.debug if is_probably_startup_connect_refused(e) else _LOG.warning
+            _log(
+                "Redis live_state debug forwarder: connection issue (%s); retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        except Exception as e:
+            _log = _LOG.debug if is_probably_startup_connect_refused(e) else _LOG.warning
+            _log(
+                "Redis live_state debug forwarder: %s; retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        finally:
+            try:
+                if pubsub is not None:
+                    pubsub.close()
+            except Exception:
+                pass
+            try:
+                if r is not None:
+                    r.close()
+            except Exception:
+                pass
+
+
+async def redis_live_state_debug_consume_loop(queue: asyncio.Queue) -> None:
+    while True:
+        try:
+            text = await queue.get()
+            try:
+                obj = json.loads(text)
+            except Exception:
+                continue
+            if isinstance(obj, dict) and obj.get("type") == "live_state_updated":
+                await _broadcast_live_state_debug(obj)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            _LOG.warning("Redis live_state debug consumer: %s", e)
+
+
 async def redis_db_changes_consume_loop(queue: asyncio.Queue) -> None:
     while True:
         try:
@@ -390,6 +660,98 @@ async def redis_trading_preferences_consume_loop(queue: asyncio.Queue) -> None:
             _LOG.warning("Redis preferences consumer: %s", e)
 
 
+async def _serve_live_path_cache_monitor_ws(websocket: WebSocket, spec) -> None:
+    from backend.core.live_path_cache_monitor import validate_spec
+
+    err = validate_spec(spec)
+    if err:
+        await websocket.close(code=4400, reason=err)
+        return
+    await websocket.accept()
+    live_path_monitor_ws_register(websocket, spec)
+    try:
+        await _live_path_monitor_send_init(websocket, spec)
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_path_monitor_ws_unregister(websocket)
+
+
+@realtime_ws_router.websocket("/ws/active-trades-hot-path")
+async def websocket_active_trades_hot_path(websocket: WebSocket):
+    """Session-scoped: trade-log marks only (sell/pnl) for trade history."""
+    from backend.core.live_path_cache_monitor import (
+        PATCH_SCOPE_TRADE_LOG,
+        parse_spec_from_query,
+    )
+
+    user_no = resolve_session_user_no_from_asgi_scope(websocket.scope)
+    if not user_no:
+        await websocket.close(code=4401, reason="Not authenticated")
+        return
+    spec = parse_spec_from_query(
+        source="active_trades", user_no=user_no, patch_scope=PATCH_SCOPE_TRADE_LOG
+    )
+    await _serve_live_path_cache_monitor_ws(websocket, spec)
+
+
+@realtime_ws_router.websocket("/ws/active-trades-panel-live")
+async def websocket_active_trades_panel_live(websocket: WebSocket):
+    """Session-scoped: live prob + pnl patches for trade monitor active-trades table."""
+    from backend.core.live_path_cache_monitor import (
+        PATCH_SCOPE_ACTIVE_TRADES_UI,
+        parse_spec_from_query,
+    )
+
+    user_no = resolve_session_user_no_from_asgi_scope(websocket.scope)
+    if not user_no:
+        await websocket.close(code=4401, reason="Not authenticated")
+        return
+    spec = parse_spec_from_query(
+        source="active_trades", user_no=user_no, patch_scope=PATCH_SCOPE_ACTIVE_TRADES_UI
+    )
+    await _serve_live_path_cache_monitor_ws(websocket, spec)
+
+
+@realtime_ws_router.websocket("/ws/debug/live-path-cache")
+async def websocket_debug_live_path_cache(
+    websocket: WebSocket,
+    source: str = "active_trades",
+    user_no: str = "0001",
+    exchange: str = "kalshi",
+    market: str = "15m",
+    symbol: str = "BTC",
+    redis_key: str = "",
+):
+    """No auth — query params select cache source (local monitor UI)."""
+    from backend.core.live_path_cache_monitor import parse_spec_from_query
+
+    spec = parse_spec_from_query(
+        source=source,
+        user_no=user_no,
+        exchange=exchange,
+        market=market,
+        symbol=symbol,
+        redis_key=redis_key,
+    )
+    await _serve_live_path_cache_monitor_ws(websocket, spec)
+
+
+@realtime_ws_router.websocket("/ws/debug/active-trades-hot-path/{user_no}")
+async def websocket_debug_active_trades_hot_path(websocket: WebSocket, user_no: str):
+    """Legacy alias — active_trades UI patches (includes prob) for tenant slot."""
+    from backend.core.live_path_cache_monitor import parse_spec_from_query
+
+    slot = str(user_no).strip()
+    if not slot.isdigit() or len(slot) > 4:
+        await websocket.close(code=4400, reason="user_no must be numeric slot e.g. 0001")
+        return
+    spec = parse_spec_from_query(source="active_trades", user_no=slot)
+    await _serve_live_path_cache_monitor_ws(websocket, spec)
+
+
 @realtime_ws_router.websocket("/ws/preferences")
 async def websocket_preferences(websocket: WebSocket):
     user_no = resolve_session_user_no_from_asgi_scope(websocket.scope)
@@ -407,6 +769,65 @@ async def websocket_preferences(websocket: WebSocket):
         pass
     finally:
         prefs_ws_unregister(websocket)
+
+
+def _ws_query_param(scope: dict, key: str, default: str = "") -> str:
+    raw = scope.get("query_string") or b""
+    try:
+        qs = raw.decode("utf-8") if isinstance(raw, bytes) else str(raw)
+    except Exception:
+        return default
+    if not qs:
+        return default
+    from urllib.parse import parse_qs
+
+    vals = parse_qs(qs, keep_blank_values=True).get(key) or []
+    return str(vals[0]).strip() if vals else default
+
+
+async def _hydrate_live_market_ws(websocket: WebSocket, symbol: str, market: str) -> None:
+    """First frames on connect: spot + strike ladder for requested symbol/market (no HTTP)."""
+    try:
+        from backend.redis_switchboard import build_live_symbol_spot_payload
+        from backend.core.live_state_read_helpers import strike_ladder_ws_payload
+
+        spot = await asyncio.to_thread(build_live_symbol_spot_payload)
+        if spot:
+            await websocket.send_text(json.dumps(spot))
+        sym = (symbol or "BTC").strip().upper() or "BTC"
+        mk = (market or "15m").strip().lower()
+        if mk not in ("hourly", "15m"):
+            mk = "15m"
+        ladder = await asyncio.to_thread(strike_ladder_ws_payload, "kalshi", mk, sym)
+        if ladder:
+            await websocket.send_text(json.dumps(ladder))
+        from backend.core.trade_monitor_orderbook_watch import get_trade_monitor_orderbook_watch
+        from backend.core.trade_monitor_live_orderbook_payload import build_live_orderbook_ws_payload
+
+        watch_mt = await asyncio.to_thread(get_trade_monitor_orderbook_watch)
+        if watch_mt:
+            ob = await asyncio.to_thread(build_live_orderbook_ws_payload, watch_mt)
+            if ob:
+                await websocket.send_text(json.dumps(ob))
+    except Exception as e:
+        _LOG.debug("live_market WS hydrate failed: %s", e)
+
+
+@realtime_ws_router.websocket("/ws/live_market")
+async def websocket_live_market(websocket: WebSocket):
+    """Global Kalshi live_data (strike ladder, orderbook, spot). No tenant session required."""
+    sym = _ws_query_param(websocket.scope, "symbol", "BTC")
+    mkt = _ws_query_param(websocket.scope, "market", "15m")
+    await websocket.accept()
+    live_market_clients.add(websocket)
+    await _hydrate_live_market_ws(websocket, sym, mkt)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        live_market_clients.discard(websocket)
 
 
 @realtime_ws_router.websocket("/ws/db_changes")

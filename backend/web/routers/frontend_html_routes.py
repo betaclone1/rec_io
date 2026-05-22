@@ -301,6 +301,33 @@ async def test_mobile():
     return {"message": "Mobile test route works!"}
 
 
+@frontend_html_router.get("/live-path-cache-monitor", response_class=HTMLResponse)
+async def serve_live_path_cache_monitor():
+    """Local dev UI: inspect any live_path / live_state Redis cache with WS updates."""
+    file_path = f"{frontend_dir}/tabs/live_path_cache_monitor.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            content = f.read()
+            return HTMLResponse(
+                content=content,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+    return HTMLResponse(content="Live path cache monitor not found", status_code=404)
+
+
+@frontend_html_router.get("/active-trades-hot-path-test", response_class=HTMLResponse)
+async def serve_active_trades_hot_path_test_redirect():
+    """Legacy URL → generic monitor with active_trades preset."""
+    return RedirectResponse(
+        url="/live-path-cache-monitor?source=active_trades&user_no=0001",
+        status_code=302,
+    )
+
+
 @frontend_html_router.get("/test_monitor_history_display.html", response_class=HTMLResponse)
 async def serve_test_monitor_history_display():
     file_path = f"{frontend_dir}/test_monitor_history_display.html"

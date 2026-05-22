@@ -193,6 +193,14 @@ def _http_path_allowed_without_tenant(path: str, method: str) -> bool:
         return True
     if path == "/api/trade-monitor/orderbook" and m == "GET":
         return True
+    if path == "/api/trade-monitor/strike-ladder" and m == "GET":
+        return True
+    if path == "/api/live_strike_ladder_bootstrap" and m == "GET":
+        return True
+    if path == "/api/live_symbol_spot_bootstrap" and m == "GET":
+        return True
+    if path == "/api/trade-monitor/orderbook_watch" and m == "POST":
+        return True
     return False
 
 

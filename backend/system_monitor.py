@@ -107,8 +107,7 @@ class SystemMonitor:
             "strike_table_generator_ws_hourly": get_port("strike_table_generator_ws_hourly"),
             "strike_table_generator_ws_15m": get_port("strike_table_generator_ws_15m"),
             user_scoped_service_name("kalshi_account_sync"): get_port("kalshi_account_sync"),
-            "market_watchdog_ws_kalshi_hourly": get_port("market_watchdog_ws_kalshi_hourly"),
-            "market_watchdog_ws_kalshi_15m": get_port("market_watchdog_ws_kalshi_15m"),
+            "market_watchdog_ws_kalshi": get_port("market_watchdog_ws_kalshi"),
             user_scoped_service_name("monitor_manager"): get_port("monitor_manager"),
             "cascading_failure_detector": get_port("cascading_failure_detector"),
             "system_monitor": get_port("system_monitor")
@@ -162,12 +161,8 @@ class SystemMonitor:
                 {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
                 {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
                 {
-                    "name": "market_watchdog_ws_kalshi_hourly",
-                    "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
-                },
-                {
-                    "name": "market_watchdog_ws_kalshi_15m",
-                    "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
+                    "name": "market_watchdog_ws_kalshi",
+                    "script": "market_watchdog_ws.py --exchange kalshi --market all",
                 },
                 {"name": "system_monitor", "script": "system_monitor.py"},
                 {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"},

@@ -30,8 +30,11 @@ def _validate_iso(label: str, v: Optional[str]) -> None:
         raise HTTPException(status_code=400, detail=f"Invalid {label}; use YYYY-MM-DD")
 
 
-def build_trade_history_filter_sql(body: Dict[str, Any]) -> Tuple[str, List[Any]]:
-    """Returns SQL fragment ``AND ...`` clauses (no leading WHERE) and param list."""
+def build_trade_history_filter_sql(
+    body: Dict[str, Any], *, table_alias: str = "t"
+) -> Tuple[str, List[Any]]:
+    """Returns SQL fragment (AND-clauses, no leading WHERE) and param list."""
+    a = table_alias.strip() or "t"
     clauses: List[str] = []
     params: List[Any] = []
 
@@ -40,14 +43,14 @@ def build_trade_history_filter_sql(body: Dict[str, Any]) -> Tuple[str, List[Any]
     _validate_iso("min_date", min_d if isinstance(min_d, str) else None)
     _validate_iso("max_date", max_d if isinstance(max_d, str) else None)
     if isinstance(min_d, str) and min_d.strip():
-        clauses.append("t.date >= %s")
+        clauses.append(f"{a}.date >= %s")
         params.append(min_d.strip())
     if isinstance(max_d, str) and max_d.strip():
-        clauses.append("t.date <= %s")
+        clauses.append(f"{a}.date <= %s")
         params.append(max_d.strip())
 
     if not body.get("include_test_trades", False):
-        clauses.append("(t.test_filter IS NOT TRUE)")
+        clauses.append(f"({a}.test_filter IS NOT TRUE)")
 
     show_win = bool(body.get("show_win", True))
     show_loss = bool(body.get("show_loss", True))
@@ -57,11 +60,11 @@ def build_trade_history_filter_sql(body: Dict[str, Any]) -> Tuple[str, List[Any]
         pass
     elif show_win:
         clauses.append(
-            "(NOT (UPPER(TRIM(COALESCE(t.win_loss, ''))) IN ('L', 'LOSS')))"
+            f"(NOT (UPPER(TRIM(COALESCE({a}.win_loss, ''))) IN ('L', 'LOSS')))"
         )
     elif show_loss:
         clauses.append(
-            "(NOT (UPPER(TRIM(COALESCE(t.win_loss, ''))) IN ('W', 'WIN')))"
+            f"(NOT (UPPER(TRIM(COALESCE({a}.win_loss, ''))) IN ('W', 'WIN')))"
         )
 
     show_live = bool(body.get("show_live", True))
@@ -71,23 +74,23 @@ def build_trade_history_filter_sql(body: Dict[str, Any]) -> Tuple[str, List[Any]
     elif show_live and show_paper:
         pass
     elif show_live:
-        clauses.append("(COALESCE(t.paper_trade, FALSE) = FALSE)")
+        clauses.append(f"(COALESCE({a}.paper_trade, FALSE) = FALSE)")
     else:
-        clauses.append("(COALESCE(t.paper_trade, FALSE) = TRUE)")
+        clauses.append(f"(COALESCE({a}.paper_trade, FALSE) = TRUE)")
 
     symbols = body.get("symbols") or []
     if symbols:
-        clauses.append("t.symbol = ANY(%s)")
+        clauses.append(f"{a}.symbol = ANY(%s)")
         params.append(list(symbols))
 
     strategies = body.get("strategies") or []
     if strategies:
-        clauses.append("t.trade_strategy = ANY(%s)")
+        clauses.append(f"{a}.trade_strategy = ANY(%s)")
         params.append(list(strategies))
 
     monitors = body.get("monitors") or []
     if monitors:
-        clauses.append("LOWER(TRIM(COALESCE(t.monitor, ''))) = ANY(%s)")
+        clauses.append(f"LOWER(TRIM(COALESCE({a}.monitor, ''))) = ANY(%s)")
         params.append([str(m).lower().strip() for m in monitors])
 
     dows = body.get("days_of_week")
@@ -95,12 +98,46 @@ def build_trade_history_filter_sql(body: Dict[str, Any]) -> Tuple[str, List[Any]
         if len(dows) == 0:
             clauses.append("1=0")
         elif len(dows) < 7:
-            clauses.append("(EXTRACT(DOW FROM t.date::date))::int = ANY(%s)")
+            clauses.append(f"(EXTRACT(DOW FROM {a}.date::date))::int = ANY(%s)")
             params.append([int(x) for x in dows])
 
     if not clauses:
         return "", []
     return " AND ".join(clauses), params
+
+
+def trade_history_filter_body_from_query(
+    *,
+    include_test_trades: bool = False,
+    show_win: bool = True,
+    show_loss: bool = True,
+    show_live: bool = True,
+    show_paper: bool = False,
+    symbols: Optional[Sequence[str]] = None,
+    strategies: Optional[Sequence[str]] = None,
+    monitors: Optional[Sequence[str]] = None,
+    days_of_week: Optional[Sequence[int]] = None,
+    min_date: Optional[str] = None,
+    max_date: Optional[str] = None,
+) -> Dict[str, Any]:
+    """Build filter dict for list + insights (GET /trades query params)."""
+    body: Dict[str, Any] = {
+        "include_test_trades": include_test_trades,
+        "show_win": show_win,
+        "show_loss": show_loss,
+        "show_live": show_live,
+        "show_paper": show_paper,
+        "symbols": list(symbols or []),
+        "strategies": list(strategies or []),
+        "monitors": list(monitors or []),
+    }
+    if min_date:
+        body["min_date"] = min_date
+    if max_date:
+        body["max_date"] = max_date
+    if days_of_week is not None:
+        body["days_of_week"] = list(days_of_week)
+    return body
 
 
 # Clock token only (1–12 + optional :mm + am/pm). Avoid ``(\d+)pm`` which matches strike digits (e.g. 45pm → 57:00).
@@ -331,6 +368,15 @@ def run_trade_history_insights(
     if interval not in _VALID_INTERVALS:
         raise HTTPException(status_code=400, detail="Invalid analysis_interval")
 
+    from backend.core.trades_history_insights_cache import (
+        get_cached_insights,
+        set_cached_insights,
+    )
+
+    cached = get_cached_insights(user_slot, body)
+    if cached is not None:
+        return cached
+
     if not fetch_master_trades_column_names(cursor, user_slot):
         return {
             "summary": {
@@ -537,9 +583,11 @@ def run_trade_history_insights(
                 }
             )
 
-    return {
+    result = {
         "summary": summary,
         "analysis_interval": interval,
         "period_data": period_data,
         "by_monitor": by_monitor,
     }
+    set_cached_insights(user_slot, body, result)
+    return result

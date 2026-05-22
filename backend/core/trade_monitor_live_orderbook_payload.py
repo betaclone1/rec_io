@@ -1,8 +1,7 @@
 """
 Build the trade-monitor orderbook JSON payload from live_data.market_kalshi_* ticker rows plus YES/NO depth.
 
-Depth ladders prefer Redis projections written by ``kalshi_live_orderbook_sidecar`` (see
-``trade_monitor_orderbook_redis_key``). When Redis misses and ``TRADE_MONITOR_ORDERBOOK_PG_FALLBACK``
+Depth ladders prefer Redis projections (``trade_monitor_orderbook_redis_key``). When Redis misses and ``TRADE_MONITOR_ORDERBOOK_PG_FALLBACK``
 is on (default), reads ``live_data.orderbook_kalshi_*``. Matches the shape consumed by
 frontend/js/orderbook-redis-ui.js (same as legacy Redis UI).
 """
@@ -20,15 +19,17 @@ from zoneinfo import ZoneInfo
 import psycopg2
 from psycopg2 import errors as pg_errors
 
+from backend.core import live_state_cache
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.kalshi_contract_settlement import kalshi_contract_settlement_end_est
-from backend.core.kalshi_live_orderbook_sidecar import (
+from backend.core.trade_monitor_orderbook_keys import (
     physical_table_name,
     quoted_table,
     trade_monitor_orderbook_redis_key,
 )
 from backend.core.trading_redis_comms import redis_client_optional
 from backend.core.kalshi_market_normalize import format_floor_strike_usd_comma_cents
+from backend.core.live_state_config import live_state_cache_enabled
 from backend.core.strike_ladder_fetch import fetch_strike_ladder_payload_from_db
 from backend.core.strike_snapshot_redis import get_strike_ladder_from_snapshot
 
@@ -133,7 +134,7 @@ def _transform_complement_levels(levels: dict[Decimal, Decimal]) -> dict[Decimal
 
 def orderbook_levels_pg_fallback_enabled() -> bool:
     """When False, depth ladders never hit Postgres (Redis-only)."""
-    return os.getenv("TRADE_MONITOR_ORDERBOOK_PG_FALLBACK", "1").strip().lower() not in (
+    return os.getenv("TRADE_MONITOR_ORDERBOOK_PG_FALLBACK", "0").strip().lower() not in (
         "0",
         "false",
         "no",
@@ -141,14 +142,22 @@ def orderbook_levels_pg_fallback_enabled() -> bool:
     )
 
 
-def try_load_yes_no_levels_from_redis(
-    market_ticker: str,
-) -> Optional[tuple[dict[Decimal, Decimal], dict[Decimal, Decimal]]]:
-    """Parse YES/NO price ladders from Redis snapshot; return None if missing or invalid."""
+def _orderbook_redis_client():
+    """Prefer live_state Redis client (read_api / strike paths); fall back to trading comms."""
+    from backend.core import live_state_cache
+
+    r = live_state_cache.redis_client_optional()
+    if r is not None:
+        return r
+    return redis_client_optional()
+
+
+def load_orderbook_snapshot_from_redis(market_ticker: str) -> Optional[dict[str, Any]]:
+    """Raw Redis orderbook envelope (yes/no ladders + optional seq)."""
     mt = str(market_ticker or "").strip()
     if not mt:
         return None
-    r = redis_client_optional()
+    r = _orderbook_redis_client()
     if not r:
         return None
     try:
@@ -167,6 +176,18 @@ def try_load_yes_no_levels_from_redis(
         return None
     rid = str(data.get("market_ticker") or "").strip()
     if rid and rid != mt:
+        return None
+    if data.get("valid") is False:
+        return None
+    return data
+
+
+def try_load_yes_no_levels_from_redis(
+    market_ticker: str,
+) -> Optional[tuple[dict[Decimal, Decimal], dict[Decimal, Decimal]]]:
+    """Parse YES/NO price ladders from Redis snapshot; return None if missing or invalid."""
+    data = load_orderbook_snapshot_from_redis(market_ticker)
+    if not data:
         return None
     yt = data.get("yes")
     nt = data.get("no")
@@ -338,6 +359,176 @@ def _strike_display_from_row(strike_raw: Any) -> str:
     return out if out else (s if s.startswith("$") else f"${inner}")
 
 
+def _row_dict_from_live_market_entry(
+    entry: Dict[str, Any],
+    *,
+    symbol: str,
+    market: str,
+    event_ticker: Optional[str] = None,
+) -> Dict[str, Any]:
+    return {
+        "symbol": str(symbol or "BTC").strip().upper() or "BTC",
+        "event_ticker": event_ticker or entry.get("event_ticker"),
+        "market_ticker": entry.get("ticker") or entry.get("market_ticker"),
+        "market": market,
+        "strike": entry.get("strike"),
+        "yes_bid_dollars": entry.get("yes_bid_dollars"),
+        "yes_ask_dollars": entry.get("yes_ask_dollars"),
+        "no_bid_dollars": entry.get("no_bid_dollars"),
+        "no_ask_dollars": entry.get("no_ask_dollars"),
+        "last_price_dollars": entry.get("last_price_dollars"),
+        "volume_fp": entry.get("volume_fp"),
+        "open_interest_fp": entry.get("open_interest_fp"),
+    }
+
+
+def _row_dict_from_strike_ladder_row(
+    row: Dict[str, Any],
+    *,
+    symbol: str,
+    market: str,
+) -> Dict[str, Any]:
+    return {
+        "symbol": str(symbol or "BTC").strip().upper() or "BTC",
+        "market_ticker": row.get("ticker") or row.get("market_ticker"),
+        "market": market,
+        "strike": row.get("strike"),
+        "yes_ask_dollars": row.get("yes_ask_dollars"),
+        "no_ask_dollars": row.get("no_ask_dollars"),
+        "volume_fp": row.get("volume_fp"),
+        "open_interest_fp": row.get("open_interest_fp"),
+        "last_price_dollars": row.get("last_price_dollars"),
+    }
+
+
+def _resolve_market_row_from_live_cache(
+    market_ticker: str,
+    *,
+    symbol: str,
+    market: str,
+) -> Optional[Dict[str, Any]]:
+    """Resolve ticker metadata from live_state when ``market_kalshi_*`` PG rows are absent."""
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None
+    sym_u = str(symbol or "BTC").strip().upper() or "BTC"
+    mkt = str(market or "15m").strip().lower()
+    mcol = "hourly" if mkt == "hourly" else "15m"
+
+    market_env = live_state_cache.get_market_data(DEFAULT_EXCHANGE, mcol, sym_u) or {}
+    event_ticker = market_env.get("event_ticker")
+    for entry in market_env.get("markets") or []:
+        if not isinstance(entry, dict):
+            continue
+        if str(entry.get("ticker") or "").strip() == mt:
+            return _row_dict_from_live_market_entry(
+                entry, symbol=sym_u, market=mcol, event_ticker=event_ticker
+            )
+
+    for row in live_state_cache.get_strike_ladder_rows(DEFAULT_EXCHANGE, mcol, sym_u) or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ticker") or row.get("market_ticker") or "").strip() == mt:
+            out = _row_dict_from_strike_ladder_row(row, symbol=sym_u, market=mcol)
+            if event_ticker and not out.get("event_ticker"):
+                out["event_ticker"] = event_ticker
+            return out
+    return None
+
+
+_LIVE_ORDERBOOK_SYMBOLS = ("BTC", "ETH", "SOL", "XRP")
+_LIVE_ORDERBOOK_MARKETS = ("15m", "hourly")
+
+
+def _resolve_market_row_for_orderbook_ticker(market_ticker: str) -> Optional[Dict[str, Any]]:
+    """Find ticker metadata in live_state when only ``market_ticker`` is known (WS path)."""
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None
+    for mkt in _LIVE_ORDERBOOK_MARKETS:
+        for sym in _LIVE_ORDERBOOK_SYMBOLS:
+            row = _resolve_market_row_from_live_cache(mt, symbol=sym, market=mkt)
+            if row:
+                return row
+    return None
+
+
+def _last_price_dollars_for_orderbook_row(row: Dict[str, Any]) -> Any:
+    lp = row.get("last_price_dollars")
+    if lp is not None and str(lp).strip() != "":
+        return lp
+    try:
+        yb = row.get("yes_bid_dollars")
+        ya = row.get("yes_ask_dollars")
+        if yb is not None and ya is not None:
+            mid = (Decimal(str(yb)) + Decimal(str(ya))) / Decimal("2")
+            return str(mid.quantize(Decimal("0.0001")))
+    except Exception:
+        pass
+    return None
+
+
+def _last_trade_dict_for_market_ticker(market_ticker: str) -> dict[str, str]:
+    row = _resolve_market_row_for_orderbook_ticker(market_ticker)
+    if not row:
+        return {"yes_cents": "", "no_cents": ""}
+    yes_cents, no_cents = _last_trade_cents(_last_price_dollars_for_orderbook_row(row))
+    return {"yes_cents": yes_cents, "no_cents": no_cents}
+
+
+def _resolve_default_market_from_live_cache(
+    *,
+    symbol: str,
+    market: str,
+) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
+    """Pick a default active ticker when the client did not pass ``market_ticker``."""
+    if not live_state_cache_enabled():
+        return None, None
+    sym_u = str(symbol or "BTC").strip().upper() or "BTC"
+    mkt = str(market or "15m").strip().lower()
+    mcol = "hourly" if mkt == "hourly" else "15m"
+    market_env = live_state_cache.get_market_data(DEFAULT_EXCHANGE, mcol, sym_u) or {}
+    markets = market_env.get("markets") or []
+    if markets and isinstance(markets[0], dict):
+        entry = markets[0]
+        mt = str(entry.get("ticker") or "").strip()
+        if mt:
+            return mt, _row_dict_from_live_market_entry(
+                entry,
+                symbol=sym_u,
+                market=mcol,
+                event_ticker=market_env.get("event_ticker"),
+            )
+    rows = live_state_cache.get_strike_ladder_rows(DEFAULT_EXCHANGE, mcol, sym_u) or []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        mt = str(row.get("ticker") or "").strip()
+        if mt:
+            return mt, _row_dict_from_strike_ladder_row(row, symbol=sym_u, market=mcol)
+    return None, None
+
+
+def _fetch_market_title_from_live_cache(
+    *,
+    symbol: str,
+    market: str,
+) -> Optional[str]:
+    if not live_state_cache_enabled():
+        return None
+    sym_u = str(symbol or "BTC").strip().upper() or "BTC"
+    mkt = str(market or "15m").strip().lower()
+    mcol = "hourly" if mkt == "hourly" else "15m"
+    env = live_state_cache.get_strike_ladder(DEFAULT_EXCHANGE, mcol, sym_u)
+    if not env:
+        return None
+    meta = (env.get("data") or {}).get("meta") or {}
+    title = meta.get("market_title")
+    if title and str(title).strip():
+        return str(title).strip()
+    return None
+
+
 def _resolve_market_ticker_and_table(
     cur,
     *,
@@ -402,6 +593,54 @@ def _resolve_market_ticker_and_table(
     return mt, table, dict(zip(cols, row))
 
 
+def build_live_orderbook_ws_payload(market_ticker: str) -> Optional[dict[str, Any]]:
+    """Redis-only depth snapshot for ``live_orderbook`` WS (no Postgres)."""
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None
+    data = load_orderbook_snapshot_from_redis(mt)
+    if not data or data.get("valid") is False:
+        return None
+    yt = data.get("yes")
+    nt = data.get("no")
+    if not isinstance(yt, dict) or not isinstance(nt, dict):
+        return None
+    yes_levels: dict[Decimal, Decimal] = {}
+    no_levels: dict[Decimal, Decimal] = {}
+    for p_str, sz_str in yt.items():
+        try:
+            yes_levels[_d(p_str)] = _d(sz_str)
+        except Exception:
+            continue
+    for p_str, sz_str in nt.items():
+        try:
+            no_levels[_d(p_str)] = _d(sz_str)
+        except Exception:
+            continue
+    if not yes_levels and not no_levels:
+        return None
+    yes_bids = _book_rows_near_touch(yes_levels, is_ask=False)
+    no_bids = _book_rows_near_touch(no_levels, is_ask=False)
+    yes_asks = _book_rows_near_touch(_transform_complement_levels(no_levels), is_ask=True)
+    no_asks = _book_rows_near_touch(_transform_complement_levels(yes_levels), is_ask=True)
+    book_seq = data.get("seq")
+    if book_seq is not None:
+        try:
+            book_seq = int(book_seq)
+        except (TypeError, ValueError):
+            book_seq = None
+    payload: dict[str, Any] = {
+        "type": "live_orderbook",
+        "market_ticker": mt,
+        "last_trade": _last_trade_dict_for_market_ticker(mt),
+        "trade_yes": {"asks": yes_asks, "bids": yes_bids},
+        "trade_no": {"asks": no_asks, "bids": no_bids},
+    }
+    if book_seq is not None:
+        payload["book_seq"] = book_seq
+    return payload
+
+
 def build_trade_monitor_orderbook_payload(
     cur,
     *,
@@ -409,13 +648,29 @@ def build_trade_monitor_orderbook_payload(
     symbol: str = "BTC",
     market: str = "15m",
 ) -> dict[str, Any]:
+    mkt_label = str(market or "15m").strip().lower()
+    sym_u = str(symbol or "BTC").strip().upper() or "BTC"
     mt, _tbl_used, row = _resolve_market_ticker_and_table(
         cur, market_ticker=market_ticker, symbol=symbol, market=market
     )
     if not mt:
+        mt, row = _resolve_default_market_from_live_cache(symbol=sym_u, market=mkt_label)
+    elif not row:
+        row = _resolve_market_row_from_live_cache(mt, symbol=sym_u, market=mkt_label)
+    if not mt:
         return {"error": "no_market_row"}
     if not row:
-        return {"error": "no_market_row", "market_ticker": mt}
+        redis_hit = try_load_yes_no_levels_from_redis(mt)
+        if redis_hit is not None and (redis_hit[0] or redis_hit[1]):
+            row = {
+                "symbol": sym_u,
+                "market_ticker": mt,
+                "market": "hourly" if mkt_label == "hourly" else "15m",
+            }
+        else:
+            return {"error": "no_market_row", "market_ticker": mt}
+    if not _tbl_used:
+        _tbl_used = _WS_TABLE_HOURLY if mkt_label == "hourly" else _WS_TABLE_15M
 
     levels_from_redis = False
     orderbook_table_ready = True
@@ -450,14 +705,17 @@ def build_trade_monitor_orderbook_payload(
     mkt_label = str(row.get("market") or market or "15m").strip().lower()
     interval_label = "15 min" if mkt_label == "15m" else "hourly" if mkt_label == "hourly" else mkt_label
 
-    market_title_row: Optional[str] = None
-    try:
-        market_title_row = _fetch_market_title_from_strike_table(
-            cur, symbol=sym, market=mkt_label, market_ticker=mt
-        )
-    except Exception:
-        _rollback_connection_safe(cur)
-        market_title_row = None
+    market_title_row: Optional[str] = _fetch_market_title_from_live_cache(
+        symbol=sym, market=mkt_label
+    )
+    if not market_title_row:
+        try:
+            market_title_row = _fetch_market_title_from_strike_table(
+                cur, symbol=sym, market=mkt_label, market_ticker=mt
+            )
+        except Exception:
+            _rollback_connection_safe(cur)
+            market_title_row = None
     title_tail = _headline_tail_from_market_title(sym, interval_label, market_title_row)
     if title_tail:
         title_tail = _capitalize_leading_price_word(title_tail)
@@ -469,7 +727,7 @@ def build_trade_monitor_orderbook_payload(
 
     window = _market_window_label_eastern(mt) if mkt_label == "15m" else ""
 
-    yes_cents, no_cents = _last_trade_cents(row.get("last_price_dollars"))
+    yes_cents, no_cents = _last_trade_cents(_last_price_dollars_for_orderbook_row(row))
 
     ticker_ws: dict[str, Any] = {
         "market_ticker": mt,
@@ -502,7 +760,16 @@ def build_trade_monitor_orderbook_payload(
     settle_end = kalshi_contract_settlement_end_est(mt)
     settlement_end_ms = int(settle_end.timestamp() * 1000) if settle_end else None
 
-    return {
+    book_seq = None
+    if levels_from_redis:
+        snap = load_orderbook_snapshot_from_redis(mt)
+        if snap and snap.get("seq") is not None:
+            try:
+                book_seq = int(snap["seq"])
+            except (TypeError, ValueError):
+                book_seq = None
+
+    out = {
         "market_ticker": mt,
         "header": {
             "symbol": sym,
@@ -533,6 +800,9 @@ def build_trade_monitor_orderbook_payload(
             ),
         },
     }
+    if book_seq is not None:
+        out["book_seq"] = book_seq
+    return out
 
 
 def build_trade_monitor_orderbook_liquidity_map(

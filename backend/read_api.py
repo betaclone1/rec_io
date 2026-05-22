@@ -35,7 +35,10 @@ from psycopg2 import sql
 from fastapi import FastAPI, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
-from backend.core.trades_history_insights import run_trade_history_insights
+from backend.core.trades_history_insights import (
+    run_trade_history_insights,
+    trade_history_filter_body_from_query,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -206,6 +209,61 @@ async def post_trade_history_insights(body: TradeHistoryInsightsBody) -> Dict[st
         conn.close()
 
 
+def _parse_days_of_week_param(raw: Optional[str]) -> Optional[List[int]]:
+    if raw is None or not str(raw).strip():
+        return None
+    out: List[int] = []
+    for part in str(raw).split(","):
+        p = part.strip()
+        if not p:
+            continue
+        try:
+            out.append(int(p))
+        except ValueError:
+            raise HTTPException(
+                status_code=400, detail="Invalid days_of_week; use comma-separated 0-6"
+            )
+    return out
+
+
+@app.get("/api/debug/active_trades_redis_pool")
+async def get_active_trades_redis_pool_debug() -> Dict[str, Any]:
+    """Debug: full Redis active_trades hash for current tenant (hot-path proof UI)."""
+    from backend.core import live_state_active_trades as ls_at
+    from backend.core.live_state_config import live_state_cache_enabled
+
+    slot = resolved_tenant_user_no_for_app()
+    enabled = ls_at.live_state_active_trades_enabled()
+    records = ls_at.list_trades(slot) if enabled else []
+    return {
+        "tenant_user_no": slot,
+        "redis_key": ls_at.tenant_active_trades_key(slot),
+        "live_state_cache_enabled": live_state_cache_enabled(),
+        "active_trades_hot_path_enabled": enabled,
+        "record_count": len(records),
+        "records": records,
+        "server_ts": time.time(),
+    }
+
+
+@app.get("/api/trades/hot_marks")
+async def get_trades_hot_marks() -> Dict[str, Any]:
+    """Open-trade marks from Redis active_trades pool (hot path), not PostgreSQL."""
+    from backend.core.live_state_active_trades import (
+        export_hot_marks_for_trade_log,
+        live_state_active_trades_enabled,
+    )
+
+    if not live_state_active_trades_enabled():
+        return {"marks": [], "source": "redis_active_trades", "enabled": False}
+    slot = resolved_tenant_user_no_for_app()
+    return {
+        "marks": export_hot_marks_for_trade_log(slot),
+        "source": "redis_active_trades",
+        "enabled": True,
+    }
+
+
 @app.get("/trades")
 async def get_trades(
     status: Optional[str] = None,
@@ -228,10 +286,36 @@ async def get_trades(
         ge=1,
         description="Keyset cursor for ORDER BY id DESC: rows with id < before_id. Requires page_size.",
     ),
+    include_test_trades: bool = Query(False),
+    show_win: bool = Query(True),
+    show_loss: bool = Query(True),
+    show_live: bool = Query(True),
+    show_paper: bool = Query(False),
+    symbols: Optional[List[str]] = Query(None),
+    strategies: Optional[List[str]] = Query(None),
+    monitors: Optional[List[str]] = Query(None),
+    days_of_week: Optional[str] = Query(
+        None,
+        description="Comma-separated day-of-week (0=Sunday). Omit for all days.",
+    ),
 ):
     """Tenant trade log from PostgreSQL (same contract as main_app proxy)."""
     try:
         slot = resolved_tenant_user_no_for_app()
+        dows = _parse_days_of_week_param(days_of_week)
+        filter_body = trade_history_filter_body_from_query(
+            include_test_trades=include_test_trades,
+            show_win=show_win,
+            show_loss=show_loss,
+            show_live=show_live,
+            show_paper=show_paper,
+            symbols=symbols,
+            strategies=strategies,
+            monitors=monitors,
+            days_of_week=dows,
+            min_date=min_date,
+            max_date=max_date,
+        )
         conn = get_postgresql_connection()
         if not conn:
             raise HTTPException(
@@ -248,6 +332,7 @@ async def get_trades(
                     max_date=max_date,
                     page_size=page_size,
                     before_id=before_id,
+                    filter_body=filter_body,
                 )
         finally:
             conn.close()
@@ -700,6 +785,65 @@ async def get_orderbook_ui_snapshot() -> JSONResponse:
     return JSONResponse({"error": "invalid_payload"})
 
 
+@app.post("/api/trade-monitor/orderbook_watch")
+async def post_trade_monitor_orderbook_watch(
+    market_ticker: Optional[str] = Query(
+        None,
+        description="Kalshi market_ticker to stream; omit or empty to clear watch",
+    ),
+) -> JSONResponse:
+    """Register which orderbook ticker should receive ``live_orderbook`` WS fanout."""
+    from backend.core.trade_monitor_orderbook_watch import set_trade_monitor_orderbook_watch
+
+    mt = str(market_ticker or "").strip()
+    set_trade_monitor_orderbook_watch(mt)
+    body: dict = {"ok": True, "market_ticker": mt}
+    if mt:
+        try:
+            from backend.core.trade_monitor_live_orderbook_payload import (
+                build_live_orderbook_ws_payload,
+            )
+            from backend.redis_switchboard import publish_live_orderbook_ws_message
+
+            ob_msg = await asyncio.to_thread(build_live_orderbook_ws_payload, mt)
+            if ob_msg:
+                body["orderbook"] = ob_msg
+                await asyncio.to_thread(publish_live_orderbook_ws_message, ob_msg)
+        except Exception:
+            pass
+    return JSONResponse(body)
+
+
+@app.get("/api/trade-monitor/strike-ladder")
+async def get_trade_monitor_strike_ladder(
+    symbol: str = Query("BTC", description="Kalshi symbol, e.g. BTC"),
+    market: str = Query("15m", description="15m or hourly"),
+) -> JSONResponse:
+    """Trade-monitor strike ladder JSON from live_state cache (same shape as WS ``live_strike_ladder``)."""
+    sym_u = (symbol or "BTC").strip().upper()
+    mk = (market or "15m").strip().lower()
+    if mk not in ("hourly", "15m"):
+        mk = "15m"
+    try:
+        from backend.core.live_state_read_helpers import strike_ladder_ws_payload
+
+        payload = await asyncio.to_thread(strike_ladder_ws_payload, "kalshi", mk, sym_u)
+        if payload and payload.get("strikes") is not None:
+            return JSONResponse(payload)
+    except Exception:
+        pass
+    return JSONResponse(
+        {
+            "type": "live_strike_ladder",
+            "symbol": sym_u,
+            "market": mk,
+            "strikes": [],
+            "error": "live_state_strike_ladder_miss",
+        },
+        status_code=503,
+    )
+
+
 @app.get("/api/trade-monitor/orderbook")
 async def get_trade_monitor_orderbook(
     symbol: str = Query("BTC", description="Kalshi symbol, e.g. BTC"),
@@ -821,6 +965,50 @@ async def live_symbol_spot_bootstrap() -> JSONResponse:
                 "rows": [],
             }
         )
+
+
+@app.get("/api/live_strike_ladder_bootstrap")
+async def live_strike_ladder_bootstrap(
+    symbol: str = "BTC",
+    market: str = "15m",
+) -> JSONResponse:
+    """Same payload shape as WebSocket ``live_strike_ladder`` (live_state cache)."""
+    sym_u = (symbol or "BTC").strip().upper()
+    mk = (market or "15m").strip().lower()
+    if mk not in ("hourly", "15m"):
+        mk = "15m"
+    try:
+        from backend.core.live_state_read_helpers import strike_ladder_ws_payload
+
+        payload = await asyncio.to_thread(strike_ladder_ws_payload, "kalshi", mk, sym_u)
+        strikes = (payload or {}).get("strikes") if isinstance(payload, dict) else None
+        if payload and strikes:
+            return JSONResponse(payload)
+    except Exception:
+        pass
+    try:
+        from backend.core.strike_ladder_fetch import fetch_strike_ladder_prefer_snapshot
+
+        ladder = await asyncio.to_thread(
+            fetch_strike_ladder_prefer_snapshot, sym_u, mk, "kalshi"
+        )
+        if ladder and ladder.get("strikes"):
+            out = dict(ladder)
+            out["type"] = "live_strike_ladder"
+            out["symbol"] = sym_u
+            out["market"] = mk
+            out.setdefault("source", "snapshot_or_db_fallback")
+            return JSONResponse(out)
+    except Exception:
+        pass
+    return JSONResponse(
+        {
+            "type": "live_strike_ladder",
+            "symbol": sym_u,
+            "market": mk,
+            "strikes": [],
+        }
+    )
 
 
 @app.get("/api/portfolio/history")
@@ -1620,32 +1808,67 @@ async def get_core_data(symbol: str = "BTC") -> Dict[str, Any]:
         btc_price = 0.0
         momentum_data: Dict[str, Any] = {}
         latest_db_price = 0
+        momentum_from_cache = False
+        try:
+            from backend.core.live_state_read_helpers import symbol_metrics_from_cache
+
+            sym_cached = symbol_metrics_from_cache(symbol)
+            btc_cached = symbol_metrics_from_cache("BTC")
+            if btc_cached and btc_cached.get("price") is not None:
+                btc_price = float(btc_cached["price"])
+            if sym_cached and sym_cached.get("momentum") is not None:
+                momentum_from_cache = True
+                momentum_data = {
+                    "weighted_momentum_score": float(sym_cached.get("momentum") or 0.0),
+                    "delta_1m": sym_cached.get("delta_1m"),
+                    "delta_2m": sym_cached.get("delta_2m"),
+                    "delta_3m": sym_cached.get("delta_3m"),
+                    "delta_4m": sym_cached.get("delta_4m"),
+                    "delta_15m": sym_cached.get("delta_15m"),
+                    "delta_30m": sym_cached.get("delta_30m"),
+                    "momentum_percentile": sym_cached.get("momentum_percentile"),
+                    "momentum_5s_avg": sym_cached.get("momentum_5s_avg"),
+                    "move_1m": sym_cached.get("move_1m"),
+                    "move_2m": sym_cached.get("move_2m"),
+                    "move_3m": sym_cached.get("move_3m"),
+                    "move_4m": sym_cached.get("move_4m"),
+                    "movement": sym_cached.get("movement"),
+                    "movement_percentile": sym_cached.get("movement_percentile"),
+                }
+                if sym_cached.get("price") is not None:
+                    latest_db_price = float(sym_cached["price"])
+        except Exception:
+            pass
         conn = None
         try:
             conn = get_postgresql_connection()
             cursor = conn.cursor()
-            cursor.execute(
-                "SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1"
-            )
-            row_btc = cursor.fetchone()
-            if row_btc and row_btc[0] is not None:
-                btc_price = float(row_btc[0])
-            else:
-                tk = _kraken_xxbtzusd_ticker_cached()
-                if tk:
-                    btc_price = float(tk["c"][0])
+            if btc_price == 0.0:
+                cursor.execute(
+                    "SELECT price FROM live_data.live_price_log_1s_btc ORDER BY timestamp DESC LIMIT 1"
+                )
+                row_btc = cursor.fetchone()
+                if row_btc and row_btc[0] is not None:
+                    btc_price = float(row_btc[0])
+                else:
+                    tk = _kraken_xxbtzusd_ticker_cached()
+                    if tk:
+                        btc_price = float(tk["c"][0])
 
-            cursor.execute(
-                f"""
-                SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
-                       move_1m, move_2m, move_3m, move_4m, movement, movement_percentile
-                FROM live_data.live_price_log_1s_{symbol.lower()}
-                ORDER BY timestamp DESC
-                LIMIT 1
-                """
-            )
-            result = cursor.fetchone()
-            if result:
+            if not momentum_from_cache:
+                cursor.execute(
+                    f"""
+                    SELECT momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg,
+                           move_1m, move_2m, move_3m, move_4m, movement, movement_percentile
+                    FROM live_data.live_price_log_1s_{symbol.lower()}
+                    ORDER BY timestamp DESC
+                    LIMIT 1
+                    """
+                )
+                result = cursor.fetchone()
+            else:
+                result = True
+            if result and not momentum_from_cache:
                 (
                     momentum,
                     delta_1m,
@@ -1792,9 +2015,34 @@ async def get_current_momentum(symbol: str = "BTC") -> Dict[str, Any]:
 
 @app.get("/api/live_symbol_status_snapshot")
 async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
+    """Symbol tick snapshot from live_state (legacy route name)."""
     started = time.perf_counter()
     try:
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
         allowed = ("BTC", "ETH", "SOL", "XRP")
+        out: List[Dict[str, Any]] = []
+        ts_out = None
+        if live_state_cache_enabled():
+            for sym in allowed:
+                m = symbol_metrics(sym)
+                if not m:
+                    continue
+                entry = {
+                    "symbol": sym,
+                    "price": m.get("price"),
+                    "momentum_percentile": m.get("momentum_percentile"),
+                    "volatility_percentile": m.get("volatility_percentile"),
+                    "movement_percentile": m.get("movement_percentile"),
+                    "timestamp": m.get("timestamp"),
+                    "source": "live_state",
+                }
+                out.append(entry)
+                if ts_out is None and entry.get("timestamp"):
+                    ts_out = entry["timestamp"]
+            return {"status": "ok", "timestamp": ts_out, "symbols": out}
+
         conn = get_postgresql_connection()
         cursor = conn.cursor()
         cursor.execute(
@@ -1807,7 +2055,6 @@ async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
         )
         rows = {str(r[0]).upper(): r for r in cursor.fetchall()}
         conn.close()
-        out: List[Dict[str, Any]] = []
         for sym in allowed:
             row = rows.get(sym)
             if not row:
@@ -1821,14 +2068,11 @@ async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
                     "volatility_percentile": float(vol_pct) if vol_pct is not None else None,
                     "movement_percentile": float(mov_pct) if mov_pct is not None else None,
                     "timestamp": ts,
+                    "source": "postgresql_legacy",
                 }
             )
-        ts_out = None
-        for sym in allowed:
-            found = next((r for r in out if r["symbol"] == sym), None)
-            if found and found.get("timestamp"):
-                ts_out = found["timestamp"]
-                break
+            if ts_out is None and ts:
+                ts_out = ts
         return {"status": "ok", "timestamp": ts_out, "symbols": out}
     except Exception as e:
         return {"status": "error", "message": str(e), "symbols": []}
@@ -1855,6 +2099,34 @@ async def get_postgresql_strike_table(symbol: str, request: Request) -> Dict[str
         raw = (request.query_params.get("raw") or "").strip().lower() in ("1", "true", "yes")
         if market not in ("hourly", "15m"):
             return {"error": "market required (hourly or 15m)"}
+        sym_u = (symbol or "").upper()
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core.live_state_read_helpers import strike_ladder_from_cache
+
+        try:
+            cached_ladder = strike_ladder_from_cache("kalshi", market, sym_u)
+            if cached_ladder and cached_ladder.get("strikes") is not None:
+                cached_ladder.setdefault("source", "live_state_cache")
+                if cached_ladder.get("ttc") is not None and cached_ladder.get("ttc_seconds") is None:
+                    try:
+                        cached_ladder["ttc_seconds"] = int(cached_ladder["ttc"])
+                    except (TypeError, ValueError):
+                        pass
+                if cached_ladder.get("event_ticker") and not cached_ladder.get("settlement_end_ms"):
+                    end = kalshi_contract_settlement_end_est(str(cached_ladder["event_ticker"]).strip())
+                    if end:
+                        cached_ladder["settlement_end_ms"] = int(end.timestamp() * 1000)
+                return cached_ladder
+        except Exception:
+            pass
+        if live_state_cache_enabled():
+            return {
+                "error": "live_state_strike_ladder_miss",
+                "symbol": sym_u,
+                "market": market,
+                "strikes": [],
+            }
+
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             sym_u = (symbol or "").upper()

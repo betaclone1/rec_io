@@ -14,6 +14,8 @@
   let lastExpandedOrderbookSignature = '';
   let hourlyExpandedStateByTicker = new Map();
   let centerAtmStrikeOnNextRender = true;
+  /** Latest WS orderbook per ticker — repaint after strike-table DOM rebuild. */
+  const lastLiveOrderbookByTicker = Object.create(null);
 
   /**
    * Countdown uses only Kalshi ticker → expiration (America/New_York), not DB ttc_* columns.
@@ -24,28 +26,29 @@
   let ttcTimer = null;
   let hourlyHeaderLastFetchSymbol = '';
   let hourlyStrikeTableDbWsUnsub = null;
+  let hourlyMonitorListDbWsUnsub = null;
   /** Last `live_symbol_spot` frame (Redis → main `/ws/db_changes`); used when symbol/monitor changes. */
   let lastLiveSymbolSpotMsg = null;
+  /** Renew server watch while a strike row book stays expanded (hot cache is not throttled). */
+  let lastExpandedOrderbookEventTicker = '';
 
   /** Strikes with 100¢ on either side are hidden except this many kept around the money line. */
   const MIN_HOURLY_VISIBLE_AROUND_MONEY_LINE = 3;
 
-  let refreshBusy = false;
-  let refreshPending = false;
-  let refreshTimer = null;
+  /** rAF-coalesce ATM row moves on rapid `live_symbol_spot`. */
+  let strikeTableAtmSyncRaf = null;
 
-  /** Coalesce high-frequency `/ws/db_changes` so we do not refetch the ladder on every orderbook tick. */
-  const STRIKE_TABLE_WS_MIN_INTERVAL_MS = 900;
-  let strikeTableWsRefreshTimer = null;
-  let lastStrikeTableWsRefreshRun = 0;
-
-  /** Debounce ATM row DOM work on rapid `live_symbol_spot` frames. */
-  const STRIKE_TABLE_ATM_SYNC_MIN_MS = 120;
-  let strikeTableAtmSyncTimer = null;
-  let strikeTableAtmSyncLast = 0;
-
-  const EXPANDED_ORDERBOOK_WS_DEBOUNCE_MS = 200;
-  let expandedOrderbookWsTimer = null;
+  /** Apply every WS frame immediately (no client-side rate limit). */
+  function createTmUiPassthrough(applyLatest) {
+    return {
+      schedule: function (arg) {
+        applyLatest(arg);
+      },
+      applyNow: function (arg) {
+        applyLatest(arg);
+      },
+    };
+  }
 
   function setMode(event, next) {
     if (event && typeof event.stopPropagation === 'function') {
@@ -59,7 +62,7 @@
     n.classList.toggle('active', mode === 'no');
     n.classList.toggle('tab-no', true);
     shouldAutoCenter = true;
-    requestDataRefresh();
+    if (hourlyStrikeRows.length) patchHourlyRowQuotesInPlace();
   }
   window.setMode = setMode;
 
@@ -100,6 +103,36 @@
    * Cross-host static tabs (e.g. 127.0.0.1:8091 with API on localhost:3000) do not send cookies on the
    * WS upgrade; append ``token`` so ``tenant_asgi`` can authenticate (same as HTTP query token).
    */
+  function tmLiveMarketWebSocketUrl() {
+    var base = tmMainApiBase();
+    var u;
+    try {
+      u = new URL(base + '/');
+    } catch (e) {
+      u = new URL((window.location.origin || '') + '/');
+    }
+    var wsProto = u.protocol === 'https:' ? 'wss:' : 'ws:';
+    var sym = currentSymbol();
+    var mkt = currentMarket();
+    return (
+      wsProto +
+      '//' +
+      u.host +
+      '/ws/live_market?symbol=' +
+      encodeURIComponent(sym) +
+      '&market=' +
+      encodeURIComponent(mkt)
+    );
+  }
+
+  function tmHasAuthSession() {
+    try {
+      return !!(localStorage.getItem('rec_auth_token') || '').trim();
+    } catch (e) {
+      return false;
+    }
+  }
+
   function dbChangesWebSocketUrl() {
     var base = tmMainApiBase();
     var u;
@@ -152,11 +185,25 @@
     el.style.display = 'inline-block';
   }
 
+  function formatTmMomPercentile(val) {
+    const num = Number(val);
+    if (!Number.isFinite(num)) return 'Mom: —';
+    if (num === 0) return 'Mom: 0';
+    const sign = num > 0 ? '+' : '';
+    return 'Mom: ' + sign + num.toFixed(1);
+  }
+
   /**
    * Postgres live_data → NOTIFY → redis_switchboard → Redis → same-origin `/ws/db_changes`.
    * Payload built in ``backend/redis_switchboard.build_live_symbol_spot_payload``.
    */
   function applyLiveSymbolSpotMessage(msg) {
+    if (!msg || msg.type !== 'live_symbol_spot') return;
+    lastLiveSymbolSpotMsg = msg;
+    tmSpotUiThrottle.applyNow(msg);
+  }
+
+  function applyLiveSymbolSpotMessageNow(msg) {
     if (!msg || msg.type !== 'live_symbol_spot') return;
     lastLiveSymbolSpotMsg = msg;
     const rawSpot = msg.spot_by_symbol || {};
@@ -189,16 +236,37 @@
     decorateTmPctChangeCell(document.getElementById('change-3h'), ch.change3h);
     decorateTmPctChangeCell(document.getElementById('change-1d'), ch.change1d);
 
+    const rawMom = msg.momentum_by_symbol || {};
+    let momVal = rawMom[sym];
+    if (momVal == null) {
+      Object.keys(rawMom).forEach(function (k) {
+        if (String(k).trim().toUpperCase() === sym && momVal == null) momVal = rawMom[k];
+      });
+    }
+    const elMom = document.getElementById('symbol-momentum-value');
+    if (elMom) elMom.textContent = formatTmMomPercentile(momVal);
+
     try {
       window.dispatchEvent(new CustomEvent('rec:live-symbol-spot', { detail: msg }));
     } catch (e) {}
   }
 
+  const tmSpotUiThrottle = createTmUiPassthrough(applyLiveSymbolSpotMessageNow);
+
   window.tmNewRefreshLiveSpotPanel = function () {
     if (lastLiveSymbolSpotMsg) {
-      applyLiveSymbolSpotMessage(lastLiveSymbolSpotMsg);
+      tmSpotUiThrottle.applyNow(lastLiveSymbolSpotMsg);
     }
   };
+
+  /** Global live_data (strike ladder, spot bootstrap, orderbook watch) — no tenant session. */
+  function tmGlobalApiFetch(path, init) {
+    init = init || {};
+    if (init.credentials === undefined) init.credentials = 'include';
+    const base = tmMainApiBase();
+    const pathNorm = path.charAt(0) === '/' ? path : '/' + path;
+    return fetch(base + pathNorm, init);
+  }
 
   function tmMainApiFetch(path, init) {
     init = init || {};
@@ -221,19 +289,6 @@
     return fetch(target.toString(), init);
   }
 
-  async function fetchLiveSymbolSpotBootstrap() {
-    if (!document.body || !document.body.classList.contains('trade-monitor-new-page')) {
-      return;
-    }
-    try {
-      const res = await tmMainApiFetch('/api/live_symbol_spot_bootstrap', { cache: 'no-store' });
-      if (!res.ok) return;
-      const msg = await res.json();
-      if (msg && msg.type === 'live_symbol_spot') {
-        applyLiveSymbolSpotMessage(msg);
-      }
-    } catch (e) {}
-  }
 
   function trimFracZeros(s) {
     if (!s.includes('.')) return s;
@@ -283,7 +338,8 @@
         const c = Number(r.size_fp || 0);
         const t = Number(r.total_dollars || 0);
         const side = i === labelRowIndex ? sideLabel : '';
-        return `<tr><td class="side-col">${side}</td><td>${fmtPrice(p)}</td><td>${fmtContracts(c)}</td><td>${fmtTotalDollars(t)}</td></tr>`;
+        const sideCls = side ? 'book-side-label' : 'side-col';
+        return `<tr><td class="${sideCls}">${side}</td><td>${fmtPrice(p)}</td><td>${fmtContracts(c)}</td><td>${fmtTotalDollars(t)}</td></tr>`;
       })
       .join('');
   }
@@ -593,6 +649,43 @@
   /** Called from trade-monitor-new-init when auto-trade toggle syncs so border updates immediately. */
   window.tmNewSyncTtcClockChrome = applyHeaderTtcToClock;
 
+  function applyHeaderTtcFromPack(pack) {
+    if (!pack) return false;
+    const eventRef = pack.eventTicker && String(pack.eventTicker).trim();
+    const rowRef =
+      pack.rows && pack.rows[0] && pack.rows[0].ticker && String(pack.rows[0].ticker).trim();
+    const ref = eventRef || rowRef || '';
+    const eventKey = ref ? kalshiEventRefKey(ref) : '';
+    if (eventKey && eventKey !== marketExpireSourceKey) {
+      clearMarketExpiration();
+    }
+    const endMs =
+      pack.settlementEndMs != null && Number.isFinite(Number(pack.settlementEndMs))
+        ? Number(pack.settlementEndMs)
+        : null;
+    if (endMs != null) {
+      marketExpireSourceKey = eventKey || marketExpireSourceKey;
+      marketExpireAtMs = endMs;
+      applyHeaderTtcToClock();
+      return true;
+    }
+    const packSec =
+      pack.ttcSeconds != null && pack.ttcSeconds !== '' && Number.isFinite(Number(pack.ttcSeconds))
+        ? Number(pack.ttcSeconds)
+        : null;
+    if (packSec != null) {
+      marketExpireSourceKey = eventKey || marketExpireSourceKey;
+      marketExpireAtMs = Date.now() + packSec * 1000;
+      applyHeaderTtcToClock();
+      return true;
+    }
+    if (ref && armExpirationFromTicker(ref)) {
+      applyHeaderTtcToClock();
+      return true;
+    }
+    return false;
+  }
+
   function applyStrikePackHeader(pack, market) {
     if (!pack || pack.fetchFailed) return;
     const sym = (pack.headerSymbol || currentSymbol()).toString().trim().toUpperCase() || 'BTC';
@@ -609,18 +702,11 @@
       const nextTitle = sym + ' ' + mkLabel + ' \u2022 ' + strat;
       if (tEl.textContent !== nextTitle) tEl.textContent = nextTitle;
     }
-    const ref =
-      (pack.rows && pack.rows[0] && pack.rows[0].ticker && String(pack.rows[0].ticker).trim()) ||
-      (pack.eventTicker && String(pack.eventTicker).trim()) ||
-      '';
     if (wEl) {
       const nextWindow = monitorNumber + ' \u2022 ' + (mt || '');
       if (wEl.textContent !== nextWindow) wEl.textContent = nextWindow;
     }
-    if (ref) {
-      armExpirationFromTicker(ref);
-      applyHeaderTtcToClock();
-    } else {
+    if (!applyHeaderTtcFromPack(pack)) {
       clearMarketExpiration();
       updateMarketHeaderTtc(null);
     }
@@ -646,87 +732,6 @@
       new URLSearchParams(window.location.search || '').get('market') ||
       '15m';
     return String(m).trim().toLowerCase() === 'hourly' ? 'hourly' : '15m';
-  }
-
-  async function fetchStrikeTablePack(symbol, market) {
-    const empty = {
-      rows: [],
-      currentPrice: null,
-      marketTitle: null,
-      ttcSeconds: null,
-      settlementEndMs: null,
-      eventTicker: null,
-      headerSymbol: null,
-      fetchFailed: true,
-    };
-    const mktParam = market === 'hourly' ? 'hourly' : '15m';
-    const res = await tmMainApiFetch(
-      '/api/postgresql/strike_table/' +
-        encodeURIComponent(String(symbol).toLowerCase()) +
-        '?market=' +
-        encodeURIComponent(mktParam),
-      { cache: 'no-store' }
-    );
-    let data = null;
-    try {
-      data = await res.json();
-    } catch (e) {
-      return empty;
-    }
-    if (!res.ok || !data || data.error) {
-      return empty;
-    }
-    const strikesArr = Array.isArray(data.strikes) ? data.strikes : [];
-    const cpRaw = data.current_price;
-    const currentPrice =
-      cpRaw != null && cpRaw !== '' && !isNaN(Number(cpRaw)) ? Number(cpRaw) : null;
-    const marketTitle =
-      data.market_title != null && String(data.market_title).trim() !== ''
-        ? String(data.market_title).trim()
-        : null;
-    const ttcSeconds =
-      data.ttc_seconds != null && data.ttc_seconds !== '' && !isNaN(Number(data.ttc_seconds))
-        ? Number(data.ttc_seconds)
-        : null;
-    const settlementEndMs =
-      data.settlement_end_ms != null &&
-      data.settlement_end_ms !== '' &&
-      !isNaN(Number(data.settlement_end_ms))
-        ? Number(data.settlement_end_ms)
-        : null;
-    const headerSymbol =
-      data.symbol != null && String(data.symbol).trim() !== ''
-        ? String(data.symbol).trim().toUpperCase()
-        : String(symbol).trim().toUpperCase() || 'BTC';
-    const eventTicker =
-      data.event_ticker != null && String(data.event_ticker).trim() !== ''
-        ? String(data.event_ticker).trim()
-        : null;
-    const rows = strikesArr
-      .filter((s) => s && s.ticker)
-      .map((s) => ({
-        ticker: String(s.ticker),
-        strike: s.strike,
-        yesAsk: s.yes_ask_dollars,
-        noAsk: s.no_ask_dollars,
-        buffer: s.buffer,
-        bufferPct: s.buffer_pct,
-        activeSide: s.active_side,
-        probActive: s.probability,
-        yesDiff: s.yes_diff != null && s.yes_diff !== '' ? Number(s.yes_diff) : null,
-        noDiff: s.no_diff != null && s.no_diff !== '' ? Number(s.no_diff) : null,
-      }))
-      .sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
-    return {
-      rows,
-      currentPrice,
-      marketTitle,
-      ttcSeconds,
-      settlementEndMs,
-      eventTicker,
-      headerSymbol,
-      fetchFailed: false,
-    };
   }
 
   function fmtStrike(v) {
@@ -837,7 +842,47 @@
     for (let i = 0; i < list.length; i++) {
       if (protectedIdx.has(i) || !hourlyRowHasEitherAsk100(list[i])) out.push(list[i]);
     }
+    return pinExpandedStrikeInVisibleRows(out);
+  }
+
+  /** Keep the expanded strike visible even when 100¢ filter would hide it. */
+  function pinExpandedStrikeInVisibleRows(rows) {
+    const list = rows || [];
+    const mt = String(expandedHourlyTicker || '').trim();
+    if (!mt || !list.length) return list;
+    if (list.some((r) => String(r.ticker) === mt)) return list;
+    const src = hourlyRawStrikeRows.length ? hourlyRawStrikeRows : list;
+    const extra = src.find((r) => String(r.ticker) === mt);
+    if (!extra) return list;
+    const out = list.slice();
+    out.push(extra);
+    out.sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
     return out;
+  }
+
+  function cacheLiveOrderbookPayload(msg) {
+    const mt = String((msg && msg.market_ticker) || '').trim();
+    if (!mt || !msg) return;
+    lastLiveOrderbookByTicker[mt] = msg;
+  }
+
+  function restoreExpandedOrderbookAfterStrikeRender() {
+    const mt = String(expandedHourlyTicker || '').trim();
+    if (!mt) return;
+    const root = document.getElementById('hourlyStrikeList');
+    if (!root) return;
+    const mount = root.querySelector('[data-hourly-expanded="' + mt + '"]');
+    if (!mount) return;
+    const cached = lastLiveOrderbookByTicker[mt];
+    if (!cached) return;
+    renderOrderbookInto(mount, cached, mt);
+    lastExpandedOrderbookSignature = JSON.stringify({
+      ticker: cached.market_ticker || '',
+      mode: mode,
+      yes: cached.trade_yes || {},
+      no: cached.trade_no || {},
+      last: cached.last_trade || {},
+    });
   }
 
   /** Re-filter ladder when live spot moves (protected-3 center tracks money line). */
@@ -854,7 +899,7 @@
     if (nextStruct !== lastHourlyStructureSignature) {
       lastHourlyStructureSignature = nextStruct;
       lastHourlyRowsSignature = nextQuotes;
-      centerAtmStrikeOnNextRender = true;
+      if (!expandedHourlyTicker) centerAtmStrikeOnNextRender = true;
       renderHourlyRows();
     } else {
       lastHourlyRowsSignature = nextQuotes;
@@ -892,79 +937,323 @@
     return null;
   }
 
-  function scheduleStrikeTableRefreshFromWs() {
-    const now = Date.now();
-    const elapsed = now - lastStrikeTableWsRefreshRun;
-    if (strikeTableWsRefreshTimer != null) return;
-    const delay = elapsed >= STRIKE_TABLE_WS_MIN_INTERVAL_MS ? 0 : STRIKE_TABLE_WS_MIN_INTERVAL_MS - elapsed;
-    strikeTableWsRefreshTimer = setTimeout(() => {
-      strikeTableWsRefreshTimer = null;
-      lastStrikeTableWsRefreshRun = Date.now();
-      requestDataRefresh();
-    }, delay);
+  function ladderMessageSymbol(msg) {
+    if (!msg || msg.symbol == null) return '';
+    return String(msg.symbol).trim().toUpperCase();
   }
 
-  async function refreshExpandedHourlyOrderbookIfOpen() {
-    if (!expandedHourlyTicker) return;
-    const mount = document.querySelector(
-      '[data-hourly-expanded="' + expandedHourlyTicker + '"]'
-    );
-    if (!mount) return;
-    const expandedTicker = expandedHourlyTicker;
-    let hrRes;
-    try {
-      hrRes = await fetch(orderbookUrlForTicker(expandedTicker), { cache: 'no-store' });
-    } catch (e) {
-      return;
-    }
-    let hrData;
-    try {
-      hrData = await hrRes.json();
-    } catch (e2) {
-      return;
-    }
-    if (expandedTicker !== expandedHourlyTicker) return;
-    if (hrData && !hrData.error) {
-      const mth = (hrData.market_ticker || '').trim();
-      if (mth) {
-        armExpirationFromTicker(mth);
+  function ladderMessageMarket(msg) {
+    const m = msg && msg.market != null ? String(msg.market).trim().toLowerCase() : '';
+    return m === 'hourly' ? 'hourly' : '15m';
+  }
+
+  function applyStrikePackToDom(pack, mkt) {
+    const symNow = currentSymbol();
+    if (mkt !== currentMarket()) return;
+    applyStrikePackHeader(pack, mkt);
+    const errEl = document.getElementById('loadErr');
+    if (!pack.fetchFailed) {
+      if (errEl) {
+        errEl.classList.add('u-hidden');
+        errEl.textContent = '';
       }
-      const expandedSig = JSON.stringify({
-        ticker: hrData.market_ticker || '',
-        mode: mode,
-        yes: hrData.trade_yes || {},
-        no: hrData.trade_no || {},
-        last: hrData.last_trade || {},
+      const rawRows = pack.rows || [];
+      hourlyRawStrikeRows = rawRows.slice();
+      hourlyCurrentPrice =
+        pack.currentPrice != null && Number.isFinite(pack.currentPrice) ? pack.currentPrice : null;
+      try {
+        window.__recTmStrikeTableHeaderPrice =
+          hourlyCurrentPrice != null && Number.isFinite(hourlyCurrentPrice) ? hourlyCurrentPrice : null;
+      } catch (eHdr) {}
+      const spotForVisibility = hourlySpotPrice();
+      const fetchedRows = applyHourlyStrikeAskVisibility(rawRows, spotForVisibility);
+      if (symNow !== currentSymbol() || mkt !== currentMarket()) return;
+      const nextStructSig = hourlyStructureSignature(fetchedRows);
+      const nextSig = hourlyQuotesSignature(fetchedRows);
+      hourlyStrikeRows = fetchedRows;
+      migrateExpandedTickerOnLadderRefresh(pack);
+      ensureHourlyExpandedTicker();
+      if (nextStructSig !== lastHourlyStructureSignature) {
+        lastHourlyStructureSignature = nextStructSig;
+        lastHourlyRowsSignature = nextSig;
+        if (!expandedHourlyTicker) centerAtmStrikeOnNextRender = true;
+        renderHourlyRows();
+      } else if (nextSig !== lastHourlyRowsSignature) {
+        lastHourlyRowsSignature = nextSig;
+        patchHourlyRowQuotesInPlace();
+      }
+    } else if (errEl) {
+      errEl.classList.remove('u-hidden');
+      errEl.textContent = 'No strike table data';
+      try {
+        window.__recTmStrikeTableHeaderPrice = null;
+      } catch (eHdr2) {}
+    }
+    if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
+  }
+
+  function applyLiveStrikeLadderWs(msg) {
+    if (!msg || msg.type !== 'live_strike_ladder') return;
+    if (ladderMessageSymbol(msg) !== currentSymbol()) return;
+    if (ladderMessageMarket(msg) !== currentMarket()) return;
+    switchLayoutForMarket(currentMarket());
+    const pack = {
+      rows: [],
+      currentPrice: null,
+      marketTitle: null,
+      ttcSeconds: null,
+      settlementEndMs: null,
+      eventTicker: null,
+      headerSymbol: null,
+      fetchFailed: true,
+    };
+    if (!msg.error) {
+      const strikesArr = Array.isArray(msg.strikes) ? msg.strikes : [];
+      const cpRaw = msg.current_price;
+      pack.currentPrice =
+        cpRaw != null && cpRaw !== '' && !isNaN(Number(cpRaw)) ? Number(cpRaw) : null;
+      pack.marketTitle =
+        msg.market_title != null && String(msg.market_title).trim() !== ''
+          ? String(msg.market_title).trim()
+          : null;
+      pack.ttcSeconds =
+        msg.ttc_seconds != null && msg.ttc_seconds !== '' && !isNaN(Number(msg.ttc_seconds))
+          ? Number(msg.ttc_seconds)
+          : msg.ttc != null && !isNaN(Number(msg.ttc))
+            ? Number(msg.ttc)
+            : null;
+      pack.settlementEndMs =
+        msg.settlement_end_ms != null && !isNaN(Number(msg.settlement_end_ms))
+          ? Number(msg.settlement_end_ms)
+          : null;
+      pack.eventTicker =
+        msg.event_ticker != null && String(msg.event_ticker).trim() !== ''
+          ? String(msg.event_ticker).trim()
+          : null;
+      pack.headerSymbol = ladderMessageSymbol(msg);
+      pack.rows = strikesArr
+        .filter((s) => s && s.ticker)
+        .map((s) => ({
+          ticker: String(s.ticker),
+          strike: s.strike,
+          yesAsk: s.yes_ask_dollars,
+          noAsk: s.no_ask_dollars,
+          buffer: s.buffer,
+          bufferPct: s.buffer_pct,
+          activeSide: s.active_side,
+          probActive: s.probability,
+          yesDiff: s.yes_diff != null && s.yes_diff !== '' ? Number(s.yes_diff) : null,
+          noDiff: s.no_diff != null && s.no_diff !== '' ? Number(s.no_diff) : null,
+        }))
+        .sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
+      pack.fetchFailed = false;
+    }
+    applyStrikePackToDom(pack, ladderMessageMarket(msg));
+  }
+
+  const tmStrikeLadderUiThrottle = createTmUiPassthrough(applyLiveStrikeLadderWs);
+
+  function scheduleApplyLiveStrikeLadder(msg, options) {
+    if (options && options.immediate) {
+      tmStrikeLadderUiThrottle.applyNow(msg);
+      return;
+    }
+    tmStrikeLadderUiThrottle.schedule(msg);
+  }
+
+  function fetchLiveStrikeLadderBootstrap(options) {
+    const sym = currentSymbol();
+    const mkt = currentMarket();
+    const path =
+      '/api/trade-monitor/strike-ladder?symbol=' +
+      encodeURIComponent(sym) +
+      '&market=' +
+      encodeURIComponent(mkt);
+    return tmGlobalApiFetch(path, { cache: 'no-store' })
+      .then(function (res) {
+        return res.json().then(function (data) {
+          return { res: res, data: data };
+        });
+      })
+      .then(function (pair) {
+        const res = pair && pair.res;
+        const data = pair && pair.data;
+        if (!res || !res.ok || !data || data.error) return;
+        const strikes = Array.isArray(data.strikes) ? data.strikes : [];
+        if (!strikes.length) return;
+        if (!data.type) data.type = 'live_strike_ladder';
+        data.symbol = sym;
+        data.market = mkt;
+        scheduleApplyLiveStrikeLadder(data, options);
+      })
+      .catch(function () {});
+  }
+
+  function normalizeOrderbookPayload(d) {
+    if (!d || d.error) return null;
+    if (d.type === 'live_orderbook') return d;
+    if (!d.market_ticker && !d.trade_yes && !d.trade_no) return null;
+    return {
+      type: 'live_orderbook',
+      market_ticker: d.market_ticker || '',
+      trade_yes: d.trade_yes || { asks: [], bids: [] },
+      trade_no: d.trade_no || { asks: [], bids: [] },
+      last_trade: d.last_trade || {},
+      book_seq: d.book_seq,
+    };
+  }
+
+  function scheduleExpandedOrderbookPaint(msg, options) {
+    if (!msg || msg.type !== 'live_orderbook') return;
+    if (options && options.immediate) {
+      tmOrderbookUiThrottle.applyNow(msg);
+    } else {
+      tmOrderbookUiThrottle.schedule(msg);
+    }
+  }
+
+  function fetchExpandedOrderbookHttp(ticker, options) {
+    const mt = String(ticker || '').trim();
+    if (!mt) return Promise.resolve();
+    const immediate = !!(options && options.immediate);
+    return tmGlobalApiFetch(orderbookUrlForTicker(mt), { cache: 'no-store' })
+      .then(function (res) {
+        return res && res.ok && res.json ? res.json() : null;
+      })
+      .then(function (data) {
+        const msg = normalizeOrderbookPayload(data);
+        if (msg) scheduleExpandedOrderbookPaint(msg, { immediate: immediate });
+      })
+      .catch(function () {});
+  }
+
+  function stopOrderbookExpandedSession() {}
+
+  function refreshOrderbookWatchAndSnapshot(ticker, options) {
+    const mt = String(ticker || '').trim();
+    const q = mt ? '?market_ticker=' + encodeURIComponent(mt) : '';
+    const immediate = !!(options && options.immediateFetch);
+    return tmGlobalApiFetch('/api/trade-monitor/orderbook_watch' + q, {
+      method: 'POST',
+      cache: 'no-store',
+    })
+      .then(function (res) {
+        return res && res.json ? res.json() : null;
+      })
+      .then(function (body) {
+        if (body && body.orderbook) {
+          const obMsg = normalizeOrderbookPayload(body.orderbook);
+          if (obMsg) {
+            scheduleExpandedOrderbookPaint(obMsg, { immediate: immediate });
+          }
+        }
+        if (immediate) {
+          return fetchExpandedOrderbookHttp(mt, { immediate: true });
+        }
+      })
+      .catch(function () {
+        if (immediate) return fetchExpandedOrderbookHttp(mt, { immediate: true });
       });
-      if (expandedSig !== lastExpandedOrderbookSignature) {
-        lastExpandedOrderbookSignature = expandedSig;
-        renderOrderbookInto(mount, hrData, expandedHourlyTicker);
-      }
+  }
+
+  function startOrderbookExpandedSession(ticker) {
+    const mt = String(ticker || '').trim();
+    stopOrderbookExpandedSession();
+    if (!mt) {
+      void refreshOrderbookWatchAndSnapshot('', {});
+      return;
+    }
+    void refreshOrderbookWatchAndSnapshot(mt, { immediateFetch: true });
+  }
+
+  function setTradeMonitorOrderbookWatch(marketTicker) {
+    const mt = String(marketTicker || '').trim();
+    if (mt) startOrderbookExpandedSession(mt);
+    else {
+      stopOrderbookExpandedSession();
+      void refreshOrderbookWatchAndSnapshot('', {});
     }
   }
 
-  function scheduleExpandedOrderbookRefreshFromWs() {
-    if (!expandedHourlyTicker) return;
-    if (expandedOrderbookWsTimer != null) clearTimeout(expandedOrderbookWsTimer);
-    expandedOrderbookWsTimer = setTimeout(() => {
-      expandedOrderbookWsTimer = null;
-      void refreshExpandedHourlyOrderbookIfOpen();
-    }, EXPANDED_ORDERBOOK_WS_DEBOUNCE_MS);
+  /** If the user already has a book expanded, follow the new cycle contract on ladder rollover. */
+  function migrateExpandedTickerOnLadderRefresh(pack) {
+    const prevTicker = String(expandedHourlyTicker || '').trim();
+    if (!prevTicker) return;
+    const eventTicker =
+      pack && pack.eventTicker != null ? String(pack.eventTicker).trim() : '';
+    const rows = (pack && pack.rows) || [];
+    const stillInLadder =
+      rows.some(function (r) {
+        return String(r.ticker) === prevTicker;
+      }) ||
+      hourlyRawStrikeRows.some(function (r) {
+        return String(r.ticker) === prevTicker;
+      });
+    if (stillInLadder) {
+      if (eventTicker && eventTicker !== lastExpandedOrderbookEventTicker) {
+        lastExpandedOrderbookEventTicker = eventTicker;
+        lastExpandedOrderbookSignature = '';
+        void refreshOrderbookWatchAndSnapshot(prevTicker, { immediateFetch: true });
+      }
+      return;
+    }
+    const nextRow = rows.length ? rows[0] : null;
+    if (!nextRow || !nextRow.ticker) {
+      stopOrderbookExpandedSession();
+      expandedHourlyTicker = '';
+      return;
+    }
+    expandedHourlyTicker = String(nextRow.ticker);
+    lastExpandedOrderbookEventTicker = eventTicker;
+    lastExpandedOrderbookSignature = '';
+    startOrderbookExpandedSession(expandedHourlyTicker);
+    centerAtmStrikeOnNextRender = false;
+    renderHourlyRows();
   }
+
+  function applyLiveOrderbookWs(msg) {
+    if (!msg || msg.type !== 'live_orderbook') return;
+    tmOrderbookUiThrottle.applyNow(msg);
+  }
+
+  function applyLiveOrderbookWsNow(msg) {
+    if (!msg || msg.type !== 'live_orderbook') return;
+    const mtStale = String(msg.market_ticker || '').trim();
+    if (msg.orderbook_stale || msg.stale) {
+      if (mtStale) delete lastLiveOrderbookByTicker[mtStale];
+      if (mtStale && mtStale === expandedHourlyTicker) {
+        const mount = document.querySelector('[data-hourly-expanded="' + mtStale + '"]');
+        if (mount) mount.innerHTML = '';
+        lastExpandedOrderbookSignature = '';
+      }
+      return;
+    }
+    cacheLiveOrderbookPayload(msg);
+    const mt = String(msg.market_ticker || '').trim();
+    if (!mt || mt !== expandedHourlyTicker) return;
+    const mount = document.querySelector('[data-hourly-expanded="' + mt + '"]');
+    if (!mount) return;
+    if (mt) armExpirationFromTicker(mt);
+    const expandedSig = JSON.stringify({
+      ticker: msg.market_ticker || '',
+      mode: mode,
+      book_seq: msg.book_seq != null ? msg.book_seq : null,
+      yes: msg.trade_yes || {},
+      no: msg.trade_no || {},
+      last: msg.last_trade || {},
+    });
+    if (expandedSig !== lastExpandedOrderbookSignature) {
+      lastExpandedOrderbookSignature = expandedSig;
+      renderOrderbookInto(mount, msg, expandedHourlyTicker);
+    }
+  }
+
+  const tmOrderbookUiThrottle = createTmUiPassthrough(applyLiveOrderbookWsNow);
 
   function syncStrikeTableAtmMarker() {
-    const now = Date.now();
-    if (now - strikeTableAtmSyncLast < STRIKE_TABLE_ATM_SYNC_MIN_MS) {
-      if (strikeTableAtmSyncTimer == null) {
-        strikeTableAtmSyncTimer = setTimeout(() => {
-          strikeTableAtmSyncTimer = null;
-          syncStrikeTableAtmMarker();
-        }, STRIKE_TABLE_ATM_SYNC_MIN_MS - (now - strikeTableAtmSyncLast));
-      }
-      return;
-    }
-    strikeTableAtmSyncLast = Date.now();
-
+    if (strikeTableAtmSyncRaf != null) return;
+    strikeTableAtmSyncRaf = requestAnimationFrame(function () {
+      strikeTableAtmSyncRaf = null;
     const root = document.getElementById('hourlyStrikeList');
     if (!root || !hourlyStrikeRows.length) return;
     const scrollRoot = root.querySelector('[data-hourly-strike-scroll]') || root;
@@ -1036,6 +1325,7 @@
         window.recTmOrderBuilderRefreshQuotes();
       } catch (eOb) {}
     }
+    });
   }
 
   function hourlyQuotesSignature(rows) {
@@ -1133,12 +1423,14 @@
   }
 
   function ensureHourlyExpandedTicker() {
-    if (!hourlyStrikeRows.length) {
+    const mt = String(expandedHourlyTicker || '').trim();
+    if (!mt) return;
+    const inVisible = hourlyStrikeRows.some((r) => String(r.ticker) === mt);
+    const inRaw = hourlyRawStrikeRows.some((r) => String(r.ticker) === mt);
+    if (!inVisible && !inRaw) {
+      stopOrderbookExpandedSession();
       expandedHourlyTicker = '';
-      return;
     }
-    const exists = hourlyStrikeRows.some((r) => r.ticker === expandedHourlyTicker);
-    if (!exists) expandedHourlyTicker = '';
   }
 
   function hourlyExpandedState(ticker) {
@@ -1156,6 +1448,7 @@
   function hourlyStructureSignature(rows) {
     return (rows || [])
       .map((r) => [r.ticker, r.strike].join('|'))
+      .sort()
       .join('||');
   }
 
@@ -1308,9 +1601,11 @@
           st.autoCenter = true;
           st.userScrolled = false;
           st.lastScrollTop = 0;
+          setTradeMonitorOrderbookWatch(expandedHourlyTicker);
+        } else {
+          setTradeMonitorOrderbookWatch('');
         }
         renderHourlyRows();
-        requestDataRefresh();
         try {
           if (document.body && document.body.classList.contains('trade-monitor-new-page')) {
             window.dispatchEvent(
@@ -1324,6 +1619,7 @@
     });
     syncStrikeTableAtmMarker();
     recTmSyncStrikeTablePillsFromOrderBuilder();
+    restoreExpandedOrderbookAfterStrikeRender();
   }
 
   function patchHourlyRowQuotesInPlace() {
@@ -1385,12 +1681,78 @@
   function centerMidRowInPanel(scrollEl, midEl) {
     if (!scrollEl || !midEl) return;
     const midTop = midEl.offsetTop;
-    const target = midTop - scrollEl.clientHeight / 2 + midEl.offsetHeight / 2;
-    scrollEl.scrollTop = Math.max(0, target);
+    const target = Math.round(midTop - scrollEl.clientHeight / 2 + midEl.offsetHeight / 2);
+    const next = Math.max(0, target);
+    if (Math.abs(scrollEl.scrollTop - next) > 1) scrollEl.scrollTop = next;
+  }
+
+  function bindOrderbookSideButtons(containerEl, d, ticker) {
+    containerEl.querySelectorAll('[data-hourly-book-side]').forEach((btn) => {
+      btn.addEventListener('click', (e) => {
+        e.preventDefault();
+        e.stopPropagation();
+        const s = String(btn.getAttribute('data-hourly-book-side') || '');
+        if (s !== 'yes' && s !== 'no') return;
+        mode = s;
+        const stToggle = hourlyExpandedState(ticker);
+        stToggle.autoCenter = true;
+        stToggle.userScrolled = false;
+        renderOrderbookInto(containerEl, d, ticker);
+        cacheLiveOrderbookPayload(d);
+        lastExpandedOrderbookSignature = JSON.stringify({
+          ticker: d.market_ticker || '',
+          mode: mode,
+          yes: d.trade_yes || {},
+          no: d.trade_no || {},
+          last: d.last_trade || {},
+        });
+      });
+    });
+  }
+
+  /** Update ask/bid rows in place — spread row stays anchored in the viewport. */
+  function patchOrderbookInto(containerEl, d, ticker) {
+    if (!containerEl || !d) return false;
+    const t = String(ticker || d.market_ticker || '');
+    const scrollEl = containerEl.querySelector('[data-hourly-scroll="' + t + '"]');
+    if (!scrollEl) return false;
+    const asksBody = scrollEl.querySelector('tbody.asks');
+    const bidsBody = scrollEl.querySelector('tbody.bids');
+    const midEl = containerEl.querySelector('[data-hourly-mid="' + t + '"]');
+    if (!asksBody || !bidsBody || !midEl) return false;
+
+    const st = hourlyExpandedState(ticker);
+    const midAnchor = midEl.offsetTop - scrollEl.scrollTop;
+    const book = mode === 'yes' ? d.trade_yes : d.trade_no;
+    const asks = book.asks || [];
+    const bids = book.bids || [];
+    const askLabelIdx = asks.length > 0 ? asks.length - 1 : -1;
+    const bidLabelIdx = bids.length > 0 ? 0 : -1;
+
+    asksBody.innerHTML = rowsToHtml(asks, 'Asks', askLabelIdx);
+    bidsBody.innerHTML = rowsToHtml(bids, 'Bids', bidLabelIdx);
+    midEl.innerHTML = buildMidCellInner(mode, d.last_trade);
+    midEl.className = mode === 'yes' ? 'mid-row mid-yes' : 'mid-row mid-no';
+    containerEl.querySelectorAll('[data-hourly-book-side]').forEach((btn) => {
+      const s = String(btn.getAttribute('data-hourly-book-side') || '');
+      btn.classList.toggle('is-active', s === mode);
+    });
+    if (!st.userScrolled) {
+      centerMidRowInPanel(scrollEl, midEl);
+    } else {
+      const next = Math.round(Math.max(0, midEl.offsetTop - midAnchor));
+      if (Math.abs(scrollEl.scrollTop - next) > 1) scrollEl.scrollTop = next;
+    }
+    st.lastScrollTop = scrollEl.scrollTop;
+    return true;
   }
 
   function renderOrderbookInto(containerEl, d, ticker) {
     if (!containerEl) return;
+    if (patchOrderbookInto(containerEl, d, ticker)) {
+      cacheLiveOrderbookPayload(d);
+      return;
+    }
     const st = hourlyExpandedState(ticker);
     const prevScroll = st && Number.isFinite(st.lastScrollTop) ? Number(st.lastScrollTop) : 0;
     const book = mode === 'yes' ? d.trade_yes : d.trade_no;
@@ -1456,34 +1818,47 @@
       });
       scrollEl.dataset.hourlyScrollBound = '1';
     }
-    containerEl.querySelectorAll('[data-hourly-book-side]').forEach((btn) => {
-      btn.addEventListener('click', (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        const s = String(btn.getAttribute('data-hourly-book-side') || '');
-        if (s !== 'yes' && s !== 'no') return;
-        mode = s;
-        const stToggle = hourlyExpandedState(ticker);
-        stToggle.autoCenter = true;
-        stToggle.userScrolled = false;
-        renderOrderbookInto(containerEl, d, ticker);
-        lastExpandedOrderbookSignature = JSON.stringify({
-          ticker: d.market_ticker || '',
-          mode: mode,
-          yes: d.trade_yes || {},
-          no: d.trade_no || {},
-          last: d.last_trade || {},
-        });
-      });
-    });
+    bindOrderbookSideButtons(containerEl, d, ticker);
+    cacheLiveOrderbookPayload(d);
   }
 
   function disconnectStrikeTableDbWs() {
-    if (!hourlyStrikeTableDbWsUnsub) return;
-    try {
-      hourlyStrikeTableDbWsUnsub();
-    } catch (e) {}
-    hourlyStrikeTableDbWsUnsub = null;
+    stopOrderbookExpandedSession();
+    if (hourlyStrikeTableDbWsUnsub) {
+      try {
+        hourlyStrikeTableDbWsUnsub();
+      } catch (e) {}
+      hourlyStrikeTableDbWsUnsub = null;
+    }
+    if (hourlyMonitorListDbWsUnsub) {
+      try {
+        hourlyMonitorListDbWsUnsub();
+      } catch (e) {}
+      hourlyMonitorListDbWsUnsub = null;
+    }
+  }
+
+  function connectTmMonitorListDbWs() {
+    if (!tmHasAuthSession()) return;
+    if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+      return;
+    }
+    if (hourlyMonitorListDbWsUnsub) return;
+    hourlyMonitorListDbWsUnsub = window.recRealtimeWsCoordinator.subscribe(dbChangesWebSocketUrl(), {
+      onlyDbStreams: ['monitor_list'],
+      onMessage: function (event) {
+        try {
+          const parse =
+            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+          const msg = parse;
+          if (msg && msg.type === 'db_change' && msg.database === 'monitor_list') {
+            try {
+              window.dispatchEvent(new CustomEvent('rec:tm-db-monitor-list'));
+            } catch (e3) {}
+          }
+        } catch (e2) {}
+      },
+    });
   }
 
   function connectStrikeTableDbWs() {
@@ -1492,20 +1867,11 @@
     }
     if (hourlyStrikeTableDbWsUnsub) return;
     disconnectStrikeTableDbWs();
-    const wsUrl = dbChangesWebSocketUrl();
-    hourlyStrikeTableDbWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+    void fetchLiveStrikeLadderBootstrap({ immediate: true });
+    hourlyStrikeTableDbWsUnsub = window.recRealtimeWsCoordinator.subscribe(tmLiveMarketWebSocketUrl(), {
       includeLiveSymbolSpot: true,
-      onlyDbStreams: [
-        'strike_table_hourly',
-        'strike_table_15m',
-        'market_kalshi_hourly',
-        'market_kalshi_15m',
-        'orderbook_kalshi',
-        'monitor_list',
-      ],
-      onOpen: function () {
-        void fetchLiveSymbolSpotBootstrap();
-      },
+      includeLiveStrikeLadder: true,
+      includeLiveOrderbook: true,
       onMessage: function (event) {
         try {
           const parse =
@@ -1515,28 +1881,22 @@
             applyLiveSymbolSpotMessage(msg);
             return;
           }
-          if (msg && msg.type === 'db_change') {
-            if (msg.database === 'orderbook_kalshi') {
-              scheduleExpandedOrderbookRefreshFromWs();
-              return;
-            }
-            if (
-              msg.database === 'strike_table_hourly' ||
-              msg.database === 'strike_table_15m' ||
-              msg.database === 'market_kalshi_hourly' ||
-              msg.database === 'market_kalshi_15m'
-            ) {
-              scheduleStrikeTableRefreshFromWs();
-            }
-            if (msg.database === 'monitor_list') {
-              try {
-                window.dispatchEvent(new CustomEvent('rec:tm-db-monitor-list'));
-              } catch (e3) {}
-            }
+          if (msg && msg.type === 'live_strike_ladder') {
+            tmStrikeLadderUiThrottle.applyNow(msg);
+            return;
+          }
+          if (msg && msg.type === 'live_orderbook') {
+            applyLiveOrderbookWs(msg);
           }
         } catch (e2) {}
       },
     });
+    connectTmMonitorListDbWs();
+  }
+
+  function reconnectLiveMarketWs() {
+    disconnectStrikeTableDbWs();
+    connectStrikeTableDbWs();
   }
 
   /** 15m and hourly: same DOM — embedded books only; legacy quote row + split panel stay hidden. */
@@ -1565,92 +1925,6 @@
     connectStrikeTableDbWs();
   }
 
-  function requestDataRefresh() {
-    if (refreshTimer) return;
-    refreshTimer = setTimeout(() => {
-      refreshTimer = null;
-      void refreshDataNow();
-    }, 40);
-  }
-
-  async function refreshDataNow() {
-    if (refreshBusy) {
-      refreshPending = true;
-      return;
-    }
-    refreshBusy = true;
-    try {
-      try {
-        await runDataTick();
-      } catch (e) {
-        const errEl = document.getElementById('loadErr');
-        if (errEl) {
-          errEl.classList.remove('u-hidden');
-          errEl.textContent = 'Error: ' + e;
-        }
-      }
-    } finally {
-      refreshBusy = false;
-      if (refreshPending) {
-        refreshPending = false;
-        requestDataRefresh();
-      }
-    }
-  }
-
-  async function runDataTick() {
-    const mkt = currentMarket();
-    switchLayoutForMarket(mkt);
-    const symNow = currentSymbol();
-    if (symNow !== hourlyHeaderLastFetchSymbol) {
-      hourlyHeaderLastFetchSymbol = symNow;
-      clearMarketExpiration();
-    }
-    const pack = await fetchStrikeTablePack(currentSymbol(), mkt);
-    applyStrikePackHeader(pack, mkt);
-    const errEl = document.getElementById('loadErr');
-    if (!pack.fetchFailed) {
-      if (errEl) {
-        errEl.classList.add('u-hidden');
-        errEl.textContent = '';
-      }
-      const rawRows = pack.rows || [];
-      hourlyRawStrikeRows = rawRows.slice();
-      hourlyCurrentPrice =
-        pack.currentPrice != null && Number.isFinite(pack.currentPrice) ? pack.currentPrice : null;
-      try {
-        window.__recTmStrikeTableHeaderPrice =
-          hourlyCurrentPrice != null && Number.isFinite(hourlyCurrentPrice) ? hourlyCurrentPrice : null;
-      } catch (eHdr) {}
-      const spotForVisibility = hourlySpotPrice();
-      const fetchedRows = applyHourlyStrikeAskVisibility(rawRows, spotForVisibility);
-      if (symNow !== currentSymbol() || mkt !== currentMarket()) {
-        return;
-      }
-      const nextStructSig = hourlyStructureSignature(fetchedRows);
-      const nextSig = hourlyQuotesSignature(fetchedRows);
-      hourlyStrikeRows = fetchedRows;
-      ensureHourlyExpandedTicker();
-      if (nextStructSig !== lastHourlyStructureSignature) {
-        lastHourlyStructureSignature = nextStructSig;
-        lastHourlyRowsSignature = nextSig;
-        // Re-arm centering when the strike ladder structure changes (e.g. initial 1-row -> full rows hydrate).
-        centerAtmStrikeOnNextRender = true;
-        renderHourlyRows();
-      } else if (nextSig !== lastHourlyRowsSignature) {
-        lastHourlyRowsSignature = nextSig;
-        patchHourlyRowQuotesInPlace();
-      }
-    } else if (errEl) {
-      errEl.classList.remove('u-hidden');
-      errEl.textContent = 'No strike table data';
-      try {
-        window.__recTmStrikeTableHeaderPrice = null;
-      } catch (eHdr2) {}
-    }
-    if (hourlyStrikeRows.length) syncStrikeTableAtmMarker();
-    await refreshExpandedHourlyOrderbookIfOpen();
-  }
 
   try {
     window.addEventListener('rec:live-symbol-spot', function () {
@@ -1665,7 +1939,7 @@
     if (symPick) {
       symPick.addEventListener('change', function () {
         window.tmNewRefreshLiveSpotPanel();
-        requestDataRefresh();
+        reconnectLiveMarketWs();
       });
     }
     (function installTmNewObStrikeListDelegation() {
@@ -1695,7 +1969,9 @@
       lastHourlyStructureSignature = '';
       lastExpandedOrderbookSignature = '';
       centerAtmStrikeOnNextRender = true;
-      requestDataRefresh();
+      switchLayoutForMarket(currentMarket());
+      void fetchLiveStrikeLadderBootstrap({ immediate: true });
+      reconnectLiveMarketWs();
     });
     if (document.readyState === 'loading') {
       document.addEventListener('DOMContentLoaded', function () {
@@ -1715,5 +1991,13 @@
 
   ensureInitialVisibility();
   centerAtmStrikeOnNextRender = true;
-  requestDataRefresh();
+  if (document.body && document.body.classList.contains('trade-monitor-new-page')) {
+    switchLayoutForMarket(currentMarket());
+  }
+
+  window.recOrderbookRedisUi = {
+    renderOrderbookInto: renderOrderbookInto,
+    patchOrderbookInto: patchOrderbookInto,
+    normalizeOrderbookPayload: normalizeOrderbookPayload,
+  };
 })();

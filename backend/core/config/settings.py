@@ -74,7 +74,7 @@ class ConfigManager:
         # Legacy config.json agent keys → MASTER_PORT_MANIFEST service names
         manifest_key = {
             "main": "main_app",
-            "market_watchdog": "market_watchdog_ws_kalshi_hourly",
+            "market_watchdog": "market_watchdog_ws_kalshi",
             "trade_monitor": "main_app",
         }.get(agent_name, agent_name)
         return get_port(manifest_key)

@@ -3056,7 +3056,16 @@ def toggle_auto_trade():
             
         conn.commit()
         conn.close()
-        
+
+        try:
+            from backend.core.tradeflow_monitor_settings_cache import (
+                invalidate_monitor_settings_cache,
+            )
+
+            invalidate_monitor_settings_cache(user_number, int(db_monitor_id))
+        except Exception:
+            pass
+
         monitor_manager._notify_frontend_monitor_list_updated("Auto trade toggled")
         return jsonify({"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"})
         

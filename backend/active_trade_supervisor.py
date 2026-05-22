@@ -221,6 +221,9 @@ def create_unified_hourly_active_trades_pool_table():
 
 def create_monitor_active_trades_table():
     """Create per-monitor table (legacy hourly) or unified pool table (15m or hourly; monitor_id column)."""
+    if _redis_active_trades_on() and not _redis_active_trades_dual_pg():
+        log_debug("[ACTIVE_TRADES] Skipping PG pool table create — Redis hot path enabled")
+        return
     if ATS_UNIFIED_ALL:
         create_unified_15m_active_trades_pool_table()
         create_unified_hourly_active_trades_pool_table()
@@ -316,6 +319,293 @@ def _active_trades_monitor_scope_sql():
     if ATS_UNIFIED_POOL:
         return " AND monitor_id = %s", (ctx_mid(),)
     return "", ()
+
+
+def _redis_active_trades_on() -> bool:
+    try:
+        from backend.core.live_state_active_trades import live_state_active_trades_enabled
+
+        return live_state_active_trades_enabled()
+    except Exception:
+        return False
+
+
+def _redis_active_trades_dual_pg() -> bool:
+    try:
+        from backend.core.live_state_active_trades import active_trades_pg_dual_write
+
+        return active_trades_pg_dual_write()
+    except Exception:
+        return True
+
+
+def _open_trade_pnl_mirror_pg_enabled() -> bool:
+    """Optional PG mirror of marks to users.trades_* (legacy NOTIFY path). Off when Redis marks are on."""
+    if _redis_active_trades_on():
+        raw = os.getenv("ATS_OPEN_TRADE_PNL_MIRROR_PG", "0").strip().lower()
+        return raw in ("1", "true", "yes", "on")
+    return True
+
+
+_ATS_UI_PUSH_INTERVAL_SEC = float(os.getenv("ATS_UI_PUSH_INTERVAL_SEC", "2"))
+_ATS_MARKS_PUSH_INTERVAL_SEC = float(os.getenv("ATS_MARKS_PUSH_INTERVAL_SEC", "0"))
+_ATS_MONITOR_SAFETY_WAKE_SEC = float(os.getenv("ATS_MONITOR_SAFETY_WAKE_SEC", "30"))
+
+
+def _maybe_broadcast_active_trades_ui() -> None:
+    """Throttle WebSocket active_trades_change so the trade monitor panel refreshes."""
+    now = time.time()
+    last = getattr(_maybe_broadcast_active_trades_ui, "_last_ts", 0.0)
+    if now - last < _ATS_UI_PUSH_INTERVAL_SEC:
+        return
+    _maybe_broadcast_active_trades_ui._last_ts = now
+    broadcast_active_trades_change()
+
+
+def _maybe_broadcast_trade_marks_updated(
+    mark_rows: List[Dict[str, Any]],
+    *,
+    force: bool = False,
+) -> None:
+    """Compact mark updates for trade history (no full /trades refetch)."""
+    if not mark_rows:
+        return
+    now = time.time()
+    last = getattr(_maybe_broadcast_trade_marks_updated, "_last_ts", 0.0)
+    if (
+        not force
+        and _ATS_MARKS_PUSH_INTERVAL_SEC > 0
+        and now - last < _ATS_MARKS_PUSH_INTERVAL_SEC
+    ):
+        return
+    _maybe_broadcast_trade_marks_updated._last_ts = now
+    try:
+        from backend.core.trading_redis_comms import publish_trade_marks_ws_message
+
+        ok = publish_trade_marks_ws_message(mark_rows, tenant_user_no=ctx_user())
+        if not ok:
+            log(f"trade_marks_updated publish failed (redis) n={len(mark_rows)}")
+    except Exception as exc:
+        log(f"trade_marks_updated publish failed: {exc}")
+
+
+def _maybe_mirror_open_trade_pnl_batch(
+    user_no: str,
+    rows: List[Tuple[int, float, float, float, float]],
+) -> None:
+    """Throttle trades_* pnl mirror (aligned with trade_marks push, not full ATS panel)."""
+    if not rows:
+        return
+    now = time.time()
+    last = getattr(_maybe_mirror_open_trade_pnl_batch, "_last_ts", 0.0)
+    mirror_iv = (
+        _ATS_MARKS_PUSH_INTERVAL_SEC
+        if _ATS_MARKS_PUSH_INTERVAL_SEC > 0
+        else _ATS_UI_PUSH_INTERVAL_SEC
+    )
+    if now - last < mirror_iv:
+        return
+    _maybe_mirror_open_trade_pnl_batch._last_ts = now
+    for tid, pnl_v, mark_sp, buy_f, qty_v in rows:
+        try:
+            _mirror_open_trade_pnl_to_trades_pg(
+                user_no, int(tid), float(pnl_v), float(mark_sp), float(buy_f), float(qty_v)
+            )
+        except Exception as mir_e:
+            log_debug(f"Open-trade pnl mirror failed trade_id={tid}: {mir_e}")
+
+
+def _open_trade_ret_pct_from_pnl(pnl_val: float, bankroll: Any) -> Optional[float]:
+    """Bankroll-based ret % for open-trade marks (matches trades_* mirror)."""
+    if bankroll is None:
+        return None
+    try:
+        brf = float(bankroll)
+        if brf > 0:
+            return round((float(pnl_val) / (brf / 100.0)) * 100, 5)
+    except (TypeError, ValueError):
+        pass
+    return None
+
+
+def _bankroll_by_trade_id(user_no: str, trade_ids: List[int]) -> Dict[int, Any]:
+    """Batch bankroll for mark broadcasts (one query per monitoring tick)."""
+    ids = [int(t) for t in trade_ids if t is not None]
+    if not ids:
+        return {}
+    trades_tbl = f"trades_{user_no}"
+    conn = get_postgresql_connection(tenant_user_no=user_no)
+    if not conn:
+        return {}
+    out: Dict[int, Any] = {}
+    try:
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, bankroll
+                FROM users.{trades_tbl}
+                WHERE id = ANY(%s)
+                """,
+                (ids,),
+            )
+            for row in cursor.fetchall() or []:
+                if row and row[0] is not None:
+                    out[int(row[0])] = row[1]
+    except Exception as e:
+        log_debug(f"bankroll batch for marks skipped: {e}")
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+    return out
+
+
+def _mirror_open_trade_pnl_to_trades_pg(
+    user_no: str,
+    trade_id: int,
+    pnl_val: float,
+    mark_sell_price: float,
+    buy_price_float: float,
+    qty: float,
+) -> None:
+    """Mirror unrealized pnl to users.trades_* (NOTIFY → trade log / db_changes stream)."""
+    if not _open_trade_pnl_mirror_pg_enabled():
+        return
+    trades_tbl = f"trades_{user_no}"
+    conn = get_postgresql_connection(tenant_user_no=user_no)
+    if not conn:
+        return
+    try:
+        cursor = conn.cursor()
+        roi_pct_val = None
+        buy_val = buy_price_float * qty
+        if buy_val > 0:
+            roi_pct_val = round((pnl_val / buy_val) * 100.0, 5)
+        ret_pct_val = None
+        ret_pct_base_val = None
+        try:
+            cursor.execute(
+                f"""
+                SELECT bankroll, mtb_base_value
+                FROM users.{trades_tbl}
+                WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
+                """,
+                (trade_id,),
+            )
+            br_row = cursor.fetchone()
+            if br_row:
+                bankroll = br_row[0]
+                mtb_base = br_row[1] if len(br_row) > 1 else None
+                ret_pct_val = _open_trade_ret_pct_from_pnl(pnl_val, bankroll)
+                if mtb_base is not None:
+                    try:
+                        mbf = float(mtb_base)
+                        if mbf > 0:
+                            ret_pct_base_val = round((pnl_val / (mbf / 100.0)) * 100, 5)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as br_e:
+            log_debug(f"Open-trade mirror: bankroll read skipped trade_id={trade_id}: {br_e}")
+
+        cursor.execute("SAVEPOINT ats_pnl_mirror")
+        try:
+            mirror_sets = (
+                (
+                    "pnl = %s, sell_price = %s, ret_pct = %s, ret_pct_base = %s, "
+                    "roi_pct = %s, ats_updated = NOW()",
+                    (
+                        pnl_val,
+                        mark_sell_price,
+                        ret_pct_val,
+                        ret_pct_base_val,
+                        roi_pct_val,
+                        trade_id,
+                    ),
+                ),
+                (
+                    "pnl = %s, sell_price = %s, ret_pct = %s, ret_pct_base = %s, roi_pct = %s",
+                    (
+                        pnl_val,
+                        mark_sell_price,
+                        ret_pct_val,
+                        ret_pct_base_val,
+                        roi_pct_val,
+                        trade_id,
+                    ),
+                ),
+                (
+                    "pnl = %s, sell_price = %s, ret_pct = %s",
+                    (pnl_val, mark_sell_price, ret_pct_val, trade_id),
+                ),
+                ("pnl = %s", (pnl_val, trade_id)),
+            )
+            applied = False
+            for set_clause, params in mirror_sets:
+                try:
+                    cursor.execute(
+                        f"""
+                        UPDATE users.{trades_tbl}
+                        SET {set_clause}
+                        WHERE id = %s AND LOWER(TRIM(status)) IN ('open', 'partial')
+                        """,
+                        params,
+                    )
+                    applied = True
+                    break
+                except Exception as e2:
+                    if getattr(e2, "pgcode", None) == "42703":
+                        continue
+                    raise
+            if not applied:
+                raise RuntimeError("ats_open_trade_mirror: no compatible UPDATE variant succeeded")
+            cursor.execute("RELEASE SAVEPOINT ats_pnl_mirror")
+            conn.commit()
+        except Exception as sync_e:
+            try:
+                cursor.execute("ROLLBACK TO SAVEPOINT ats_pnl_mirror")
+            except Exception:
+                pass
+            conn.rollback()
+            log_debug(f"Open-trade pnl mirror to users.trades skipped trade_id={trade_id}: {sync_e}")
+    finally:
+        conn.close()
+
+
+_TRADES_ENROLL_COLS = (
+    "id",
+    "ticket_id",
+    "date",
+    "time",
+    "strike",
+    "side",
+    "buy_price",
+    "position",
+    "contract",
+    "ticker",
+    "symbol",
+    "exchange",
+    "trade_strategy",
+    "symbol_open",
+    "momentum",
+    "prob",
+    "fees",
+    "diff",
+)
+
+
+def _redis_upsert_from_trades_row(row: tuple, status: str) -> bool:
+    from backend.core import live_state_active_trades as ls_at
+
+    rec = ls_at.trade_record_from_trades_columns(
+        list(_TRADES_ENROLL_COLS), row, monitor_id=ctx_mid(), status=status
+    )
+    return ls_at.upsert_trade(ctx_user(), rec)
+
+
+_reconcile_last_mono: Dict[str, float] = {}
+_ATS_RECONCILE_MIN_SEC = float(os.getenv("ATS_RECONCILE_MIN_SEC", "3"))
+
 
 # Monitor identification - extract from script name or command line args
 def get_monitor_identifier():
@@ -638,11 +928,19 @@ else:
 
 
 def _count_active_trades_across_unified_pool_monitors() -> int:
-    """Rows in unified 15m or hourly pool that need the monitoring loop (active, pending, or closing)."""
+    """Rows in unified pool that need the monitoring loop (active, pending, or closing).
+
+    Returns -1 when the database is unreachable (callers must not treat as zero trades).
+    """
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        return ls_at.count_tracked(ctx_user())
+
     # Bind explicitly to this worker slot so counts never follow a stray HTTP/API tenant context.
     conn = get_postgresql_connection(tenant_user_no=USER_NUMBER)
     if not conn:
-        return 0
+        return -1
     try:
         cur = conn.cursor()
         if ATS_UNIFIED_ALL:
@@ -674,6 +972,67 @@ def _count_active_trades_across_unified_pool_monitors() -> int:
         conn.close()
 
 
+def _unified_pool_tracked_id_sets(user_no: str) -> Tuple[set, set]:
+    """(15m pool trade_ids, hourly pool trade_ids) from Redis or legacy PG tables."""
+    from backend.core.port_config import (
+        monitor_suffix_uses_unified_15m_pool,
+        monitor_suffix_uses_unified_hourly_pool,
+    )
+
+    tracked_15m: set = set()
+    tracked_h: set = set()
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        for rec in ls_at.list_trades(user_no):
+            tid = rec.get("trade_id")
+            if tid is None:
+                continue
+            mid = str(rec.get("monitor_id") or "").strip()
+            if not mid:
+                continue
+            suffix = f"{user_no}_{mid}"
+            tid_i = int(tid)
+            if monitor_suffix_uses_unified_15m_pool(suffix):
+                tracked_15m.add(tid_i)
+            elif monitor_suffix_uses_unified_hourly_pool(suffix):
+                tracked_h.add(tid_i)
+        return tracked_15m, tracked_h
+
+    conn = get_postgresql_connection(tenant_user_no=user_no)
+    if not conn:
+        return tracked_15m, tracked_h
+    try:
+        tbl_15 = legacy_active_trades_pool_15m(user_no)
+        tbl_h = legacy_active_trades_pool_hourly(user_no)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT trade_id FROM users.{tbl_15}
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                    IN ('active', 'pending', 'closing')
+                """
+            )
+            tracked_15m = {int(r[0]) for r in cur.fetchall()}
+            cur.execute(
+                f"""
+                SELECT trade_id FROM users.{tbl_h}
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                    IN ('active', 'pending', 'closing')
+                """
+            )
+            tracked_h = {int(r[0]) for r in cur.fetchall()}
+    finally:
+        conn.close()
+    return tracked_15m, tracked_h
+
+
+def _unified_pool_tracked_ids(user_no: str, *, pool_15m: bool) -> set:
+    """Tracked trade_ids for one unified pool flavor (15m or hourly)."""
+    t15, th = _unified_pool_tracked_id_sets(user_no)
+    return t15 if pool_15m else th
+
+
 # Import centralized path utilities
 from backend.util.paths import get_project_root, get_data_dir, get_trade_history_dir, get_kalshi_data_dir, get_service_url, get_active_trades_dir
 
@@ -691,6 +1050,7 @@ CORS(app)  # Enable CORS for all routes
 # Global variable to track monitoring thread
 monitoring_thread = None
 monitoring_thread_lock = threading.Lock()
+_ats_live_state_wake = threading.Event()
 
 # Cache for active trades data to reduce frontend load
 active_trades_cache = None
@@ -844,38 +1204,54 @@ def sync_and_monitor():
         return {"status": "error", "message": str(e)}, 500
 
 def get_momentum_percentile_from_postgresql(symbol="BTC"):
-    """Get current momentum_5s_avg from live price log for the specified symbol."""
+    """Get momentum_5s_avg from live_state (legacy name retained for callers)."""
     try:
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result and result[0] is not None:
-            return float(result[0])
-        else:
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
+        m = symbol_metrics(str(symbol or "BTC").strip().upper())
+        if not m:
             return None
+        v = m.get("momentum_5s_avg")
+        if v is None:
+            v = m.get("momentum")
+        if v is not None:
+            return float(v)
+        return None
     except Exception as e:
-        log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg from PostgreSQL: {e}")
+        log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg: {e}")
         return None
 
+
 def get_momentum_5s_avg_from_postgresql(symbol="BTC"):
-    """Get current momentum_5s_avg directly from PostgreSQL for the specified symbol."""
+    """Get momentum_5s_avg from live_state."""
+    from backend.core.tradeflow_live_reads import symbol_metrics, tradeflow_requires_live_state
+
     try:
-        conn = get_postgresql_connection()
-        cursor = conn.cursor()
-        cursor.execute(f"SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1")
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result and result[0] is not None:
-            return float(result[0])
-        else:
+        m = symbol_metrics(str(symbol or "BTC").strip().upper())
+        if not m:
             return None
-    except Exception as e:
-        log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg from PostgreSQL: {e}")
+        v = m.get("momentum_5s_avg")
+        if v is not None:
+            return float(v)
         return None
+    except Exception as e:
+        if tradeflow_requires_live_state():
+            log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg: {e}")
+            return None
+        try:
+            conn = get_postgresql_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                f"SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} ORDER BY timestamp DESC LIMIT 1"
+            )
+            result = cursor.fetchone()
+            conn.close()
+            if result and result[0] is not None:
+                return float(result[0])
+            return None
+        except Exception as e2:
+            log(f"[MOMENTUM SPIKE] Error getting momentum_5s_avg from PostgreSQL: {e2}")
+            return None
 
 _broadcast_fail_last_log_ts: float = 0.0
 _BROADCAST_FAIL_LOG_INTERVAL_SEC = 60.0
@@ -1449,8 +1825,36 @@ def add_new_active_trade(trade_id: int, ticket_id: str) -> bool:
         (db_id, ticket_id, date, time, strike, side, buy_price, position,
          contract, ticker, symbol, exchange, trade_strategy, symbol_open,
          momentum, prob, fees, diff) = row
-        
-        # Insert into active trades database
+
+        if _redis_active_trades_on():
+            from backend.core import live_state_active_trades as ls_at
+
+            existing_r = ls_at.get_trade(ctx_user(), trade_id)
+            if existing_r:
+                st = str(existing_r.get("status") or "").strip().lower()
+                if st == "active":
+                    _redis_upsert_from_trades_row(row, "active")
+                    invalidate_active_trades_cache()
+                    broadcast_active_trades_change()
+                    start_monitoring_loop()
+                    log_debug(f"Trade {trade_id} already active in Redis; refreshed from trades")
+                    return True
+                if st == "pending":
+                    return confirm_pending_trade(trade_id, ticket_id)
+                if st == "closing":
+                    log_debug(f"Trade {trade_id} already closing in Redis pool")
+                    return True
+            if not _redis_upsert_from_trades_row(row, "active"):
+                log(f"❌ Redis active_trades upsert failed for trade {trade_id}")
+                return False
+            log(f"🆕 NEW OPEN TRADE ADDED TO REDIS ACTIVE_TRADES (trade_id={trade_id})")
+            invalidate_active_trades_cache()
+            broadcast_active_trades_change()
+            start_monitoring_loop()
+            if not _redis_active_trades_dual_pg():
+                return True
+
+        # Insert into active trades database (legacy PG pool or dual-write)
         # Initialize high_price and low_price to buy_price for active trades
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1711,8 +2115,19 @@ def add_pending_trade(trade_id: int, ticket_id: str) -> bool:
         (db_id, ticket_id, date, time, strike, side, buy_price, position,
          contract, ticker, symbol, exchange, trade_strategy, symbol_open,
          momentum, prob, fees, diff) = row
-        
-        # Insert into active trades database with 'pending' status
+
+        if _redis_active_trades_on():
+            if not _redis_upsert_from_trades_row(row, "pending"):
+                log(f"❌ Redis active_trades pending upsert failed for trade {trade_id}")
+                return False
+            if not _redis_active_trades_dual_pg():
+                log(f"⏳ NEW PENDING TRADE ADDED TO REDIS ACTIVE_TRADES (trade_id={trade_id})")
+                invalidate_active_trades_cache()
+                broadcast_active_trades_change()
+                start_monitoring_loop()
+                return True
+
+        # Insert into active trades database with 'pending' status (legacy / dual-write)
         conn = get_db_connection()
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
@@ -1808,7 +2223,18 @@ def confirm_pending_trade(trade_id: int, ticket_id: str) -> bool:
         (db_id, ticket_id, date, time, strike, side, buy_price, position,
          contract, ticker, symbol, exchange, trade_strategy, symbol_open,
          momentum, prob, fees, diff) = row
-        
+
+        if _redis_active_trades_on():
+            if not _redis_upsert_from_trades_row(row, "active"):
+                log(f"❌ Redis confirm pending failed for trade {trade_id}")
+                return False
+            invalidate_active_trades_cache()
+            broadcast_active_trades_change()
+            start_monitoring_loop()
+            if not _redis_active_trades_dual_pg():
+                log(f"✅ Confirmed pending trade {trade_id} as active (Redis)")
+                return True
+
         # Update the pending row to active and refresh from trades (incl. exchange — trades.market → exchange).
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -2123,6 +2549,18 @@ def remove_closed_trade(trade_id: int) -> bool:
         bool: True if successfully removed, False otherwise
     """
     try:
+        if _redis_active_trades_on():
+            from backend.core import live_state_active_trades as ls_at
+
+            if ls_at.get_trade(ctx_user(), trade_id) is None:
+                return True
+            ls_at.remove_trade(ctx_user(), trade_id)
+            log(f"🔚 CLOSED TRADE REMOVED FROM REDIS ACTIVE_TRADES (trade_id={trade_id})")
+            invalidate_active_trades_cache()
+            broadcast_active_trades_change()
+            if not _redis_active_trades_dual_pg():
+                return True
+
         # Check if trade exists before trying to remove it
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -2296,6 +2734,18 @@ def update_trade_status_to_closing(trade_id: int) -> bool:
         bool: True if successfully updated, False otherwise
     """
     try:
+        if _redis_active_trades_on():
+            from backend.core import live_state_active_trades as ls_at
+
+            if ls_at.get_trade(ctx_user(), trade_id) is None:
+                log(f"⚠️ No Redis active trade to mark closing: id={trade_id}")
+                return False
+            ls_at.update_trade_fields(ctx_user(), trade_id, {"status": "closing"})
+            invalidate_active_trades_cache()
+            broadcast_active_trades_change()
+            if not _redis_active_trades_dual_pg():
+                return True
+
         # Check if trade exists in active_trades.db
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -2336,52 +2786,84 @@ def update_trade_status_to_closing(trade_id: int) -> bool:
         log(f"❌ Error updating trade status to closing {trade_id}: {e}")
         return False
 
-def get_current_symbol_price(symbol: str = None) -> Optional[Decimal]:
-    """Latest spot from live_data.live_price_log_1s_<symbol> as Decimal (full DB precision)."""
+def _ats_tradeflow_max_age_sec() -> float:
+    """Preferred live_state freshness for ATS PnL (default 60s; auto-entry gate stays at 3s)."""
+    raw = os.getenv("TRADEFLOW_ATS_MAX_AGE_SEC", "60").strip()
     try:
-        # Use current monitor symbol if no symbol specified
+        return max(3.0, float(raw))
+    except (TypeError, ValueError):
+        return 60.0
+
+
+def _ats_tradeflow_max_stale_sec() -> float:
+    """Max age to still use last live_state quote for open-position marking (quiet books)."""
+    raw = os.getenv("TRADEFLOW_ATS_MAX_STALE_SEC", "180").strip()
+    try:
+        return max(10.0, float(raw))
+    except (TypeError, ValueError):
+        return 180.0
+
+
+def get_current_symbol_price(
+    symbol: str = None,
+    *,
+    max_age_sec: Optional[float] = None,
+) -> Optional[Decimal]:
+    """Latest spot from live_state (or PG when cache disabled)."""
+    try:
         if symbol is None:
             symbol = get_current_monitor_symbol()
-        
-        # Get PostgreSQL connection
+        sym_u = str(symbol or "BTC").strip().upper()
+
+        from backend.core.tradeflow_live_reads import (
+            symbol_spot_price,
+            tradeflow_requires_live_state,
+        )
+
+        if tradeflow_requires_live_state():
+            from backend.core.tradeflow_live_reads import symbol_spot_price_for_monitoring
+
+            prefer = max_age_sec if max_age_sec is not None else _ats_tradeflow_max_age_sec()
+            spot = symbol_spot_price_for_monitoring(
+                sym_u,
+                prefer_max_age_sec=prefer,
+                allow_stale_max_age_sec=_ats_tradeflow_max_stale_sec(),
+            )
+            if spot is not None:
+                return Decimal(str(spot))
+            return None
+
+        age_limit = max_age_sec if max_age_sec is not None else _ats_tradeflow_max_age_sec()
+        spot = symbol_spot_price(sym_u, max_age_sec=age_limit)
+        if spot is not None:
+            return Decimal(str(spot))
+
         conn = get_postgresql_connection()
         if not conn:
             log("⚠️ Failed to connect to PostgreSQL")
             return None
-            
         cursor = conn.cursor()
-        
-        # Map symbol to the appropriate price log table
-        table_name = f"live_data.live_price_log_1s_{symbol.lower()}"
-            
+        table_name = f"live_data.live_price_log_1s_{sym_u.lower()}"
         cursor.execute(f"SELECT price FROM {table_name} ORDER BY timestamp DESC LIMIT 1")
         result = cursor.fetchone()
         conn.close()
-        
         if result and result[0] is not None:
             raw = result[0]
-            price = raw if isinstance(raw, Decimal) else Decimal(str(raw))
-            # Only log price every 30 seconds to reduce noise
-            current_time = time.time()
-            if not hasattr(get_current_symbol_price, 'last_log_time') or current_time - get_current_symbol_price.last_log_time > 30:
-                # Only log price occasionally to reduce noise
-                get_current_symbol_price.last_log_time = current_time
-            return price
-        else:
-            log(f"⚠️ No {symbol} price found in PostgreSQL database")
-            return None
-            
+            return raw if isinstance(raw, Decimal) else Decimal(str(raw))
+        log(f"⚠️ No {sym_u} price found")
+        return None
     except Exception as e:
         log(f"Error getting current {symbol} price: {e}")
         return None
 
-def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Optional[Dict[str, Any]]:
-    """Get the latest Kalshi market snapshot data from PostgreSQL.
-    15m: reads configured unified source (`market_kalshi_ws_15m` default, legacy fallback `market_kalshi_15m`).
-    Legacy per-symbol ``market_kalshi_15m_btc`` tables are not updated by that pipeline and are ignored.
-    Hourly: unified ``live_data.market_kalshi_hourly`` (filter by symbol)."""
+def get_kalshi_market_snapshot(
+    symbol: str = None,
+    market: str = None,
+    *,
+    max_age_sec: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """Kalshi market snapshot from live_state when enabled; else PostgreSQL."""
     try:
-        # Use current monitor symbol and market if not specified
         if symbol is None or market is None:
             sym, mkt = get_current_monitor_symbol_and_market()
             if symbol is None:
@@ -2392,6 +2874,18 @@ def get_kalshi_market_snapshot(symbol: str = None, market: str = None) -> Option
         if market not in ("hourly", "15m"):
             market = "hourly"
         sym_u = (symbol or "BTC").strip().upper()
+
+        from backend.core.tradeflow_live_reads import (
+            kalshi_market_snapshot as _cache_kalshi_snapshot,
+            tradeflow_requires_live_state,
+        )
+
+        if tradeflow_requires_live_state():
+            age_limit = max_age_sec if max_age_sec is not None else _ats_tradeflow_max_age_sec()
+            snap = _cache_kalshi_snapshot(sym_u, market, max_age_sec=age_limit)
+            if not snap or not snap.get("markets"):
+                log_debug(f"No Kalshi market snapshot in live_state for {sym_u}/{market}")
+            return snap
 
         conn = get_postgresql_connection()
         if not conn:
@@ -2556,10 +3050,7 @@ def _kalshi_direct_closing_price_for_ticker(
     symbol: Optional[str],
     market: str,
 ) -> Optional[float]:
-    """
-    Point lookup in live_data Kalshi tables when the bulk snapshot list misses a row
-    (normalization, race, or rare ingestion gaps). Same tables as get_kalshi_market_snapshot.
-    """
+    """Point lookup when bulk snapshot misses a ticker (live_state first)."""
     tt = _normalize_kalshi_ticker(trade_ticker)
     if not tt:
         return None
@@ -2567,6 +3058,24 @@ def _kalshi_direct_closing_price_for_ticker(
     mkt = (market or "hourly").strip().lower()
     if mkt not in ("hourly", "15m"):
         mkt = "hourly"
+
+    from backend.core.tradeflow_live_reads import (
+        kalshi_closing_price_for_ticker,
+        tradeflow_requires_live_state,
+    )
+
+    if tradeflow_requires_live_state():
+        from backend.core.tradeflow_live_reads import kalshi_closing_price_for_ticker_monitoring
+
+        return kalshi_closing_price_for_ticker_monitoring(
+            sym_u,
+            mkt,
+            tt,
+            trade_side,
+            prefer_max_age_sec=_ats_tradeflow_max_age_sec(),
+            allow_stale_max_age_sec=_ats_tradeflow_max_stale_sec(),
+        )
+
     conn = get_postgresql_connection()
     if not conn:
         return None
@@ -2657,10 +3166,24 @@ def _kalshi_direct_closing_price_for_ticker(
             pass
 
 
+def _kalshi_snapshot_stale_max_sec() -> float:
+    try:
+        from backend.core.tradeflow_live_reads import (
+            tradeflow_live_state_max_age_sec,
+            tradeflow_requires_live_state,
+        )
+
+        if tradeflow_requires_live_state():
+            return _ats_tradeflow_max_age_sec() + 0.5
+    except Exception:
+        pass
+    return KALSHI_SNAPSHOT_STALE_MAX_SEC
+
+
 def get_kalshi_market_snapshot_cached(
     symbol: str = None, market: str = None,
 ) -> Optional[Dict[str, Any]]:
-    """Like get_kalshi_market_snapshot but reuse the last good snapshot for up to KALSHI_SNAPSHOT_STALE_MAX_SEC."""
+    """Reuse last good live_state snapshot briefly when a tick misses."""
     global _kalshi_snapshot_cache
     if symbol is None or market is None:
         sym, mkt = get_current_monitor_symbol_and_market()
@@ -2673,15 +3196,31 @@ def get_kalshi_market_snapshot_cached(
         market = "hourly"
     symbol = (symbol or "BTC").strip().upper()
     key = _kalshi_snapshot_cache_key(symbol, market)
+    stale_max = max(_kalshi_snapshot_stale_max_sec(), _ats_tradeflow_max_stale_sec())
 
-    fresh = get_kalshi_market_snapshot(symbol, market)
+    from backend.core.tradeflow_live_reads import (
+        kalshi_market_snapshot_for_monitoring,
+        tradeflow_requires_live_state,
+    )
+
+    if tradeflow_requires_live_state():
+        fresh = kalshi_market_snapshot_for_monitoring(
+            symbol,
+            market,
+            prefer_max_age_sec=_ats_tradeflow_max_age_sec(),
+            allow_stale_max_age_sec=_ats_tradeflow_max_stale_sec(),
+        )
+    else:
+        fresh = get_kalshi_market_snapshot(
+            symbol, market, max_age_sec=_ats_tradeflow_max_age_sec()
+        )
     if fresh and fresh.get("markets"):
         _kalshi_snapshot_cache[key] = {"t": time.time(), "data": fresh}
         return fresh
     entry = _kalshi_snapshot_cache.get(key) or {}
     age = time.time() - float(entry.get("t") or 0)
     stale = entry.get("data")
-    if stale and stale.get("markets") and age < KALSHI_SNAPSHOT_STALE_MAX_SEC:
+    if stale and stale.get("markets") and age < stale_max:
         log_debug(f"Using stale Kalshi snapshot ({key}, age {age:.1f}s)")
         return stale
     return fresh
@@ -2780,15 +3319,19 @@ def get_current_probability_from_live_strike_table(
     if not ticker:
         return None
     sym, mkt = _get_symbol_and_market_for_strike(trade_symbol)
-    table_name = get_strike_table_name(sym, mkt)
-    if table_name not in ("strike_table_hourly", "strike_table_15m", "strike_table_ws_15m"):
-        return None
-    ladder = fetch_strike_ladder_prefer_snapshot(sym, mkt, DEFAULT_EXCHANGE)
+    from backend.core.tradeflow_live_reads import strike_ladder, tradeflow_requires_live_state
+
+    ladder = strike_ladder(sym, mkt, DEFAULT_EXCHANGE)
     snap_row = find_ladder_strike_by_ticker(ladder, ticker)
     if snap_row is not None:
         v_snap = probability_from_strike_row_side_aware(snap_row, mkt, trade_side)
         if v_snap is not None:
             return v_snap
+    if tradeflow_requires_live_state():
+        return None
+    table_name = get_strike_table_name(sym, mkt)
+    if table_name not in ("strike_table_hourly", "strike_table_15m", "strike_table_ws_15m"):
+        return None
     conn = get_postgresql_connection()
     if not conn:
         return None
@@ -2890,10 +3433,14 @@ def get_current_probability(strike: float, current_price: float, ttc_seconds: fl
         except Exception as e:
             log_debug(f"Master lookup probability failed ({sym_u}): {e}")
 
-    ladder_fb = fetch_strike_ladder_prefer_snapshot(sym_u, mkt, DEFAULT_EXCHANGE)
+    from backend.core.tradeflow_live_reads import strike_ladder, tradeflow_requires_live_state
+
+    ladder_fb = strike_ladder(sym_u, mkt, DEFAULT_EXCHANGE)
     prob_ladder = probability_from_ladder_by_strike(ladder_fb, st, mkt)
     if prob_ladder is not None:
         return float(prob_ladder)
+    if tradeflow_requires_live_state():
+        return None
 
     try:
         table_name = get_strike_table_name(sym, mkt)
@@ -2979,6 +3526,20 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
             seen.add(t)
             out.append(t)
     u = USER_NUMBER
+    if _redis_active_trades_on():
+        try:
+            from backend.core import live_state_active_trades as ls_at
+
+            for rec in ls_at.list_trades(u):
+                mid = str(rec.get("monitor_id") or "").strip()
+                if not mid:
+                    continue
+                t = (u, mid)
+                if t not in seen:
+                    seen.add(t)
+                    out.append(t)
+        except Exception as e:
+            log_debug(f"monitor bindings from Redis pool: {e}")
     pool_tables: List[str]
     if ATS_UNIFIED_ALL:
         wh = effective_tenant_context_for_sql_rewrite().user_no
@@ -3012,6 +3573,243 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
         finally:
             conn.close()
     return out
+
+
+def _fetch_active_trades_for_monitoring() -> List[Dict[str, Any]]:
+    """Active rows for auto-stop (status=active only)."""
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        return ls_at.list_trades(ctx_user(), monitor_id=ctx_mid(), statuses=("active",))
+    conn = get_db_connection()
+    if not conn:
+        return []
+    try:
+        cursor = conn.cursor()
+        active_trades_table = get_monitor_active_trades_table()
+        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+        cursor.execute(
+            f"""
+            SELECT * FROM users.{active_trades_table}
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}
+            """,
+            scope_params,
+        )
+        columns = [desc[0] for desc in cursor.description]
+        rows = cursor.fetchall()
+        return _active_trades_result_dicts(columns, rows)
+    except Exception as e:
+        log_debug(f"MONITORING: active trades fetch failed ({ctx_ident()}): {e}")
+        return []
+    finally:
+        conn.close()
+
+
+def _redis_list_trades_monitor_filter() -> Optional[str]:
+    """Unified tenant pool: all monitors in one Redis hash; per-monitor ATS filters by monitor_id."""
+    if ATS_UNIFIED_POOL:
+        return None
+    mid = str(ctx_mid() or "").strip()
+    if mid in ("", "0"):
+        return None
+    return mid
+
+
+def _ats_refresh_monitoring_all_bindings() -> None:
+    """Run monitoring tick for every unified-pool monitor (or single monitor)."""
+    if ATS_UNIFIED_POOL:
+        for _ats_u, _ats_mid in _iter_unified_pool_monitor_bindings_for_monitoring():
+            with ats_monitor_bind(_ats_u, _ats_mid):
+                update_active_trade_monitoring_data()
+    else:
+        update_active_trade_monitoring_data()
+
+
+def _update_monitoring_marks_redis(
+    snap_cache: Dict[str, Dict[str, Any]],
+    sym: str,
+    mkt: str,
+) -> None:
+    """Write marks to Redis active_trades only (no PG pool or trades_* mirror)."""
+    from backend.core import live_state_active_trades as ls_at
+
+    def _snapshot_for_trade_symbol(trade_symbol) -> Dict[str, Any]:
+        base = sym or "BTC"
+        tsu = (
+            str(trade_symbol).strip().upper()
+            if trade_symbol is not None and str(trade_symbol).strip()
+            else str(base).strip().upper()
+        )
+        key = _kalshi_snapshot_cache_key(tsu, mkt)
+        if key not in snap_cache:
+            sd = get_kalshi_market_snapshot_cached(symbol=tsu, market=mkt)
+            snap_cache[key] = sd if sd else {"markets": [], "timestamp": None}
+        out = snap_cache[key]
+        if "markets" not in out:
+            out["markets"] = []
+        return out
+
+    pool = ls_at.list_trades(
+        ctx_user(),
+        monitor_id=_redis_list_trades_monitor_filter(),
+        statuses=("active",),
+    )
+    if not pool:
+        return
+    any_updated = False
+    mark_broadcast_rows: List[Dict[str, Any]] = []
+    pnl_mirror_rows: List[Tuple[int, float, float, float, float]] = []
+    pool_trade_ids = [
+        int(tr.get("trade_id"))
+        for tr in pool
+        if tr.get("trade_id") is not None
+    ]
+    bankroll_by_id = _bankroll_by_trade_id(ctx_user(), pool_trade_ids)
+    for tr in pool:
+        try:
+            trade_id = int(tr.get("trade_id"))
+            buy_price = tr.get("buy_price")
+            position = tr.get("position")
+            fees = tr.get("fees")
+            time_str = tr.get("time")
+            date_str = tr.get("date")
+            strike = tr.get("strike")
+            side = tr.get("side")
+            momentum = tr.get("momentum")
+            ticker = tr.get("ticker")
+            symbol = tr.get("symbol")
+            current_high_price = tr.get("high_price")
+            current_low_price = tr.get("low_price")
+            current_close_price_db = tr.get("current_close_price")
+
+            strike_clean = str(strike).replace("$", "").replace(",", "")
+            try:
+                strike_price = Decimal(strike_clean)
+            except InvalidOperation:
+                log(f"⚠️ Invalid strike for trade {trade_id}: {strike!r}")
+                continue
+
+            current_symbol_price = get_current_symbol_price(symbol)
+            if current_symbol_price is None:
+                log(f"⚠️ Could not get current {symbol} price for trade {trade_id}, skipping")
+                continue
+
+            trade_sym_u = (
+                str(symbol).strip().upper()
+                if symbol is not None and str(symbol).strip()
+                else str(sym or "BTC").strip().upper()
+            )
+            snapshot_data = _snapshot_for_trade_symbol(trade_sym_u)
+            current_market_price = get_current_closing_price_for_trade(
+                ticker,
+                side,
+                snapshot_data=snapshot_data,
+                symbol=trade_sym_u,
+                market=mkt,
+            )
+            if current_market_price is None and current_close_price_db is not None:
+                current_market_price = float(current_close_price_db)
+            if current_market_price is None:
+                log(f"⚠️ Could not get market price for trade {trade_id} ({ticker}), skipping")
+                continue
+
+            raw_buffer = current_symbol_price - strike_price
+            if str(side or "").upper() == "Y":
+                buffer_from_strike = raw_buffer
+            else:
+                buffer_from_strike = -raw_buffer
+
+            try:
+                if hasattr(date_str, "year") and hasattr(time_str, "hour"):
+                    entry_datetime = datetime.combine(date_str, time_str)
+                else:
+                    entry_datetime = datetime.strptime(
+                        f"{str(date_str)} {str(time_str)}", "%Y-%m-%d %H:%M:%S"
+                    )
+                entry_datetime = entry_datetime.replace(tzinfo=EST)
+            except Exception:
+                entry_datetime = wall_now()
+            time_since_entry = int((wall_now() - entry_datetime).total_seconds())
+            ttc_seconds = get_unified_ttc_seconds(symbol)
+            momentum_score = float(momentum) if momentum is not None else None
+            buy_price_float = float(buy_price) if hasattr(buy_price, "__float__") else buy_price
+            try:
+                qty = float(position) if position is not None else 1.0
+                if qty <= 0 or qty != qty:
+                    qty = 1.0
+            except (TypeError, ValueError):
+                qty = 1.0
+            try:
+                fees_val = float(fees) if fees is not None else 0.0
+            except (TypeError, ValueError):
+                fees_val = 0.0
+
+            current_probability = get_current_probability_from_live_strike_table(
+                ticker, trade_sym_u, side
+            )
+            if current_probability is None:
+                current_probability = get_current_probability(
+                    float(strike_price),
+                    float(current_symbol_price),
+                    ttc_seconds,
+                    momentum_score,
+                    symbol,
+                )
+            if current_probability is not None and buffer_from_strike < 0:
+                current_probability = 100 - current_probability
+
+            per_contract_pnl = 1.0 - float(current_market_price) - buy_price_float
+            total_unrealized = float(per_contract_pnl * qty - fees_val)
+            pnl_val = round(total_unrealized, 6)
+            pnl_formatted = f"{round(total_unrealized, 2):.2f}"
+            position_value = 1.0 - float(current_market_price)
+            if current_high_price is None:
+                current_high_price = buy_price_float
+            if current_low_price is None:
+                current_low_price = buy_price_float
+            new_high_price = max(float(current_high_price), position_value)
+            new_low_price = min(float(current_low_price), position_value)
+
+            if ls_at.update_trade_fields(
+                ctx_user(),
+                trade_id,
+                {
+                    "current_symbol_price": current_symbol_price,
+                    "current_probability": current_probability,
+                    "buffer_from_entry": buffer_from_strike,
+                    "time_since_entry": time_since_entry,
+                    "current_close_price": current_market_price,
+                    "current_pnl": pnl_formatted,
+                    "high_price": new_high_price,
+                    "low_price": new_low_price,
+                },
+                publish=False,
+            ):
+                any_updated = True
+                pnl_mirror_rows.append(
+                    (trade_id, pnl_val, float(position_value), buy_price_float, qty)
+                )
+                mark_broadcast_rows.append(
+                    {
+                        "trade_id": trade_id,
+                        "pnl": pnl_val,
+                        "sell_price": float(position_value),
+                        "ret_pct": _open_trade_ret_pct_from_pnl(
+                            pnl_val, bankroll_by_id.get(trade_id)
+                        ),
+                        "current_pnl": pnl_formatted,
+                    }
+                )
+                log(f"MONITORING: Updated trade {trade_id} - symbol_price: {current_symbol_price}, market_price: {current_market_price}, buffer: {buffer_from_strike}, prob: {current_probability}, pnl: {pnl_formatted}")
+        except Exception as e:
+            log(f"Error updating Redis monitoring for trade: {e}")
+
+    if any_updated:
+        ls_at._publish_active_trades_updated(ctx_user())
+        invalidate_active_trades_cache()
+        _maybe_mirror_open_trade_pnl_batch(ctx_user(), pnl_mirror_rows)
+        _maybe_broadcast_trade_marks_updated(mark_broadcast_rows, force=True)
+        _maybe_broadcast_active_trades_ui()
 
 
 def update_active_trade_monitoring_data():
@@ -3049,9 +3847,16 @@ def update_active_trade_monitoring_data():
 
         if not _snapshot_for_trade_symbol(sym).get("markets"):
             log_debug("⚠️ Kalshi snapshot empty; using per-trade DB fallbacks where possible")
+
+        if _redis_active_trades_on():
+            _update_monitoring_marks_redis(snap_cache, sym, mkt)
+            return
         
         # Get all active trades
         conn = get_db_connection()
+        if not conn:
+            log("⚠️ update_active_trade_monitoring_data: no DB connection; skipping tick")
+            return
         cursor = conn.cursor()
         active_trades_table = get_monitor_active_trades_table()
         scope_sql, scope_params = _active_trades_monitor_scope_sql()
@@ -3065,7 +3870,13 @@ def update_active_trade_monitoring_data():
         
         if not active_trades:
             return
-        
+
+        pg_mark_broadcast_rows: List[Dict[str, Any]] = []
+        pg_bankroll_by_id = _bankroll_by_trade_id(
+            ctx_user(),
+            [int(row[1]) for row in active_trades if row[1] is not None],
+        )
+
         for (
             active_id,
             trade_id,
@@ -3193,9 +4004,24 @@ def update_active_trade_monitoring_data():
                 total_unrealized = float(per_contract_pnl * qty - fees_val)
                 pnl_val = round(total_unrealized, 6)
                 pnl_formatted = f"{round(total_unrealized, 2):.2f}"
+                position_value = 1.0 - float(current_market_price)
+                try:
+                    tid_mark = int(trade_id)
+                    pg_mark_broadcast_rows.append(
+                        {
+                            "trade_id": tid_mark,
+                            "pnl": pnl_val,
+                            "sell_price": float(position_value),
+                            "ret_pct": _open_trade_ret_pct_from_pnl(
+                                pnl_val, pg_bankroll_by_id.get(tid_mark)
+                            ),
+                            "current_pnl": pnl_formatted,
+                        }
+                    )
+                except (TypeError, ValueError):
+                    pass
 
                 # Position value from exit ask (high/low tracking)
-                position_value = 1.0 - float(current_market_price)
 
                 # Compare and determine new high_price and low_price
                 # If high_price or low_price is NULL (shouldn't happen for active trades, but handle gracefully),
@@ -3212,6 +4038,11 @@ def update_active_trade_monitoring_data():
                 
                 # Update the monitoring data
                 conn = get_db_connection()
+                if not conn:
+                    log(
+                        f"⚠️ Could not update monitoring row for trade {trade_id}: no DB connection"
+                    )
+                    continue
                 cursor = conn.cursor()
                 trades_tbl = f"trades_{ctx_user()}"
                 # Trade log: mirror unrealized pnl to users.trades_* so NOTIFY refetches /trades.
@@ -3361,7 +4192,10 @@ def update_active_trade_monitoring_data():
                 
             except Exception as e:
                 log(f"Error updating monitoring data for trade {trade_id}: {e}")
-                
+
+        if pg_mark_broadcast_rows:
+            _maybe_broadcast_trade_marks_updated(pg_mark_broadcast_rows, force=True)
+
     except Exception as e:
         log(f"Error in update_active_trade_monitoring_data: {e}")
 
@@ -3382,24 +4216,27 @@ def check_monitoring_failsafe():
         # Check if there are active trades
         conn = get_db_connection()
         if conn is None:
-            log("❌ FAILSAFE: No DB connection; skipping failsafe check (restart would not help)")
-            return
-        cursor = conn.cursor()
-        if ATS_UNIFIED_POOL:
-            active_count = _count_active_trades_across_unified_pool_monitors()
-        else:
-            active_trades_table = get_monitor_active_trades_table()
-            cursor.execute(
-                f"""
-                SELECT COUNT(*) FROM users.{active_trades_table}
-                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                """
+            log(
+                "⚠️ FAILSAFE: No DB connection for trade count; assuming tracked rows may exist"
             )
-            active_count = cursor.fetchone()[0]
-        conn.close()
+            active_count = -1
+        else:
+            cursor = conn.cursor()
+            if ATS_UNIFIED_POOL:
+                active_count = _count_active_trades_across_unified_pool_monitors()
+            else:
+                active_trades_table = get_monitor_active_trades_table()
+                cursor.execute(
+                    f"""
+                    SELECT COUNT(*) FROM users.{active_trades_table}
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
+                    """
+                )
+                active_count = int(cursor.fetchone()[0])
+            conn.close()
 
         # If there are tracked trades but no monitoring thread, restart it
-        if active_count > 0:
+        if active_count != 0:
             with monitoring_thread_lock:
                 thread_alive = False
                 try:
@@ -3410,8 +4247,13 @@ def check_monitoring_failsafe():
                     thread_alive = False
 
                 if not thread_alive:
+                    count_msg = (
+                        f"{active_count} tracked trade row(s)"
+                        if active_count > 0
+                        else "tracked trade row(s) (count unknown — DB unreachable)"
+                    )
                     log(
-                        f"🔄 FAILSAFE: Found {active_count} tracked trade row(s) "
+                        f"🔄 FAILSAFE: Found {count_msg} "
                         f"(active/pending/closing) but monitoring not running"
                     )
                     
@@ -3584,37 +4426,14 @@ def start_monitoring_loop():
                                 f"TICK RECONCILE: exception ({ctx_ident()}): {_rec_e}"
                             )
 
-                        # Check if there are still active trades
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        active_trades_table = get_monitor_active_trades_table()
-                        scope_sql, scope_params = _active_trades_monitor_scope_sql()
-                        cursor.execute(
-                            f"SELECT * FROM users.{active_trades_table} WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}",
-                            scope_params,
-                        )
-                        columns = [desc[0] for desc in cursor.description]
-                        active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                        conn.close()
-
+                        active_trades = _fetch_active_trades_for_monitoring()
                         if not active_trades:
                             continue
 
-                        # Update monitoring data
                         update_active_trade_monitoring_data()
-
-                        # Refetch active_trades after update to get fresh current_probability values for auto-stop
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        active_trades_table = get_monitor_active_trades_table()
-                        scope_sql, scope_params = _active_trades_monitor_scope_sql()
-                        cursor.execute(
-                            f"SELECT * FROM users.{active_trades_table} WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') = 'active'{scope_sql}",
-                            scope_params,
-                        )
-                        columns = [desc[0] for desc in cursor.description]
-                        active_trades = [dict(zip(columns, row)) for row in cursor.fetchall()]
-                        conn.close()
+                        active_trades = _fetch_active_trades_for_monitoring()
+                        if not active_trades:
+                            continue
 
                         # Log monitoring status every 60 seconds
                         current_time = time.time()
@@ -3873,29 +4692,35 @@ def start_monitoring_loop():
 
                 if ATS_UNIFIED_POOL:
                     tracked_left = _count_active_trades_across_unified_pool_monitors()
+                    if tracked_left < 0:
+                        tracked_left = 1
                 else:
+                    tracked_left = -1
                     try:
                         _tconn = get_db_connection()
-                        _ttbl = get_monitor_active_trades_table()
-                        _tc = _tconn.cursor()
-                        _tc.execute(
-                            f"""
-                            SELECT COUNT(*) FROM users.{_ttbl}
-                            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                            """
-                        )
-                        tracked_left = int(_tc.fetchone()[0])
-                        _tconn.close()
+                        if _tconn:
+                            _ttbl = get_monitor_active_trades_table()
+                            _tc = _tconn.cursor()
+                            _tc.execute(
+                                f"""
+                                SELECT COUNT(*) FROM users.{_ttbl}
+                                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
+                                """
+                            )
+                            tracked_left = int(_tc.fetchone()[0])
+                            _tconn.close()
                     except Exception:
-                        tracked_left = 0
+                        tracked_left = -1
+                    if tracked_left < 0:
+                        tracked_left = 1
 
                 if tracked_left == 0:
                     log(
                         "📊 MONITORING: No active, pending, or closing trades; stopping monitoring loop"
                     )
                     break
-                # Sleep for 1 second
-                time.sleep(1)
+                _ats_live_state_wake.wait(timeout=_ATS_MONITOR_SAFETY_WAKE_SEC)
+                _ats_live_state_wake.clear()
 
         except Exception as e:
             log(f"🚨 CRITICAL: Monitoring loop crashed with error: {e}")
@@ -3906,20 +4731,27 @@ def start_monitoring_loop():
                 if ATS_UNIFIED_POOL:
                     active_count = _count_active_trades_across_unified_pool_monitors()
                 else:
+                    active_count = -1
                     conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute(
-                        f"""
-                        SELECT COUNT(*) FROM users.active_trades_{ctx_user()}_{ctx_mid()}
-                        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                        """
-                    )
-                    active_count = cursor.fetchone()[0]
-                    conn.close()
+                    if conn:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            f"""
+                            SELECT COUNT(*) FROM users.active_trades_{ctx_user()}_{ctx_mid()}
+                            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
+                            """
+                        )
+                        active_count = int(cursor.fetchone()[0])
+                        conn.close()
 
-                if active_count > 0:
+                if active_count != 0:
+                    count_note = (
+                        f"{active_count} tracked trade row(s)"
+                        if active_count > 0
+                        else "tracked trade row(s) (count unknown)"
+                    )
                     log(
-                        f"🚨 CRITICAL: Monitoring loop crashed but {active_count} tracked trade row(s) "
+                        f"🚨 CRITICAL: Monitoring loop crashed but {count_note} "
                         f"(active/pending/closing) still need monitoring"
                     )
                     log("🔄 AUTO-RESTART: Attempting to restart monitoring loop in 5 seconds...")
@@ -3956,6 +4788,26 @@ def start_monitoring_loop():
                 raise RuntimeError("Thread failed to start after start() call")
             
             log("📊 MONITORING: Monitoring thread started and verified alive")
+
+            try:
+                from backend.core.tradeflow_live_state_trigger import (
+                    start_tradeflow_live_state_listener,
+                )
+
+                def _ats_on_live_state() -> None:
+                    _ats_live_state_wake.set()
+                    try:
+                        _ats_refresh_monitoring_all_bindings()
+                    except Exception as live_exc:
+                        log(f"live_state mark refresh failed: {live_exc}")
+
+                if start_tradeflow_live_state_listener(
+                    _ats_on_live_state,
+                    service=f"ats_{MONITOR_IDENTIFIER}",
+                ):
+                    log("📊 MONITORING: live_state trigger enabled")
+            except Exception as trig_exc:
+                log_debug(f"live_state trigger not started: {trig_exc}")
             
         except Exception as e:
             log(f"❌ CRITICAL: Failed to start monitoring thread: {e}")
@@ -3995,6 +4847,10 @@ def _active_trades_result_dicts(columns: List[str], rows) -> List[Dict[str, Any]
 
 def _get_all_active_trades_for_current_monitor() -> List[Dict[str, Any]]:
     """Rows from this monitor's active_trades table (requires correct ctx bind for unified pool)."""
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        return ls_at.list_trades(ctx_user(), monitor_id=ctx_mid())
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -4022,6 +4878,10 @@ def _get_all_active_trades_for_current_monitor() -> List[Dict[str, Any]]:
 
 def _get_all_active_trades_unified_pool_unbound() -> List[Dict[str, Any]]:
     """All monitors' rows from pool table(s) (no ContextVar bind). unified_all = 15m + hourly tables."""
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        return ls_at.list_trades(ctx_user())
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -4091,20 +4951,25 @@ def _sync_with_trades_db_for_current_monitor():
     tracked_trade_ids = [row[0] for row in cursor.fetchall()]
     conn.close()
 
-    # Get all active trade IDs
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    active_trades_table = get_monitor_active_trades_table()
-    scope_sql, scope_params = _active_trades_monitor_scope_sql()
-    cursor.execute(
-        f"""
-        SELECT trade_id FROM users.{active_trades_table}
-        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing'){scope_sql}
-        """,
-        scope_params,
-    )
-    active_trade_ids = [row[0] for row in cursor.fetchall()]
-    conn.close()
+    # Pool membership: Redis when hot-path is on (PG pool may be stale after cutover).
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        active_trade_ids = list(ls_at.pool_status_map(ctx_user(), monitor_id=ctx_mid()).keys())
+    else:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        active_trades_table = get_monitor_active_trades_table()
+        scope_sql, scope_params = _active_trades_monitor_scope_sql()
+        cursor.execute(
+            f"""
+            SELECT trade_id FROM users.{active_trades_table}
+            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing'){scope_sql}
+            """,
+            scope_params,
+        )
+        active_trade_ids = [row[0] for row in cursor.fetchall()]
+        conn.close()
 
     # Find trades that should be active but aren't
     missing_trades = set(tracked_trade_ids) - set(active_trade_ids)
@@ -4140,6 +5005,13 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
     """
     u = ctx_user()
     mid = ctx_mid()
+    rk = f"{u}_{mid}"
+    now_m = time.monotonic()
+    last = _reconcile_last_mono.get(rk, 0.0)
+    if now_m - last < _ATS_RECONCILE_MIN_SEC:
+        return
+    _reconcile_last_mono[rk] = now_m
+
     mon_tag = f"mon_{u}_{mid}"
     tbl = get_monitor_active_trades_table()
     scope_sql, scope_params = _active_trades_monitor_scope_sql()
@@ -4171,24 +5043,31 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
             st_l,
         )
 
-    conn_at = get_db_connection()
-    if not conn_at:
-        return
-    try:
-        cur = conn_at.cursor()
-        cur.execute(
-            f"""
-            SELECT trade_id, status FROM users.{tbl}
-            WHERE status IN ('pending', 'active', 'closing'){scope_sql}
-            """,
-            scope_params,
-        )
-        pool_rows = {int(r[0]): str(r[1] or "").strip().lower() for r in cur.fetchall()}
-    except Exception as e:
-        log_debug(f"TICK RECONCILE: pool read failed ({ctx_ident()}): {e}")
-        return
-    finally:
-        conn_at.close()
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        pool_rows = ls_at.pool_status_map(u, monitor_id=mid)
+    else:
+        conn_at = get_db_connection()
+        if not conn_at:
+            return
+        try:
+            cur = conn_at.cursor()
+            cur.execute(
+                f"""
+                SELECT trade_id, status FROM users.{tbl}
+                WHERE status IN ('pending', 'active', 'closing'){scope_sql}
+                """,
+                scope_params,
+            )
+            pool_rows = {
+                int(r[0]): str(r[1] or "").strip().lower() for r in cur.fetchall()
+            }
+        except Exception as e:
+            log_debug(f"TICK RECONCILE: pool read failed ({ctx_ident()}): {e}")
+            return
+        finally:
+            conn_at.close()
 
     for tid, (ticket_id, st) in trade_by_id.items():
         ps = pool_rows.get(tid)
@@ -4342,30 +5221,7 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
 
     if ATS_UNIFIED_ALL:
         wh = effective_tenant_context_for_sql_rewrite().user_no
-        tbl_15 = legacy_active_trades_pool_15m(wh)
-        tbl_h = legacy_active_trades_pool_hourly(wh)
-        conn = get_postgresql_connection()
-        if not conn:
-            log("🔄 RECONCILE: no DB connection; skipping unified open-trade scan")
-            return
-        try:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT trade_id FROM users.{tbl_15}
-                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                    """
-                )
-                tracked_15m = {int(r[0]) for r in cur.fetchall()}
-                cur.execute(
-                    f"""
-                    SELECT trade_id FROM users.{tbl_h}
-                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                    """
-                )
-                tracked_h = {int(r[0]) for r in cur.fetchall()}
-        finally:
-            conn.close()
+        tracked_15m, tracked_h = _unified_pool_tracked_id_sets(wh)
 
         conn_tr = get_trades_db_connection()
         if not conn_tr:
@@ -4415,14 +5271,12 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
 
     wh2 = effective_tenant_context_for_sql_rewrite().user_no
     if ATS_UNIFIED_15M:
-        tbl = legacy_active_trades_pool_15m(wh2)
 
         def _use_unified_pool(suffix: str) -> bool:
             return monitor_suffix_uses_unified_15m_pool(suffix)
 
         pool_label = "15m"
     elif ATS_UNIFIED_HOURLY:
-        tbl = legacy_active_trades_pool_hourly(wh2)
 
         def _use_unified_pool(suffix: str) -> bool:
             return monitor_suffix_uses_unified_hourly_pool(suffix)
@@ -4430,21 +5284,7 @@ def _reconcile_unified_pool_open_trades_full_scan() -> None:
         pool_label = "hourly"
     else:
         return
-    conn = get_postgresql_connection()
-    if not conn:
-        log(f"🔄 RECONCILE: no DB connection; skipping unified {pool_label} open-trade scan")
-        return
-    try:
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT trade_id FROM users.{tbl}
-                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                """
-            )
-            tracked = {int(r[0]) for r in cur.fetchall()}
-    finally:
-        conn.close()
+    tracked = _unified_pool_tracked_ids(wh2, pool_15m=ATS_UNIFIED_15M)
 
     conn_tr = get_trades_db_connection()
     if not conn_tr:
@@ -4596,17 +5436,19 @@ def start_event_driven_supervisor():
             if ATS_UNIFIED_POOL:
                 active_count = _count_active_trades_across_unified_pool_monitors()
             else:
+                active_count = -1
                 conn = get_db_connection()
-                cursor = conn.cursor()
-                active_trades_table = get_monitor_active_trades_table()
-                cursor.execute(
-                    f"""
-                    SELECT COUNT(*) FROM users.{active_trades_table}
-                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
-                    """
-                )
-                active_count = cursor.fetchone()[0]
-                conn.close()
+                if conn:
+                    cursor = conn.cursor()
+                    active_trades_table = get_monitor_active_trades_table()
+                    cursor.execute(
+                        f"""
+                        SELECT COUNT(*) FROM users.{active_trades_table}
+                        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active') IN ('active', 'pending', 'closing')
+                        """
+                    )
+                    active_count = int(cursor.fetchone()[0])
+                    conn.close()
 
             # Check if monitoring thread is alive
             monitoring_thread_alive = False
@@ -4615,7 +5457,7 @@ def start_event_driven_supervisor():
                     monitoring_thread_alive = True
 
             # If there are tracked trades but no monitoring thread, restart it
-            if active_count > 0 and not monitoring_thread_alive:
+            if active_count != 0 and not monitoring_thread_alive:
                 log(
                     f"🚨 BRUTE FORCE FAILSAFE: Found {active_count} tracked trade row(s) "
                     f"but monitoring thread is dead"
@@ -4681,17 +5523,23 @@ def start_event_driven_supervisor():
 def is_auto_stop_enabled():
     """Check if AUTO STOP is enabled by checking auto_trade boolean in monitor_list"""
     try:
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute(f"SELECT auto_trade FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s", (ctx_mid(),))
-            result = cursor.fetchone()
+        from backend.core.tradeflow_monitor_settings_cache import get_cached_monitor_settings
+
+        def _load():
+            conn = get_postgresql_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT auto_trade FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                    (ctx_mid(),),
+                )
+                result = cursor.fetchone()
+            conn.close()
             if result:
-                auto_trade_enabled = result[0]
-                return auto_trade_enabled
-            else:
-                log_debug(f"No monitor found with ID {ctx_mid()} in monitor_list")
-                return False
+                return bool(result[0])
+            log_debug(f"No monitor found with ID {ctx_mid()} in monitor_list")
+            return False
+
+        return bool(get_cached_monitor_settings(ctx_user(), ctx_mid(), _load))
     except Exception as e:
         log(f"[AUTO STOP] Error reading auto_trade from monitor_list: {e}")
         return False
@@ -5856,12 +6704,24 @@ def get_auto_stop_threshold():
         return 40
 
 def get_unified_ttc_seconds(symbol: str = None):
-    """Get unified TTC from master strike table (uses monitor symbol+market when symbol is None)."""
+    """Get unified TTC from live_state ladder (uses monitor symbol+market when symbol is None)."""
     try:
+        from backend.core.tradeflow_live_reads import (
+            strike_ladder,
+            tradeflow_requires_live_state,
+            ttc_seconds_from_ladder,
+        )
+
         sym, mkt = _get_symbol_and_market_for_strike(symbol)
-        ladder = fetch_strike_ladder_prefer_snapshot(sym, mkt, DEFAULT_EXCHANGE)
-        if ladder is not None and ladder.get("ttc") is not None:
-            return int(ladder["ttc"])
+        ladder = strike_ladder(sym, mkt, DEFAULT_EXCHANGE)
+        ttc = ttc_seconds_from_ladder(ladder, mkt)
+        if ttc is not None:
+            return int(ttc)
+        if tradeflow_requires_live_state():
+            log_debug("No TTC from live_state ladder; using fallback calculation")
+            now = wall_now()
+            next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+            return max(1, int((next_hour - now).total_seconds()))
         table_name = get_strike_table_name(sym, mkt)
         conn = get_db_connection()
         cursor = conn.cursor()

@@ -2054,6 +2054,91 @@
 
   window.tmNewRefreshActiveTradesPanel = tmNewRefreshActiveTradesPanel;
 
+  var _tmNewPanelLiveWsUnsub = null;
+
+  function tmNewFindActiveTradeRow(tradeId) {
+    var tbody = document.getElementById('tmNewActiveTradesTableBody');
+    if (!tbody) return null;
+    return tbody.querySelector('tr[data-trade-id="' + String(tradeId) + '"]');
+  }
+
+  function tmNewApplyActiveTradesLivePatches(patches) {
+    if (!Array.isArray(patches) || !patches.length) return;
+    patches.forEach(function (p) {
+      if (!p || p.trade_id == null) return;
+      var tr = tmNewFindActiveTradeRow(p.trade_id);
+      if (!tr) return;
+      var cells = tr.children;
+      if (cells.length < 6) return;
+      if (p.prob != null) {
+        var pr = Number(p.prob);
+        if (Number.isFinite(pr)) {
+          cells[4].textContent = pr.toFixed(1);
+          tmNewActiveTradesApplyRiskRowClasses(tr, pr);
+        }
+      }
+      if (p.pnl != null) {
+        var pnlTd = cells[5];
+        var pnlVal = Number(String(p.pnl).replace(/,/g, ''));
+        if (Number.isFinite(pnlVal)) {
+          tmNewActiveTradesFormatPnlCell(pnlTd, { current_pnl: pnlVal, pnl: pnlVal });
+        }
+      }
+    });
+  }
+
+  function onTmNewActiveTradesPanelLiveMessage(event) {
+    try {
+      var data =
+        typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+      if (!data || typeof data !== 'object') return;
+      if (data.type === 'cache_init') {
+        void tmNewRefreshActiveTradesPanel();
+        return;
+      }
+      if (data.type === 'cache_patch' || data.type === 'trade_patch') {
+        if (data.patch_scope && data.patch_scope !== 'active_trades_ui') return;
+        tmNewApplyActiveTradesLivePatches(data.patches);
+      }
+    } catch (e) {
+      console.error('[tm-new] active-trades-panel-live WS:', e);
+    }
+  }
+
+  function tmNewConnectActiveTradesPanelLiveWs() {
+    if (_tmNewPanelLiveWsUnsub) return;
+    if (!tradeMonitorHasShellSession()) return;
+    var protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    var wsUrl = protocol + '//' + window.location.host + '/ws/active-trades-panel-live';
+    if (window.recRealtimeWsCoordinator && typeof window.recRealtimeWsCoordinator.subscribe === 'function') {
+      _tmNewPanelLiveWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+        onMessage: onTmNewActiveTradesPanelLiveMessage,
+      });
+      return;
+    }
+    var ws = new WebSocket(wsUrl);
+    ws.onmessage = onTmNewActiveTradesPanelLiveMessage;
+    ws.onclose = function () {
+      _tmNewPanelLiveWsUnsub = null;
+      setTimeout(tmNewConnectActiveTradesPanelLiveWs, 5000);
+    };
+    _tmNewPanelLiveWsUnsub = function () {
+      try {
+        ws.close();
+      } catch (e) {}
+      _tmNewPanelLiveWsUnsub = null;
+    };
+  }
+
+  function tmNewTeardownActiveTradesPanelLiveWs() {
+    if (_tmNewPanelLiveWsUnsub) {
+      try {
+        _tmNewPanelLiveWsUnsub();
+      } catch (e) {}
+      _tmNewPanelLiveWsUnsub = null;
+    }
+  }
+
   window.addEventListener('rec:tm-monitor-changed', function () {
     void tmNewRefreshActiveTradesPanel();
   });
@@ -2391,12 +2476,13 @@
         return (async function () {
           let title = '';
           try {
-            const res = await tmNewApiFetch(
-              '/api/postgresql/strike_table/' +
-                encodeURIComponent(p.sym.toLowerCase()) +
-                '?market=' +
+            const res = await fetch(
+              tmNewMainApiBase() +
+                '/api/trade-monitor/strike-ladder?symbol=' +
+                encodeURIComponent(p.sym) +
+                '&market=' +
                 encodeURIComponent(p.mkt === 'hourly' ? 'hourly' : '15m'),
-              { cache: 'no-store' }
+              { cache: 'no-store', credentials: 'include' }
             );
             const data = await res.json();
             if (res.ok && data && !data.error && data.market_title != null) {
@@ -2770,6 +2856,7 @@
       }
       void tmNewFetchTradingModeFromServer();
       tmNewConnectPreferencesWs();
+      tmNewConnectActiveTradesPanelLiveWs();
       try {
         await populateTmNewMonitorPicker();
       } catch (e) {

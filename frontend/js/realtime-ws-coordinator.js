@@ -23,13 +23,60 @@
     );
   }
 
+  function rawMentionsLiveStrikeLadder(raw) {
+    const win = typeof window !== 'undefined' ? window : globalThis;
+    if (typeof win.recWsRawMentionsLiveStrikeLadder === 'function') {
+      return win.recWsRawMentionsLiveStrikeLadder(raw);
+    }
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"live_strike_ladder"') !== -1 ||
+      raw.indexOf('"type": "live_strike_ladder"') !== -1
+    );
+  }
+
+  function rawMentionsLiveOrderbook(raw) {
+    const win = typeof window !== 'undefined' ? window : globalThis;
+    if (typeof win.recWsRawMentionsLiveOrderbook === 'function') {
+      return win.recWsRawMentionsLiveOrderbook(raw);
+    }
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"live_orderbook"') !== -1 ||
+      raw.indexOf('"type": "live_orderbook"') !== -1
+    );
+  }
+
+  function rawMentionsTradeMarksUpdated(raw) {
+    const win = typeof window !== 'undefined' ? window : globalThis;
+    if (typeof win.recWsRawMentionsTradeMarksUpdated === 'function') {
+      return win.recWsRawMentionsTradeMarksUpdated(raw);
+    }
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"trade_marks_updated"') !== -1 ||
+      raw.indexOf('"type": "trade_marks_updated"') !== -1
+    );
+  }
+
   function subscriberWantsRawMessage(sub, raw) {
     if (!sub || typeof sub.onMessage !== 'function') return false;
     if (typeof raw !== 'string') return true;
     const streams = sub.onlyDbStreams;
     const hasStreamFilter = streams && streams.length > 0;
-    if (!hasStreamFilter && !sub.includeLiveSymbolSpot) return true;
+    if (
+      !hasStreamFilter &&
+      !sub.includeLiveSymbolSpot &&
+      !sub.includeLiveStrikeLadder &&
+      !sub.includeLiveOrderbook &&
+      !sub.includeTradeMarksUpdated
+    ) {
+      return true;
+    }
     if (sub.includeLiveSymbolSpot && rawMentionsLiveSymbolSpot(raw)) return true;
+    if (sub.includeLiveStrikeLadder && rawMentionsLiveStrikeLadder(raw)) return true;
+    if (sub.includeLiveOrderbook && rawMentionsLiveOrderbook(raw)) return true;
+    if (sub.includeTradeMarksUpdated && rawMentionsTradeMarksUpdated(raw)) return true;
     const win = typeof window !== 'undefined' ? window : globalThis;
     if (
       hasStreamFilter &&
@@ -155,6 +202,9 @@
         onClose: handlers && handlers.onClose,
         onlyDbStreams: handlers && handlers.onlyDbStreams,
         includeLiveSymbolSpot: !!(handlers && handlers.includeLiveSymbolSpot),
+        includeLiveStrikeLadder: !!(handlers && handlers.includeLiveStrikeLadder),
+        includeLiveOrderbook: !!(handlers && handlers.includeLiveOrderbook),
+        includeTradeMarksUpdated: !!(handlers && handlers.includeTradeMarksUpdated),
       };
       entry.subscribers.add(sub);
       return function () {

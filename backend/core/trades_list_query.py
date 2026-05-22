@@ -11,6 +11,10 @@ from typing import Any, Dict, List, Optional, Tuple, Union
 
 from fastapi import HTTPException
 
+from backend.core.trades_history_insights import (
+    build_trade_history_filter_sql,
+    trade_history_filter_body_from_query,
+)
 from backend.util.trade_log_archivist import (
     fetch_master_trades_column_names,
     union_trades_with_archives_select_columns,
@@ -89,6 +93,7 @@ def execute_trades_list_query(
     max_date: Optional[str] = None,
     page_size: Optional[int] = None,
     before_id: Optional[int] = None,
+    filter_body: Optional[Dict[str, Any]] = None,
 ) -> Union[List[Dict[str, Any]], Dict[str, Any]]:
     """
     Run tenant trade list query. Caller owns connection/cursor lifecycle.
@@ -131,6 +136,13 @@ def execute_trades_list_query(
     if before_id is not None:
         where_parts.append("id < %s")
         params.append(before_id)
+    if filter_body:
+        filt_sql, filt_params = build_trade_history_filter_sql(
+            filter_body, table_alias="all_trades"
+        )
+        if filt_sql:
+            where_parts.append(filt_sql)
+            params.extend(filt_params)
     where_sql = ""
     if where_parts:
         where_sql = " WHERE " + " AND ".join(where_parts)

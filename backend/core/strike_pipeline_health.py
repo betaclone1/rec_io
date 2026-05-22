@@ -45,6 +45,30 @@ def pipeline_spot_flatline_min_distinct() -> int:
     return int(os.getenv("PIPELINE_SPOT_FLATLINE_MIN_DISTINCT", "2"))
 
 
+def _spot_series_passes_gate_live_state(symbol: str) -> tuple[bool, str]:
+    """Hot-path spot freshness when ticks live in Redis (PG dual-write may be off)."""
+    try:
+        from backend.core import live_state_cache
+        from backend.core.live_state_config import live_state_cache_enabled
+
+        if not live_state_cache_enabled():
+            return False, "live_state_cache_off"
+        env = live_state_cache.get_symbol(symbol)
+        window_sec = max(5, int(pipeline_spot_flatline_window_sec()))
+        age = live_state_cache.cache_age_sec(env)
+        if age > float(window_sec):
+            return False, f"live_state_symbol_stale:{age:.1f}s>{window_sec}s"
+        data = live_state_cache.get_symbol_data(symbol)
+        if not data:
+            return False, "live_state_symbol_miss"
+        price = data.get("price") or data.get("one_minute_avg")
+        if price is None:
+            return False, "live_state_symbol_no_price"
+        return True, "ok"
+    except Exception as e:
+        return False, f"live_state_spot_gate_failed:{e}"
+
+
 def _spot_series_passes_gate(conn, symbol: str) -> tuple[bool, str]:
     sym = str(symbol or "").strip().upper()
     if not re.fullmatch(r"[A-Z]{2,10}", sym):
@@ -69,15 +93,27 @@ def _spot_series_passes_gate(conn, symbol: str) -> tuple[bool, str]:
             )
             row = cur.fetchone()
         if not row:
+            ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
+            if ls_ok:
+                return True, ls_rsn
             return False, "spot_series_missing"
         sample_count = int(row[0] or 0)
         distinct_count = int(row[1] or 0)
         if sample_count < min_distinct:
+            ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
+            if ls_ok:
+                return True, ls_rsn
             return False, f"spot_samples_insufficient:{sample_count}<{min_distinct}"
         if distinct_count < min_distinct:
+            ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
+            if ls_ok:
+                return True, ls_rsn
             return False, f"spot_flatline:{distinct_count}<{min_distinct}_in_{window_sec}s"
         return True, "ok"
     except Exception as e:
+        ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
+        if ls_ok:
+            return True, ls_rsn
         return False, f"spot_gate_query_failed:{e}"
 
 

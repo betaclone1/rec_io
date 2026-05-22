@@ -25,7 +25,7 @@ import re
 from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
 from datetime import datetime, timezone, timedelta
 from zoneinfo import ZoneInfo
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from contextvars import ContextVar
 from contextlib import contextmanager
 from collections import defaultdict
@@ -290,7 +290,7 @@ def _auto_entry_differential_allowed(settings: dict, traded_side: str, strike: d
 
 
 def _log_aes_trigger_feed_snapshot(strike_data: dict, strike_table_data: Optional[dict]) -> None:
-    """Structured INFO line at auto-trigger time: ladder snapshot + live_symbol_status for incident forensics."""
+    """Structured INFO at auto-trigger: ladder snapshot + live_state symbol metrics."""
     try:
         strategy = get_trade_strategy()
     except Exception:
@@ -299,40 +299,21 @@ def _log_aes_trigger_feed_snapshot(strike_data: dict, strike_table_data: Optiona
         sym, mkt = get_current_monitor_symbol_and_market()
     except Exception:
         sym, mkt = "BTC", "hourly"
-    row = None
-    conn = None
-    try:
-        conn = get_db_connection()
-        if conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    SELECT symbol, "timestamp", price, one_minute_avg, momentum_30s_avg
-                    FROM live_data.live_symbol_status
-                    WHERE symbol = %s
-                    """,
-                    (str(sym).upper(),),
-                )
-                row = cur.fetchone()
-    except Exception:
-        row = None
-    finally:
-        try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
     status_payload = None
-    if row:
-        try:
+    try:
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
+        m = symbol_metrics(str(sym or "BTC").strip().upper())
+        if m:
             status_payload = {
-                "timestamp": row[1],
-                "price": float(row[2]) if row[2] is not None else None,
-                "one_minute_avg": float(row[3]) if len(row) > 3 and row[3] is not None else None,
-                "momentum_30s_avg": float(row[4]) if len(row) > 4 and row[4] is not None else None,
+                "source": "live_state",
+                "price": m.get("price"),
+                "one_minute_avg": m.get("one_minute_avg"),
+                "momentum_30s_avg": m.get("momentum_30s_avg"),
+                "momentum_5s_avg": m.get("momentum_5s_avg"),
             }
-        except (TypeError, ValueError):
-            status_payload = {"timestamp": row[1], "price": row[2], "one_minute_avg": row[3], "momentum_30s_avg": row[4] if len(row) > 4 else None}
+    except Exception:
+        status_payload = None
     std = strike_table_data or {}
     payload = {
         "aes": "trigger_ctx",
@@ -354,7 +335,7 @@ def _log_aes_trigger_feed_snapshot(strike_data: dict, strike_table_data: Optiona
             "ttc": std.get("ttc"),
             "event_ticker": std.get("event_ticker"),
         },
-        "live_symbol_status": status_payload,
+        "symbol_metrics": status_payload,
     }
     try:
         log(f"[AES_TRIGGER_CTX] {json.dumps(payload, default=str)}")
@@ -585,8 +566,9 @@ def _resolve_event_time(symbol: str, market_title: Optional[str], event_ticker: 
         ev = _kalshi_event_ticker_from_market_ticker(event_ticker) or str(event_ticker).strip()
         parts = ev.split("-")
         if len(parts) >= 2:
-            dt_part = parts[-1]
-            clock = _kalshi_clock_from_event_suffix(dt_part)
+            clock = _kalshi_clock_from_event_suffix(parts[-1])
+            if clock is None and len(parts) >= 3 and parts[-1].isdigit() and len(parts[-1]) <= 2:
+                clock = _kalshi_clock_from_event_suffix(parts[-2])
             if clock:
                 h24, min_opt = clock
                 time_hour_24 = h24
@@ -1060,6 +1042,12 @@ logging.getLogger("werkzeug").setLevel(logging.ERROR)
 # Global variable to track monitoring thread
 monitoring_thread = None
 monitoring_thread_lock = threading.Lock()
+_aes_live_state_wake = threading.Event()
+_AES_FAILSAFE_POLL_SEC = float(os.getenv("AES_FAILSAFE_POLL_SEC", "1"))
+_AES_LP_RECONCILE_SEC = float(os.getenv("AES_LP_RECONCILE_SEC", "5"))
+_aes_last_lp_recompute_mono: float = 0.0
+_aes_pool_ladder_keys: Set[Tuple[str, str]] = set()
+_aes_pool_ladder_keys_at: float = 0.0
 
 # SIMPLIFIED: Track last trade time per strike (atomic)
 last_trade_times = {}  # strike_key -> timestamp
@@ -1252,85 +1240,53 @@ def log_heartbeat():
 # Legacy auto_entry_state.json functionality removed - now using PostgreSQL for all state management
 
 def get_current_momentum(symbol="BTC"):
-    """Get current momentum_5s_avg from live price log for specified symbol"""
+    """Get current momentum_5s_avg from live_state symbol cache (no PG on hot path)."""
     try:
-        import psycopg2
-        
-        # PostgreSQL connection parameters
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get momentum_5s_avg from live price log (symbol's live data stream)
-        cursor.execute(f"""
-            SELECT momentum_5s_avg FROM live_data.live_price_log_1s_{symbol.lower()} 
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """)
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result and result[0] is not None:
-            momentum_5s_avg = float(result[0])
-            return momentum_5s_avg
-        else:
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
+        m = symbol_metrics(str(symbol or "BTC").strip().upper())
+        if not m:
             return None
+        v = m.get("momentum_5s_avg")
+        if v is None:
+            v = m.get("momentum")
+        if v is not None:
+            return float(v)
+        return None
     except Exception as e:
         log(f"[AUTO ENTRY MOMENTUM] Error getting momentum for {symbol}: {e}")
         return None
 
+
 def get_momentum_30s_avg(symbol="BTC"):
-    """Get current momentum_30s_avg from live price log for specified symbol"""
+    """Get current momentum_30s_avg from live_state symbol cache."""
     try:
-        import psycopg2
-        
-        # PostgreSQL connection parameters
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get momentum_30s_avg from live price log (symbol's live data stream)
-        cursor.execute(f"""
-            SELECT momentum_30s_avg FROM live_data.live_price_log_1s_{symbol.lower()} 
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """)
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result and result[0] is not None:
-            momentum_30s_avg = float(result[0])
-            return momentum_30s_avg
-        else:
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
+        m = symbol_metrics(str(symbol or "BTC").strip().upper())
+        if not m:
             return None
+        v = m.get("momentum_30s_avg")
+        if v is not None:
+            return float(v)
+        return None
     except Exception as e:
         log(f"[AUTO ENTRY MOMENTUM] Error getting momentum_30s_avg for {symbol}: {e}")
         return None
 
+
 def get_momentum_percentile(symbol="BTC"):
-    """Get current momentum_percentile from live price log for specified symbol"""
+    """Get current momentum_percentile from live_state symbol cache."""
     try:
-        import psycopg2
-        
-        # PostgreSQL connection parameters
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        # Get momentum_percentile from live price log (symbol's live data stream)
-        cursor.execute(f"""
-            SELECT momentum_percentile FROM live_data.live_price_log_1s_{symbol.lower()} 
-            ORDER BY timestamp DESC 
-            LIMIT 1
-        """)
-        
-        result = cursor.fetchone()
-        conn.close()
-        
-        if result and result[0] is not None:
-            momentum_percentile = float(result[0])
-            return momentum_percentile
-        else:
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
+        m = symbol_metrics(str(symbol or "BTC").strip().upper())
+        if not m:
             return None
+        v = m.get("momentum_percentile")
+        if v is not None:
+            return float(v)
+        return None
     except Exception as e:
         log(f"[AUTO ENTRY MOMENTUM] Error getting momentum_percentile for {symbol}: {e}")
         return None
@@ -2066,26 +2022,32 @@ def is_auto_trade_enabled():
     if AES_UNIFIED_POOL and _aes_bind_m.get() is None:
         return False
     try:
-        import psycopg2
-        conn = get_db_connection()
-        if not conn:
-            log(f"[AUTO ENTRY] ❌ No database connection available when reading auto_trade for monitor {ctx_mid()}; shutting down supervisor")
-            os._exit(0)
+        from backend.core.tradeflow_monitor_settings_cache import get_cached_monitor_settings
 
-        with conn.cursor() as cursor:
-            # Check auto_trade boolean from the specific monitor's row in monitor_list
-            cursor.execute(f"SELECT auto_trade FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
-            result = cursor.fetchone()
+        def _load():
+            import psycopg2
 
+            conn = get_db_connection()
+            if not conn:
+                log(
+                    f"[AUTO ENTRY] ❌ No database connection available when reading auto_trade for monitor {ctx_mid()}; shutting down supervisor"
+                )
+                os._exit(0)
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT auto_trade FROM {_aes_monitor_list_table()} WHERE id = %s",
+                    (ctx_mid(),),
+                )
+                result = cursor.fetchone()
             if not result:
                 log(
                     f"[AUTO ENTRY] ❌ Monitor {ctx_mid()} missing from {_aes_monitor_list_table()}; "
                     "shutting down supervisor to avoid ghost auto-entry"
                 )
                 os._exit(0)
+            return bool(result[0])
 
-            auto_trade_enabled = bool(result[0])
-            return auto_trade_enabled
+        return bool(get_cached_monitor_settings(ctx_user(), ctx_mid(), _load))
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error reading auto_trade from monitor_list for monitor {ctx_mid()}: {e}")
         os._exit(0)
@@ -2189,7 +2151,7 @@ def get_auto_entry_settings():
         return {}
 
 def get_current_ttc():
-    """Get current TTC from strike table (PostgreSQL). Uses ttc_hourly or ttc_15m per monitor market; no HTTP to main app."""
+    """Get current TTC from live_state strike ladder (no PostgreSQL on hot path)."""
     try:
         current_symbol, current_market = get_current_monitor_symbol_and_market()
         if not current_market or current_market not in ("hourly", "15m"):
@@ -2197,42 +2159,21 @@ def get_current_ttc():
         ctx = _aes_unified_tick_context.get()
         if ctx and ctx.get("data") is not None:
             if ctx.get("symbol") == current_symbol and ctx.get("market") == current_market:
-                ttc_val = ctx["data"].get("ttc")
+                from backend.core.tradeflow_live_reads import ttc_seconds_from_ladder
+
+                ttc_val = ttc_seconds_from_ladder(ctx["data"], current_market)
                 if ttc_val is not None:
                     return int(ttc_val)
-        import psycopg2
-        conn = get_db_connection()
-        with conn.cursor() as cursor:
-            ttc_column = "ttc_15m" if current_market == "15m" else "ttc_hourly"
-            ex = _strike_data_exchange_key()
-            sym_u = current_symbol.upper()
-            if current_market == "15m":
-                table_15m = get_strike_table_name(current_symbol, "15m")
-                cursor.execute(
-                    f"""
-                    SELECT {ttc_column} FROM live_data.{table_15m}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (ex, sym_u),
-                )
-            else:
-                table_name = get_strike_table_name(current_symbol, current_market)
-                cursor.execute(
-                    f"""
-                    SELECT {ttc_column} FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (ex, sym_u),
-                )
-            result = cursor.fetchone()
-        conn.close()
-        if result and result[0] is not None:
-            return int(result[0])
-        # Fallback when strike table has no row (e.g. generator not yet run)
+        from backend.core.tradeflow_live_reads import strike_ladder, ttc_seconds_from_ladder
+
+        ladder = strike_ladder(
+            current_symbol,
+            current_market,
+            _strike_data_exchange_key(),
+        )
+        ttc_val = ttc_seconds_from_ladder(ladder, current_market)
+        if ttc_val is not None:
+            return int(ttc_val)
         now = est_now()
         next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
         return max(1, int((next_hour - now).total_seconds()))
@@ -2265,16 +2206,14 @@ def get_master_strike_table_data():
 
 
 def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
-    """Load ladder snapshot for explicit symbol and market (hourly or 15m).
-
-    Prefers Redis snapshot from ``strike_snapshot_publisher`` when enabled so all AES
-    processes see the same payload per wall second; falls back to PostgreSQL.
-    """
+    """Load ladder from live_state when enabled (no PostgreSQL fallback on hot path)."""
     try:
-        from backend.core.strike_ladder_fetch import fetch_strike_ladder_prefer_snapshot
+        from backend.core.tradeflow_live_reads import strike_ladder
 
-        return fetch_strike_ladder_prefer_snapshot(
-            current_symbol, current_market, _strike_data_exchange_key()
+        return strike_ladder(
+            current_symbol,
+            current_market,
+            _strike_data_exchange_key(),
         )
     except Exception as e:
         log(f"[AUTO_ENTRY] Error reading master strike table data: {e}")
@@ -2282,77 +2221,27 @@ def _fetch_master_strike_table_data(current_symbol: str, current_market: str):
 
 
 def _fetch_ttc_15m_latest_header(current_symbol: str) -> Optional[int]:
-    """If ladder JSON omits ``ttc_15m`` (older Redis snapshots), read latest hourly row from ``live_data``."""
+    """TTC from hourly live_state ladder when header omits ``ttc_15m``."""
     try:
-        from backend.core.config.database import get_system_postgresql_connection
+        from backend.core.tradeflow_live_reads import strike_ladder, ttc_seconds_from_ladder
 
-        conn = get_system_postgresql_connection()
-        if not conn:
-            return None
-        try:
-            ex = _strike_data_exchange_key()
-            sym_u = (current_symbol or "").upper().strip()
-            if not sym_u:
-                return None
-            table_name = get_strike_table_name(current_symbol, "hourly")
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT ttc_15m FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (ex, sym_u),
-                )
-                row = cur.fetchone()
-            if row and row[0] is not None:
-                return int(row[0])
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        ladder = strike_ladder(
+            current_symbol, "hourly", _strike_data_exchange_key()
+        )
+        return ttc_seconds_from_ladder(ladder, "hourly")
     except Exception:
         return None
-    return None
 
 
 def _fetch_ttc_native_15m_latest_header(current_symbol: str) -> Optional[int]:
-    """If 15m ladder snapshot omits TTC, read latest ``ttc_15m`` from the native 15m strike table."""
+    """TTC from 15m live_state ladder when snapshot omits ``ttc``."""
     try:
-        from backend.core.config.database import get_system_postgresql_connection
+        from backend.core.tradeflow_live_reads import strike_ladder, ttc_seconds_from_ladder
 
-        conn = get_system_postgresql_connection()
-        if not conn:
-            return None
-        try:
-            ex = _strike_data_exchange_key()
-            sym_u = (current_symbol or "").upper().strip()
-            if not sym_u:
-                return None
-            table_name = get_strike_table_name(current_symbol, "15m")
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT ttc_15m FROM live_data.{table_name}
-                    WHERE exchange = %s AND symbol = %s
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                    """,
-                    (ex, sym_u),
-                )
-                row = cur.fetchone()
-            if row and row[0] is not None:
-                return int(row[0])
-        finally:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        ladder = strike_ladder(current_symbol, "15m", _strike_data_exchange_key())
+        return ttc_seconds_from_ladder(ladder, "15m")
     except Exception:
         return None
-    return None
 
 
 def get_master_strike_table_data_simulated_15m():
@@ -2579,7 +2468,11 @@ def _auto_entry_strike_vs_spot_gate(strike_data: dict, symbol_upper: str) -> tup
         return True, "ok"
     spot = None
     try:
-        spot = get_current_price_from_db(sym)
+        from backend.core.tradeflow_live_reads import symbol_spot_price, tradeflow_requires_live_state
+
+        spot = symbol_spot_price(sym)
+        if spot is None and not tradeflow_requires_live_state():
+            spot = get_current_price_from_db(sym)
     except Exception:
         pass
     ok, reason, _drift = floor_strike_vs_spot_check(strike_f, spot)
@@ -3515,16 +3408,14 @@ def check_auto_entry_conditions_hourly_htc():
                 _ex = _strike_data_exchange_key()
                 if (_mkt or "").strip().lower() == "15m":
                     _mh = "live_data.market_kalshi_15m"
-                    _wd = "market_watchdog_ws_kalshi_15m"
                     _sg = "strike_table_generator_ws_15m"
                 else:
                     _mh = "live_data.market_kalshi_hourly"
-                    _wd = "market_watchdog_ws_kalshi_hourly"
                     _sg = "strike_table_generator_ws_hourly"
                 log(
                     f"[AUTO ENTRY] ⚠️ No strike ladder in live_data.{_tn} for exchange={_ex} symbol={_sym.upper()}. "
-                    f"Upstream: {_mh} must have event_ticker ({_wd}); then {_sg} writes rows. "
-                    f"Check those logs for 'No event_ticker' or rollover gaps."
+                    f"Upstream: {_mh} must have event_ticker; then {_sg} writes rows. "
+                    f"Check those logs for rollover gaps."
                 )
                 check_auto_entry_conditions_hourly_htc.last_strike_table_log = current_time
             return
@@ -5558,6 +5449,51 @@ def _aes_run_symbol_wide_startup_once() -> None:
         log(f"⚠️ [SIM TRADE LP] Startup reconcile failed: {e}")
 
 
+def _aes_active_pool_ladder_keys() -> Set[Tuple[str, str]]:
+    """(symbol, market) pairs for all active monitors in this unified AES process."""
+    global _aes_pool_ladder_keys, _aes_pool_ladder_keys_at
+    if not AES_UNIFIED_POOL:
+        sym, mkt = get_current_monitor_symbol_and_market()
+        return {((sym or "BTC").upper(), (mkt or "hourly").lower())}
+    now = time.monotonic()
+    if _aes_pool_ladder_keys and (now - _aes_pool_ladder_keys_at) < 5.0:
+        return _aes_pool_ladder_keys
+    keys: Set[Tuple[str, str]] = set()
+    try:
+        if AES_UNIFIED_15M:
+            from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
+
+            rows = list_active_15m_monitor_rows()
+        elif AES_UNIFIED_HOURLY:
+            from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+            rows = list_active_hourly_monitor_rows()
+        else:
+            from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+            rows = list_active_unified_monitor_rows()
+        for row in rows:
+            sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
+            mkt = (row.get("market") or "").strip().lower()
+            if mkt not in ("hourly", "15m"):
+                mkt = "15m" if AES_UNIFIED_15M else "hourly"
+            keys.add((sym, mkt))
+    except Exception as e:
+        log_debug(f"[AES] pool ladder keys: {e}")
+    _aes_pool_ladder_keys = keys
+    _aes_pool_ladder_keys_at = now
+    return keys
+
+
+def _aes_maybe_lp_recompute() -> None:
+    global _aes_last_lp_recompute_mono
+    now = time.monotonic()
+    if now - _aes_last_lp_recompute_mono < _AES_LP_RECONCILE_SEC:
+        return
+    _aes_last_lp_recompute_mono = now
+    _aes_tick_symbol_wide_recompute()
+
+
 def _aes_tick_symbol_wide_recompute() -> None:
     """Expire simulated-trade cooldown windows (recompute loss_prevention) for tenants with active anchors."""
     try:
@@ -5624,13 +5560,12 @@ def start_monitoring_loop():
                 # Clean up old cooldowns first
                 cleanup_old_cooldowns()
 
-                _aes_tick_symbol_wide_recompute()
-                
-                # Check auto entry conditions
+                _aes_maybe_lp_recompute()
+
                 check_auto_entry_conditions()
-                
-                # Sleep for 1 second
-                time.sleep(1)
+
+                _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
+                _aes_live_state_wake.clear()
                 
             except Exception as e:
                 import traceback
@@ -5648,6 +5583,38 @@ def start_monitoring_loop():
         monitoring_thread = threading.Thread(target=monitoring_worker, daemon=True)
         monitoring_thread.start()
         log("📊 MONITORING: Auto entry monitoring thread started")
+
+    try:
+        from backend.core.tradeflow_live_state_trigger import (
+            start_tradeflow_live_state_listener,
+        )
+
+        sym, mkt = get_current_monitor_symbol_and_market()
+
+        def _aes_symbol_market_filter(s: str, m: str) -> bool:
+            try:
+                if AES_UNIFIED_POOL:
+                    return (s.strip().upper(), m.strip().lower()) in _aes_active_pool_ladder_keys()
+                cs, cm = get_current_monitor_symbol_and_market()
+                return s == (cs or "").strip().upper() and m == (cm or "hourly").strip().lower()
+            except Exception:
+                return True
+
+        def _aes_on_live_state() -> None:
+            _aes_live_state_wake.set()
+
+        if start_tradeflow_live_state_listener(
+            _aes_on_live_state,
+            service=f"aes_{MONITOR_IDENTIFIER}",
+            symbol_market_filter=_aes_symbol_market_filter,
+        ):
+            log(
+                "📊 MONITORING: live_state trigger enabled for %s/%s",
+                sym,
+                mkt,
+            )
+    except Exception as e:
+        log_debug(f"live_state trigger not started: {e}")
 
 # Health check endpoint
 @app.route("/health")

@@ -376,17 +376,17 @@ class LookupProbabilityCalculator:
     def get_probability(
         self, ttc_seconds: int, buffer_points: float, momentum_bucket: int, conn=None
     ) -> tuple[float, float]:
-        """
-        Get probability values from lookup table with bilinear interpolation.
-        
-        Args:
-            ttc_seconds: Time to close in seconds
-            buffer_points: Buffer distance in points
-            momentum_bucket: Momentum bucket (-30 to +30)
-            
-        Returns:
-            Tuple of (positive_probability, negative_probability) as prob_within values
-        """
+        """Get probability values from lookup table (RAM cache or bilinear SQL)."""
+        try:
+            from backend.core.live_state_config import probability_lookup_ram_enabled
+            from backend.core.probability_lookup_cache import get_probability as ram_get
+
+            if probability_lookup_ram_enabled():
+                pos, neg = ram_get(self.symbol, ttc_seconds, buffer_points, momentum_bucket)
+                if pos is not None and neg is not None:
+                    return pos, neg
+        except Exception:
+            pass
         # Round TTC to nearest 10-second increment to match lookup table granularity
         ttc_seconds = round(ttc_seconds / 10) * 10
         
@@ -1234,7 +1234,12 @@ class StrikeTableGenerator:
         for i in range(1, len(unique_strikes)):
             d = unique_strikes[i] - unique_strikes[i - 1]
             if d > 0:
-                diffs.append(int(round(d)))
+                if uses_high_precision_price(self.symbol):
+                    q = round(d, 2)
+                    if q > 0:
+                        diffs.append(max(1, int(round(q * 100))))
+                else:
+                    diffs.append(int(round(d)))
         if not diffs:
             raise ValueError("No positive strike differences found")
 
@@ -1321,31 +1326,30 @@ class StrikeTableGenerator:
                 if floor_strike is not None:
                     available_strikes.append(self._normalize_floor_strike(float(floor_strike)))
 
-            if self.interval == "15m":
-                # Single strike only; strike_tier 0.
-                # For 15m we do NOT depend on Kalshi strikes existing; if none are usable,
-                # synthesize a strike from the current price.
-                if available_strikes:
-                    available_strikes.sort(
-                        key=lambda x: abs(float(x) - float(current_price))
-                    )
-                    single = available_strikes[0]
-                else:
-                    if uses_high_precision_price(self.symbol):
-                        single = round_price_buffer(current_price)
-                    else:
-                        single = int(round(current_price))
+            if len(markets) == 1:
+                # Single-contract cycle (e.g. 15m): one floor_strike anchor for the ladder.
+                if not available_strikes:
                     logger.warning(
-                        "15m: no valid strikes from market data, using synthetic strike %s based on current_price %s",
-                        single,
-                        current_price,
+                        "missing floor_strike in market cache for %s; skipping refresh this cycle",
+                        self.symbol.upper(),
                     )
-
+                    return (False, None, 0)
+                if len(available_strikes) > 1:
+                    logger.warning(
+                        "multiple floor_strikes in cache for %s; using first (n=%s)",
+                        self.symbol.upper(),
+                        len(available_strikes),
+                    )
+                single = available_strikes[0]
                 max_buffer = self.calculator.max_buffer
                 if abs(current_price - single) > max_buffer:
-                    logger.warning("15m strike %s outside lookup buffer %s, using anyway", single, max_buffer)
+                    logger.warning(
+                        "anchor strike %s outside lookup buffer %s, using anyway",
+                        single,
+                        max_buffer,
+                    )
                 strikes = [single]
-                logger.debug("Processing 1 strike (15m): %s", single)
+                logger.debug("Processing 1 strike (single-contract cycle): %s", single)
             else:
                 if not available_strikes:
                     raise ValueError("No valid strikes found in market data")
@@ -1373,50 +1377,64 @@ class StrikeTableGenerator:
             # momentum_percentile is already in percentile format like -47.0, -51.0, etc.
             momentum_bucket = round(momentum_percentile)
             
-            # Write to database
+            skip_strike_table_pg_dml = False
+            try:
+                from backend.core.live_state_config import (
+                    live_state_cache_enabled,
+                    live_state_pg_writes_enabled,
+                )
+
+                skip_strike_table_pg_dml = (
+                    live_state_cache_enabled() and not live_state_pg_writes_enabled()
+                )
+            except Exception:
+                skip_strike_table_pg_dml = False
+
+            # Write to database (skipped when live_state is primary and dual-write is off)
             conn = get_postgresql_connection()
             cursor = conn.cursor()
             
             table_name = self._strike_table_name()
             # Carry forward ask extrema across DELETE/INSERT (same Kalshi event_ticker + market ticker).
             prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
-            try:
-                sel = (
-                    f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "
-                    f"no_ask_min_15m, no_ask_max_15m, ttc_15m FROM live_data.{table_name}"
-                )
-                if self.unified_15m or self.interval == "hourly":
-                    sel += " WHERE exchange = %s AND symbol = %s"
-                    cursor.execute(sel, (self.data_exchange, self.symbol.upper()))
-                else:
-                    cursor.execute(sel)
-                for row in cursor.fetchall():
-                    if row[0] is None or row[1] is None:
-                        continue
-                    prev_final_ask_map[(str(row[0]), str(row[1]))] = row
-            except Exception as ex:
-                logger.warning(
-                    "Could not load prior final-quarter ask columns for %s (run migrations?): %s",
-                    table_name,
-                    ex,
-                )
-                prev_final_ask_map = {}
-
-            # All strike tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m tables leave hourly cols NULL).
-            # Clear ALL previous strike table data - only keep current iteration
-            try:
-                if self.unified_15m or self.interval == "hourly":
-                    cursor.execute(
-                        f"DELETE FROM live_data.{table_name} WHERE exchange = %s AND symbol = %s",
-                        (self.data_exchange, self.symbol.upper()),
+            if not skip_strike_table_pg_dml:
+                try:
+                    sel = (
+                        f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "
+                        f"no_ask_min_15m, no_ask_max_15m, ttc_15m FROM live_data.{table_name}"
                     )
-                else:
-                    cursor.execute(f"DELETE FROM live_data.{table_name}")
-                logger.debug("Cleared previous strike table data for %s (%s)", self.symbol.upper(), self.interval)
-            except Exception as e:
-                logger.error("Error clearing strike table: %s", e)
-                conn.rollback()
-                raise
+                    if self.unified_15m or self.interval == "hourly":
+                        sel += " WHERE exchange = %s AND symbol = %s"
+                        cursor.execute(sel, (self.data_exchange, self.symbol.upper()))
+                    else:
+                        cursor.execute(sel)
+                    for row in cursor.fetchall():
+                        if row[0] is None or row[1] is None:
+                            continue
+                        prev_final_ask_map[(str(row[0]), str(row[1]))] = row
+                except Exception as ex:
+                    logger.warning(
+                        "Could not load prior final-quarter ask columns for %s (run migrations?): %s",
+                        table_name,
+                        ex,
+                    )
+                    prev_final_ask_map = {}
+
+                # All strike tables use ttc_hourly, ttc_15m, probability_hourly, probability_15m (15m tables leave hourly cols NULL).
+                # Clear ALL previous strike table data - only keep current iteration
+                try:
+                    if self.unified_15m or self.interval == "hourly":
+                        cursor.execute(
+                            f"DELETE FROM live_data.{table_name} WHERE exchange = %s AND symbol = %s",
+                            (self.data_exchange, self.symbol.upper()),
+                        )
+                    else:
+                        cursor.execute(f"DELETE FROM live_data.{table_name}")
+                    logger.debug("Cleared previous strike table data for %s (%s)", self.symbol.upper(), self.interval)
+                except Exception as e:
+                    logger.error("Error clearing strike table: %s", e)
+                    conn.rollback()
+                    raise
             
             # One timestamp per DB refresh so read_api can load all strikes with
             # WHERE timestamp = (SELECT max(timestamp) ... LIMIT 1).
@@ -1424,6 +1442,7 @@ class StrikeTableGenerator:
 
             # Process each strike
             strike_data = []
+            ladder_strikes_out: List[Dict[str, Any]] = []
             for strike in strikes:
                 try:
                     # Calculate buffer and probability
@@ -1489,19 +1508,55 @@ class StrikeTableGenerator:
                     open_interest_fp = None
                     ticker = None
                     
-                    # Find the matching market
-                    for market in markets:
-                        floor_strike = market.get("floor_strike")
-                        if floor_strike is not None:
-                            if strikes_equivalent(self.symbol, float(floor_strike), float(strike)):
-                                yes_ask_dollars = market.get("yes_ask_dollars")
-                                no_ask_dollars = market.get("no_ask_dollars")
-                                yes_bid_dollars = market.get("yes_bid_dollars")
-                                no_bid_dollars = market.get("no_bid_dollars")
+                    # 15m Kalshi events are one contract per symbol (no strike ladder in cache).
+                    if self.interval == "15m":
+                        from backend.core.kalshi_market_normalize import (
+                            derive_no_side_dollars_from_yes,
+                        )
+
+                        for market in markets:
+                            yes_ask_dollars = market.get("yes_ask_dollars")
+                            no_ask_dollars = market.get("no_ask_dollars")
+                            yes_bid_dollars = market.get("yes_bid_dollars")
+                            no_bid_dollars = market.get("no_bid_dollars")
+                            if yes_ask_dollars and not no_ask_dollars and yes_bid_dollars:
+                                nb_d, na_d = derive_no_side_dollars_from_yes(
+                                    yes_bid_dollars, yes_ask_dollars
+                                )
+                                if na_d:
+                                    no_ask_dollars = na_d
+                                if nb_d and not no_bid_dollars:
+                                    no_bid_dollars = nb_d
+                            if yes_ask_dollars and no_ask_dollars:
                                 volume_fp = market.get("volume_fp")
                                 open_interest_fp = market.get("open_interest_fp")
                                 ticker = market.get("ticker")
                                 break
+
+                    # Hourly (and 15m fallback): match ladder row by floor_strike.
+                    if not yes_ask_dollars or not no_ask_dollars:
+                        for market in markets:
+                            floor_strike = market.get("floor_strike")
+                            if floor_strike is None and market.get("strike") is not None:
+                                try:
+                                    floor_strike = float(
+                                        str(market.get("strike"))
+                                        .replace("$", "")
+                                        .replace(",", "")
+                                        .strip()
+                                    )
+                                except (TypeError, ValueError):
+                                    floor_strike = None
+                            if floor_strike is not None:
+                                if strikes_equivalent(self.symbol, float(floor_strike), float(strike)):
+                                    yes_ask_dollars = market.get("yes_ask_dollars")
+                                    no_ask_dollars = market.get("no_ask_dollars")
+                                    yes_bid_dollars = market.get("yes_bid_dollars")
+                                    no_bid_dollars = market.get("no_bid_dollars")
+                                    volume_fp = market.get("volume_fp")
+                                    open_interest_fp = market.get("open_interest_fp")
+                                    ticker = market.get("ticker")
+                                    break
                     
                     # Calculate yes_diff and no_diff based on money line position using subpenny precision
                     # Convert _dollars values to cents for calculation (multiply by 100)
@@ -1626,8 +1681,52 @@ class StrikeTableGenerator:
                         strike_row_ts,
                     )
 
+                    if skip_strike_table_pg_dml:
+                        _sf = float(strike) if strike is not None else None
+                        _strike_out = (
+                            int(_sf)
+                            if _sf is not None and _sf == int(_sf)
+                            else _sf
+                        )
+                        prob_out = probability_15m if self.interval == "15m" else prob_hourly_val
+                        ladder_strikes_out.append(
+                            {
+                                "strike": _strike_out,
+                                "buffer": float(buffer),
+                                "buffer_pct": float(buffer_pct) if buffer_pct is not None else None,
+                                "probability": float(prob_out) if prob_out is not None else float(probability),
+                                "yes_prob_hourly": float(yes_prob_hourly_store)
+                                if yes_prob_hourly_store is not None
+                                else None,
+                                "no_prob_hourly": float(no_prob_hourly_store)
+                                if no_prob_hourly_store is not None
+                                else None,
+                                "yes_prob_15m": float(yes_prob_15m_store)
+                                if yes_prob_15m_store is not None
+                                else None,
+                                "no_prob_15m": float(no_prob_15m_store)
+                                if no_prob_15m_store is not None
+                                else None,
+                                "yes_ask_dollars": yes_ask_dollars,
+                                "no_ask_dollars": no_ask_dollars,
+                                "yes_diff": float(yes_diff) if yes_diff is not None else None,
+                                "no_diff": float(no_diff) if no_diff is not None else None,
+                                "volume_fp": volume_fp if volume_fp is None else str(volume_fp).strip(),
+                                "open_interest_fp": open_interest_fp
+                                if open_interest_fp is None
+                                else str(open_interest_fp).strip(),
+                                "ticker": ticker,
+                                "active_side": active_side,
+                                "yes_ask_min_15m": float(ymn) if ymn is not None else None,
+                                "yes_ask_max_15m": float(ymx) if ymx is not None else None,
+                                "no_ask_min_15m": float(nmn) if nmn is not None else None,
+                                "no_ask_max_15m": float(nmx) if nmx is not None else None,
+                                "yes_ask_range_15m": float(yrg) if yrg is not None else None,
+                                "no_ask_range_15m": float(nrg) if nrg is not None else None,
+                            }
+                        )
                     # Unified 15m and hourly strike tables use exchange (same shape as strike_table_15m).
-                    if self.unified_15m or self.interval == "hourly":
+                    elif self.unified_15m or self.interval == "hourly":
                         cursor.execute(
                             f"""
                             INSERT INTO live_data.{table_name}
@@ -1707,7 +1806,7 @@ class StrikeTableGenerator:
                             ),
                         )
 
-                    if ticker:
+                    if ticker and not skip_strike_table_pg_dml:
                         try:
                             from backend.historical_strike_table_archive import (
                                 append_strike_archive_row_from_live_tuple,
@@ -1736,10 +1835,127 @@ class StrikeTableGenerator:
                     logger.error("Error processing strike %s: %s", strike, e)
                     continue
             
-            conn.commit()
+            if not skip_strike_table_pg_dml:
+                conn.commit()
             event_ticker = market_data.get("event_ticker")
             logger.debug("Generated %s strike table records for %s", len(strike_data), self.symbol.upper())
-            return (True, event_ticker, len(strike_data))
+            try:
+                import uuid
+
+                from backend.core import live_state_cache
+                from backend.core.live_state_config import (
+                    live_state_cache_enabled,
+                    live_state_spool_enabled,
+                )
+
+                if live_state_cache_enabled():
+                    if skip_strike_table_pg_dml and ladder_strikes_out:
+                        mk = "15m" if self.interval == "15m" else "hourly"
+                        ttc_out = ttc_15m_seconds if self.interval == "15m" else ttc_hourly_val
+                        ladder_json = {
+                            "symbol": self.symbol.upper(),
+                            "current_price": float(current_price),
+                            "ttc": ttc_out,
+                            "exchange": "Kalshi",
+                            "event_ticker": event_ticker,
+                            "market_title": market_title,
+                            "strike_tier": strike_tier_val,
+                            "market_status": market_data.get("market_status"),
+                            "last_updated": batch_strike_row_ts.isoformat(),
+                            "market": mk,
+                            "strikes": ladder_strikes_out,
+                            "momentum": {"percentile": float(momentum_percentile)},
+                            "volatility": float(volatility) if volatility is not None else None,
+                            "volatility_percentile": float(volatility_percentile)
+                            if volatility_percentile is not None
+                            else None,
+                            "movement": float(movement) if movement is not None else None,
+                            "movement_percentile": float(movement_percentile)
+                            if movement_percentile is not None
+                            else None,
+                            "source": "live_state_cache",
+                        }
+                    else:
+                        ladder_json = self.get_latest_strike_table_json()
+                    if ladder_json:
+                        mk = "15m" if self.interval == "15m" else "hourly"
+                        try:
+                            from backend.core.kalshi_contract_settlement import (
+                                kalshi_contract_settlement_end_est,
+                            )
+
+                            ref_ticker = (
+                                ladder_json.get("event_ticker")
+                                or (
+                                    (ladder_json.get("strikes") or [{}])[0].get("ticker")
+                                    if ladder_json.get("strikes")
+                                    else None
+                                )
+                            )
+                            if ref_ticker:
+                                end_est = kalshi_contract_settlement_end_est(
+                                    str(ref_ticker).strip()
+                                )
+                                if end_est is not None:
+                                    ladder_json["settlement_end_ms"] = int(
+                                        end_est.timestamp() * 1000
+                                    )
+                            if ladder_json.get("ttc") is not None and ladder_json.get(
+                                "ttc_seconds"
+                            ) is None:
+                                ladder_json["ttc_seconds"] = ladder_json.get("ttc")
+                        except Exception:
+                            pass
+                        try:
+                            sym_env = live_state_cache.get_symbol(self.symbol)
+                            ingest_mono = (
+                                sym_env.get("ingest_mono") if sym_env else None
+                            )
+                            if ingest_mono is not None:
+                                ladder_json["pipeline_ws_to_ladder_ms"] = round(
+                                    (time.monotonic() - float(ingest_mono)) * 1000.0,
+                                    2,
+                                )
+                                ladder_json["source_symbol_updated_at"] = sym_env.get(
+                                    "updated_at"
+                                )
+                        except Exception:
+                            pass
+                        ladder_rows = ladder_json.get("strikes") or []
+                        if ladder_rows:
+                            live_state_cache.set_strike_ladder(
+                                self.data_exchange,
+                                mk,
+                                self.symbol,
+                                generation_id=str(uuid.uuid4()),
+                                rows=ladder_rows,
+                                meta=ladder_json,
+                            )
+                if live_state_spool_enabled():
+                    try:
+                        from backend.core import event_spool  # optional; not deployed on all stacks
+                    except ImportError:
+                        event_spool = None  # type: ignore[misc, assignment]
+                    if event_spool is not None:
+                        event_spool.append_event(
+                            "strike_snapshot",
+                            {
+                                "table_name": table_name,
+                                "exchange": self.data_exchange,
+                                "symbol": self.symbol.upper(),
+                                "market": self.interval,
+                                "event_ticker": event_ticker,
+                                "row_count": len(strike_data),
+                            },
+                            source="strike_table_generator",
+                            idempotency_key=f"strike:{self.data_exchange}:{self.interval}:{self.symbol.upper()}:{event_ticker}",
+                        )
+            except Exception as pub_exc:
+                logger.warning("strike live_state publish: %s", pub_exc)
+            row_count = len(strike_data)
+            if skip_strike_table_pg_dml and ladder_strikes_out:
+                row_count = max(row_count, len(ladder_strikes_out))
+            return (True, event_ticker, row_count)
         except Exception as e:
             msg = str(e or "")
             # During quarter-hour rollover, market_kalshi_15m is intentionally empty
@@ -1764,7 +1980,25 @@ class StrikeTableGenerator:
                 conn.close()
     
     def get_latest_strike_table_json(self) -> Optional[Dict[str, Any]]:
-        """Get the latest strike table data in JSON format compatible with frontend."""
+        """Latest strike ladder JSON from live_state Redis (no PostgreSQL substitute)."""
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core import live_state_cache
+
+        if live_state_cache_enabled():
+            mk = "15m" if self.interval == "15m" else "hourly"
+            env = live_state_cache.get_strike_ladder(
+                self.data_exchange, mk, self.symbol.upper()
+            )
+            if env:
+                data = env.get("data") or {}
+                meta = data.get("meta") or {}
+                if meta:
+                    return meta
+                rows = data.get("rows")
+                if rows:
+                    return {"strikes": rows, "source": "live_state_cache"}
+            return None
+
         conn = None
         try:
             conn = get_postgresql_connection()

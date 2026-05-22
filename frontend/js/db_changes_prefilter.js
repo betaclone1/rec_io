@@ -28,4 +28,28 @@
     }
     return false;
   };
+
+  g.recWsRawMentionsLiveStrikeLadder = function recWsRawMentionsLiveStrikeLadder(raw) {
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"live_strike_ladder"') !== -1 ||
+      raw.indexOf('"type": "live_strike_ladder"') !== -1
+    );
+  };
+
+  g.recWsRawMentionsTradeMarksUpdated = function recWsRawMentionsTradeMarksUpdated(raw) {
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"trade_marks_updated"') !== -1 ||
+      raw.indexOf('"type": "trade_marks_updated"') !== -1
+    );
+  };
+
+  g.recWsRawMentionsLiveOrderbook = function recWsRawMentionsLiveOrderbook(raw) {
+    if (typeof raw !== 'string') return false;
+    return (
+      raw.indexOf('"type":"live_orderbook"') !== -1 ||
+      raw.indexOf('"type": "live_orderbook"') !== -1
+    );
+  };
 })(typeof window !== 'undefined' ? window : globalThis);

@@ -808,6 +808,52 @@ def wait_auto_entry_settings_ack(
     return None
 
 
+def publish_trade_marks_ws_message(
+    marks: list,
+    *,
+    tenant_user_no: Optional[str] = None,
+    r=None,
+) -> bool:
+    """In-place trade log marks on ``rec_io:db_changes`` → main ``/ws/db_changes`` (not preferences)."""
+    if not marks:
+        return False
+    envelope: Dict[str, Any] = {
+        "type": "trade_marks_updated",
+        "marks": marks,
+        "timestamp": now_est().isoformat(),
+    }
+    if tenant_user_no:
+        u = str(tenant_user_no).strip()
+        if u.isdigit() and len(u) <= 4:
+            envelope["tenant_user_no"] = u.zfill(4)
+    payload = json.dumps(envelope, default=str)
+    channel = channel_db_changes()
+
+    def _try_publish(client) -> bool:
+        client.publish(channel, payload)
+        return True
+
+    if r is not None:
+        try:
+            return _try_publish(r)
+        except Exception as e:
+            logger.warning("publish_trade_marks_ws_message failed: %s", e)
+            return False
+
+    for attempt in range(2):
+        client = redis_client_optional()
+        if not client:
+            return False
+        try:
+            return _try_publish(client)
+        except Exception as e:
+            logger.warning(
+                "publish_trade_marks_ws_message failed (attempt %s): %s", attempt + 1, e
+            )
+            _invalidate_trading_redis_cache()
+    return False
+
+
 def publish_db_change_json(db_name: str, change_data: Optional[Dict[str, Any]] = None, r=None) -> bool:
     """Same JSON shape as main.broadcast_db_change for /ws/db_changes subscribers."""
     close_client = False

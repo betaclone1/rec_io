@@ -5,8 +5,8 @@ SCOPE (anti-bloat): This process does exactly: (1) LISTEN rec_io_db_changes,
 (2) map (schema, table) -> stream name via stream_registry, (3) publish one JSON
 to Redis rec_io:db_changes, (4) fan out to /ws/db_changes clients. Plus /health.
 
-Also publishes ``{"type":"live_symbol_spot",...}`` (same Redis channel) after
-``live_data.live_symbol_status`` NOTIFY and after ``live_data.price_change_*`` NOTIFY,
+Also publishes ``{"type":"live_symbol_spot",...}`` after live_state symbol updates and
+``live_data.price_change_*`` NOTIFY (``live_symbol_status`` NOTIFY is LP-only).
 with spot rows plus latest 1h/3h/1d percent fields from ``price_change_<symbol>`` tables.
 
 Do NOT add application HTTP APIs or auth here. See docs/REALTIME_BACKBONE.md
@@ -27,8 +27,10 @@ import select
 import threading
 import queue
 import asyncio
+import time
 from datetime import date, datetime, timezone
 from decimal import Decimal
+from typing import Optional
 
 from psycopg2 import sql as psql
 from psycopg2.extras import RealDictCursor
@@ -100,11 +102,166 @@ def _numeric_spot_from_row(row: dict):
     return None
 
 
+def _live_tick_spot_from_row(row: dict):
+    """UI live tick: raw Coinbase ``price`` when cache-only; else legacy avg-first."""
+    try:
+        from backend.core.live_state_config import (
+            live_state_cache_enabled,
+            live_state_pg_writes_enabled,
+        )
+
+        if live_state_cache_enabled() and not live_state_pg_writes_enabled():
+            p = row.get("price")
+            if p is not None:
+                return float(p)
+    except Exception:
+        pass
+    return _numeric_spot_from_row(row)
+
+
+_CHANGES_BY_SYMBOL_CACHE: dict = {}
+_CHANGES_BY_SYMBOL_CACHE_AT: float = 0.0
+_CHANGES_CACHE_TTL_SEC = float(os.getenv("LIVE_SYMBOL_CHANGES_CACHE_TTL_SEC", "30"))
+
+
+def invalidate_price_changes_cache() -> None:
+    global _CHANGES_BY_SYMBOL_CACHE_AT
+    _CHANGES_BY_SYMBOL_CACHE_AT = 0.0
+
+
+def _fetch_changes_by_symbol() -> dict:
+    """Latest 1h/3h/1d %% from ``live_data.price_change_*`` (not on hot tick path)."""
+    global _CHANGES_BY_SYMBOL_CACHE, _CHANGES_BY_SYMBOL_CACHE_AT
+    now = time.monotonic()
+    if _CHANGES_BY_SYMBOL_CACHE and (now - _CHANGES_BY_SYMBOL_CACHE_AT) < _CHANGES_CACHE_TTL_SEC:
+        return dict(_CHANGES_BY_SYMBOL_CACHE)
+    changes_by_symbol: dict = {}
+    try:
+        from backend.core.config.database import get_system_postgresql_connection
+
+        conn = get_system_postgresql_connection()
+        if not conn:
+            return dict(_CHANGES_BY_SYMBOL_CACHE)
+        try:
+            cur = conn.cursor(cursor_factory=RealDictCursor)
+            for sym_key, tbl in (
+                ("BTC", "price_change_btc"),
+                ("ETH", "price_change_eth"),
+                ("SOL", "price_change_sol"),
+                ("XRP", "price_change_xrp"),
+            ):
+                try:
+                    cur.execute(
+                        psql.SQL(
+                            "SELECT change1h, change3h, change1d FROM live_data.{} "
+                            "ORDER BY id DESC LIMIT 1"
+                        ).format(psql.Identifier(tbl))
+                    )
+                    prow = cur.fetchone()
+                    if prow:
+                        pd = dict(prow)
+                        changes_by_symbol[sym_key] = {
+                            "change1h": _jsonable_value(pd.get("change1h")),
+                            "change3h": _jsonable_value(pd.get("change3h")),
+                            "change1d": _jsonable_value(pd.get("change1d")),
+                        }
+                except Exception:
+                    continue
+            cur.close()
+        finally:
+            conn.close()
+    except Exception as e:
+        logger.debug("_fetch_changes_by_symbol: %s", e)
+        return dict(_CHANGES_BY_SYMBOL_CACHE)
+    _CHANGES_BY_SYMBOL_CACHE = changes_by_symbol
+    _CHANGES_BY_SYMBOL_CACHE_AT = now
+    return dict(changes_by_symbol)
+
+
+def _momentum_by_symbol_from_rows(row_dicts: list) -> dict:
+    """Trade-monitor header Mom: prefer 30s smoothed momentum (stored as percentile)."""
+    out: dict = {}
+    for r in row_dicts or []:
+        sym = r.get("symbol")
+        if sym is None:
+            continue
+        key = str(sym).strip().upper()
+        if not key:
+            continue
+        raw = r.get("momentum_30s_avg")
+        if raw is None:
+            raw = r.get("momentum_percentile")
+        if raw is None:
+            raw = r.get("momentum")
+        if raw is not None:
+            try:
+                out[key] = float(raw)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _publish_to_db_changes_bus(text: str) -> None:
+    """Fan out to main_app (Redis pub/sub) and switchboard WS bridge (local queue)."""
+    try:
+        get_redis_client().publish(REDIS_CHANNEL_DB_CHANGES, text)
+    except Exception as e:
+        logger.warning("Redis publish db_changes bus failed: %s", e)
+    message_queue.put((REDIS_CHANNEL_DB_CHANGES, text))
+
+
+def publish_live_orderbook_ws_message(payload: dict) -> None:
+    """Push one ``live_orderbook`` frame to the db_changes bus (trade-monitor WS clients)."""
+    if not payload:
+        return
+    body = dict(payload)
+    body.setdefault("type", "live_orderbook")
+    _publish_to_db_changes_bus(json.dumps(body))
+
+
+def build_live_symbol_spot_from_cache():
+    """Build live_symbol_spot from Redis live_state symbol keys only (no PG)."""
+    from backend.core import live_state_cache
+    from backend.core.live_state_config import live_state_cache_enabled
+
+    if not live_state_cache_enabled():
+        return None
+    row_dicts = []
+    spot_by_symbol: dict = {}
+    for sym in ("BTC", "ETH", "SOL", "XRP"):
+        cached = live_state_cache.get_symbol_data(sym)
+        if not cached:
+            continue
+        merged = dict(cached)
+        merged["symbol"] = sym
+        row_dicts.append(_jsonable_row(merged))
+        sp = _live_tick_spot_from_row(merged)
+        if sp is not None:
+            spot_by_symbol[sym] = sp
+    if not row_dicts:
+        return None
+    now = datetime.now(timezone.utc).isoformat()
+    return {
+        "type": "live_symbol_spot",
+        "timestamp": now,
+        "spot_by_symbol": spot_by_symbol,
+        "changes_by_symbol": _fetch_changes_by_symbol(),
+        "momentum_by_symbol": _momentum_by_symbol_from_rows(row_dicts),
+        "rows": row_dicts,
+    }
+
+
 def build_live_symbol_spot_payload():
     """
-    Snapshot ``live_data.live_symbol_status`` plus latest ``price_change_*`` %% rows.
-    Returns a dict suitable for json.dumps, or None if DB unavailable / empty status.
+    Snapshot spot/momentum from live_state Redis plus ``price_change_*`` %% (PG, ~30s cache).
+
+    When ``LIVE_STATE_CACHE_ENABLED=1``, symbol rows come only from Redis; missing cache → None.
     """
+    from backend.core.live_state_config import live_state_cache_enabled
+
+    if live_state_cache_enabled():
+        return build_live_symbol_spot_from_cache()
+
     from backend.core.config.database import get_system_postgresql_connection
 
     conn = get_system_postgresql_connection()
@@ -123,6 +280,27 @@ def build_live_symbol_spot_payload():
         if not rows:
             return None
         row_dicts = [_jsonable_row(dict(r)) for r in rows]
+        try:
+            from backend.core.live_state_config import live_state_cache_enabled
+            from backend.core import live_state_cache
+
+            if live_state_cache_enabled():
+                for sym in ("BTC", "ETH", "SOL", "XRP"):
+                    cached = live_state_cache.get_symbol_data(sym)
+                    if not cached:
+                        continue
+                    merged = dict(cached)
+                    merged["symbol"] = sym
+                    replaced = False
+                    for i, existing in enumerate(row_dicts):
+                        if str(existing.get("symbol", "")).upper() == sym:
+                            row_dicts[i] = _jsonable_row({**existing, **merged})
+                            replaced = True
+                            break
+                    if not replaced:
+                        row_dicts.append(_jsonable_row(merged))
+        except Exception:
+            pass
         spot_by_symbol = {}
         for r in row_dicts:
             sym = r.get("symbol")
@@ -131,39 +309,17 @@ def build_live_symbol_spot_payload():
             key = str(sym).strip().upper()
             if not key:
                 continue
-            sp = _numeric_spot_from_row(r)
+            sp = _live_tick_spot_from_row(r)
             if sp is not None:
                 spot_by_symbol[key] = sp
-        changes_by_symbol: dict = {}
-        for sym_key, tbl in (
-            ("BTC", "price_change_btc"),
-            ("ETH", "price_change_eth"),
-            ("SOL", "price_change_sol"),
-            ("XRP", "price_change_xrp"),
-        ):
-            try:
-                cur.execute(
-                    psql.SQL(
-                        "SELECT change1h, change3h, change1d FROM live_data.{} "
-                        "ORDER BY id DESC LIMIT 1"
-                    ).format(psql.Identifier(tbl))
-                )
-                prow = cur.fetchone()
-                if prow:
-                    pd = dict(prow)
-                    changes_by_symbol[sym_key] = {
-                        "change1h": _jsonable_value(pd.get("change1h")),
-                        "change3h": _jsonable_value(pd.get("change3h")),
-                        "change1d": _jsonable_value(pd.get("change1d")),
-                    }
-            except Exception:
-                continue
+        changes_by_symbol = _fetch_changes_by_symbol()
         now = datetime.now(timezone.utc).isoformat()
         return {
             "type": "live_symbol_spot",
             "timestamp": now,
             "spot_by_symbol": spot_by_symbol,
             "changes_by_symbol": changes_by_symbol,
+            "momentum_by_symbol": _momentum_by_symbol_from_rows(row_dicts),
             "rows": row_dicts,
         }
     except Exception as e:
@@ -208,6 +364,7 @@ def pg_listen_loop():
                     tbl_l = str(table or "").lower()
                     if sch_l == "live_data" and tbl_l in _PRICE_CHANGE_NOTIFY_TABLES:
                         try:
+                            invalidate_price_changes_cache()
                             spot_msg = build_live_symbol_spot_payload()
                             if spot_msg:
                                 r.publish(
@@ -264,6 +421,162 @@ def pg_listen_loop():
                     logger.warning("Error handling NOTIFY: %s", e)
     except Exception as e:
         logger.warning("PG listen thread exited: %s", e)
+
+
+def _market_from_live_state_key(parts: list[str]) -> Optional[str]:
+    """Parse market segment from ``rec_io:live_state:v1:{kind}:{exchange}:{market}:{symbol}``."""
+    # parts: rec_io, live_state, v1, kind, exchange, market, symbol
+    if len(parts) < 7:
+        return None
+    return str(parts[5] or "").strip().lower()
+
+
+def _publish_orderbook_kalshi_db_change(market_ticker: str = "") -> None:
+    """Synthetic ``orderbook_kalshi`` db_change for cache-only depth (replaces PG NOTIFY)."""
+    now = datetime.now(timezone.utc).isoformat()
+    change = {"schema": "live_data", "table": "orderbook_kalshi", "op": "LIVE_CACHE"}
+    if market_ticker:
+        change["market_ticker"] = market_ticker
+    _publish_to_db_changes_bus(
+        json.dumps(
+            {
+                "type": "db_change",
+                "schema": "live_data",
+                "database": "orderbook_kalshi",
+                "table": "orderbook_kalshi",
+                "data": {"timestamp": now, "change_data": change},
+                "timestamp": now,
+            }
+        )
+    )
+
+
+def _fanout_live_strike_ladder_ws(exchange: str, market: str, symbol: str) -> None:
+    """Push ``live_strike_ladder`` from Redis on every strike_ladder cache write."""
+    sym = str(symbol or "").strip().upper()
+    mk = str(market or "").strip().lower()
+    if not sym or mk not in ("hourly", "15m"):
+        return
+    try:
+        from backend.core.live_state_read_helpers import strike_ladder_ws_payload
+
+        ladder_msg = strike_ladder_ws_payload(exchange, mk, sym)
+        if not ladder_msg:
+            return
+        _publish_to_db_changes_bus(json.dumps(ladder_msg))
+    except Exception as e:
+        logger.debug("live_strike_ladder fanout failed: %s", e)
+
+
+def _fanout_live_state_updated(payload: dict) -> None:
+    """Map live_state pub/sub events to WS payloads (cache-only mode; no PG NOTIFY)."""
+    kind = payload.get("kind")
+    key = str(payload.get("key") or "")
+    parts = key.split(":")
+    if kind == "orderbook":
+        mt = str(payload.get("market_ticker") or "").strip()
+        if not mt:
+            return
+        try:
+            from backend.core.trade_monitor_orderbook_watch import should_fanout_orderbook_live_ws
+
+            mk_fanout = str(payload.get("market_interval") or "15m").strip().lower()
+            if not should_fanout_orderbook_live_ws(mt, market=mk_fanout):
+                return
+        except Exception:
+            pass
+        event_seq = payload.get("book_seq")
+        try:
+            from backend.core.trade_monitor_live_orderbook_payload import (
+                build_live_orderbook_ws_payload,
+            )
+
+            ob_msg = build_live_orderbook_ws_payload(mt)
+            if not ob_msg:
+                return
+            _publish_to_db_changes_bus(json.dumps(ob_msg))
+        except Exception as e:
+            logger.debug("live_orderbook fanout failed: %s", e)
+        return
+    if kind == "symbol":
+        spot = build_live_symbol_spot_payload()
+        if spot:
+            _publish_to_db_changes_bus(json.dumps(spot))
+        now = datetime.now(timezone.utc).isoformat()
+        _publish_to_db_changes_bus(
+            json.dumps(
+                {
+                    "type": "db_change",
+                    "database": STREAM_LIVE_SYMBOL_STATUS,
+                    "data": {
+                        "timestamp": now,
+                        "change_data": {
+                            "schema": "live_data",
+                            "table": "live_symbol_status",
+                            "op": "LIVE_CACHE",
+                        },
+                    },
+                    "timestamp": now,
+                }
+            )
+        )
+        return
+    mk = _market_from_live_state_key(parts)
+    if not mk:
+        return
+    sym = str(parts[6] or "").strip().upper() if len(parts) >= 7 else ""
+    if kind == "strike_ladder":
+        if sym:
+            _fanout_live_strike_ladder_ws("kalshi", mk, sym)
+        db_name = "strike_table_15m" if mk == "15m" else "strike_table_hourly"
+    elif kind == "market":
+        if sym:
+            _fanout_live_strike_ladder_ws("kalshi", mk, sym)
+        db_name = "market_kalshi_15m" if mk == "15m" else "market_kalshi_hourly"
+    else:
+        return
+    now = datetime.now(timezone.utc).isoformat()
+    _publish_to_db_changes_bus(
+        json.dumps(
+            {
+                "type": "db_change",
+                "schema": "live_data",
+                "database": db_name,
+                "table": db_name,
+                "data": {
+                    "timestamp": now,
+                    "change_data": {"schema": "live_data", "table": db_name, "op": "LIVE_STATE"},
+                },
+                "timestamp": now,
+            }
+        )
+    )
+
+
+def live_state_subscriber_loop():
+    """Subscribe to rec_io:live_state:updated and fan out synthetic WS messages."""
+    from backend.core.live_state_cache import UPDATED_CHANNEL
+    from backend.core.live_state_config import live_state_cache_enabled
+
+    if not live_state_cache_enabled():
+        return
+    try:
+        r = get_redis_client()
+        pubsub = r.pubsub()
+        pubsub.subscribe(UPDATED_CHANNEL)
+        logger.info("Subscribed to Redis %s (live_state fanout)", UPDATED_CHANNEL)
+        for message in pubsub.listen():
+            if message.get("type") != "message":
+                continue
+            try:
+                payload = json.loads(message["data"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if payload.get("type") != "live_state_updated":
+                continue
+            _fanout_live_state_updated(payload)
+    except Exception as e:
+        logger.warning("live_state subscriber thread exited: %s", e)
 
 
 def redis_subscriber_loop():
@@ -613,6 +926,8 @@ async def startup():
     # Start Redis subscriber thread
     t_redis = threading.Thread(target=redis_subscriber_loop, daemon=True)
     t_redis.start()
+    t_live_state = threading.Thread(target=live_state_subscriber_loop, daemon=True)
+    t_live_state.start()
     # Start bridge task
     asyncio.create_task(bridge_loop())
     logger.info("Switchboard listening on %s:%s", SWITCHBOARD_HOST, SWITCHBOARD_PORT)

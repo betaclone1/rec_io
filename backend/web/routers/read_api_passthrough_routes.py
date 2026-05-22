@@ -43,6 +43,18 @@ async def get_trades_proxy(request: Request):
     return await _get(request, path)
 
 
+@read_api_passthrough_router.get("/api/trades/hot_marks")
+async def get_trades_hot_marks_proxy(request: Request):
+    """Proxy to read_api: live marks from Redis active_trades (hot path)."""
+    return await _get(request, "/api/trades/hot_marks")
+
+
+@read_api_passthrough_router.get("/api/debug/active_trades_redis_pool")
+async def active_trades_redis_pool_debug_proxy(request: Request):
+    """Proxy to read_api: full Redis active_trades pool (debug test UI)."""
+    return await _get(request, "/api/debug/active_trades_redis_pool")
+
+
 @read_api_passthrough_router.post("/api/trades/history/insights")
 async def trade_history_insights_proxy(request: Request):
     """Proxy to read_api: summary + analysis over full filtered trade set."""
@@ -59,6 +71,36 @@ async def live_symbol_spot_bootstrap_proxy(request: Request):
         if q
         else "/api/live_symbol_spot_bootstrap"
     )
+    return await _get(request, path)
+
+
+@read_api_passthrough_router.get("/api/live_strike_ladder_bootstrap")
+async def live_strike_ladder_bootstrap_proxy(request: Request):
+    """Proxy to read_api: strike ladder bootstrap for trade monitor."""
+    q = request.url.query
+    path = (
+        f"/api/live_strike_ladder_bootstrap?{q}"
+        if q
+        else "/api/live_strike_ladder_bootstrap"
+    )
+    return await _get(request, path)
+
+
+@read_api_passthrough_router.post("/api/trade-monitor/orderbook_watch")
+async def trade_monitor_orderbook_watch_proxy(request: Request):
+    q = request.url.query
+    path = (
+        f"/api/trade-monitor/orderbook_watch?{q}"
+        if q
+        else "/api/trade-monitor/orderbook_watch"
+    )
+    return await _post_body(request, path, b"")
+
+
+@read_api_passthrough_router.get("/api/trade-monitor/strike-ladder")
+async def trade_monitor_strike_ladder_proxy(request: Request):
+    q = request.url.query
+    path = f"/api/trade-monitor/strike-ladder?{q}" if q else "/api/trade-monitor/strike-ladder"
     return await _get(request, path)
 
 

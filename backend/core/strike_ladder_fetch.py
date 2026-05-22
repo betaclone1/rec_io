@@ -35,8 +35,17 @@ def fetch_strike_ladder_prefer_snapshot(
     current_market: str,
     exchange: Optional[str] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Redis snapshot when fresh (same wall-second payload for all workers), else ``live_data`` ladder."""
+    """Live strike ladder from live_state Redis; legacy PG only when cache is disabled."""
     ex = normalize_exchange(exchange)
+    from backend.core.live_state_config import live_state_cache_enabled
+    from backend.core.live_state_read_helpers import strike_ladder_from_cache
+
+    if live_state_cache_enabled():
+        ladder = strike_ladder_from_cache(ex, current_market, current_symbol)
+        if ladder is not None:
+            return ladder
+        return None
+
     from backend.core.strike_snapshot_redis import get_strike_ladder_from_snapshot
 
     snap = get_strike_ladder_from_snapshot(ex, current_market, current_symbol)

@@ -136,6 +136,186 @@ VOLATILITY_CACHE = {}
 # Global movement profile cache (percentile -> movement_value)
 MOVEMENT_PROFILES = {}
 
+CRYPTO_LIVE_STATE_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP"})
+
+def _hot_wall_timestamp_ms() -> str:
+    """Eastern wall time with millisecond precision for live_state hot path."""
+    now = datetime.now(ZoneInfo("America/New_York"))
+    return now.strftime("%Y-%m-%dT%H:%M:%S") + f".{now.microsecond // 1000:03d}"
+
+
+def _coinbase_live_hot_path(symbol: str) -> bool:
+    """Coinbase crypto: every WS tick → Redis live_state; history via spool only."""
+    try:
+        from backend.core.live_state_config import live_state_cache_enabled
+
+        return symbol in CRYPTO_LIVE_STATE_SYMBOLS and live_state_cache_enabled()
+    except Exception:
+        return False
+
+
+def build_symbol_tick_row(
+    symbol: str,
+    timestamp: str,
+    price: float,
+    *,
+    ws_received_mono: float,
+) -> Tuple[Dict[str, Any], str]:
+    """Full spot + momentum + volatility + movement row (buffer-first when enabled)."""
+    px = float(price)
+    try:
+        one_minute_avg = get_1m_avg_price(symbol)
+        if one_minute_avg == 0.0:
+            one_minute_avg = px
+    except Exception:
+        one_minute_avg = px
+
+    try:
+        momentum_data = get_momentum_data(symbol)
+    except Exception:
+        momentum_data = {
+            "momentum": None,
+            "delta_1m": None,
+            "delta_2m": None,
+            "delta_3m": None,
+            "delta_4m": None,
+            "delta_15m": None,
+            "delta_30m": None,
+        }
+
+    momentum_percentile = None
+    if momentum_data.get("momentum") is not None:
+        try:
+            momentum_percentile = calculate_momentum_percentile(
+                symbol, momentum_data["momentum"]
+            )
+        except Exception:
+            pass
+
+    try:
+        momentum_5s_avg = calculate_5s_momentum_average(symbol)
+    except Exception:
+        momentum_5s_avg = None
+    try:
+        momentum_30s_avg = calculate_30s_momentum_average(symbol)
+    except Exception:
+        momentum_30s_avg = None
+
+    minute_key = timestamp[:16]
+    volatility_value, volatility_percentile = get_volatility_for_minute(symbol, minute_key)
+
+    try:
+        movement_data = get_movement_data(symbol)
+    except Exception:
+        movement_data = {
+            "move_1m": None,
+            "move_2m": None,
+            "move_3m": None,
+            "move_4m": None,
+            "move_15m": None,
+            "move_30m": None,
+            "movement": None,
+            "movement_percentile": None,
+        }
+
+    table_name = SYMBOL_CONFIG[symbol]["table_name"]
+    tick_row = {
+        "timestamp": timestamp,
+        "ws_received_mono": ws_received_mono,
+        "price": px,
+        "one_minute_avg": one_minute_avg,
+        "momentum": momentum_data.get("momentum"),
+        "delta_1m": momentum_data.get("delta_1m"),
+        "delta_2m": momentum_data.get("delta_2m"),
+        "delta_3m": momentum_data.get("delta_3m"),
+        "delta_4m": momentum_data.get("delta_4m"),
+        "delta_15m": momentum_data.get("delta_15m"),
+        "delta_30m": momentum_data.get("delta_30m"),
+        "momentum_percentile": momentum_percentile,
+        "momentum_5s_avg": momentum_5s_avg,
+        "momentum_30s_avg": momentum_30s_avg,
+        "volatility": volatility_value,
+        "volatility_percentile": volatility_percentile,
+        "move_1m": movement_data.get("move_1m"),
+        "move_2m": movement_data.get("move_2m"),
+        "move_3m": movement_data.get("move_3m"),
+        "move_4m": movement_data.get("move_4m"),
+        "move_15m": movement_data.get("move_15m"),
+        "move_30m": movement_data.get("move_30m"),
+        "movement": movement_data.get("movement"),
+        "movement_percentile": movement_data.get("movement_percentile"),
+    }
+    return tick_row, table_name
+
+
+def _publish_crypto_live_state(
+    symbol: str,
+    tick_row: Dict[str, Any],
+    timestamp: str,
+    table_name: str,
+) -> None:
+    from backend.core.live_state_config import (
+        live_state_cache_enabled,
+        live_state_pg_writes_enabled,
+        live_state_spool_enabled,
+    )
+    from backend.core import live_state_cache
+    from backend.core.symbol_tick_buffer import record_momentum
+
+    if not live_state_cache_enabled():
+        return
+    if _metrics_use_buffer(symbol):
+        record_momentum(symbol, tick_row.get("momentum"))
+    live_state_cache.set_symbol(
+        symbol, tick_row, source_event_at=timestamp, publish_detail="full"
+    )
+    if live_state_spool_enabled():
+        try:
+            from backend.core import event_spool
+        except ImportError:
+            event_spool = None  # type: ignore[misc, assignment]
+        if event_spool is not None:
+            event_spool.append_event(
+                "tick",
+                {"symbol": symbol, "table_name": table_name, "row": tick_row},
+                source=f"symbol_price_watchdog_{symbol.lower()}",
+                idempotency_key=f"tick:{symbol}:{timestamp}",
+                occurred_at=timestamp,
+            )
+    if not live_state_pg_writes_enabled():
+        logger.debug("%s live_state hot path (PG via spool/db_writer)", symbol)
+
+
+def publish_crypto_symbol_hot(
+    symbol: str,
+    price: float,
+    *,
+    ws_received_mono: float,
+) -> None:
+    """Every Coinbase tick → full live_state row + strike regen (no rate cap)."""
+    if not _coinbase_live_hot_path(symbol):
+        return
+
+    ts = _hot_wall_timestamp_ms()
+    px = float(price)
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import append_tick
+
+        append_tick(symbol, ts, px)
+    tick_row, table_name = build_symbol_tick_row(
+        symbol, ts, price, ws_received_mono=ws_received_mono
+    )
+    _publish_crypto_live_state(symbol, tick_row, ts, table_name)
+
+
+def _metrics_use_buffer(symbol: str) -> bool:
+    try:
+        from backend.core.live_state_config import live_state_use_tick_buffer
+
+        return live_state_use_tick_buffer() and symbol in CRYPTO_LIVE_STATE_SYMBOLS
+    except Exception:
+        return False
+
 def update_prev_day_avg_for_symbol(symbol: str, cursor, table_name: str, yesterday_start: str, yesterday_end: str):
     """
     Compute previous calendar day's average momentum/volatility/movement percentiles from this symbol's
@@ -429,6 +609,10 @@ def get_1m_avg_price(symbol: str) -> float:
     Calculate the average price of the last 60 seconds from the PostgreSQL database.
     Returns the current price if insufficient data is available.
     """
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import avg_price_last_minute
+
+        return avg_price_last_minute(symbol, get_current_price(symbol))
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -462,7 +646,13 @@ def get_1m_avg_price(symbol: str) -> float:
         return get_current_price(symbol)
 
 def get_current_price(symbol: str) -> float:
-    """Get the most recent price from the PostgreSQL database"""
+    """Get the most recent price from buffer or PostgreSQL."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import latest_price
+
+        p = latest_price(symbol)
+        if p is not None:
+            return p
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -493,7 +683,11 @@ def get_momentum_data(symbol: str = 'BTC') -> dict:
         return {"momentum": None}
 
 def get_price_at_offset(symbol: str, minutes_ago: int) -> Optional[float]:
-    """Get price from X minutes ago using PostgreSQL database"""
+    """Get price from X minutes ago using tick buffer or PostgreSQL."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import price_at_offset_minutes
+
+        return price_at_offset_minutes(symbol, minutes_ago)
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -526,7 +720,11 @@ def get_price_at_offset(symbol: str, minutes_ago: int) -> Optional[float]:
         return None
 
 def get_current_price_from_db(symbol: str) -> Optional[float]:
-    """Get the most recent price from PostgreSQL database"""
+    """Get the most recent price from tick buffer or PostgreSQL."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import latest_price
+
+        return latest_price(symbol)
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -545,7 +743,11 @@ def get_current_price_from_db(symbol: str) -> Optional[float]:
         return None
 
 def get_high_low_open_for_window(symbol: str, minutes_ago: int) -> Tuple[Optional[float], Optional[float], Optional[float]]:
-    """Return (high, low, open) for the last N minutes from live table. Open = price at window start (oldest tick)."""
+    """Return (high, low, open) for the last N minutes from buffer or live table."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import high_low_open_window
+
+        return high_low_open_window(symbol, minutes_ago)
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -671,6 +873,14 @@ def get_movement_data(symbol: str) -> Dict[str, Any]:
 
 def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
     """Calculate 5-second rolling average of momentum values and return as percentile"""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import momentum_tail
+
+        vals = momentum_tail(symbol, 5)
+        if not vals:
+            return None
+        avg = sum(vals) / len(vals)
+        return calculate_momentum_percentile(symbol, avg)
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -707,7 +917,18 @@ def calculate_5s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
         return None
 
 def calculate_30s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
-    """Calculate 30-second rolling average of momentum values and return as percentile"""
+    """30-second mean of momentum scores, as percentile (same scale as legacy Mom header)."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import momentum_tail
+
+        vals = momentum_tail(symbol, 30)
+        if not vals:
+            return None
+        avg = sum(vals) / len(vals)
+        pct = calculate_momentum_percentile(symbol, avg)
+        if pct is not None:
+            return pct
+        return avg
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
@@ -765,6 +986,10 @@ def get_minute_candles_for_volatility(symbol: str, lookback_minutes: int = 60) -
     Get 1-minute OHLC candles from the last lookback_minutes using separate connection.
     Returns list of dicts with keys: open, high, low, close (oldest first).
     """
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import minute_candles
+
+        return minute_candles(symbol, lookback_minutes)
     try:
         conn = get_postgres_connection()
         if not conn:
@@ -949,71 +1174,73 @@ def get_volatility_for_minute(symbol: str, minute_key: str) -> Tuple[Optional[fl
     
     return (volatility_value, volatility_percentile)
 
-def insert_tick(symbol: str, timestamp: str, price: float):
+def insert_tick(
+    symbol: str,
+    timestamp: str,
+    price: float,
+    *,
+    ws_received_mono: Optional[float] = None,
+):
     """
     Insert symbol price tick with 1-minute average and momentum data into PostgreSQL.
     Rolling retention: keeps ``LIVE_PRICE_LOG_RETENTION_DAYS`` days of 1s ticks per symbol table.
-    """
-    conn = get_postgres_connection()
-    cursor = conn.cursor()
-    
-    try:
-        # Calculate 1-minute average price - handle case where no historical data exists yet
-        try:
-            one_minute_avg = get_1m_avg_price(symbol)
-            if one_minute_avg == 0.0:  # No historical data
-                one_minute_avg = price  # Use current price as fallback
-        except Exception as e:
-            logger.debug("1m average calculation failed (no historical data yet): %s", e)
-            one_minute_avg = price  # Use current price as fallback
 
-        try:
-            momentum_data = get_momentum_data(symbol)
-        except Exception as e:
-            logger.debug("Momentum calculation failed (no historical data yet): %s", e)
-            momentum_data = {
-                'momentum': None,
-                'delta_1m': None,
-                'delta_2m': None,
-                'delta_3m': None,
-                'delta_4m': None,
-                'delta_15m': None,
-                'delta_30m': None
-            }
-        
-        # Calculate momentum percentile
-        momentum_percentile = None
-        if momentum_data.get('momentum') is not None:
+    ``ws_received_mono`` is ``time.monotonic()`` when the upstream WS tick was accepted
+  (used for live pipeline latency measurement).
+    """
+    recv_mono = float(ws_received_mono) if ws_received_mono is not None else time.monotonic()
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import append_tick
+
+        append_tick(symbol, timestamp, price)
+
+    conn = None
+    try:
+        tick_row, table_name = build_symbol_tick_row(
+            symbol, timestamp, price, ws_received_mono=recv_mono
+        )
+        momentum_data = {
+            "momentum": tick_row.get("momentum"),
+            "delta_1m": tick_row.get("delta_1m"),
+            "delta_2m": tick_row.get("delta_2m"),
+            "delta_3m": tick_row.get("delta_3m"),
+            "delta_4m": tick_row.get("delta_4m"),
+            "delta_15m": tick_row.get("delta_15m"),
+            "delta_30m": tick_row.get("delta_30m"),
+        }
+        momentum_percentile = tick_row.get("momentum_percentile")
+        momentum_5s_avg = tick_row.get("momentum_5s_avg")
+        momentum_30s_avg = tick_row.get("momentum_30s_avg")
+        volatility_value = tick_row.get("volatility")
+        volatility_percentile = tick_row.get("volatility_percentile")
+        movement_data = {
+            "move_1m": tick_row.get("move_1m"),
+            "move_2m": tick_row.get("move_2m"),
+            "move_3m": tick_row.get("move_3m"),
+            "move_4m": tick_row.get("move_4m"),
+            "move_15m": tick_row.get("move_15m"),
+            "move_30m": tick_row.get("move_30m"),
+            "movement": tick_row.get("movement"),
+            "movement_percentile": tick_row.get("movement_percentile"),
+        }
+        one_minute_avg = tick_row.get("one_minute_avg")
+
+        if symbol in CRYPTO_LIVE_STATE_SYMBOLS:
             try:
-                momentum_percentile = calculate_momentum_percentile(symbol, momentum_data['momentum'])
+                from backend.core.live_state_config import (
+                    live_state_cache_enabled,
+                    live_state_pg_writes_enabled,
+                )
+
+                if live_state_cache_enabled():
+                    _publish_crypto_live_state(symbol, tick_row, timestamp, table_name)
+                    if not live_state_pg_writes_enabled():
+                        return
             except Exception as e:
-                logger.debug("Momentum percentile calculation failed: %s", e)
-        momentum_5s_avg = None
-        try:
-            momentum_5s_avg = calculate_5s_momentum_average(symbol)
-        except Exception as e:
-            logger.debug("5s momentum average calculation failed: %s", e)
-        momentum_30s_avg = None
-        try:
-            momentum_30s_avg = calculate_30s_momentum_average(symbol)
-        except Exception as e:
-            logger.debug("30s momentum average calculation failed: %s", e)
-        
-        # Get volatility for current minute (calculated synchronously on first tick of minute)
-        minute_key = timestamp[:16]  # Extract minute key (YYYY-MM-DDTHH:MM)
-        volatility_value, volatility_percentile = get_volatility_for_minute(symbol, minute_key)
-        
-        # Get movement data (move_1m..move_30m, movement, movement_percentile)
-        try:
-            movement_data = get_movement_data(symbol)
-        except Exception as e:
-            logger.debug("Movement calculation failed: %s", e)
-            movement_data = {
-                "move_1m": None, "move_2m": None, "move_3m": None, "move_4m": None,
-                "move_15m": None, "move_30m": None, "movement": None, "movement_percentile": None,
-            }
-        
-        table_name = SYMBOL_CONFIG[symbol]['table_name']
+                logger.warning("live_state publish failed for %s: %s", symbol, e)
+
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
         
         # Insert the data with all columns including momentum, volatility, and movement
         cursor.execute(f'''
@@ -1069,69 +1296,8 @@ def insert_tick(symbol: str, timestamp: str, price: float):
             movement_data.get('movement_percentile'),
         ))
         
-        # Dual write to live_symbol_status is trigger-driven for BTC/ETH/SOL/XRP.
-        # Keep Python-side dual-write only for non-triggered symbols (SPX/NDX).
-        if symbol not in ("BTC", "ETH", "SOL", "XRP"):
-            # Column order must match live_symbol_status (volatility before momentum_30s_avg).
-            status_tick_values = (
-                timestamp,
-                price,
-                one_minute_avg,
-                momentum_data.get('momentum'),
-                momentum_data.get('delta_1m'),
-                momentum_data.get('delta_2m'),
-                momentum_data.get('delta_3m'),
-                momentum_data.get('delta_4m'),
-                momentum_data.get('delta_15m'),
-                momentum_data.get('delta_30m'),
-                momentum_percentile,
-                momentum_5s_avg,
-                volatility_value,
-                volatility_percentile,
-                momentum_30s_avg,
-                movement_data.get('move_1m'),
-                movement_data.get('move_2m'),
-                movement_data.get('move_3m'),
-                movement_data.get('move_4m'),
-                movement_data.get('move_15m'),
-                movement_data.get('move_30m'),
-                movement_data.get('movement'),
-                movement_data.get('movement_percentile'),
-            )
-            cursor.execute("""
-                UPDATE live_data.live_symbol_status SET
-                    "timestamp" = %s,
-                    price = %s,
-                    one_minute_avg = %s,
-                    momentum = %s,
-                    delta_1m = %s,
-                    delta_2m = %s,
-                    delta_3m = %s,
-                    delta_4m = %s,
-                    delta_15m = %s,
-                    delta_30m = %s,
-                    momentum_percentile = %s,
-                    momentum_5s_avg = %s,
-                    volatility = %s,
-                    volatility_percentile = %s,
-                    momentum_30s_avg = %s,
-                    move_1m = %s,
-                    move_2m = %s,
-                    move_3m = %s,
-                    move_4m = %s,
-                    move_15m = %s,
-                    move_30m = %s,
-                    movement = %s,
-                    movement_percentile = %s
-                WHERE symbol = %s
-            """, status_tick_values + (symbol,))
-            if cursor.rowcount == 0:
-                cursor.execute("""
-                    INSERT INTO live_data.live_symbol_status
-                    (symbol, "timestamp", price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, volatility, volatility_percentile, momentum_30s_avg, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (symbol,) + status_tick_values)
-        
+        # live_symbol_status: LP/cooldown only (no per-tick mirror); ticks go to live_state + price log.
+
         # ROLLING WINDOW: drop ticks older than LIVE_PRICE_LOG_RETENTION_DAYS (all symbols).
         dt = datetime.now(ZoneInfo("America/New_York")).replace(microsecond=0)
         cutoff_time = dt - timedelta(days=LIVE_PRICE_LOG_RETENTION_DAYS)
@@ -1142,10 +1308,12 @@ def insert_tick(symbol: str, timestamp: str, price: float):
         logger.debug("%s price logged: $%s at %s", symbol, f"{price:,.2f}", timestamp)
     except Exception as e:
         logger.error("Logger encountered an error: %s", e, exc_info=True)
-        conn.rollback()
+        if conn:
+            conn.rollback()
         raise
     finally:
-        conn.close()
+        if conn:
+            conn.close()
 
 HEARTBEAT_INTERVAL_SEC = 300  # 5 min internal heartbeat to stdout
 STALE_PRICE_RECONNECT_SEC = 180  # force WS reconnect if ticker price is unchanged too long
@@ -1206,6 +1374,20 @@ async def log_symbol_price(symbol: str):
                                 now_epoch - last_distinct_price_ts,
                             )
                             break
+
+                        ws_mono = time.monotonic()
+                        try:
+                            publish_crypto_symbol_hot(
+                                symbol, price, ws_received_mono=ws_mono
+                            )
+                        except Exception as e:
+                            logger.debug(
+                                "%s hot live_state publish failed: %s", symbol, e
+                            )
+
+                        if _coinbase_live_hot_path(symbol):
+                            continue
+
                         now = datetime.now(ZoneInfo("America/New_York"))
                         now = now.replace(microsecond=0)
 
@@ -1215,7 +1397,12 @@ async def log_symbol_price(symbol: str):
                         last_logged_second = current_second
 
                         rounded_timestamp = now.strftime("%Y-%m-%dT%H:%M:%S")
-                        insert_tick(symbol, rounded_timestamp, price)
+                        insert_tick(
+                            symbol,
+                            rounded_timestamp,
+                            price,
+                            ws_received_mono=ws_mono,
+                        )
 
                         if time.time() - last_heartbeat >= HEARTBEAT_INTERVAL_SEC:
                             logger.info("heartbeat")

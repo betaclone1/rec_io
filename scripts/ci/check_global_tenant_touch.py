@@ -23,8 +23,8 @@ REPO = Path(__file__).resolve().parents[2]
 
 # Paths relative to repo root — global daemons / shared-schema writers only.
 GLOBAL_MODULES = (
-    "backend/market_watchdog_ws.py",
-    "backend/market_watchdog.py",
+    "backend/core/market_watchdog/venues/kalshi_ws_ingest.py",
+    "backend/core/market_watchdog/kalshi_schedule_rest.py",
     "backend/strike_table_generator_ws.py",
     "backend/symbol_price_watchdog.py",
     "backend/symbol_price_watchdog_finance.py",

@@ -1,0 +1,361 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Live path cache monitor</title>
+  <style>
+    :root {
+      --bg: #0d1117;
+      --panel: #161b22;
+      --border: #30363d;
+      --text: #e6edf3;
+      --muted: #8b949e;
+      --accent: #58a6ff;
+      --ok: #3fb950;
+      --warn: #d29922;
+    }
+    * { box-sizing: border-box; }
+    body {
+      font: 13px/1.45 ui-monospace, Menlo, monospace;
+      background: var(--bg);
+      color: var(--text);
+      margin: 0;
+      padding: 16px;
+    }
+    h1 { font-size: 16px; color: var(--accent); margin: 0 0 4px; font-weight: 600; }
+    .sub { color: var(--muted); margin: 0 0 14px; max-width: 900px; }
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+      padding: 12px;
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      margin-bottom: 12px;
+    }
+    label { display: flex; flex-direction: column; gap: 4px; color: var(--muted); font-size: 11px; }
+    select, input, button {
+      font: inherit;
+      background: var(--bg);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 6px 8px;
+    }
+    button { cursor: pointer; color: var(--accent); }
+    button:hover { border-color: var(--accent); }
+    #meta { margin-bottom: 10px; color: var(--muted); }
+    #meta .ok { color: var(--ok); }
+    #meta .warn { color: var(--warn); }
+    #redis-key { color: var(--accent); word-break: break-all; }
+    .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    @media (max-width: 960px) { .panels { grid-template-columns: 1fr; } }
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      min-height: 200px;
+    }
+    .panel h2 {
+      margin: 0;
+      padding: 8px 10px;
+      font-size: 12px;
+      background: var(--panel);
+      border-bottom: 1px solid var(--border);
+      color: var(--muted);
+    }
+    table { width: 100%; border-collapse: collapse; }
+    th, td { border-bottom: 1px solid var(--border); padding: 5px 8px; text-align: left; }
+    th { color: var(--muted); font-weight: 500; }
+    .n { text-align: right; }
+    pre {
+      margin: 0;
+      padding: 10px;
+      max-height: 420px;
+      overflow: auto;
+      font-size: 11px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <h1>Live path cache monitor</h1>
+  <p class="sub">
+    Drop in any hot-path Redis / live_state source, confirm real-time updates via
+    <code>rec_io:live_state:updated</code> (and row patches for active trades).
+    Shareable URL: query params mirror the controls below.
+  </p>
+
+  <div class="toolbar" id="toolbar">
+    <label>Source
+      <select id="source"></select>
+    </label>
+    <span id="param-fields"></span>
+    <button type="button" id="btn-connect">Connect</button>
+    <button type="button" id="btn-snapshot">HTTP snapshot</button>
+  </div>
+
+  <div id="meta">
+    <span id="ws-status">disconnected</span>
+    · <span id="event-count">0 events</span>
+    · <span id="patch-count">0 patches</span>
+    · age <span id="age">—</span>
+    · <span id="redis-key"></span>
+  </div>
+
+  <div class="panels">
+    <div class="panel" id="panel-table">
+      <h2>Row view (active trades)</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>trade_id</th><th>status</th><th>ticker</th>
+            <th class="n">buy</th><th class="n">sell</th><th class="n">pnl</th>
+            <th class="n">prob*</th>
+          </tr>
+        </thead>
+        <tbody id="rows-body"></tbody>
+      </table>
+      <p class="sub" style="padding:8px;margin:0;font-size:11px;">*prob shown for ATS debug only; not trade-log live columns.</p>
+    </div>
+    <div class="panel">
+      <h2>Snapshot / last event</h2>
+      <pre id="json-out">Select a source and connect.</pre>
+    </div>
+  </div>
+
+  <script>
+(function () {
+  var catalog = [];
+  var ws = null;
+  var rows = {};
+  var eventCount = 0;
+  var patchCount = 0;
+  var reconnectTimer = null;
+
+  function qs() { return new URLSearchParams(window.location.search); }
+
+  function fmtNum(v) {
+    if (v == null || v === '') return '—';
+    var n = Number(v);
+    return isFinite(n) ? n.toFixed(4) : String(v);
+  }
+
+  function setParamsFromUrl() {
+    var q = qs();
+    var source = q.get('source') || 'active_trades';
+    document.getElementById('source').value = source;
+    renderParamFields();
+    ['user_no', 'exchange', 'market', 'symbol', 'redis_key'].forEach(function (name) {
+      var el = document.getElementById('p-' + name);
+      if (el && q.has(name)) el.value = q.get(name);
+    });
+  }
+
+  function syncUrl() {
+    var def = catalog.find(function (s) { return s.id === document.getElementById('source').value; });
+    var params = new URLSearchParams();
+    params.set('source', document.getElementById('source').value);
+    if (def && def.params) {
+      def.params.forEach(function (p) {
+        var el = document.getElementById('p-' + p.name);
+        if (el && String(el.value || '').trim() !== '') params.set(p.name, el.value.trim());
+      });
+    }
+    var next = window.location.pathname + '?' + params.toString();
+    window.history.replaceState(null, '', next);
+  }
+
+  function currentQuery() {
+    var def = catalog.find(function (s) { return s.id === document.getElementById('source').value; });
+    var q = { source: document.getElementById('source').value };
+    if (!def) return q;
+    def.params.forEach(function (p) {
+      var el = document.getElementById('p-' + p.name);
+      q[p.name] = el ? el.value.trim() : (p.default || '');
+    });
+    return q;
+  }
+
+  function renderParamFields() {
+    var sid = document.getElementById('source').value;
+    var def = catalog.find(function (s) { return s.id === sid; });
+    var host = document.getElementById('param-fields');
+    host.innerHTML = '';
+    if (!def) return;
+    def.params.forEach(function (p) {
+      var lab = document.createElement('label');
+      lab.textContent = p.label;
+      var inp = document.createElement('input');
+      inp.id = 'p-' + p.name;
+      inp.placeholder = p.placeholder || p.default || '';
+      inp.value = qs().get(p.name) || p.default || '';
+      lab.appendChild(inp);
+      host.appendChild(lab);
+    });
+    document.getElementById('panel-table').classList.toggle('hidden', !def.row_mode);
+  }
+
+  function setCell(tr, field, text) {
+    var el = tr.querySelector('[data-f="' + field + '"]');
+    if (el) el.textContent = text;
+  }
+
+  function ensureRow(t) {
+    var id = String(t.trade_id);
+    if (rows[id]) return rows[id];
+    var tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td>' + id + '</td><td>' + (t.status || '—') + '</td><td>' + (t.ticker || '—') + '</td>' +
+      '<td class="n">' + fmtNum(t.buy_price) + '</td>' +
+      '<td class="n" data-f="sell">—</td><td class="n" data-f="pnl">—</td>' +
+      '<td class="n" data-f="prob">—</td>';
+    document.getElementById('rows-body').appendChild(tr);
+    rows[id] = tr;
+    if (t.sell_price != null) setCell(tr, 'sell', fmtNum(t.sell_price));
+    if (t.sell != null) setCell(tr, 'sell', fmtNum(t.sell));
+    if (t.pnl != null) setCell(tr, 'pnl', String(t.pnl));
+    if (t.current_probability != null) setCell(tr, 'prob', fmtNum(t.current_probability));
+    return tr;
+  }
+
+  function applyPatches(patches) {
+    if (!patches || !patches.length) return;
+    patchCount += patches.length;
+    document.getElementById('patch-count').textContent = patchCount + ' patches';
+    patches.forEach(function (p) {
+      var tr = rows[String(p.trade_id)] || ensureRow({ trade_id: p.trade_id, status: 'active' });
+      if (p.sell != null) setCell(tr, 'sell', fmtNum(p.sell));
+      if (p.pnl != null) setCell(tr, 'pnl', String(p.pnl));
+      if (p.prob != null) setCell(tr, 'prob', fmtNum(p.prob));
+    });
+  }
+
+  function showJson(obj) {
+    document.getElementById('json-out').textContent = JSON.stringify(obj, null, 2);
+  }
+
+  function applyInit(msg) {
+    var snap = msg.snapshot || msg;
+    document.getElementById('redis-key').textContent = snap.redis_key || msg.redis_key || '';
+    if (snap.age_sec != null) {
+      document.getElementById('age').textContent = snap.age_sec + 's';
+    }
+    showJson(snap);
+    if (!msg.row_mode && msg.type === 'cache_init') return;
+    document.getElementById('rows-body').innerHTML = '';
+    rows = {};
+    var list = snap.rows || snap.records || msg.trades || [];
+    list.forEach(ensureRow);
+  }
+
+  function onMessage(ev) {
+    var msg = JSON.parse(ev.data);
+    if (msg.type === 'cache_init' || msg.type === 'active_trades_init') {
+      applyInit(msg.type === 'cache_init' ? msg : {
+        row_mode: true,
+        snapshot: { rows: msg.trades, redis_key: msg.redis_key },
+        trades: msg.trades,
+        redis_key: msg.redis_key,
+      });
+      return;
+    }
+    if (msg.type === 'cache_patch' || msg.type === 'trade_patch') {
+      applyPatches(msg.patches);
+      return;
+    }
+    if (msg.type === 'cache_event') {
+      eventCount += 1;
+      document.getElementById('event-count').textContent = eventCount + ' events';
+      if (msg.age_sec != null) {
+        document.getElementById('age').textContent = msg.age_sec + 's';
+      }
+      showJson(msg);
+    }
+  }
+
+  function wsUrl() {
+    var q = currentQuery();
+    var params = new URLSearchParams(q);
+    return (location.protocol === 'https:' ? 'wss:' : 'ws:') +
+      '//' + location.host + '/ws/debug/live-path-cache?' + params.toString();
+  }
+
+  function disconnect() {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer);
+      reconnectTimer = null;
+    }
+    if (ws) {
+      try { ws.close(); } catch (e) {}
+      ws = null;
+    }
+  }
+
+  function connect() {
+    syncUrl();
+    disconnect();
+    eventCount = 0;
+    patchCount = 0;
+    document.getElementById('event-count').textContent = '0 events';
+    document.getElementById('patch-count').textContent = '0 patches';
+    document.getElementById('ws-status').textContent = 'connecting…';
+    ws = new WebSocket(wsUrl());
+    ws.onopen = function () {
+      document.getElementById('ws-status').innerHTML = '<span class="ok">connected</span>';
+    };
+    ws.onclose = function () {
+      document.getElementById('ws-status').textContent = 'reconnecting…';
+      reconnectTimer = setTimeout(connect, 2000);
+    };
+    ws.onmessage = onMessage;
+  }
+
+  function fetchSnapshot() {
+    syncUrl();
+    var params = new URLSearchParams(currentQuery());
+    fetch('/debug/live-path-cache/snapshot?' + params.toString(), { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (snap) {
+        applyInit({ type: 'cache_init', row_mode: !!snap.rows, snapshot: snap });
+      })
+      .catch(function (e) {
+        showJson({ error: String(e) });
+      });
+  }
+
+  function loadCatalog() {
+    return fetch('/debug/live-path-cache/catalog', { cache: 'no-store' })
+      .then(function (r) { return r.json(); })
+      .then(function (data) {
+        catalog = data.sources || [];
+        var sel = document.getElementById('source');
+        sel.innerHTML = '';
+        catalog.forEach(function (s) {
+          var opt = document.createElement('option');
+          opt.value = s.id;
+          opt.textContent = s.label;
+          sel.appendChild(opt);
+        });
+        setParamsFromUrl();
+      });
+  }
+
+  document.getElementById('source').addEventListener('change', function () {
+    renderParamFields();
+    syncUrl();
+  });
+  document.getElementById('btn-connect').addEventListener('click', connect);
+  document.getElementById('btn-snapshot').addEventListener('click', fetchSnapshot);
+
+  loadCatalog().then(function () {
+    connect();
+  });
+})();
+  </script>
+</body>
+</html>

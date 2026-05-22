@@ -1314,6 +1314,9 @@
     let currentSort = { key: 'id', asc: false };
     let trades = [];
     let filteredTrades = [];
+    /** GET /trades applies trade-history filters in PostgreSQL (smaller payload, less client work). */
+    const _thUseServerListFilters = true;
+    let _thFilterRefetchTimer = null;
     let _thRenderToken = 0;
     const _TH_RENDER_CHUNK_SIZE = 180;
     let _tradeHistoryInsights = null;
@@ -1322,6 +1325,9 @@
     /** Populated in loadMonitorOptions: monitor id (``mon_*``) → symbol/strategy from /api/monitors */
     const tradeHistoryMonitorIdToFilterMeta = {};
     let _tradeHistoryRefreshSymbolStrategyUi = function () {};
+    /** Live marks from Redis active_trades (hot path). Survives /trades refetch and table re-render. */
+    const _thHotPathMarks = new Map();
+    let _thLastHotMarkAt = 0;
 
 
 
@@ -1915,7 +1921,7 @@
       });
       tradeHistorySyncAllMonitorTiles();
       tradeHistoryReactivateFiltersForCheckedMonitors();
-      applyFilters();
+      thOnTradeHistoryFilterChange();
       savePreferences();
     }
 
@@ -2483,6 +2489,19 @@
       return null;
     }
 
+    /** Live marks may set pnl and/or current_pnl on open rows. */
+    function tradeHistoryTradePnlNumber(t) {
+      if (!t) return null;
+      if (t.pnl !== null && t.pnl !== undefined && t.pnl !== '' && !isNaN(Number(t.pnl))) {
+        return Number(t.pnl);
+      }
+      if (t.current_pnl !== null && t.current_pnl !== undefined && t.current_pnl !== '') {
+        const cp = Number(t.current_pnl);
+        if (!isNaN(cp)) return cp;
+      }
+      return null;
+    }
+
     function tradeHistoryAggregateTradesForSummaryRow(list) {
       let n = 0;
       let wins = 0;
@@ -2520,8 +2539,9 @@
         if (t.ret_pct !== null && t.ret_pct !== undefined && t.ret_pct !== '' && !isNaN(Number(t.ret_pct))) {
           sumRet += Number(t.ret_pct);
         }
-        if (t.pnl !== null && t.pnl !== undefined && t.pnl !== '' && !isNaN(Number(t.pnl))) {
-          sumPnl += Number(t.pnl);
+        const pnlNum = tradeHistoryTradePnlNumber(t);
+        if (pnlNum !== null) {
+          sumPnl += pnlNum;
         }
       }
       const avgProb = probN > 0 ? probSum / probN : 0;
@@ -2544,6 +2564,19 @@
       });
     }
 
+    function tradeHistoryApplyInsightsSummaryOrClientFallback(s) {
+      if (s && Number(s.trade_count) > 0) {
+        applyInsightsSummary(s);
+        return;
+      }
+      const base = Array.isArray(filteredTrades) ? filteredTrades : [];
+      if (base.length > 0) {
+        applyImmediateSummaryFromFilteredTrades(base);
+        return;
+      }
+      applyInsightsSummary(s);
+    }
+
     /** Map lower(monitor id) → row from last insights response (full timeframe, not paginated trades). */
     function tradeHistoryInsightsByMonitorMap() {
       const raw = _tradeHistoryInsights && _tradeHistoryInsights.by_monitor;
@@ -2557,8 +2590,18 @@
       return m;
     }
 
-    /** One monitor row: server by_monitor when present, else trades in ``base`` (filtered, no monitor filter). */
+    /** One monitor row: prefer loaded trades (live marks) when present; else server by_monitor. */
     function tradeHistoryAggForMonitorSummaryRow(mid, baseTrades) {
+      const clientAgg = tradeHistoryAggregateTradesForSummaryRow(
+        (Array.isArray(baseTrades) ? baseTrades : []).filter((t) => {
+          const raw = t.monitor;
+          if (raw == null || raw === '') return false;
+          return String(raw).toLowerCase() === String(mid).toLowerCase();
+        })
+      );
+      if (clientAgg.n > 0) {
+        return clientAgg;
+      }
       const map = tradeHistoryInsightsByMonitorMap();
       if (map) {
         const r = map.get(String(mid || '').toLowerCase());
@@ -2574,13 +2617,7 @@
           };
         }
       }
-      return tradeHistoryAggregateTradesForSummaryRow(
-        (Array.isArray(baseTrades) ? baseTrades : []).filter((t) => {
-          const raw = t.monitor;
-          if (raw == null || raw === '') return false;
-          return String(raw).toLowerCase() === String(mid).toLowerCase();
-        })
-      );
+      return clientAgg;
     }
 
     function tradeHistoryCompareSummaryRowsByRetDesc(a, b) {
@@ -2813,7 +2850,7 @@
         const data = JSON.parse(raw);
         if (reqId !== _thInsightsReqId) return;
         _tradeHistoryInsights = data;
-        applyInsightsSummary(data.summary);
+        tradeHistoryApplyInsightsSummaryOrClientFallback(data.summary);
         updateAnalysisDisplay(data.analysis_interval);
         tradeHistoryRefreshMonitorStripCharts();
       } catch (e) {
@@ -2825,7 +2862,7 @@
           period_data: [],
           by_monitor: [],
         };
-        applyInsightsSummary(null);
+        tradeHistoryApplyInsightsSummaryOrClientFallback(null);
         updateAnalysisDisplay(body.analysis_interval);
         tradeHistoryRefreshMonitorStripCharts();
       }
@@ -3082,10 +3119,12 @@
       function appendRowsToFragment(frag, endIdx) {
         for (; cursor < endIdx; cursor++) {
           const trade = tradesToRender[cursor];
+          tradeHistoryMergeHotMarkIntoTrade(trade);
           const isNewGroup = trade.contract !== lastContract;
           if (isNewGroup) groupIndex++;
           lastContract = trade.contract;
           const tr = document.createElement('tr');
+          if (trade.id != null) tr.setAttribute('data-trade-id', String(trade.id));
           tr.style.borderTop = isNewGroup ? '2px solid #666' : '';
           tr.classList.add(groupIndex % 2 === 1 ? 'group-odd' : 'group-even');
           const pt = trade.paper_trade ?? trade.paperTrade;
@@ -3172,22 +3211,24 @@
 
       const dateFilterPicker = document.getElementById('date-filter-picker');
       
-      const includeTestEl = document.getElementById('include-test-trades');
-      const includeTestTrades = includeTestEl && includeTestEl.checked;
-      let filtered = trades;
-      if (!includeTestTrades) {
-        filtered = filtered.filter(trade => !trade.test_filter);
+      let filtered;
+      if (_thUseServerListFilters) {
+        filtered = Array.isArray(trades) ? trades.slice() : [];
+      } else {
+        const includeTestEl = document.getElementById('include-test-trades');
+        const includeTestTrades = includeTestEl && includeTestEl.checked;
+        filtered = trades;
+        if (!includeTestTrades) {
+          filtered = filtered.filter(trade => !trade.test_filter);
+        }
+        filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
+        filtered = filterTradesByWinLoss(filtered);
+        filtered = filterTradesBySymbol(filtered);
+        filtered = filterTradesByStrategy(filtered);
+        filtered = filterTradesByMonitor(filtered);
+        filtered = filterTradesByDay(filtered);
+        filtered = filterTradesByPaperTrade(filtered);
       }
-      
-      filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
-      filtered = filterTradesByWinLoss(filtered);
-      // Contract filtering disabled – show all contracts
-      // filtered = filterTradesByContract(filtered);
-      filtered = filterTradesBySymbol(filtered);
-      filtered = filterTradesByStrategy(filtered);
-      filtered = filterTradesByMonitor(filtered);
-      filtered = filterTradesByDay(filtered);
-      filtered = filterTradesByPaperTrade(filtered);
       
       filteredTrades = [...filtered];
       applyCurrentSort();
@@ -3199,6 +3240,305 @@
       if (options.skipInsightsRefresh !== true) {
         refreshTradeHistoryInsights();
       }
+    }
+
+    function thOnTradeHistoryFilterChange() {
+      if (_thUseServerListFilters) {
+        if (_thFilterRefetchTimer) clearTimeout(_thFilterRefetchTimer);
+        _thFilterRefetchTimer = setTimeout(function () {
+          _thFilterRefetchTimer = null;
+          fetchAllTrades('filter-change');
+        }, 400);
+        return;
+      }
+      applyFilters();
+    }
+
+    function appendTradeHistoryFilterQueryParams(url) {
+      const body = collectTradeHistoryInsightsBody();
+      const stripMon = tradeHistorySelectedMonitorIdsFromStrip();
+      const monCbs = document.querySelectorAll('#th-monitor-checkboxes-host input[type="checkbox"]');
+      if (monCbs.length > 0) {
+        if (stripMon.length === 0 && !tradeHistoryMonitorPreviewId) {
+          body.monitors = [];
+        } else if (stripMon.length > 0 && stripMon.length < monCbs.length) {
+          body.monitors = stripMon.map(function (m) {
+            var s = String(m || '').trim().toLowerCase();
+            return s.indexOf('mon_') === 0 ? s : 'mon_' + s;
+          });
+        } else {
+          body.monitors = [];
+        }
+      }
+      if (body.min_date) url.searchParams.set('min_date', body.min_date);
+      if (body.max_date) url.searchParams.set('max_date', body.max_date);
+      url.searchParams.set('include_test_trades', body.include_test_trades ? 'true' : 'false');
+      url.searchParams.set('show_win', body.show_win !== false ? 'true' : 'false');
+      url.searchParams.set('show_loss', body.show_loss !== false ? 'true' : 'false');
+      url.searchParams.set('show_live', body.show_live !== false ? 'true' : 'false');
+      url.searchParams.set('show_paper', body.show_paper ? 'true' : 'false');
+      if (body.symbols && body.symbols.length) {
+        body.symbols.forEach(function (sym) {
+          url.searchParams.append('symbols', sym);
+        });
+      }
+      if (body.strategies && body.strategies.length) {
+        body.strategies.forEach(function (st) {
+          url.searchParams.append('strategies', st);
+        });
+      }
+      if (body.monitors && body.monitors.length) {
+        body.monitors.forEach(function (mon) {
+          url.searchParams.append('monitors', mon);
+        });
+      }
+      if (body.days_of_week !== undefined && body.days_of_week !== null) {
+        if (body.days_of_week.length === 0) {
+          url.searchParams.set('days_of_week', '');
+        } else if (body.days_of_week.length < 7) {
+          url.searchParams.set('days_of_week', body.days_of_week.join(','));
+        }
+      }
+    }
+
+    function thRetPctFromPnlAndBankroll(pnlVal, bankroll) {
+      const pnl = Number(pnlVal);
+      const br = Number(bankroll);
+      if (!Number.isFinite(pnl) || !Number.isFinite(br) || br <= 0) return null;
+      return Math.round((pnl / (br / 100)) * 100 * 100000) / 100000;
+    }
+
+    let _thTradeLogColIndex = null;
+
+    function tradeHistoryTradeLogColIndex() {
+      if (_thTradeLogColIndex) return _thTradeLogColIndex;
+      const map = {};
+      document.querySelectorAll('#trade-log-table thead th[data-key]').forEach(function (th, i) {
+        const key = th.getAttribute('data-key');
+        if (key) map[key] = i;
+      });
+      _thTradeLogColIndex = map;
+      return map;
+    }
+
+    function tradeHistoryFindTradeById(tradeId) {
+      const tid = Number(tradeId);
+      if (!Number.isFinite(tid)) return null;
+      if (Array.isArray(filteredTrades)) {
+        const ft = filteredTrades.find(function (x) { return Number(x.id) === tid; });
+        if (ft) return ft;
+      }
+      if (Array.isArray(trades)) {
+        const t = trades.find(function (x) { return Number(x.id) === tid; });
+        if (t) return t;
+      }
+      return null;
+    }
+
+    function tradeHistoryApplyMarkToTradeObject(t, m) {
+      if (!t || !m) return false;
+      let changed = false;
+      if (m.pnl != null) {
+        t.pnl = m.pnl;
+        changed = true;
+      }
+      if (m.sell_price != null) {
+        t.sell_price = m.sell_price;
+        changed = true;
+      }
+      if (m.ret_pct != null) {
+        t.ret_pct = m.ret_pct;
+        changed = true;
+      } else if (m.pnl != null) {
+        const computed = thRetPctFromPnlAndBankroll(m.pnl, t.bankroll);
+        if (computed != null) {
+          t.ret_pct = computed;
+          changed = true;
+        }
+      }
+      if (m.current_pnl != null) {
+        t.current_pnl = m.current_pnl;
+        changed = true;
+      }
+      return changed;
+    }
+
+    function patchTradeHistoryMarkCellsDom(byId) {
+      const tbody = document.querySelector('#trade-log-table tbody');
+      if (!tbody || !byId || !byId.size) return false;
+      const cols = tradeHistoryTradeLogColIndex();
+      const sellIdx = cols.sell_price;
+      const pnlIdx = cols.pnl;
+      const retIdx = cols.ret_pct;
+      let patched = 0;
+      byId.forEach(function (m, tradeId) {
+        const tr = tbody.querySelector('tr[data-trade-id="' + tradeId + '"]');
+        if (!tr) return;
+        const cells = tr.children;
+        if (sellIdx != null && sellIdx < cells.length && m.sell_price != null) {
+          const sp = Number(m.sell_price);
+          cells[sellIdx].textContent = Number.isFinite(sp) ? sp.toFixed(2) : '';
+        }
+        const pnlVal =
+          m.pnl != null
+            ? Number(m.pnl)
+            : m.current_pnl != null
+              ? Number(m.current_pnl)
+              : null;
+        if (pnlIdx != null && pnlIdx < cells.length && pnlVal != null && Number.isFinite(pnlVal)) {
+          cells[pnlIdx].textContent = pnlVal.toFixed(2);
+        }
+        if (retIdx != null && retIdx < cells.length) {
+          if (m.ret_pct != null) {
+            const rv = Number(m.ret_pct);
+            if (Number.isFinite(rv)) cells[retIdx].textContent = rv.toFixed(2);
+          } else if (pnlVal != null && Number.isFinite(pnlVal)) {
+            const t = tradeHistoryFindTradeById(tradeId);
+            const computed = t ? thRetPctFromPnlAndBankroll(pnlVal, t.bankroll) : null;
+            if (computed != null) cells[retIdx].textContent = computed.toFixed(2);
+          }
+        }
+        patched += 1;
+      });
+      return patched > 0;
+    }
+
+    function tradeHistoryMarkFromActiveTradeRecord(t) {
+      if (!t || t.trade_id == null) return null;
+      const mark = { trade_id: Number(t.trade_id) };
+      const mcp = t.current_close_price;
+      if (mcp != null && mcp !== '') {
+        const mp = Number(mcp);
+        if (Number.isFinite(mp)) mark.sell_price = Math.round((1.0 - mp) * 1000000) / 1000000;
+      }
+      const cp = t.current_pnl;
+      if (cp != null && String(cp).trim() !== '') {
+        const pv = Number(String(cp).replace(/,/g, ''));
+        if (Number.isFinite(pv)) mark.pnl = pv;
+      }
+      return mark.trade_id != null && (mark.sell_price != null || mark.pnl != null) ? mark : null;
+    }
+
+    function tradeHistoryMarksFromActiveTradesPayload(data) {
+      const body = data && data.data ? data.data : data;
+      const list = body && body.active_trades;
+      if (!Array.isArray(list)) return [];
+      const out = [];
+      list.forEach(function (t) {
+        const m = tradeHistoryMarkFromActiveTradeRecord(t);
+        if (m) out.push(m);
+      });
+      return out;
+    }
+
+    function tradeHistoryIsOpenTrade(trade) {
+      const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
+      return st === 'open' || st === 'partial';
+    }
+
+    function tradeHistoryMergeHotMarkIntoTrade(trade) {
+      if (!trade || trade.id == null) return;
+      const tid = Number(trade.id);
+      if (!tradeHistoryIsOpenTrade(trade)) {
+        _thHotPathMarks.delete(tid);
+        return;
+      }
+      const m = _thHotPathMarks.get(tid);
+      if (m) tradeHistoryApplyMarkToTradeObject(trade, m);
+    }
+
+    function tradeHistoryMergeHotMarksIntoAllTrades() {
+      if (!Array.isArray(trades)) return;
+      trades.forEach(tradeHistoryMergeHotMarkIntoTrade);
+      if (Array.isArray(filteredTrades)) filteredTrades.forEach(tradeHistoryMergeHotMarkIntoTrade);
+    }
+
+    function tradeHistoryApplyMarksToCache(marks) {
+      if (!Array.isArray(marks) || !marks.length) return false;
+      marks.forEach(function (m) {
+        if (m && m.trade_id != null) _thHotPathMarks.set(Number(m.trade_id), m);
+      });
+      _thLastHotMarkAt = Date.now();
+      tradeHistoryUpdateHotPathStatus();
+      tradeHistoryMergeHotMarksIntoAllTrades();
+      const domPatched = patchTradeHistoryMarkCellsDom(_thHotPathMarks);
+      if (domPatched) {
+        applyImmediateSummaryFromFilteredTrades(
+          Array.isArray(filteredTrades) ? filteredTrades : []
+        );
+      }
+      return domPatched;
+    }
+
+    function tradeHistoryMarkFromInitRow(t) {
+      if (!t || t.trade_id == null) return null;
+      const mark = { trade_id: Number(t.trade_id) };
+      if (t.sell_price != null) mark.sell_price = t.sell_price;
+      if (t.pnl != null) mark.pnl = t.pnl;
+      if (mark.sell_price == null && mark.pnl == null) return null;
+      return mark;
+    }
+
+    function tradeHistoryApplyPatches(patches) {
+      if (!Array.isArray(patches) || !patches.length) return false;
+      patches.forEach(function (p) {
+        if (!p || p.trade_id == null) return;
+        const tid = Number(p.trade_id);
+        const prev = _thHotPathMarks.get(tid) || { trade_id: tid };
+        const next = Object.assign({}, prev);
+        if (p.sell != null) next.sell_price = p.sell;
+        if (p.pnl != null) next.pnl = p.pnl;
+        if (p.ret_pct != null) next.ret_pct = p.ret_pct;
+        _thHotPathMarks.set(tid, next);
+      });
+      _thLastHotMarkAt = Date.now();
+      tradeHistoryUpdateHotPathStatus();
+      tradeHistoryMergeHotMarksIntoAllTrades();
+      const domPatched = patchTradeHistoryMarkCellsDom(_thHotPathMarks);
+      if (domPatched) {
+        applyImmediateSummaryFromFilteredTrades(
+          Array.isArray(filteredTrades) ? filteredTrades : []
+        );
+      }
+      return domPatched;
+    }
+
+    function tradeHistoryUpdateHotPathStatus() {
+      const el = document.getElementById('trade-history-loaded-meta');
+      if (!el || !_thLastHotMarkAt) return;
+      const ageSec = Math.max(0, Math.round((Date.now() - _thLastHotMarkAt) / 1000));
+      const base = el.textContent ? el.textContent.split(' · ')[0] : '';
+      el.textContent = base + ' · Live Redis marks: ' + _thHotPathMarks.size + ' open (' + ageSec + 's ago)';
+    }
+
+    async function tradeHistoryFetchHotPathMarks() {
+      try {
+        const res = await fetch(window.location.origin + '/api/trades/hot_marks', {
+          cache: 'no-store',
+          credentials: 'same-origin',
+        });
+        if (!res.ok) return;
+        const data = await res.json();
+        tradeHistoryApplyMarksToCache(data.marks);
+      } catch (e) { /* hot path optional */ }
+    }
+
+    function patchTradesFromMarks(marks) {
+      return tradeHistoryApplyMarksToCache(marks);
+    }
+
+    function tradeHistoryClientPeriodData(interval) {
+      const base = tradeHistoryApplyFiltersWithoutMonitor(Array.isArray(trades) ? trades : []);
+      const groups = groupTradesByInterval(base, interval);
+      return calculatePeriodStats(groups).periodData;
+    }
+
+    function tradeHistoryRefreshAnalysisFromClient() {
+      const iv =
+        document.getElementById('analysis-time-interval')?.value ||
+        (_tradeHistoryInsights && _tradeHistoryInsights.analysis_interval) ||
+        'daily';
+      updateAnalysisDisplay(iv, { preferClient: true });
     }
 
     /** Bounds for GET /trades (server filters `date` text); null = full history (ALL / no range). */
@@ -3294,10 +3634,14 @@
 
     function buildTradesFetchUrl() {
       const url = new URL(window.location.origin + '/trades');
-      const b = computeTradesFetchDateBounds();
-      if (b) {
-        url.searchParams.set('min_date', b.min_date);
-        url.searchParams.set('max_date', b.max_date);
+      if (_thUseServerListFilters) {
+        appendTradeHistoryFilterQueryParams(url);
+      } else {
+        const b = computeTradesFetchDateBounds();
+        if (b) {
+          url.searchParams.set('min_date', b.min_date);
+          url.searchParams.set('max_date', b.max_date);
+        }
       }
       return url.toString();
     }
@@ -3305,10 +3649,6 @@
     let _thTradesFetchInFlight = false;
     let _thTradesFetchQueuedReason = null;
     let _thLastTradesFetchErrorLogMs = 0;
-    /** After a ws-driven refetch completes; limits how often prod NOTIFY spam retriggers full /trades pagination. */
-    let _thLastWsTradesFetchCompletedMs = 0;
-    const _TH_WS_TRADES_MIN_INTERVAL_MS = 4000;
-
     function _thSetFetchBanner(text, show) {
       const el = document.getElementById('trade-history-fetch-banner');
       if (!el) return;
@@ -3330,13 +3670,6 @@
       }
     }
 
-    function _thTradeFetchSilentFooterProgress(reason) {
-      const r = reason || 'unspecified';
-      if (r === 'ws-db_change-trades') return true;
-      if (r === 'tab-visible' && Array.isArray(trades) && trades.length > 0) return true;
-      return false;
-    }
-
     async function fetchAllTrades(reason) {
       const r = reason || 'unspecified';
       if (_thTradesFetchInFlight) {
@@ -3349,29 +3682,27 @@
         console.log('[trade_history] GET /trades — reason:', r);
       }
       try {
-        refreshTradeHistoryInsights();
         const meta = document.getElementById('trade-history-loaded-meta');
-        const silentFooter = _thTradeFetchSilentFooterProgress(r);
         trades = await recFetchTradesMerged(
           buildTradesFetchUrl(),
-          { cache: 'no-store' },
-          silentFooter
-            ? undefined
-            : function (loaded, hasMore) {
-                if (meta) {
-                  meta.textContent = hasMore
-                    ? 'Loading ' + loaded + ' trade' + (loaded === 1 ? '' : 's') + '…'
-                    : 'Loaded ' + loaded + ' trade' + (loaded === 1 ? '' : 's');
-                }
-              }
+          { cache: 'no-store', credentials: 'include' },
+          function (loaded, hasMore) {
+            if (meta) {
+              meta.textContent = hasMore
+                ? 'Loading ' + loaded + ' trade' + (loaded === 1 ? '' : 's') + '…'
+                : 'Loaded ' + loaded + ' trade' + (loaded === 1 ? '' : 's');
+            }
+          }
         );
         _thSetFetchBanner('', false);
         updateTradeHistoryLoadedMeta();
+        tradeHistoryMergeHotMarksIntoAllTrades();
         applyFilters({
           preserveMonitorPreview: true,
           skipInsightsRefresh: true,
-          preserveResultsScroll: _thTradeFetchSilentFooterProgress(r),
+          preserveResultsScroll: r === 'tab-visible',
         });
+        refreshTradeHistoryInsights();
       } catch (error) {
         const hadRows = Array.isArray(trades) && trades.length > 0;
         const now = Date.now();
@@ -3394,10 +3725,8 @@
         updateTradeHistoryLoadedMeta();
       } finally {
         _thTradesFetchInFlight = false;
-        if (r === 'ws-db_change-trades') {
-          _thLastWsTradesFetchCompletedMs = Date.now();
-        }
         updateTradeHistoryLoadedMeta();
+        tradeHistoryUpdateHotPathStatus();
         if (_thTradesFetchQueuedReason != null) {
           const qr = _thTradesFetchQueuedReason;
           _thTradesFetchQueuedReason = null;
@@ -3530,60 +3859,151 @@
       if (endDate) endDateInput.value = endDate;
     }
 
-    // Debounced refetch when /ws/db_changes signals trades (many NOTIFYs possible under DB contention)
-    let _tradeHistoryDbRefreshTimer = null;
-    const _TH_WS_TRADES_DEBOUNCE_MS = 800;
-    function scheduleTradesRefetchFromDbChange() {
-      if (window.TRADE_HISTORY_PAUSED) return;
-      if (_tradeHistoryDbRefreshTimer) clearTimeout(_tradeHistoryDbRefreshTimer);
-      _tradeHistoryDbRefreshTimer = setTimeout(() => {
-        _tradeHistoryDbRefreshTimer = null;
-        const now = Date.now();
-        const since = now - _thLastWsTradesFetchCompletedMs;
-        if (
-          _thLastWsTradesFetchCompletedMs > 0 &&
-          since < _TH_WS_TRADES_MIN_INTERVAL_MS
-        ) {
-          _tradeHistoryDbRefreshTimer = setTimeout(() => {
-            _tradeHistoryDbRefreshTimer = null;
-            scheduleTradesRefetchFromDbChange();
-          }, _TH_WS_TRADES_MIN_INTERVAL_MS - since);
-          return;
-        }
-        fetchAllTrades('ws-db_change-trades');
-      }, _TH_WS_TRADES_DEBOUNCE_MS);
+    let _thDbChangesUnsub = null;
+    let _thHotPathWsUnsub = null;
+
+    function teardownTradeHistoryHotPathWs() {
+      if (_thHotPathWsUnsub) {
+        try { _thHotPathWsUnsub(); } catch (e) {}
+        _thHotPathWsUnsub = null;
+      }
+      if (window._thHotPathWs) {
+        try { window._thHotPathWs.close(); } catch (e) {}
+        window._thHotPathWs = null;
+      }
     }
 
-    let _thDbChangesUnsub = null;
+    function onTradeHistoryHotPathMessage(event) {
+      try {
+        const data =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+        if (!data || typeof data !== 'object') return;
+        if (data.type === 'active_trades_init' || data.type === 'cache_init') {
+          const rows =
+            data.type === 'cache_init'
+              ? (data.snapshot && data.snapshot.rows) || []
+              : data.trades || [];
+          const marks = [];
+          rows.forEach(function (t) {
+            const m = tradeHistoryMarkFromInitRow(t) || tradeHistoryMarkFromActiveTradeRecord(t);
+            if (m) marks.push(m);
+          });
+          tradeHistoryApplyMarksToCache(marks);
+          return;
+        }
+        if (data.type === 'trade_patch' || data.type === 'cache_patch') {
+          tradeHistoryApplyPatches(data.patches);
+        }
+      } catch (err) {
+        console.error('Error parsing active-trades hot path WS (trade history):', err);
+      }
+    }
+
+    function setupTradeHistoryHotPathListener() {
+      if (window.TRADE_HISTORY_PAUSED) return;
+      if (_thHotPathWsUnsub) return;
+      const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      const wsUrl = protocol + '//' + window.location.host + '/ws/active-trades-hot-path';
+      if (window.recRealtimeWsCoordinator && typeof window.recRealtimeWsCoordinator.subscribe === 'function') {
+        _thHotPathWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+          onMessage: onTradeHistoryHotPathMessage,
+        });
+        return;
+      }
+      const ws = new WebSocket(wsUrl);
+      window._thHotPathWs = ws;
+      ws.onmessage = onTradeHistoryHotPathMessage;
+      ws.onclose = function () {
+        window._thHotPathWs = null;
+        if (!window.TRADE_HISTORY_PAUSED) {
+          setTimeout(setupTradeHistoryHotPathListener, 5000);
+        }
+      };
+      _thHotPathWsUnsub = function () {
+        try { ws.close(); } catch (e) {}
+        window._thHotPathWs = null;
+      };
+    }
+
     function teardownTradeHistoryDbWs() {
+      teardownTradeHistoryHotPathWs();
       if (_thDbChangesUnsub) {
         try { _thDbChangesUnsub(); } catch (e) {}
         _thDbChangesUnsub = null;
       }
+      if (window._thDbChangesWs) {
+        try { window._thDbChangesWs.close(); } catch (e) {}
+        window._thDbChangesWs = null;
+      }
     }
+    function recTradeHistoryTenantMatches(msgTenant) {
+      if (msgTenant == null || msgTenant === '') return true;
+      if (typeof recSessionUserSlot !== 'function') return true;
+      var slot = recSessionUserSlot();
+      if (!slot) return true;
+      var mt = String(msgTenant).trim();
+      if (!/^\d+$/.test(mt)) return true;
+      while (mt.length < 4) mt = '0' + mt;
+      if (mt.length > 4) mt = mt.slice(-4);
+      return mt === slot;
+    }
+
+    function onTradeHistoryDbChangeMessage(event) {
+      try {
+        const data =
+          typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+        if (!data || typeof data !== 'object') return;
+        if (data.type === 'trade_marks_updated') {
+          if (!recTradeHistoryTenantMatches(data.tenant_user_no)) return;
+          const marks =
+            data.marks || (data.data && data.data.marks);
+          if (localStorage.getItem('trade_history_debug') === '1') {
+            console.log('[trade_history] trade_marks_updated', marks && marks.length, marks);
+          }
+          patchTradesFromMarks(marks);
+          return;
+        }
+        if (data.type === 'db_change' && data.database === 'trades') {
+          const op =
+            data.data &&
+            data.data.change_data &&
+            data.data.change_data.op;
+          if (op === 'INSERT' || op === 'DELETE') {
+            fetchAllTrades('ws-db_change-' + op);
+          }
+        }
+      } catch (error) {
+        console.error('Error parsing database change notification (trade history):', error);
+      }
+    }
+
     // WebSocket: same-origin /ws/db_changes (see docs/REALTIME_BACKBONE.md). Paused when History iframe is hidden.
     function setupDatabaseChangeListener() {
       if (window.TRADE_HISTORY_PAUSED) return;
       if (_thDbChangesUnsub) return;
-      if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
-        return;
-      }
       const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
       const wsUrl = `${protocol}//${window.location.host}/ws/db_changes`;
-      _thDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
-        onlyDbStreams: ['trades'],
-        onMessage: function (event) {
-          try {
-            const data =
-              typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
-            if (data && data.type === 'db_change' && data.database === 'trades') {
-              scheduleTradesRefetchFromDbChange();
-            }
-          } catch (error) {
-            console.error('Error parsing database change notification (trade history):', error);
-          }
-        },
-      });
+      if (window.recRealtimeWsCoordinator && typeof window.recRealtimeWsCoordinator.subscribe === 'function') {
+        _thDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+          onlyDbStreams: ['trades'],
+          includeTradeMarksUpdated: true,
+          onMessage: onTradeHistoryDbChangeMessage,
+        });
+        return;
+      }
+      const ws = new WebSocket(wsUrl);
+      window._thDbChangesWs = ws;
+      ws.onmessage = onTradeHistoryDbChangeMessage;
+      ws.onclose = function () {
+        window._thDbChangesWs = null;
+        if (!window.TRADE_HISTORY_PAUSED) {
+          setTimeout(setupDatabaseChangeListener, 5000);
+        }
+      };
+      _thDbChangesUnsub = function () {
+        try { ws.close(); } catch (e) {}
+        window._thDbChangesWs = null;
+      };
     }
 
     window.addEventListener('message', function(event) {
@@ -3592,18 +4012,13 @@
       const visible = event.data.visible === true;
       window.TRADE_HISTORY_PAUSED = !visible;
       if (visible) {
-        if (_tradeHistoryDbRefreshTimer) {
-          clearTimeout(_tradeHistoryDbRefreshTimer);
-          _tradeHistoryDbRefreshTimer = null;
-        }
+        teardownTradeHistoryDbWs();
         setupDatabaseChangeListener();
+        setupTradeHistoryHotPathListener();
+        tradeHistoryFetchHotPathMarks();
         fetchAllTrades('tab-visible');
       } else {
         teardownTradeHistoryDbWs();
-        if (_tradeHistoryDbRefreshTimer) {
-          clearTimeout(_tradeHistoryDbRefreshTimer);
-          _tradeHistoryDbRefreshTimer = null;
-        }
       }
     });
 
@@ -3849,13 +4264,13 @@
       const filterLoss = document.getElementById('filter-loss');
       if (filterWin) {
         filterWin.addEventListener('change', () => {
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
       if (filterLoss) {
         filterLoss.addEventListener('change', () => {
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -3865,13 +4280,13 @@
       const filterPaper = document.getElementById('filter-paper');
       if (filterLive) {
         filterLive.addEventListener('change', () => {
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
       if (filterPaper) {
         filterPaper.addEventListener('change', () => {
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -3879,7 +4294,7 @@
       const includeTestTradesCb = document.getElementById('include-test-trades');
       if (includeTestTradesCb) {
         includeTestTradesCb.addEventListener('change', () => {
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -3911,7 +4326,7 @@
         strategySelectAll.addEventListener('click', () => {
           getStrategyCheckboxes().forEach(cb => { cb.checked = true; });
           updateStrategyButtonText();
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -3919,7 +4334,7 @@
         strategySelectNone.addEventListener('click', () => {
           getStrategyCheckboxes().forEach(cb => { cb.checked = false; });
           updateStrategyButtonText();
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -3928,7 +4343,7 @@
         strategyDropdownContent.addEventListener('change', (e) => {
           if (e.target.matches('#strategy-checkboxes-container input[type="checkbox"]')) {
             updateStrategyButtonText();
-            applyFilters();
+            thOnTradeHistoryFilterChange();
             savePreferences();
           }
         });
@@ -4153,7 +4568,7 @@
                   checkbox.checked = !checkbox.checked;
                   tradeHistorySyncMonitorTileForCheckbox(checkbox);
                   tradeHistoryReactivateFiltersForCheckedMonitors();
-                  applyFilters();
+                  thOnTradeHistoryFilterChange();
                   savePreferences();
                 });
                 const midAttr = checkbox.getAttribute('data-monitor-id');
@@ -4187,7 +4602,7 @@
           if (e.target.matches('input[type="checkbox"][data-monitor-id]')) {
             tradeHistorySyncMonitorTileForCheckbox(e.target);
             tradeHistoryReactivateFiltersForCheckedMonitors();
-            applyFilters();
+            thOnTradeHistoryFilterChange();
             savePreferences();
           }
         });
@@ -4201,7 +4616,7 @@
         if (checked) {
           tradeHistoryReactivateFiltersForCheckedMonitors();
         }
-        applyFilters();
+        thOnTradeHistoryFilterChange();
         savePreferences();
       }
       function thMonitorAllNoneClick(ev, checked) {
@@ -4229,33 +4644,46 @@
       // Load monitors before first trade fetch so filters match saved prefs
       await loadMonitorOptions(window.tradeHistoryMonitorSelection);
       fetchAllTrades('initial-load');
+      tradeHistoryFetchHotPathMarks();
 
       // When monitor_manager updates monitor_list (Redis → main /ws/preferences), reload tiles + dropdown
       (function connectTradeHistoryMonitorListWs() {
-        function recTenantMatchesMessageTenant(msgTenant) {
-          if (msgTenant == null || msgTenant === '') return true;
-          if (typeof recSessionUserSlot !== 'function') return true;
-          var slot = recSessionUserSlot();
-          if (!slot) return true;
-          var mt = String(msgTenant).trim();
-          if (!/^\d+$/.test(mt)) return true;
-          while (mt.length < 4) mt = '0' + mt;
-          if (mt.length > 4) mt = mt.slice(-4);
-          return mt === slot;
-        }
-        let thMonWs = null;
-        function connect() {
-          if (thMonWs) {
-            try { thMonWs.close(); } catch (e) {}
+        function handlePreferencesMessage(data) {
+          if (!data || typeof data !== 'object') return;
+          if (!recTradeHistoryTenantMatches(data.tenant_user_no)) return;
+          if (data.type === 'monitor_list_updated') {
+            loadMonitorOptions(window.tradeHistoryMonitorSelection);
+            return;
           }
-          const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-          thMonWs = new WebSocket(proto + '//' + window.location.host + '/ws/preferences');
+          if (data.type === 'active_trades_change') {
+            tradeHistoryApplyMarksToCache(tradeHistoryMarksFromActiveTradesPayload(data));
+            return;
+          }
+        }
+        let thPrefsUnsub = null;
+        const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        const prefsUrl = proto + '//' + window.location.host + '/ws/preferences';
+        function connect() {
+          if (thPrefsUnsub) {
+            try { thPrefsUnsub(); } catch (e) {}
+            thPrefsUnsub = null;
+          }
+          if (window.recRealtimeWsCoordinator && typeof window.recRealtimeWsCoordinator.subscribe === 'function') {
+            thPrefsUnsub = window.recRealtimeWsCoordinator.subscribe(prefsUrl, {
+              onMessage: function (ev) {
+                try {
+                  const data =
+                    typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(ev) : JSON.parse(ev.data);
+                  handlePreferencesMessage(data);
+                } catch (err) { /* ignore */ }
+              },
+            });
+            return;
+          }
+          const thMonWs = new WebSocket(prefsUrl);
           thMonWs.onmessage = function (ev) {
             try {
-              const data = JSON.parse(ev.data);
-              if (data.type === 'monitor_list_updated' && recTenantMatchesMessageTenant(data.tenant_user_no)) {
-                loadMonitorOptions(window.tradeHistoryMonitorSelection);
-              }
+              handlePreferencesMessage(JSON.parse(ev.data));
             } catch (err) { /* ignore */ }
           };
           thMonWs.onclose = function () {
@@ -4297,19 +4725,19 @@
       document.getElementById('day-select-all')?.addEventListener('click', () => {
         dayCheckboxes.forEach(cb => { if (cb) cb.checked = true; });
         updateDayButtonText();
-        applyFilters();
+        thOnTradeHistoryFilterChange();
         savePreferences();
       });
       document.getElementById('day-select-none')?.addEventListener('click', () => {
         dayCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
         updateDayButtonText();
-        applyFilters();
+        thOnTradeHistoryFilterChange();
         savePreferences();
       });
       dayDropdownContent.addEventListener('change', (e) => {
         if (e.target.matches('input[type="checkbox"]')) {
           updateDayButtonText();
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         }
       });
@@ -4362,7 +4790,7 @@
         symbolSelectAll.addEventListener('click', () => {
           getSymbolCheckboxes().forEach(cb => { cb.checked = true; });
           updateSymbolButtonText();
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -4370,7 +4798,7 @@
         symbolSelectNone.addEventListener('click', () => {
           getSymbolCheckboxes().forEach(cb => { cb.checked = false; });
           updateSymbolButtonText();
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         });
       }
@@ -4379,7 +4807,7 @@
         symbolDropdownContent.addEventListener('change', (e) => {
           if (e.target.matches('#symbol-checkboxes-container input[type="checkbox"]')) {
             updateSymbolButtonText();
-            applyFilters();
+            thOnTradeHistoryFilterChange();
             savePreferences();
           }
         });
@@ -4455,19 +4883,19 @@
       document.getElementById('contract-select-all')?.addEventListener('click', () => {
         contractCheckboxes.forEach(cb => { if (cb) cb.checked = true; });
         updateContractButtonText();
-        applyFilters();
+        thOnTradeHistoryFilterChange();
         savePreferences();
       });
       document.getElementById('contract-select-none')?.addEventListener('click', () => {
         contractCheckboxes.forEach(cb => { if (cb) cb.checked = false; });
         updateContractButtonText();
-        applyFilters();
+        thOnTradeHistoryFilterChange();
         savePreferences();
       });
       contractDropdownContent.addEventListener('change', (e) => {
         if (e.target.matches('input[type="checkbox"]')) {
           updateContractButtonText();
-          applyFilters();
+          thOnTradeHistoryFilterChange();
           savePreferences();
         }
       });
@@ -4492,8 +4920,10 @@
 
 
       
-      // WebSocket db_changes (no interval polling; see scheduleTradesRefetchFromDbChange)
+      // Open-trade sell/pnl/ret only (prob is frozen at open). /ws/active-trades-hot-path patches cells in place.
+      // db_changes: INSERT/DELETE only; trade_marks_updated kept as fallback.
       setupDatabaseChangeListener();
+      setupTradeHistoryHotPathListener();
 
       // Set up analysis panel event listeners
       const analysisIntervalSelect = document.getElementById('analysis-time-interval');
@@ -4872,7 +5302,7 @@
         includeTestReset.checked = false;
       }
 
-      applyFilters(); // Re-apply filters after reset
+      thOnTradeHistoryFilterChange(); // Re-apply filters after reset
       savePreferences(); // Save the new default preferences
       console.log('All filters reset completed');
     }
@@ -4938,6 +5368,40 @@
       hourly: []
     };
 
+    /** Hourly analysis bucket from contract label (hourly ``BTC 4pm`` or 15m ``ETH 3:45pm``). */
+    function tradeHistoryHourlyBucketKey(dateStr, contract) {
+      const c = String(contract || '').trim();
+      if (!c || !dateStr) return null;
+      const m15 = c.match(/(\d{1,2}):(\d{2})\s*(am|pm)/i);
+      if (m15) {
+        let h = parseInt(m15[1], 10);
+        const min = parseInt(m15[2], 10);
+        const ap = m15[3].toLowerCase();
+        let h24 = h;
+        if (ap === 'am') {
+          h24 = h === 12 ? 0 : h;
+        } else {
+          h24 = h === 12 ? 12 : h + 12;
+        }
+        return `${dateStr} ${String(h24).padStart(2, '0')}:${String(min).padStart(2, '0')}`;
+      }
+      if (/am/i.test(c)) {
+        const hm = c.match(/(\d{1,2})\s*am/i);
+        if (!hm) return null;
+        const hour = parseInt(hm[1], 10);
+        const hour24 = hour === 12 ? 0 : hour;
+        return `${dateStr} ${String(hour24).padStart(2, '0')}:00`;
+      }
+      if (/pm/i.test(c)) {
+        const hm = c.match(/(\d{1,2})\s*pm/i);
+        if (!hm) return null;
+        const hour = parseInt(hm[1], 10);
+        const hour24 = hour === 12 ? 12 : hour + 12;
+        return `${dateStr} ${String(hour24).padStart(2, '0')}:00`;
+      }
+      return null;
+    }
+
     // Function to group trades by time interval
     function groupTradesByInterval(trades, interval) {
       const groups = {};
@@ -4974,23 +5438,8 @@
             break;
           case 'hourly':
             if (!trade.contract) return;
-            // Group by contract time, not trade execution time
-            const contract = trade.contract;
-            let contractHour = '';
-            
-            // Extract hour from contract (e.g., "BTC 4pm" -> "16:00", "BTC 11am" -> "11:00", "BTC 12am" -> "00:00")
-            if (contract.includes('am')) {
-              const hour = parseInt(contract.match(/(\d+)am/)[1]);
-              const hour24 = hour === 12 ? 0 : hour; // 12am is midnight
-              contractHour = `${hour24.toString().padStart(2, '0')}:00`;
-            } else if (contract.includes('pm')) {
-              const hour = parseInt(contract.match(/(\d+)pm/)[1]);
-              const hour24 = hour === 12 ? 12 : hour + 12;
-              contractHour = `${hour24.toString().padStart(2, '0')}:00`;
-            }
-            
-            key = `${trade.date} ${contractHour}`;
-            console.log(`[Hourly Debug] Contract: ${contract}, contract hour: ${contractHour}, key: ${key}`);
+            key = tradeHistoryHourlyBucketKey(trade.date, trade.contract);
+            if (!key) return;
             break;
           default:
             return;
@@ -5023,8 +5472,8 @@
       periods.forEach(period => {
         const trades = groups[period];
         const periodPnL = trades.reduce((sum, trade) => {
-          const pnl = Number(trade.pnl) || 0;
-          return sum + pnl;
+          const pnl = tradeHistoryTradePnlNumber(trade);
+          return sum + (pnl !== null ? pnl : 0);
         }, 0);
         
         const periodRetPct = trades.reduce((sum, trade) => {
@@ -5063,13 +5512,28 @@
     }
 
     // Function to update analysis display
-    function updateAnalysisDisplay(interval) {
-      if (!_tradeHistoryInsights || !Array.isArray(_tradeHistoryInsights.period_data)) {
+    function updateAnalysisDisplay(interval, options) {
+      const opts = options || {};
+      const dropdownIv = document.getElementById('analysis-time-interval')?.value || 'daily';
+      const iv = interval || (_tradeHistoryInsights && _tradeHistoryInsights.analysis_interval) || dropdownIv;
+      let list =
+        _tradeHistoryInsights && Array.isArray(_tradeHistoryInsights.period_data)
+          ? _tradeHistoryInsights.period_data
+          : [];
+      if (opts.preferClient || !list.length) {
+        const clientList = tradeHistoryClientPeriodData(iv);
+        if (clientList.length) {
+          list = clientList;
+        }
+      }
+      if (!list.length) {
+        document.getElementById('total-periods').textContent = '0';
+        document.getElementById('trades-per-period').textContent = '0';
+        document.getElementById('avg-ret-per-period').textContent = '0.00%';
+        document.getElementById('avg-pnl-per-period').textContent = '$0.00';
+        renderAnalysisChart([], iv, currentChartView);
         return;
       }
-      const dropdownIv = document.getElementById('analysis-time-interval')?.value || 'daily';
-      const iv = interval || _tradeHistoryInsights.analysis_interval || dropdownIv;
-      const list = _tradeHistoryInsights.period_data;
       const stats = {
         totalPeriods: list.length,
         totalTrades: list.reduce((s, p) => s + (p.trades || 0), 0),
@@ -5700,7 +6164,7 @@
       }
       
       // Apply the new filters
-      applyFilters();
+      thOnTradeHistoryFilterChange();
       savePreferences();
     }
 

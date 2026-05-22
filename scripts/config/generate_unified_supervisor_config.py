@@ -268,8 +268,7 @@ class SupervisorConfigGenerator:
                 "symbol_price_watchdog_spx": 8017,
                 "symbol_price_watchdog_ndx": 8019,
                 "kalshi_account_sync_0001": 8004,
-                "market_watchdog_ws_kalshi_hourly": 8005,
-                "market_watchdog_ws_kalshi_15m": 8035,
+                "market_watchdog_ws_kalshi": 8005,
                 "strike_table_generator_ws_hourly": 8014,
                 "strike_table_generator_ws_15m": 8036,
                 "auto_entry_supervisor_15m": 8033,
@@ -435,29 +434,16 @@ class SupervisorConfigGenerator:
                     "autostart": True,
                 }
             )
-        # Orderbook sidecar: Redis-backed depth from WS (kalshi_live_orderbook_sidecar).
-        # On by default for all hosts; set MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=1 in config.local.json
-        # (or env) to turn off without code changes.
         env_market_watchdog_ws = env_global
-        if "MARKET_WATCHDOG_WS_ORDERBOOK_DISABLE=" not in env_market_watchdog_ws:
-            if "MARKET_WATCHDOG_WS_ORDERBOOK_TABLES=" not in env_market_watchdog_ws:
-                env_market_watchdog_ws = (
-                    env_market_watchdog_ws + ',MARKET_WATCHDOG_WS_ORDERBOOK_TABLES="1"'
-                )
+        if "LIVE_STATE_CACHE_ENABLED=" not in env_market_watchdog_ws:
+            env_market_watchdog_ws = (
+                env_market_watchdog_ws + ',LIVE_STATE_CACHE_ENABLED="1"'
+            )
         services.append(
             {
-                "name": "market_watchdog_ws_kalshi_hourly",
-                "script": "market_watchdog_ws.py --exchange kalshi --market hourly",
-                "port": ports.get("market_watchdog_ws_kalshi_hourly", 8005),
-                "environment": env_market_watchdog_ws,
-                "autostart": True,
-            }
-        )
-        services.append(
-            {
-                "name": "market_watchdog_ws_kalshi_15m",
-                "script": "market_watchdog_ws.py --exchange kalshi --market 15m",
-                "port": ports.get("market_watchdog_ws_kalshi_15m", 8035),
+                "name": "market_watchdog_ws_kalshi",
+                "script": "market_watchdog_ws.py --exchange kalshi --market all",
+                "port": ports.get("market_watchdog_ws_kalshi", 8005),
                 "environment": env_market_watchdog_ws,
                 "autostart": True,
             }
@@ -489,6 +475,7 @@ class SupervisorConfigGenerator:
                 "autostart": True,
             }
         )
+        # db_writer_agent removed: script not in tree; hot path uses Redis live_state + optional spool.
 
         pr = Path(project_root)
         kalshi_by_user = fetch_kalshi_enabled_map_for_user_nos(list(trading_users))
@@ -604,7 +591,7 @@ class SupervisorConfigGenerator:
         services.append(
             {
                 "name": "strike_table_generator_ws_hourly",
-                "script": "strike_table_generator_ws.py --exchange kalshi --market hourly --debounce-ms 1200 --min-refresh-sec 1.2",
+                "script": "strike_table_generator_ws.py --exchange kalshi --market hourly",
                 "port": ports.get("strike_table_generator_ws_hourly", 8014),
                 "environment": env_global,
                 "autostart": True,
@@ -613,7 +600,7 @@ class SupervisorConfigGenerator:
         services.append(
             {
                 "name": "strike_table_generator_ws_15m",
-                "script": "strike_table_generator_ws.py --exchange kalshi --market 15m --debounce-ms 1200 --min-refresh-sec 1.2",
+                "script": "strike_table_generator_ws.py --exchange kalshi --market 15m",
                 "port": ports.get("strike_table_generator_ws_15m", 8036),
                 "environment": env_global,
                 "autostart": True,
@@ -836,6 +823,36 @@ environment={env_vars}
                 env_vars.append('PIPELINE_HEALTH_WRITER_DEAD_SEC="900"')
             if not any(x.startswith("PIPELINE_CATASTROPHIC_TRANSPORT_SEC=") for x in env_vars):
                 env_vars.append('PIPELINE_CATASTROPHIC_TRANSPORT_SEC="600"')
+
+            # Phase 1 live_state cache (config.local.json "live_state" or shell env at generate time).
+            _live_state_cfg = self.config.get("live_state") or {}
+            if not isinstance(_live_state_cfg, dict):
+                _live_state_cfg = {}
+            for _ls_key in (
+                "LIVE_STATE_CACHE_ENABLED",
+                "LIVE_STATE_USE_TICK_BUFFER",
+                "LIVE_STATE_SPOOL_ENABLED",
+                "LIVE_STATE_DUAL_WRITE_PG",
+                "PROBABILITY_LOOKUP_RAM",
+                "DB_WRITER_ENABLED",
+                "DB_WRITER_FLUSH_INTERVAL_SEC",
+                "DB_WRITER_MAX_EVENTS_PER_FLUSH",
+                "DB_WRITER_SPOOL_READ_CHUNK",
+                "MARKET_WATCHDOG_WS_ORDERBOOK_PG",
+                "TRADE_MONITOR_ORDERBOOK_PG_FALLBACK",
+                "LIVE_STATE_REDIS_KEY_PREFIX",
+                "LIVE_STATE_UPDATED_CHANNEL",
+                "LIVE_STATE_SPOOL_STREAM",
+            ):
+                if any(x.startswith(f"{_ls_key}=") for x in env_vars):
+                    continue
+                _ls_val = os.getenv(_ls_key)
+                if _ls_val is None or str(_ls_val).strip() == "":
+                    _ls_val = _live_state_cfg.get(_ls_key)
+                if _ls_val is None or str(_ls_val).strip() == "":
+                    continue
+                esc = str(_ls_val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{_ls_key}="{esc}"')
 
             # Shared strike ladder snapshots (Redis): AES/ATS read same payload per wall second when publisher runs.
             if not any(x.startswith("REC_STRIKE_SNAPSHOT_READ=") for x in env_vars):

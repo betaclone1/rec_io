@@ -100,8 +100,7 @@ class CascadingFailureDetector:
             # "symbol_price_watchdog_spx", # SPX price data
             "strike_table_generator_ws_hourly",  # WS hourly strikes → live_data.strike_table_hourly
             user_scoped_service_name("kalshi_account_sync"), # Kalshi API sync
-            "market_watchdog_ws_kalshi_hourly",  # Kalshi hourly WS ticker → live_data.market_kalshi_hourly
-            "market_watchdog_ws_kalshi_15m", # Kalshi 15m WS ticker → live_data.market_kalshi_ws_15m
+            "market_watchdog_ws_kalshi",
             "strike_table_generator_ws_15m", # WS 15m strikes → live_data.strike_table_15m
         ]
         

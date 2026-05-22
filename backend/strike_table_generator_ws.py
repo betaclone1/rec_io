@@ -63,7 +63,7 @@ logger = _configure_logging()
 
 DEFAULT_STREAM_MARKET = "market_kalshi_15m"
 DEFAULT_STREAM_MARKET_HOURLY = "market_kalshi_hourly"
-DEFAULT_STREAM_SYMBOL = "live_symbol_status"
+# Strike regen wake: market PG NOTIFY + live_state pub/sub (not live_symbol_status ticks).
 DEFAULT_REDIS_CHANNEL = "rec_io:db_changes"
 # Hourly: WS ladder rows update often; tight freshness is reasonable.
 DEFAULT_PIPELINE_MAX_AGE_SEC = 30
@@ -213,68 +213,33 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
             conn.close()
 
     def market_stream_age_sec(self) -> float:
-        """Age in seconds of latest WS market row for this symbol."""
-        conn = get_system_postgresql_connection()
-        if not conn:
+        """Age in seconds of latest WS market snapshot in live_state."""
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core import live_state_cache
+
+        if not live_state_cache_enabled():
             return float("inf")
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"""
-                SELECT EXTRACT(EPOCH FROM (NOW() - MAX(updated_at)))
-                FROM live_data.{self.market_table_name}
-                WHERE exchange = %s AND symbol = %s
-                """,
-                (self.data_exchange, self.symbol.upper()),
-            )
-            row = cur.fetchone()
-            if not row or row[0] is None:
-                return float("inf")
-            return float(row[0])
-        except Exception:
-            logger.exception("[%s] failed reading market stream age", self.symbol.upper())
-            return float("inf")
-        finally:
-            conn.close()
+        env = live_state_cache.get_market(
+            self.data_exchange, self.pipeline_health_market, self.symbol
+        )
+        return live_state_cache.cache_age_sec(env)
 
     def price_stream_age_sec(self) -> float:
-        """Age in seconds of latest live symbol status tick for this symbol."""
-        conn = get_system_postgresql_connection()
-        if not conn:
+        """Age in seconds of latest symbol tick in live_state."""
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core import live_state_cache
+
+        if not live_state_cache_enabled():
             return float("inf")
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT EXTRACT(
-                    EPOCH FROM (
-                        NOW() - (
-                            NULLIF("timestamp", '')::timestamp
-                            AT TIME ZONE 'America/New_York'
-                        )
-                    )
-                )
-                FROM live_data.live_symbol_status
-                WHERE symbol = %s
-                """,
-                (self.symbol.upper(),),
-            )
-            row = cur.fetchone()
-            if not row or row[0] is None:
-                return float("inf")
-            return float(row[0])
-        except Exception:
-            logger.exception("[%s] failed reading price stream age", self.symbol.upper())
-            return float("inf")
-        finally:
-            conn.close()
+        env = live_state_cache.get_symbol(self.symbol)
+        return live_state_cache.cache_age_sec(env)
 
     def evaluate_pipeline_health(self, ok: bool, row_count: int) -> tuple[bool, str]:
         """
         Integrity: refresh succeeded and produced rows.
 
         Freshness: when ``STRIKE_PIPELINE_HEALTH_STRICT_MODE`` is on (fail-closed trading),
-        require recent WS market rows and a recent ``live_symbol_status`` tick so we never
+        require recent WS market rows and a recent live_state symbol tick so we never
         mark the pipeline healthy on stale Kalshi ladder data. Optionally the same checks apply
         when ``STRIKE_PIPELINE_FRESHNESS_STRICT`` is set without strict mode (dashboard-only).
         """
@@ -299,44 +264,53 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         return True, "ok"
 
     def get_current_market_data(self):
-        """Read current spot/momentum from live_symbol_status and ladder from WS market table."""
-        conn = get_system_postgresql_connection()
-        if not conn:
-            raise ValueError("database unavailable")
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                """
-                SELECT
-                    COALESCE(one_minute_avg, price),
-                    momentum,
-                    momentum_percentile,
-                    volatility,
-                    volatility_percentile,
-                    movement,
-                    movement_percentile
-                FROM live_data.live_symbol_status
-                WHERE symbol = %s
-                LIMIT 1
-                """,
-                (self.symbol.upper(),),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(f"no live_symbol_status for {self.symbol.upper()}")
-            current_price = float(row[0]) if row[0] is not None else None
-            if current_price is None:
-                raise ValueError(f"no current price in live_symbol_status for {self.symbol.upper()}")
-            momentum_score = float(row[1]) if row[1] is not None else 0.0
-            momentum_percentile = float(row[2]) if row[2] is not None else 0.0
-            volatility = float(row[3]) if row[3] is not None else None
-            volatility_percentile = float(row[4]) if row[4] is not None else None
-            movement = float(row[5]) if row[5] is not None else None
-            movement_percentile = float(row[6]) if row[6] is not None else None
-        finally:
-            conn.close()
+        """Read spot/momentum and Kalshi ladder from live_state Redis (no PostgreSQL substitute)."""
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core import live_state_cache
 
-        market_data = self.get_kalshi_market_snapshot()
+        if not live_state_cache_enabled():
+            raise RuntimeError(
+                "LIVE_STATE_CACHE_ENABLED is required for strike_table_generator_ws"
+            )
+        sym_data = live_state_cache.get_symbol_data(self.symbol)
+        mkt_data = live_state_cache.get_market_data(
+            self.data_exchange, self.pipeline_health_market, self.symbol
+        )
+        if not sym_data:
+            raise ValueError(
+                f"live_state symbol cache miss for {self.symbol.upper()}"
+            )
+        if not mkt_data or not mkt_data.get("markets"):
+            raise ValueError(
+                f"live_state market cache miss for {self.data_exchange}/"
+                f"{self.pipeline_health_market}/{self.symbol.upper()}"
+            )
+        market_data = self._market_data_from_cache_snapshot(mkt_data)
+        price = sym_data.get("price") or sym_data.get("one_minute_avg")
+        if price is None:
+            raise ValueError(f"live_state symbol cache has no price for {self.symbol.upper()}")
+        return {
+            "current_price": float(price),
+            "momentum_score": float(sym_data.get("momentum") or 0.0),
+            "momentum_percentile": float(sym_data.get("momentum_percentile") or 0.0),
+            "volatility": sym_data.get("volatility"),
+            "volatility_percentile": sym_data.get("volatility_percentile"),
+            "movement": sym_data.get("movement"),
+            "movement_percentile": sym_data.get("movement_percentile"),
+            "market_data": market_data,
+        }
+
+    def _market_data_result(
+        self,
+        current_price,
+        momentum_score,
+        momentum_percentile,
+        volatility,
+        volatility_percentile,
+        movement,
+        movement_percentile,
+        market_data,
+    ):
         return {
             "current_price": current_price,
             "momentum_score": momentum_score,
@@ -348,126 +322,198 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
             "market_data": market_data,
         }
 
-    def get_kalshi_market_snapshot(self):
-        """Read latest event + ladder from the configured WS market table (15m or hourly)."""
-        conn = get_system_postgresql_connection()
-        if not conn:
-            raise ValueError("database unavailable")
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"""
-                SELECT event_ticker
-                FROM live_data.{self.market_table_name}
-                WHERE exchange = %s AND symbol = %s
-                ORDER BY updated_at DESC
-                LIMIT 1
-                """,
-                (self.data_exchange, self.symbol.upper()),
-            )
-            row = cur.fetchone()
-            if not row:
-                raise ValueError(
-                    f"No event_ticker in {self.market_table_name} exchange={self.data_exchange} symbol={self.symbol.upper()}"
-                )
-            event_ticker = row[0]
-            cur.execute(
-                f"""
-                SELECT
-                    market_ticker, strike,
-                    yes_ask_dollars, no_ask_dollars,
-                    yes_bid_dollars, no_bid_dollars,
-                    last_price_dollars, volume_fp, open_interest_fp
-                FROM live_data.{self.market_table_name}
-                WHERE exchange = %s AND symbol = %s AND event_ticker = %s
-                ORDER BY market_ticker
-                """,
-                (self.data_exchange, self.symbol.upper(), event_ticker),
-            )
-            rows = cur.fetchall()
-        finally:
-            conn.close()
-
-        if not rows:
-            raise ValueError(f"No rows in {self.market_table_name} for event {event_ticker}")
-
+    def _market_data_from_cache_snapshot(self, mkt_data: dict):
+        """Build market_data dict from live_state market cache payload."""
+        event_ticker = mkt_data.get("event_ticker")
         markets = []
-        for r in rows:
-            market_ticker, strike_txt, ya, na, yb, nb, lp, volume_fp, oi = r
-            floor_strike = None
-            if strike_txt:
+        for m in mkt_data.get("markets") or []:
+            floor_strike = m.get("floor_strike")
+            if floor_strike is None and m.get("strike") is not None:
                 try:
-                    floor_strike = float(str(strike_txt).replace("$", "").replace(",", ""))
-                except ValueError:
+                    floor_strike = float(
+                        str(m.get("strike")).replace("$", "").replace(",", "").strip()
+                    )
+                except (TypeError, ValueError):
                     floor_strike = None
             markets.append(
                 {
-                    "ticker": market_ticker,
+                    "ticker": m.get("ticker"),
+                    "strike": m.get("strike"),
                     "floor_strike": floor_strike,
-                    "yes_ask_dollars": ya,
-                    "no_ask_dollars": na,
-                    "yes_bid_dollars": yb,
-                    "no_bid_dollars": nb,
-                    "last_price_dollars": lp,
-                    "volume_fp": volume_fp,
-                    "open_interest_fp": oi,
+                    "yes_ask_dollars": m.get("yes_ask_dollars"),
+                    "no_ask_dollars": m.get("no_ask_dollars"),
+                    "yes_bid_dollars": m.get("yes_bid_dollars"),
+                    "no_bid_dollars": m.get("no_bid_dollars"),
+                    "last_price_dollars": m.get("last_price_dollars"),
+                    "volume_fp": m.get("volume_fp"),
+                    "open_interest_fp": m.get("open_interest_fp"),
                     "status": "active",
                 }
             )
-
-        # strike_tier is internal and must be computed from ladder spacing.
-        # 15m remains 0 by design (single-contract cadence).
-        if self.interval == "hourly":
+        strike_tier = 0
+        if self.interval == "hourly" and markets:
             strike_tier = int(self.detect_strike_tier_spacing(markets))
-            if strike_tier <= 0:
-                raise ValueError(f"invalid computed strike_tier={strike_tier} for {self.symbol.upper()}")
-        else:
-            strike_tier = 0
-
         return {
             "event_ticker": event_ticker,
             "market_status": "active",
-            "event_title": self.generate_market_title(event_ticker),
+            "event_title": self.generate_market_title(event_ticker or ""),
             "strike_date": datetime.now(ZoneInfo("America/New_York")).isoformat(),
             "strike_tier": strike_tier,
             "markets": markets,
         }
 
+    def get_kalshi_market_snapshot(self):
+        """Read latest event + ladder from live_state market cache only."""
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core import live_state_cache
 
-def _coalesced_wait(
-    pubsub,
-    debounce_ms: int,
-    stop_after_sec: float = 30.0,
+        if not live_state_cache_enabled():
+            raise RuntimeError(
+                "LIVE_STATE_CACHE_ENABLED is required for strike_table_generator_ws"
+            )
+        mkt_data = live_state_cache.get_market_data(
+            self.data_exchange, self.pipeline_health_market, self.symbol
+        )
+        if not mkt_data or not mkt_data.get("markets"):
+            raise ValueError(
+                f"live_state market cache miss for {self.data_exchange}/"
+                f"{self.pipeline_health_market}/{self.symbol.upper()}"
+            )
+        return self._market_data_from_cache_snapshot(mkt_data)
+
+
+def _symbols_from_live_state_event(
+    payload: dict,
     *,
-    stream_db_names: tuple[str, ...] = (DEFAULT_STREAM_MARKET, DEFAULT_STREAM_SYMBOL),
-) -> bool:
-    """Wait for at least one message, then debounce briefly to coalesce bursts."""
-    deadline = time.time() + stop_after_sec
-    got_one = False
-    while time.time() < deadline:
-        msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-        if not msg or msg.get("type") != "message":
+    data_exchange: str,
+    market_kind: str,
+) -> set[str]:
+    """Symbols needing strike regen from ``live_state_updated`` (symbol or market writes)."""
+    kind = str(payload.get("kind") or "").strip()
+    key = str(payload.get("key") or "")
+    parts = key.split(":")
+    ex = data_exchange.strip().lower()
+    mk = market_kind.strip().lower()
+    if kind == "symbol" and len(parts) >= 5:
+        sym = str(parts[-1]).strip().upper()
+        return {sym} if sym else set()
+    if kind == "market" and len(parts) >= 7:
+        if str(parts[4]).strip().lower() != ex:
+            return set()
+        if str(parts[5]).strip().lower() != mk:
+            return set()
+        sym = str(parts[6]).strip().upper()
+        return {sym} if sym else set()
+    return set()
+
+
+def _symbols_from_pubsub_message(
+    raw: str,
+    *,
+    data_exchange: str,
+    market_kind: str,
+    stream_db_names: tuple[str, ...],
+    subscribed_symbols: frozenset[str],
+) -> set[str]:
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return set()
+    if payload.get("type") == "live_state_updated":
+        if payload.get("kind") == "orderbook":
+            return set()
+        return _symbols_from_live_state_event(
+            payload, data_exchange=data_exchange, market_kind=market_kind
+        ) & subscribed_symbols
+    if payload.get("type") == "db_change":
+        db_name = payload.get("database")
+        if db_name in stream_db_names:
+            return set(subscribed_symbols)
+    return set()
+
+
+def _collect_symbols_to_regenerate(
+    pubsub,
+    *,
+    data_exchange: str,
+    market_kind: str,
+    stream_db_names: tuple[str, ...],
+    subscribed_symbols: frozenset[str],
+    block_timeout_sec: float = 1.0,
+) -> set[str]:
+    """
+    Block until at least one regen signal, then drain the pubsub buffer (no wall-clock debounce).
+    Bursts coalesce to one regen per symbol per drain cycle.
+    """
+    symbols: set[str] = set()
+    msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=block_timeout_sec)
+    if msg and msg.get("type") == "message":
+        raw = msg.get("data")
+        if raw:
+            symbols |= _symbols_from_pubsub_message(
+                raw,
+                data_exchange=data_exchange,
+                market_kind=market_kind,
+                stream_db_names=stream_db_names,
+                subscribed_symbols=subscribed_symbols,
+            )
+    while True:
+        msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=0.0)
+        if not msg:
+            break
+        if msg.get("type") != "message":
             continue
         raw = msg.get("data")
         if not raw:
             continue
-        try:
-            payload = json.loads(raw)
-        except Exception:
-            continue
-        if payload.get("type") != "db_change":
-            continue
-        db_name = payload.get("database")
-        if db_name in stream_db_names:
-            got_one = True
-            break
-    if not got_one:
-        return False
+        symbols |= _symbols_from_pubsub_message(
+            raw,
+            data_exchange=data_exchange,
+            market_kind=market_kind,
+            stream_db_names=stream_db_names,
+            subscribed_symbols=subscribed_symbols,
+        )
+    return symbols
 
-    end = time.time() + (debounce_ms / 1000.0)
-    while time.time() < end:
-        _ = pubsub.get_message(ignore_subscribe_messages=True, timeout=0.05)
-    return True
+
+def _refresh_symbol(
+    generators: dict,
+    sym: str,
+    *,
+    raw_unhealthy_since: dict,
+    degrade_confirm_sec: int,
+) -> None:
+    gen = generators.get(sym)
+    if not gen:
+        return
+    now = time.time()
+    ok, ev, n = gen.generate_strike_table()
+    healthy_raw, reason_raw = gen.evaluate_pipeline_health(ok, n)
+    if healthy_raw:
+        raw_unhealthy_since[sym] = None
+        healthy, reason = True, "ok"
+    else:
+        if raw_unhealthy_since[sym] is None:
+            raw_unhealthy_since[sym] = now
+        elapsed = now - float(raw_unhealthy_since[sym] or now)
+        if elapsed < float(degrade_confirm_sec):
+            healthy = True
+            reason = f"transient_unhealthy:{reason_raw}:{elapsed:.1f}s<{degrade_confirm_sec}s"
+        else:
+            healthy = False
+            reason = reason_raw
+    gen.set_pipeline_health(healthy=healthy, reason=reason)
+    if not healthy:
+        logger.warning("[%s] strike refresh degraded reason=%s event=%s rows=%s", sym, reason, ev, n)
+    elif not healthy_raw:
+        logger.debug(
+            "[%s] strike refresh unhealthy masked %ss reason=%s event=%s rows=%s",
+            sym,
+            degrade_confirm_sec,
+            reason,
+            ev,
+            n,
+        )
 
 
 def run_redis_triggered(
@@ -476,18 +522,16 @@ def run_redis_triggered(
     symbols: tuple[str, ...],
     market_kind: str = "15m",
     redis_channel: str = DEFAULT_REDIS_CHANNEL,
-    debounce_ms: int = 1200,
-    min_refresh_sec: float = 1.2,
     pipeline_max_age_sec: int = DEFAULT_PIPELINE_MAX_AGE_SEC,
     degrade_confirm_sec: int = DEFAULT_DEGRADE_CONFIRM_SEC,
 ) -> None:
     mk = (market_kind or "15m").strip().lower()
+    # Market ingest is live_state only — no PG market_kalshi_* writer (see docs/KALSHI_MARKET_INGEST.md).
+    stream_db_names: tuple[str, ...] = ()
     if mk == "hourly":
-        stream_db_names = (DEFAULT_STREAM_MARKET_HOURLY, DEFAULT_STREAM_SYMBOL)
         default_strike = os.getenv("STRIKE_TABLE_HOURLY_TARGET", "strike_table_hourly")
         default_market = "market_kalshi_hourly"
     elif mk == "15m":
-        stream_db_names = (DEFAULT_STREAM_MARKET, DEFAULT_STREAM_SYMBOL)
         default_strike = os.getenv("STRIKE_TABLE_15M_TARGET", "strike_table_15m")
         default_market = "market_kalshi_15m"
     else:
@@ -515,99 +559,51 @@ def run_redis_triggered(
     # Ensure schema once.
     next(iter(generators.values())).setup_live_data_schema()
 
-    # Prime immediately at startup.
+    subscribed = frozenset(syms)
+
     for s in syms:
-        now = time.time()
-        ok, ev, n = generators[s].generate_strike_table()
-        healthy_raw, reason_raw = generators[s].evaluate_pipeline_health(ok, n)
-        if healthy_raw:
-            raw_unhealthy_since[s] = None
-            healthy, reason = True, "ok"
-        else:
-            if raw_unhealthy_since[s] is None:
-                raw_unhealthy_since[s] = now
-            elapsed = now - float(raw_unhealthy_since[s] or now)
-            if elapsed < float(degrade_confirm_sec):
-                healthy = True
-                reason = f"transient_unhealthy:{reason_raw}:{elapsed:.1f}s<{degrade_confirm_sec}s"
-            else:
-                healthy = False
-                reason = reason_raw
-        generators[s].set_pipeline_health(healthy=healthy, reason=reason)
-        if not healthy:
-            logger.warning("[%s] startup prime degraded ok=%s event=%s rows=%s reason=%s", s, ok, ev, n, reason)
-        elif not healthy_raw:
-            logger.warning(
-                "[%s] startup prime unhealthy masked %ss ok=%s event=%s rows=%s reason=%s",
-                s,
-                degrade_confirm_sec,
-                ok,
-                ev,
-                n,
-                reason,
-            )
-        else:
-            logger.info("[%s] startup prime ok=%s event=%s rows=%s", s, ok, ev, n)
+        _refresh_symbol(
+            generators,
+            s,
+            raw_unhealthy_since=raw_unhealthy_since,
+            degrade_confirm_sec=degrade_confirm_sec,
+        )
+        logger.info("[%s] startup prime complete", s)
 
     logger.info(
-        "Redis-triggered WS strike generator start market=%s exchange=%s symbols=%s channel=%s debounce_ms=%s",
+        "Event-driven WS strike generator market=%s exchange=%s symbols=%s channels=%s,%s",
         mk,
         data_exchange,
         ",".join(syms),
         redis_channel,
-        debounce_ms,
+        "rec_io:live_state:updated",
     )
+
+    from backend.core.live_state_cache import UPDATED_CHANNEL
 
     r = _redis_client()
     pubsub = r.pubsub()
-    pubsub.subscribe(redis_channel)
-    logger.info("Subscribed Redis channel %s", redis_channel)
-    last_refresh_at = 0.0
+    pubsub.subscribe(redis_channel, UPDATED_CHANNEL)
+    logger.info("Subscribed Redis channels %s, %s", redis_channel, UPDATED_CHANNEL)
 
     while True:
         try:
-            fired = _coalesced_wait(
+            to_regen = _collect_symbols_to_regenerate(
                 pubsub,
-                debounce_ms=debounce_ms,
-                stop_after_sec=30.0,
+                data_exchange=data_exchange,
+                market_kind=mk,
                 stream_db_names=stream_db_names,
+                subscribed_symbols=subscribed,
             )
-            if not fired:
+            if not to_regen:
                 continue
-            now = time.time()
-            if now - last_refresh_at < min_refresh_sec:
-                continue
-            last_refresh_at = now
-            for s in syms:
-                ok, ev, n = generators[s].generate_strike_table()
-                healthy_raw, reason_raw = generators[s].evaluate_pipeline_health(ok, n)
-                if healthy_raw:
-                    raw_unhealthy_since[s] = None
-                    healthy, reason = True, "ok"
-                else:
-                    if raw_unhealthy_since[s] is None:
-                        raw_unhealthy_since[s] = now
-                    elapsed = now - float(raw_unhealthy_since[s] or now)
-                    if elapsed < float(degrade_confirm_sec):
-                        healthy = True
-                        reason = f"transient_unhealthy:{reason_raw}:{elapsed:.1f}s<{degrade_confirm_sec}s"
-                    else:
-                        healthy = False
-                        reason = reason_raw
-                generators[s].set_pipeline_health(healthy=healthy, reason=reason)
-                if not healthy:
-                    logger.warning("[%s] strike refresh degraded reason=%s event=%s rows=%s", s, reason, ev, n)
-                elif not healthy_raw:
-                    logger.warning(
-                        "[%s] strike refresh unhealthy but masked %ss (degrade_confirm) reason=%s event=%s rows=%s",
-                        s,
-                        degrade_confirm_sec,
-                        reason,
-                        ev,
-                        n,
-                    )
-                else:
-                    logger.info("[%s] strike refresh ok event=%s rows=%s", s, ev, n)
+            for s in sorted(to_regen):
+                _refresh_symbol(
+                    generators,
+                    s,
+                    raw_unhealthy_since=raw_unhealthy_since,
+                    degrade_confirm_sec=degrade_confirm_sec,
+                )
         except KeyboardInterrupt:
             logger.info("Stopped by user")
             break
@@ -632,8 +628,6 @@ def main() -> None:
         help="Optional symbol list. Default: symbols_list order filtered to Kalshi 15m or hourly set.",
     )
     parser.add_argument("--redis-channel", default=DEFAULT_REDIS_CHANNEL)
-    parser.add_argument("--debounce-ms", type=int, default=1200)
-    parser.add_argument("--min-refresh-sec", type=float, default=1.2)
     parser.add_argument(
         "--pipeline-max-age-sec",
         type=int,
@@ -682,8 +676,6 @@ def main() -> None:
         symbols=syms,
         market_kind=args.market,
         redis_channel=args.redis_channel,
-        debounce_ms=max(20, int(args.debounce_ms)),
-        min_refresh_sec=max(0.1, float(args.min_refresh_sec)),
         pipeline_max_age_sec=pipeline_max_age,
         degrade_confirm_sec=max(5, int(args.degrade_confirm_sec)),
     )

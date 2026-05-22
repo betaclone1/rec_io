@@ -8639,7 +8639,7 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ### Table: `live_data.live_symbol_status`
 
-**Population:** Trigger-driven from `live_data.live_price_log_1s_btc`, `live_price_log_1s_eth`, `live_price_log_1s_sol`, and `live_price_log_1s_xrp` (latest row per symbol via upsert on `symbol`). Symbol-wide loss prevention fields are synced from configured user `0001` hero monitors whose `name` matches `monitor_follow`.
+**Population:** Symbol-wide loss prevention fields are synced from configured user `0001` hero monitors whose `name` matches `monitor_follow`. `prev_day_avg_*` / `daily_update` may be updated by `symbol_price_watchdog` daily rollup. Legacy tick columns (`price`, `momentum`, deltas, etc.) are **not** mirrored in real time (migration `20260517_1500_live_symbol_status_lp_only_drop_price_sync`); operational ticks live in Redis `live_state` and `live_price_log_1s_*`.
 
 #### Columns
 
