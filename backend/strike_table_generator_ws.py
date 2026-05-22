@@ -71,7 +71,10 @@ DEFAULT_PIPELINE_MAX_AGE_SEC = 30
 # unified market table between rollovers / quiet tape; 30s false-negatives the whole pipeline.
 DEFAULT_PIPELINE_MAX_AGE_15M_SEC = 900
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
+# Per-symbol floor between full strike regens (pub/sub can fire many times per second).
+STRIKE_REGEN_MIN_INTERVAL_SEC = 0.25
 KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL"})
+_last_regen_mono: dict[str, float] = {}
 
 
 def _redis_client():
@@ -270,7 +273,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
         if not live_state_cache_enabled():
             raise RuntimeError(
-                "LIVE_STATE_CACHE_ENABLED is required for strike_table_generator_ws"
+                "live_state Redis cache is disabled; strike_table_generator_ws requires the hot path"
             )
         sym_data = live_state_cache.get_symbol_data(self.symbol)
         mkt_data = live_state_cache.get_market_data(
@@ -369,7 +372,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
 
         if not live_state_cache_enabled():
             raise RuntimeError(
-                "LIVE_STATE_CACHE_ENABLED is required for strike_table_generator_ws"
+                "live_state Redis cache is disabled; strike_table_generator_ws requires the hot path"
             )
         mkt_data = live_state_cache.get_market_data(
             self.data_exchange, self.pipeline_health_market, self.symbol
@@ -486,6 +489,11 @@ def _refresh_symbol(
     gen = generators.get(sym)
     if not gen:
         return
+    now_mono = time.monotonic()
+    last = _last_regen_mono.get(sym)
+    if last is not None and (now_mono - last) < STRIKE_REGEN_MIN_INTERVAL_SEC:
+        return
+    _last_regen_mono[sym] = now_mono
     now = time.time()
     ok, ev, n = gen.generate_strike_table()
     healthy_raw, reason_raw = gen.evaluate_pipeline_health(ok, n)
@@ -561,7 +569,15 @@ def run_redis_triggered(
 
     subscribed = frozenset(syms)
 
+    try:
+        from backend.core.probability_lookup_cache import preload_symbols
+
+        preload_symbols(syms)
+    except Exception as e:
+        logger.warning("probability_lookup_cache preload skipped: %s", e)
+
     for s in syms:
+        _last_regen_mono.pop(s, None)
         _refresh_symbol(
             generators,
             s,

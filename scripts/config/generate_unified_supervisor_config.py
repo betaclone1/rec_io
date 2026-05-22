@@ -434,17 +434,12 @@ class SupervisorConfigGenerator:
                     "autostart": True,
                 }
             )
-        env_market_watchdog_ws = env_global
-        if "LIVE_STATE_CACHE_ENABLED=" not in env_market_watchdog_ws:
-            env_market_watchdog_ws = (
-                env_market_watchdog_ws + ',LIVE_STATE_CACHE_ENABLED="1"'
-            )
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi",
                 "script": "market_watchdog_ws.py --exchange kalshi --market all",
                 "port": ports.get("market_watchdog_ws_kalshi", 8005),
-                "environment": env_market_watchdog_ws,
+                "environment": env_global,
                 "autostart": True,
             }
         )
@@ -853,6 +848,8 @@ environment={env_vars}
                     continue
                 esc = str(_ls_val).replace("\\", "\\\\").replace('"', '\\"')
                 env_vars.append(f'{_ls_key}="{esc}"')
+            # v3.7+ hot path defaults ON in backend/core/live_state_config.py (no env required).
+            # Still propagate explicit overrides from shell or config.local.json "live_state".
 
             # Shared strike ladder snapshots (Redis): AES/ATS read same payload per wall second when publisher runs.
             if not any(x.startswith("REC_STRIKE_SNAPSHOT_READ=") for x in env_vars):

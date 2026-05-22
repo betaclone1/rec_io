@@ -1390,14 +1390,17 @@ class StrikeTableGenerator:
             except Exception:
                 skip_strike_table_pg_dml = False
 
-            # Write to database (skipped when live_state is primary and dual-write is off)
-            conn = get_postgresql_connection()
-            cursor = conn.cursor()
-            
+            # PG connection only when strike-table DML or SQL probability fallback is needed.
+            conn = None
+            cursor = None
+            if not skip_strike_table_pg_dml:
+                conn = get_postgresql_connection()
+                cursor = conn.cursor()
+
             table_name = self._strike_table_name()
             # Carry forward ask extrema across DELETE/INSERT (same Kalshi event_ticker + market ticker).
             prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
-            if not skip_strike_table_pg_dml:
+            if not skip_strike_table_pg_dml and cursor is not None:
                 try:
                     sel = (
                         f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "
@@ -1835,7 +1838,7 @@ class StrikeTableGenerator:
                     logger.error("Error processing strike %s: %s", strike, e)
                     continue
             
-            if not skip_strike_table_pg_dml:
+            if conn is not None:
                 conn.commit()
             event_ticker = market_data.get("event_ticker")
             logger.debug("Generated %s strike table records for %s", len(strike_data), self.symbol.upper())
