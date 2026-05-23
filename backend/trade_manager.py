@@ -1997,6 +1997,17 @@ def _order_count_val(legacy, fp):
     return 0.0
 
 
+def _fetch_kalshi_order_for_confirm(order_id: str) -> Optional[Dict[str, Any]]:
+    """Live confirm path: Redis portfolio orders hot hash only (PG is historical)."""
+    from backend.core.tradeflow_live_reads import kalshi_order
+
+    oid = str(order_id or "").strip()
+    if not oid:
+        return None
+    slot = effective_tenant_context_for_sql_rewrite().user_no
+    return kalshi_order(slot, oid)
+
+
 def _trade_position_for_db(value) -> float:
     """Normalize stored contract count on trades.position to 2dp (Kalshi fractional fills)."""
     try:
@@ -3313,11 +3324,11 @@ def insert_simulated_trade(trade):
 
 
 def confirm_open_trade(id: int, ticket_id: str) -> None:
-    """Confirms a PENDING trade has been opened by checking ORDERS table for complete fill.
+    """Confirms a PENDING trade has been opened by checking Kalshi order hot state for complete fill.
 
     Cumulative open fees on the trade row are: fees already stored from prior IOC legs plus
-    (taker_fees_dollars + maker_fees_dollars) from the tenant orders row for the current
-    order_id_open (synced Kalshi API). A per-trade lock prevents     overlapping confirms from
+    (taker_fees_dollars + maker_fees_dollars) from the live order row for the current
+    order_id_open (WS portfolio hot hash). A per-trade lock prevents overlapping confirms from
     double-counting the same order fee. Uses the same per-id lock as close confirmation.
     """
     # Get initial trade info including the order_id_open we stored
@@ -3338,7 +3349,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
     stored_order_id_open = row[2]
     
     if not stored_order_id_open:
-        log_event(ticket_id, f"MANAGER: No order_id_open stored for trade ID {id} - cannot confirm via ORDERS table")
+        log_event(ticket_id, f"MANAGER: No order_id_open stored for trade ID {id} - cannot confirm via order hot state")
         return
     
     with _trade_confirm_lock(id):
@@ -3346,27 +3357,17 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
         
         while time.time() < deadline:
             try:
-                pg_conn = get_postgresql_connection()
-                if not pg_conn:
-                    log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
-                    time.sleep(1)
-                    continue
-            
-                # Check ORDERS table for our specific order_id (prefer _fp columns for counts and *_dollars for prices/fees)
-                with pg_conn.cursor() as cursor:
-                    cursor.execute(f"""
-                        SELECT remaining_count_fp, fill_count_fp, initial_count_fp, status, outcome_side,
-                               taker_fees_dollars, maker_fees_dollars,
-                               taker_fill_cost_dollars, maker_fill_cost_dollars
-                        FROM {_tm_orders_table()} 
-                        WHERE order_id = %s
-                    """, (stored_order_id_open,))
-                    order_row = cursor.fetchone()
-            
-                if order_row:
-                    (remaining_count_fp, fill_count_fp, initial_count_fp, order_status, outcome_side,
-                     taker_fees_dollars, maker_fees_dollars,
-                     taker_fill_cost_dollars, maker_fill_cost_dollars) = order_row
+                order_rec = _fetch_kalshi_order_for_confirm(stored_order_id_open)
+                if order_rec:
+                    remaining_count_fp = order_rec.get("remaining_count_fp")
+                    fill_count_fp = order_rec.get("fill_count_fp")
+                    initial_count_fp = order_rec.get("initial_count_fp")
+                    order_status = order_rec.get("status")
+                    outcome_side = order_rec.get("outcome_side")
+                    taker_fees_dollars = order_rec.get("taker_fees_dollars")
+                    maker_fees_dollars = order_rec.get("maker_fees_dollars")
+                    taker_fill_cost_dollars = order_rec.get("taker_fill_cost_dollars")
+                    maker_fill_cost_dollars = order_rec.get("maker_fill_cost_dollars")
                     # Legacy integer counts were removed; use *_fp only.
                     remaining_val = _order_count_val(None, remaining_count_fp)
                     fill_val = _order_count_val(None, fill_count_fp)
@@ -3394,7 +3395,6 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                 pass
                     if not tr_snap:
                         log_event(ticket_id, "MANAGER: trade row missing during confirm_open")
-                        pg_conn.close()
                         break
                     row_status = tr_snap[0]
                     tr_tif = str(tr_snap[1] or "").strip().lower()
@@ -3423,7 +3423,6 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             tr_ic_chk > 0 and tr_pos_f_pending + 1e-9 < float(tr_ic_chk)
                         )
                         if prior_leg_filled_some:
-                            pg_conn.close()
                             try:
                                 pg_conn_rev = get_postgresql_connection()
                                 if pg_conn_rev:
@@ -3451,7 +3450,6 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             )
                             notify_strike_table_trade_change(id, "partial")
                             break
-                        pg_conn.close()
                         _delete_pending_trade_for_rejection(id, ticket_id, "IOC_ZERO_FILL")
                         break
 
@@ -3489,7 +3487,6 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                 ticket_id,
                                 f"MANAGER: IOC terminal order already applied (fill={order_fill_cumulative} trade_pos={tr_pos_f}) — skipping duplicate confirm",
                             )
-                            pg_conn.close()
                             ioc_handled = True
                             break
                         ratio = (
@@ -3602,7 +3599,6 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             f"MANAGER: IOC fill — status={next_st} pos={position_for_db} price={buy_price:.4f} fees=${total_fees_dollars:.4f}",
                         )
                         notify_strike_table_trade_change(id, next_st)
-                        pg_conn.close()
                         ioc_handled = True
                         break
 
@@ -3775,21 +3771,17 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             # Update trade status to open (this will also update PostgreSQL and notify ATS)
                             update_trade_status(id, 'open')
                         
-                            log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via ORDERS table — pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
+                            log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via order hot state — pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
                             # Notify strike table for display update (lowest priority)
                             notify_strike_table_trade_change(id, "open")
-                            pg_conn.close()
                             break
                         else:
                             log_event(ticket_id, f"MANAGER: Trade status is not pending (current: {current_status}) - skipping confirmation")
-                            pg_conn.close()
                             break
                     else:
                         log_event(ticket_id, f"MANAGER: Order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
                 else:
-                    log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} not found in ORDERS table yet")
-            
-                pg_conn.close()
+                    log_event(ticket_id, f"MANAGER: Opening order {stored_order_id_open} not found in order hot state yet")
                     
             except Exception as e:
                 log_event(ticket_id, f"MANAGER: OPEN TRADE WATCH DB read error: {e}")
@@ -3814,10 +3806,10 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
             notify_active_trade_supervisor_direct(id, ticket_id, "error")
 
 def confirm_close_trade(id: int, ticket_id: str) -> None:
-    """Confirms a CLOSING trade has been closed by checking ORDERS table for complete close fill.
+    """Confirms a CLOSING trade has been closed by checking Kalshi order hot state for complete close fill.
 
     Total fees on the trade row are existing fees (open + prior legs) plus close-order taker+maker
-    from the synced orders row for order_id_close. Serialized with confirm_open_trade per trade id.
+    from the live order row for order_id_close. Serialized with confirm_open_trade per trade id.
     """
     log(f"CONFIRMING CLOSE TRADE: {id}")
     
@@ -3842,30 +3834,19 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         stored_order_id_close = row[2]
         
         if not stored_order_id_close:
-            log_event(ticket_id, f"MANAGER: No order_id_close stored for trade ID {id} - cannot confirm via ORDERS table")
+            log_event(ticket_id, f"MANAGER: No order_id_close stored for trade ID {id} - cannot confirm via order hot state")
             log(f"NO CLOSE ORDER_ID FOR TRADE: {id}")
             return
         
         with _trade_confirm_lock(id):
-            # Check ORDERS table for our specific close order_id
-            pg_conn = get_postgresql_connection()
-            if not pg_conn:
-                log_event(ticket_id, f"MANAGER: Cannot connect to PostgreSQL orders table")
-                return
-        
-            # Check close order once - orders change notification should handle timing
             try:
-                with pg_conn.cursor() as cursor:
-                    cursor.execute(f"""
-                        SELECT remaining_count_fp, fill_count_fp, status,
-                               taker_fees_dollars, maker_fees_dollars
-                        FROM {_tm_orders_table()} 
-                        WHERE order_id = %s
-                    """, (stored_order_id_close,))
-                    order_row = cursor.fetchone()
-            
-                if order_row:
-                    remaining_count_fp, fill_count_fp, order_status, taker_fees_dollars, maker_fees_dollars = order_row
+                order_rec = _fetch_kalshi_order_for_confirm(stored_order_id_close)
+                if order_rec:
+                    remaining_count_fp = order_rec.get("remaining_count_fp")
+                    fill_count_fp = order_rec.get("fill_count_fp")
+                    order_status = order_rec.get("status")
+                    taker_fees_dollars = order_rec.get("taker_fees_dollars")
+                    maker_fees_dollars = order_rec.get("maker_fees_dollars")
                     # Legacy integer counts were removed; use *_fp only.
                     remaining_val = _order_count_val(None, remaining_count_fp)
                     fill_val = _order_count_val(None, fill_count_fp)
@@ -3898,27 +3879,12 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     
                         log_event(ticket_id, f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, close order: ${close_order_fees_dollars}, total: ${total_fees_paid}")
                     
-                        # Get sell price from the close order data
-                        pg_conn_close_order = get_postgresql_connection()
-                        if pg_conn_close_order:
-                            with pg_conn_close_order.cursor() as cursor:
-                                cursor.execute(f"""
-                                    SELECT outcome_side, taker_fill_cost_dollars, fill_count_fp
-                                    FROM {_tm_orders_table()} 
-                                    WHERE order_id = %s
-                                """, (stored_order_id_close,))
-                                close_order_data = cursor.fetchone()
-                            pg_conn_close_order.close()
-                        else:
-                            close_order_data = None
-                    
-                        if close_order_data:
-                            _close_outcome_side, close_fill_cost_dollars, close_fill_count_fp = close_order_data
-                            close_fill_val = _order_count_val(None, close_fill_count_fp)
-                            # Calculate sell price from close order (cost per share) using fixed-point dollars
-                            total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
-                            sell_price = (total_close_cost_usd / close_fill_val) if (total_close_cost_usd is not None and close_fill_val > 0) else 0.0
-                            # For close orders, sell_price should be 1 - the price we paid to close
+                        close_fill_cost_dollars = order_rec.get("taker_fill_cost_dollars")
+                        close_fill_count_fp = order_rec.get("fill_count_fp")
+                        close_fill_val = _order_count_val(None, close_fill_count_fp)
+                        total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+                        if total_close_cost_usd is not None and close_fill_val > 0:
+                            sell_price = total_close_cost_usd / close_fill_val
                             sell_price = 1 - sell_price
                             log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
                         else:
@@ -4043,17 +4009,14 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         # Notify strike table for display update
                         notify_strike_table_trade_change(id, "closed")
                     
-                        pg_conn.close()
                         return
                     else:
                         log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
                 else:
-                    log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} not found in ORDERS table yet")
-            
-                pg_conn.close()
+                    log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} not found in order hot state yet")
                     
             except Exception as e:
-                log_event(ticket_id, f"MANAGER: CLOSE TRADE WATCH DB read error: {e}")
+                log_event(ticket_id, f"MANAGER: CLOSE TRADE WATCH read error: {e}")
                 log(f"ERROR CHECKING CLOSE ORDER: {e}")
                 return
     except Exception as e:
@@ -6906,7 +6869,7 @@ def apply_positions_updated_payload(data: dict) -> dict:
     try:
         db_name = data.get("database", "positions")
 
-        if db_name == "positions":
+        if db_name in ("positions", "orders"):
             pg_conn = get_postgresql_connection()
             if pg_conn:
                 with pg_conn.cursor() as cursor:
@@ -6916,7 +6879,7 @@ def apply_positions_updated_payload(data: dict) -> dict:
                 pending_trades = []
 
             if pending_trades:
-                log(f"[🔔 POSITIONS UPDATED] Found {len(pending_trades)} pending trades to confirm")
+                log(f"[🔔 {db_name.upper()} UPDATED] Found {len(pending_trades)} pending trades to confirm")
                 for id, ticket_id in pending_trades:
                     threading.Thread(target=confirm_open_trade, args=(id, ticket_id), daemon=True).start()
 

@@ -50,7 +50,7 @@
     #meta .ok { color: var(--ok); }
     #meta .warn { color: var(--warn); }
     #redis-key { color: var(--accent); word-break: break-all; }
-    .panels { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .panels { display: grid; grid-template-columns: 3fr 1fr; gap: 12px; }
     @media (max-width: 960px) { .panels { grid-template-columns: 1fr; } }
     .panel {
       border: 1px solid var(--border);
@@ -109,18 +109,11 @@
 
   <div class="panels">
     <div class="panel" id="panel-table">
-      <h2>Row view (active trades)</h2>
+      <h2 id="panel-table-title">Row view</h2>
       <table>
-        <thead>
-          <tr>
-            <th>trade_id</th><th>status</th><th>ticker</th>
-            <th class="n">buy</th><th class="n">sell</th><th class="n">pnl</th>
-            <th class="n">prob*</th>
-          </tr>
-        </thead>
+        <thead><tr id="rows-head"></tr></thead>
         <tbody id="rows-body"></tbody>
       </table>
-      <p class="sub" style="padding:8px;margin:0;font-size:11px;">*prob shown for ATS debug only; not trade-log live columns.</p>
     </div>
     <div class="panel">
       <h2>Snapshot / last event</h2>
@@ -133,9 +126,37 @@
   var catalog = [];
   var ws = null;
   var rows = {};
+  var rowIdField = 'trade_id';
+  var rowColumns = [];
   var eventCount = 0;
   var patchCount = 0;
   var reconnectTimer = null;
+  var tableBootstrapped = false;
+
+  function currentSourceDef() {
+    var sid = document.getElementById('source').value;
+    return catalog.find(function (s) { return s.id === sid; });
+  }
+
+  function resetTable() {
+    document.getElementById('rows-body').innerHTML = '';
+    rows = {};
+    tableBootstrapped = false;
+  }
+
+  function renderTableHead(def) {
+    var head = document.getElementById('rows-head');
+    head.innerHTML = '';
+    if (!def || !def.row_columns || !def.row_columns.length) return;
+    def.row_columns.forEach(function (col) {
+      var th = document.createElement('th');
+      th.textContent = col.label || col.field;
+      if (col.numeric) th.className = 'n';
+      head.appendChild(th);
+    });
+    document.getElementById('panel-table-title').textContent =
+      'Row view (' + (def.label || def.id) + ')';
+  }
 
   function qs() { return new URLSearchParams(window.location.search); }
 
@@ -181,6 +202,11 @@
     return q;
   }
 
+  function onParamChange() {
+    syncUrl();
+    connect();
+  }
+
   function renderParamFields() {
     var sid = document.getElementById('source').value;
     var def = catalog.find(function (s) { return s.id === sid; });
@@ -194,10 +220,16 @@
       inp.id = 'p-' + p.name;
       inp.placeholder = p.placeholder || p.default || '';
       inp.value = qs().get(p.name) || p.default || '';
+      inp.addEventListener('change', onParamChange);
       lab.appendChild(inp);
       host.appendChild(lab);
     });
     document.getElementById('panel-table').classList.toggle('hidden', !def.row_mode);
+    rowColumns = def.row_columns || [];
+    rowIdField = def.row_id_field || 'row_id';
+    tableBootstrapped = false;
+    resetTable();
+    renderTableHead(def);
   }
 
   function setCell(tr, field, text) {
@@ -205,67 +237,159 @@
     if (el) el.textContent = text;
   }
 
-  function ensureRow(t) {
-    var id = String(t.trade_id);
-    if (rows[id]) return rows[id];
-    var tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td>' + id + '</td><td>' + (t.status || '—') + '</td><td>' + (t.ticker || '—') + '</td>' +
-      '<td class="n">' + fmtNum(t.buy_price) + '</td>' +
-      '<td class="n" data-f="sell">—</td><td class="n" data-f="pnl">—</td>' +
-      '<td class="n" data-f="prob">—</td>';
-    document.getElementById('rows-body').appendChild(tr);
-    rows[id] = tr;
-    if (t.sell_price != null) setCell(tr, 'sell', fmtNum(t.sell_price));
-    if (t.sell != null) setCell(tr, 'sell', fmtNum(t.sell));
-    if (t.pnl != null) setCell(tr, 'pnl', String(t.pnl));
-    if (t.current_probability != null) setCell(tr, 'prob', fmtNum(t.current_probability));
-    return tr;
+  function cellText(t, field) {
+    var v = t[field];
+    if (v == null || v === '') return '—';
+    var cols = rowColumns.filter(function (c) { return c.field === field; });
+    if (cols.length && cols[0].numeric) return fmtNum(v);
+    return String(v);
   }
 
-  function applyPatches(patches) {
+  function rowIdFrom(t) {
+    return String(t[rowIdField] != null ? t[rowIdField] : t.trade_id || t.row_id || '');
+  }
+
+  function removeRow(rowId) {
+    var id = String(rowId);
+    if (rows[id]) {
+      rows[id].remove();
+      delete rows[id];
+    }
+  }
+
+  function bootstrapTable(list) {
+    resetTable();
+    (list || []).forEach(function (t) {
+      ensureRow(t);
+    });
+    tableBootstrapped = true;
+  }
+
+  function patchRowsInPlace(patches) {
     if (!patches || !patches.length) return;
     patchCount += patches.length;
     document.getElementById('patch-count').textContent = patchCount + ' patches';
     patches.forEach(function (p) {
-      var tr = rows[String(p.trade_id)] || ensureRow({ trade_id: p.trade_id, status: 'active' });
-      if (p.sell != null) setCell(tr, 'sell', fmtNum(p.sell));
-      if (p.pnl != null) setCell(tr, 'pnl', String(p.pnl));
-      if (p.prob != null) setCell(tr, 'prob', fmtNum(p.prob));
+      if (!p) return;
+      var id = String(p[rowIdField] != null ? p[rowIdField] : p.row_id || p.trade_id || '');
+      if (!id) return;
+      var tr = rows[id];
+      if (!tr) {
+        ensureRow(p);
+        return;
+      }
+      rowColumns.forEach(function (col) {
+        if (Object.prototype.hasOwnProperty.call(p, col.field)) {
+          var next = cellText(p, col.field);
+          var el = tr.querySelector('[data-f="' + col.field + '"]');
+          if (el && el.textContent !== next) el.textContent = next;
+        }
+      });
     });
+  }
+
+  function ensureRow(t) {
+    var id = rowIdFrom(t);
+    if (!id) return null;
+    if (rows[id]) {
+      rowColumns.forEach(function (col) {
+        var next = cellText(t, col.field);
+        var el = rows[id].querySelector('[data-f="' + col.field + '"]');
+        if (el && el.textContent !== next) el.textContent = next;
+      });
+      return rows[id];
+    }
+    var tr = document.createElement('tr');
+    rowColumns.forEach(function (col) {
+      var td = document.createElement('td');
+      td.setAttribute('data-f', col.field);
+      if (col.numeric) td.className = 'n';
+      td.textContent = cellText(t, col.field);
+      tr.appendChild(td);
+    });
+    document.getElementById('rows-body').appendChild(tr);
+    rows[id] = tr;
+    return tr;
+  }
+
+  function updateMetaFromSnapshot(snap, msg) {
+    document.getElementById('redis-key').textContent = snap.redis_key || msg.redis_key || '';
+    if (snap.age_sec != null) {
+      document.getElementById('age').textContent = snap.age_sec + 's';
+    }
   }
 
   function showJson(obj) {
     document.getElementById('json-out').textContent = JSON.stringify(obj, null, 2);
   }
 
-  function applyInit(msg) {
-    var snap = msg.snapshot || msg;
-    document.getElementById('redis-key').textContent = snap.redis_key || msg.redis_key || '';
-    if (snap.age_sec != null) {
-      document.getElementById('age').textContent = snap.age_sec + 's';
+  function messageMatchesSource(msg) {
+    var sid = document.getElementById('source').value;
+    if (msg.source && msg.source !== sid) return false;
+    var snap = msg.snapshot;
+    if (snap && snap.source && snap.source !== sid) return false;
+    return true;
+  }
+
+  function applyCacheDelta(delta) {
+    if (!delta) return;
+    var upserts = delta.upserts || delta.patches || [];
+    var removes = delta.removes || [];
+    if (removes.length) {
+      removes.forEach(function (id) { removeRow(id); });
     }
-    showJson(snap);
-    if (!msg.row_mode && msg.type === 'cache_init') return;
-    document.getElementById('rows-body').innerHTML = '';
-    rows = {};
-    var list = snap.rows || snap.records || msg.trades || [];
-    list.forEach(ensureRow);
+    if (upserts.length) {
+      patchRowsInPlace(upserts);
+    }
+  }
+
+  function applyInit(msg, opts) {
+    opts = opts || {};
+    if (!messageMatchesSource(msg)) return;
+    var def = currentSourceDef();
+    if (def && !tableBootstrapped) {
+      rowColumns = def.row_columns || [];
+      rowIdField = def.row_id_field || 'row_id';
+      renderTableHead(def);
+    }
+    var snap = msg.snapshot || msg;
+    updateMetaFromSnapshot(snap, msg);
+    if (opts.showJson !== false) showJson(snap);
+    var rowMode = msg.row_mode != null ? msg.row_mode : !!(def && def.row_mode);
+    if (!rowMode && msg.type === 'cache_init') return;
+    if (!tableBootstrapped) {
+      var list = snap.rows || snap.records || msg.trades || [];
+      bootstrapTable(list);
+    }
+    // After bootstrap: ignore cache_init row payloads (live path uses cache_delta only).
   }
 
   function onMessage(ev) {
     var msg = JSON.parse(ev.data);
+    if (!messageMatchesSource(msg)) return;
+    if (msg.type === 'cache_delta') {
+      applyCacheDelta(msg);
+      return;
+    }
     if (msg.type === 'cache_init' || msg.type === 'active_trades_init') {
       applyInit(msg.type === 'cache_init' ? msg : {
         row_mode: true,
         snapshot: { rows: msg.trades, redis_key: msg.redis_key },
         trades: msg.trades,
         redis_key: msg.redis_key,
-      });
+      }, { showJson: !tableBootstrapped });
+      return;
+    }
+    if (msg.type === 'cache_row_remove') {
+      removeRow(msg.row_id);
       return;
     }
     if (msg.type === 'cache_patch' || msg.type === 'trade_patch') {
-      applyPatches(msg.patches);
+      if (msg.patch_scope && document.getElementById('source').value === 'active_trades' &&
+          msg.patch_scope !== 'active_trades_ui') {
+        return;
+      }
+      applyCacheDelta({ upserts: msg.patches });
       return;
     }
     if (msg.type === 'cache_event') {
@@ -291,28 +415,46 @@
       reconnectTimer = null;
     }
     if (ws) {
-      try { ws.close(); } catch (e) {}
+      var old = ws;
       ws = null;
+      // Prevent intentional close from scheduling the auto-reconnect loop.
+      old.onclose = null;
+      old.onopen = null;
+      old.onmessage = null;
+      try { old.close(); } catch (e) {}
     }
   }
 
-  function connect() {
+  function connect(opts) {
+    opts = opts || {};
+    var fullReset = opts.fullReset !== false;
     syncUrl();
     disconnect();
-    eventCount = 0;
-    patchCount = 0;
-    document.getElementById('event-count').textContent = '0 events';
-    document.getElementById('patch-count').textContent = '0 patches';
+    if (fullReset) {
+      tableBootstrapped = false;
+      rows = {};
+      document.getElementById('rows-body').innerHTML = '';
+      eventCount = 0;
+      patchCount = 0;
+      document.getElementById('event-count').textContent = '0 events';
+      document.getElementById('patch-count').textContent = '0 patches';
+      document.getElementById('redis-key').textContent = '';
+      document.getElementById('age').textContent = '—';
+    }
     document.getElementById('ws-status').textContent = 'connecting…';
-    ws = new WebSocket(wsUrl());
-    ws.onopen = function () {
+    var sock = new WebSocket(wsUrl());
+    ws = sock;
+    sock.onopen = function () {
+      if (ws !== sock) return;
       document.getElementById('ws-status').innerHTML = '<span class="ok">connected</span>';
     };
-    ws.onclose = function () {
+    sock.onclose = function () {
+      if (ws !== sock) return;
+      ws = null;
       document.getElementById('ws-status').textContent = 'reconnecting…';
-      reconnectTimer = setTimeout(connect, 2000);
+      reconnectTimer = setTimeout(function () { connect({ fullReset: false }); }, 2000);
     };
-    ws.onmessage = onMessage;
+    sock.onmessage = onMessage;
   }
 
   function fetchSnapshot() {
@@ -348,6 +490,7 @@
   document.getElementById('source').addEventListener('change', function () {
     renderParamFields();
     syncUrl();
+    connect();
   });
   document.getElementById('btn-connect').addEventListener('click', connect);
   document.getElementById('btn-snapshot').addEventListener('click', fetchSnapshot);

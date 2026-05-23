@@ -500,35 +500,22 @@ async def get_fills(response: Response, trading_mode: Optional[str] = None):
     if trading_mode == "paper":
         return {"fills": []}
     try:
-        from psycopg2.extras import RealDictCursor
+        from backend.core import live_state_kalshi_portfolio as lskp
 
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"fills": []}
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT * FROM users.fills_0001
-                    ORDER BY id DESC
-                    LIMIT 100
-                    """
-                )
-                rows = cursor.fetchall()
-            out = []
-            for row in rows:
-                d = dict(row)
-                if d.get("outcome_side") is not None:
-                    d.setdefault("side", d["outcome_side"])
-                if d.get("count_fp") is not None:
-                    try:
-                        d["count"] = int(round(float(d["count_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                out.append(d)
-            return {"fills": out}
-        finally:
-            conn.close()
+        slot = resolved_tenant_user_no_for_app()
+        rows = lskp.list_fills(slot)
+        out = []
+        for row in rows:
+            d = dict(row)
+            if d.get("outcome_side") is not None:
+                d.setdefault("side", d["outcome_side"])
+            if d.get("count_fp") is not None:
+                try:
+                    d["count"] = int(round(float(d["count_fp"])))
+                except (TypeError, ValueError):
+                    pass
+            out.append(d)
+        return {"fills": out}
     except Exception:
         return {"fills": []}
 
@@ -539,38 +526,25 @@ async def get_positions(response: Response, trading_mode: Optional[str] = None):
     if trading_mode == "paper":
         return {"positions": []}
     try:
-        from psycopg2.extras import RealDictCursor
+        from backend.core import live_state_kalshi_portfolio as lskp
 
-        conn = get_postgresql_connection()
-        if not conn:
-            return {"positions": []}
-        try:
-            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                cursor.execute(
-                    """
-                    SELECT * FROM users.positions_0001
-                    ORDER BY id DESC
-                    LIMIT 100
-                    """
-                )
-                rows = cursor.fetchall()
-            out = []
-            for row in rows:
-                d = dict(row)
-                if d.get("position_fp") is not None:
-                    try:
-                        d["position"] = int(round(float(d["position_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                if d.get("total_traded_fp") is not None:
-                    try:
-                        d["total_traded"] = int(round(float(d["total_traded_fp"])))
-                    except (TypeError, ValueError):
-                        pass
-                out.append(d)
-            return {"positions": out}
-        finally:
-            conn.close()
+        slot = resolved_tenant_user_no_for_app()
+        rows = lskp.list_positions(slot)
+        out = []
+        for row in rows:
+            d = dict(row)
+            if d.get("position_fp") is not None:
+                try:
+                    d["position"] = int(round(float(d["position_fp"])))
+                except (TypeError, ValueError):
+                    pass
+            if d.get("total_traded_fp") is not None:
+                try:
+                    d["total_traded"] = int(round(float(d["total_traded_fp"])))
+                except (TypeError, ValueError):
+                    pass
+            out.append(d)
+        return {"positions": out}
     except Exception:
         return {"positions": []}
 

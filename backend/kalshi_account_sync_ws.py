@@ -5,10 +5,10 @@ Real-time account data synchronization using WebSocket triggers + REST API polli
 
 HYBRID APPROACH:
 1. Initial sync on startup (one-time polling cycle)
-2. WebSocket: market_positions, fill, user_orders (ACCOUNT_SYNC_WS_CHANNELS); fills and orders persist from WS payloads, debounced REST for balance alongside periodic reconcile
-3. Debounced REST syncs (ACCOUNT_SYNC_DEBOUNCE_MS) for positions/settlements and balance where not WS-primary
+2. WebSocket: market_positions, fill, user_orders (ACCOUNT_SYNC_WS_CHANNELS); hot live_state first, orders/fills spooled to PG
+3. Debounced REST syncs (ACCOUNT_SYNC_DEBOUNCE_MS) for settlements and balance where not WS-primary
 4. Quick periodic: settlements + balance (ACCOUNT_SYNC_QUICK_PERIODIC_SEC, default 300s)
-5. Full reconcile: all five syncs (ACCOUNT_SYNC_FULL_RECONCILE_SEC, default 900s)
+5. Full reconcile: fills/orders/settlements/balance REST (PG + balance; hot hash is WS-only)
 6. Hourly balance checks on the hour + daily 1AM balance check
 
 This balances responsiveness with data freshness and API efficiency.
@@ -58,6 +58,7 @@ import psycopg2
 from psycopg2 import sql as psql
 from psycopg2.extras import RealDictCursor
 import schedule
+from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 import logging
 from typing import Optional
@@ -150,6 +151,14 @@ def _account_sync_full_reconcile_sec() -> int:
         return 900
 
 
+def _account_sync_positions_prune_sec() -> int:
+    """REST prune of settled/absent tickers from positions hot hash (default 5m)."""
+    try:
+        return max(120, int(os.getenv("ACCOUNT_SYNC_POSITIONS_PRUNE_SEC", "300")))
+    except ValueError:
+        return 900
+
+
 def _account_sync_poc_log_max() -> int:
     try:
         return max(0, int(os.getenv("ACCOUNT_SYNC_POC_LOG_MAX", "20")))
@@ -160,6 +169,55 @@ def _account_sync_poc_log_max() -> int:
 def _account_sync_ws_channels():
     raw = os.getenv("ACCOUNT_SYNC_WS_CHANNELS", "market_positions,fill,user_orders")
     return [c.strip() for c in raw.split(",") if c.strip()]
+
+
+def _account_sync_hot_executor_workers() -> int:
+    try:
+        return max(1, int(os.getenv("ACCOUNT_SYNC_HOT_EXECUTOR_WORKERS", "4")))
+    except ValueError:
+        return 4
+
+
+def _account_sync_rest_executor_workers() -> int:
+    try:
+        return max(1, int(os.getenv("ACCOUNT_SYNC_REST_EXECUTOR_WORKERS", "1")))
+    except ValueError:
+        return 1
+
+
+_HOT_EXECUTOR: Optional[ThreadPoolExecutor] = None
+_REST_EXECUTOR: Optional[ThreadPoolExecutor] = None
+
+
+def _get_portfolio_hot_executor() -> ThreadPoolExecutor:
+    """WS → live_state upserts; isolated from REST polling."""
+    global _HOT_EXECUTOR
+    if _HOT_EXECUTOR is None:
+        _HOT_EXECUTOR = ThreadPoolExecutor(
+            max_workers=_account_sync_hot_executor_workers(),
+            thread_name_prefix="kas_hot",
+        )
+    return _HOT_EXECUTOR
+
+
+def _get_portfolio_rest_executor() -> ThreadPoolExecutor:
+    """Debounced/periodic REST reconcile (PG + balance); never shares pool with hot path."""
+    global _REST_EXECUTOR
+    if _REST_EXECUTOR is None:
+        _REST_EXECUTOR = ThreadPoolExecutor(
+            max_workers=_account_sync_rest_executor_workers(),
+            thread_name_prefix="kas_rest",
+        )
+    return _REST_EXECUTOR
+
+
+def _shutdown_portfolio_executors() -> None:
+    global _HOT_EXECUTOR, _REST_EXECUTOR
+    for pool in (_HOT_EXECUTOR, _REST_EXECUTOR):
+        if pool is not None:
+            pool.shutdown(wait=False, cancel_futures=True)
+    _HOT_EXECUTOR = None
+    _REST_EXECUTOR = None
 
 
 async def retry_api_call_with_fallback(api_call_func, fallback_func, max_retries=3, base_delay=1):
@@ -210,14 +268,10 @@ def use_websocket_fallback_for_positions():
     rest_position = {
         "ticker": ws_data.get("market_ticker"),
         "position": ws_data.get("position"),
-        "market_exposure": ws_data.get("position_cost"),  # field mapping
-        "market_exposure_dollars": [0, 0],
-        "total_traded": ws_data.get("volume"),            # field mapping
-        "total_traded_dollars": [0, 0],
-        "realized_pnl": ws_data.get("realized_pnl"),
-        "realized_pnl_dollars": [0, 0],
-        "fees_paid": ws_data.get("fees_paid"),
-        "fees_paid_dollars": [0, 0],
+        "position_cost_dollars": ws_data.get("position_cost_dollars"),
+        "total_traded": ws_data.get("volume"),
+        "realized_pnl_dollars": ws_data.get("realized_pnl_dollars"),
+        "fees_paid_dollars": ws_data.get("fees_paid_dollars"),
         "resting_orders_count": 0,
         "last_updated_ts": LATEST_WEBSOCKET_TIMESTAMP or utc_now_iso_z()
     }
@@ -1601,200 +1655,79 @@ def _notify_trade_manager_positions_updated(payload):
                     )
 
 
-def sync_positions():
-    # PostgreSQL only - no legacy database paths needed
-    logger.debug("Syncing recent positions...")
-
-    def make_rest_api_call():
-        """Make the REST API call for positions"""
-        method = "GET"
-        path = "/portfolio/positions"
-        
-        # Single request for recent positions (no pagination loop)
-        timestamp = str(int(time.time() * 1000))
-        query = "?limit=50"  # Reduced limit for WebSocket implementation
-        url = f"{get_base_url()}{path}{query}"
-        logger.debug("Requesting recent positions: %s", url)
-
-        full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
-        signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
-
-        headers = {
-            "Accept": "application/json",
-            "User-Agent": "KalshiWatcher/1.0",
-            "KALSHI-ACCESS-KEY": KEY_ID,
-            "KALSHI-ACCESS-TIMESTAMP": timestamp,
-            "KALSHI-ACCESS-SIGNATURE": signature,
-        }
-
-        try:
-            response = requests.get(url, headers=headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            if "error" in data:
-                logger.warning("API error: %s", data["error"])
-                return None
-            
-            # Use new keys for positions
-            all_market_positions = data.get("market_positions", [])
-            all_event_positions = data.get("event_positions", [])
-            
-            # TEMPORARY MEASURE: Filter out KXMAYORNYCPARTY positions
-            # Due to a quirk in the Kalshi API feed, old test positions from months ago
-            # continue to appear in the positions response even though they should be
-            # expired/cleaned up. This filtering prevents these stale test positions
-            # from cluttering our database and notifications.
-            # TODO: Remove this filtering once Kalshi fixes their feed cleanup issue
-            filtered_market_positions = []
-            filtered_event_positions = []
-            
-            for position in all_market_positions:
-                ticker = position.get("ticker", "")
-                if "KXMAYORNYCPARTY" not in ticker:
-                    filtered_market_positions.append(position)
-                else:
-                    # Silently ignore KXMAYORNYCPARTY positions (temporary filter)
-                    pass
-            
-            for position in all_event_positions:
-                event_ticker = position.get("event_ticker", "")
-                if "KXMAYORNYCPARTY" not in event_ticker:
-                    filtered_event_positions.append(position)
-                else:
-                    # Silently ignore KXMAYORNYCPARTY event positions (temporary filter)
-                    pass
-            
-            logger.debug("Retrieved %s market and %s event positions; after filtering: %s market, %s event",
-                         len(all_market_positions), len(all_event_positions), len(filtered_market_positions), len(filtered_event_positions))
-
-            # Use filtered positions for processing
-            all_market_positions = filtered_market_positions
-            all_event_positions = filtered_event_positions
-            
-            return {
-                "market_positions": all_market_positions,
-                "event_positions": all_event_positions,
-            }
-            
-        except Exception as e:
-            logger.debug("Failed to fetch positions: %s", e)
-            raise e  # Re-raise to trigger retry logic
-
-    # Use retry logic with WebSocket fallback
-    try:
-        # Note: This is a synchronous function, so we can't use async retry here
-        # We'll implement the retry logic directly
-        max_retries = 3
-        base_delay = 1
-
-        for attempt in range(max_retries):
-            try:
-                logger.debug("REST API attempt %s/%s", attempt + 1, max_retries)
-                data = make_rest_api_call()
-                if data is not None:
-                    logger.debug("REST API successful on attempt %s", attempt + 1)
-                    break
-                else:
-                    logger.debug("REST API returned None on attempt %s", attempt + 1)
-            except Exception as e:
-                logger.debug("REST API attempt %s failed: %s", attempt + 1, e)
-
-                if attempt < max_retries - 1:
-                    delay = base_delay * (2 ** attempt)  # exponential backoff
-                    logger.debug("Waiting %ss before retry", delay)
-                    time.sleep(delay)
-                else:
-                    logger.warning("All REST API attempts failed, using WebSocket fallback")
-                    data = use_websocket_fallback_for_positions()
-                    if data is None:
-                        logger.error("WebSocket fallback also failed, aborting positions sync")
-                        return
-        else:
-            # All retries exhausted
-            logger.warning("All REST API attempts failed, using WebSocket fallback")
-            data = use_websocket_fallback_for_positions()
-            if data is None:
-                logger.error("WebSocket fallback also failed, aborting positions sync")
-                return
-
-    except Exception as e:
-        logger.error("Error in positions sync: %s", e)
-        return
-
-    # Process the data (either from REST API or WebSocket fallback)
-    all_market_positions = data.get("market_positions", [])
-    all_event_positions = data.get("event_positions", [])
-
-    # ----- CHANGE-DETECTION: skip writes if nothing changed -----
-    global LAST_POSITIONS_HASH
-    snapshot_dict = {
-        "market_positions": all_market_positions,
-        "event_positions": all_event_positions,
+def _fetch_portfolio_positions_rest() -> Optional[dict]:
+    """GET /portfolio/positions (no DB writes). Returns None on failure."""
+    method = "GET"
+    path = "/portfolio/positions"
+    query = "?limit=50"
+    timestamp = str(int(time.time() * 1000))
+    url = f"{get_base_url()}{path}{query}"
+    full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
+    signature = generate_kalshi_signature(method, full_path_for_signature, timestamp, str(KEY_PATH))
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "KalshiWatcher/1.0",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
     }
     try:
-        snapshot_hash = hashlib.md5(
-            json.dumps(snapshot_dict, sort_keys=True).encode()
-        ).hexdigest()
-    except Exception as e:
-        logger.error("Failed to hash positions snapshot: %s", e)
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+        data = response.json()
+        if "error" in data:
+            logger.warning("positions REST API error: %s", data["error"])
+            return None
+        filtered_market = []
+        for position in data.get("market_positions", []) or []:
+            ticker = position.get("ticker", "")
+            if "KXMAYORNYCPARTY" not in ticker:
+                filtered_market.append(position)
+        filtered_event = []
+        for position in data.get("event_positions", []) or []:
+            event_ticker = position.get("event_ticker", "")
+            if "KXMAYORNYCPARTY" not in event_ticker:
+                filtered_event.append(position)
+        return {
+            "market_positions": filtered_market,
+            "event_positions": filtered_event,
+        }
+    except Exception as exc:
+        logger.warning("positions REST fetch failed: %s", exc)
+        return None
+
+
+def sync_positions_prune_hot_state() -> None:
+    """REST poll: remove hot-state tickers not listed in GET /portfolio/positions (settled/absent)."""
+    from backend.core import live_state_kalshi_portfolio as lskp
+
+    data = _fetch_portfolio_positions_rest()
+    if data is None:
+        logger.debug("positions hot_state prune skipped (REST unavailable)")
         return
+    rest_tickers = [
+        str(p.get("ticker"))
+        for p in data.get("market_positions", []) or []
+        if p.get("ticker")
+    ]
+    user_no = _kas_process_user_no()
+    removed = lskp.prune_positions_to_rest_tickers(user_no, rest_tickers)
+    logger.info(
+        "Positions hot_state REST prune: rest=%s hot_removed=%s",
+        len(rest_tickers),
+        removed,
+    )
+    if removed:
+        notify_frontend_db_change(
+            "positions",
+            {"market_positions": len(rest_tickers), "pruned": removed},
+        )
+        _notify_trade_manager_positions_updated({"database": "positions"})
 
-    if snapshot_hash == LAST_POSITIONS_HASH:
-        logger.debug("No changes in positions — skipping write")
-        return  # Exit early; nothing new to write
 
-    LAST_POSITIONS_HASH = snapshot_hash
-    # ------------------------------------------------------------
-    # Write to PostgreSQL
-    try:
-        pg_conn = get_postgresql_connection()
-        if pg_conn:
-            with pg_conn.cursor() as cursor:
-                # Clear existing positions
-                cursor.execute("DELETE FROM users.positions_0001")
-                
-                for p in all_market_positions:
-                    try:
-                        ticker = p.get("ticker")
-                        last_updated_ts = p.get("last_updated_ts")
-                        raw_json = json.dumps(p)
-                        
-                        # Extract dollar values from API response (new subpenny pricing fields)
-                        total_traded_dollars = p.get("total_traded_dollars")
-                        market_exposure_dollars = p.get("market_exposure_dollars")
-                        realized_pnl_dollars = p.get("realized_pnl_dollars")
-                        fees_paid_dollars = p.get("fees_paid_dollars")
-                        # Fixed-point contract counts (Kalshi migration); store as NUMERIC
-                        total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
-                        position_fp = _fp_to_numeric(p.get("position_fp"))
-
-                        cursor.execute("""
-                            INSERT INTO users.positions_0001
-                            (ticker, last_updated_ts, raw_json,
-                             total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
-                             total_traded_fp, position_fp)
-                            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                        """, (ticker, last_updated_ts, raw_json,
-                              total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
-                              total_traded_fp, position_fp))
-                    except Exception as e:
-                        logger.error("Failed to insert position %s to PostgreSQL: %s", p.get("ticker"), e)
-
-                pg_conn.commit()
-                logger.debug("All positions written to PostgreSQL users.positions_0001")
-            pg_conn.close()
-        else:
-            logger.warning("Skipping PostgreSQL write - no connection available")
-    except Exception as pg_err:
-        logger.error("Failed to write positions to PostgreSQL: %s", pg_err)
-
-    # JSON writing removed - PostgreSQL only
-    notify_frontend_db_change("positions", {"market_positions": len(all_market_positions), "event_positions": len(all_event_positions)})
-    
-    # Notify trade_manager about positions update (retry on connection refused at startup)
-    _notify_trade_manager_positions_updated({"database": "positions"})
-
-    logger.info("Positions sync OK")
+def sync_positions():
+    """Alias for periodic REST prune (does not upsert REST rows into hot state)."""
+    sync_positions_prune_hot_state()
 
 
 def sync_fills():
@@ -2386,9 +2319,6 @@ def _flush_debounced_pending(pending: set) -> None:
     if not pending:
         return
     need_balance = False
-    if "positions" in pending:
-        sync_positions()
-        need_balance = True
     if "fills" in pending:
         sync_fills()
         need_balance = True
@@ -2410,168 +2340,77 @@ def _quick_periodic_sync() -> None:
 
 
 def _full_reconcile_sync() -> None:
-    sync_positions()
     sync_fills()
     sync_orders()
     sync_settlements()
     sync_balance()
 
 
+def _portfolio_spool_on_flush(entity: str, count: int) -> None:
+    notify_frontend_db_change(entity, {entity: count})
+    _notify_trade_manager_positions_updated({"database": entity})
+
+
 def _ws_apply_fill_message(ws_outer: dict) -> None:
-    """Persist one fill from Kalshi portfolio WS (primary writer path)."""
+    """Hot live_state upsert + spooled PG write for one fill."""
     try:
-        msg = ws_outer.get("msg") if isinstance(ws_outer, dict) else None
-        if not isinstance(msg, dict):
-            msg = ws_outer if isinstance(ws_outer, dict) else {}
-        trade_id = msg.get("trade_id")
-        if not trade_id:
+        from backend.core import live_state_kalshi_portfolio as lskp
+        from backend.core.kalshi_portfolio_records import _ws_inner, normalize_fill_record, upsert_fill_row
+        from backend.core.portfolio_pg_spool import get_portfolio_pg_spool
+
+        user_no = _kas_process_user_no()
+        lskp.upsert_fill_from_ws(user_no, ws_outer)
+        rec = normalize_fill_record(_ws_inner(ws_outer))
+        if not rec:
             return
-        ticker = msg.get("ticker") or msg.get("market_ticker")
-        order_id = msg.get("order_id")
-        out_side, ob_side = _direction_from_api_dict(msg)
-        action = msg.get("action")
-        count_fp = _fp_to_numeric(msg.get("count_fp"))
-        yes_price_dollars = msg.get("yes_price_dollars") or msg.get("yes_price_fixed")
-        no_price_dollars = msg.get("no_price_dollars") or msg.get("no_price_fixed")
-        is_taker = bool(msg.get("is_taker")) if msg.get("is_taker") is not None else None
-        created_time = msg.get("created_time")
-        raw_json = json.dumps(msg)
-        fills_tbl = _legacy_fills_qualified()
+        spool = get_portfolio_pg_spool()
+        if spool:
+            spool.append_fill(rec)
+            return
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return
         try:
             with pg_conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    INSERT INTO {fills_tbl}
-                    (trade_id, ticker, order_id, outcome_side, orderbook_side, action, count_fp,
-                     yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (trade_id) DO UPDATE SET
-                        ticker = EXCLUDED.ticker,
-                        order_id = EXCLUDED.order_id,
-                        outcome_side = EXCLUDED.outcome_side,
-                        orderbook_side = EXCLUDED.orderbook_side,
-                        action = EXCLUDED.action,
-                        count_fp = EXCLUDED.count_fp,
-                        yes_price_dollars = EXCLUDED.yes_price_dollars,
-                        no_price_dollars = EXCLUDED.no_price_dollars,
-                        is_taker = EXCLUDED.is_taker,
-                        created_time = EXCLUDED.created_time,
-                        raw_json = EXCLUDED.raw_json
-                    """,
-                    (
-                        trade_id,
-                        ticker,
-                        order_id,
-                        out_side,
-                        ob_side,
-                        action,
-                        count_fp,
-                        yes_price_dollars,
-                        no_price_dollars,
-                        is_taker,
-                        created_time,
-                        raw_json,
-                    ),
-                )
+                upsert_fill_row(cur, _legacy_fills_qualified(), rec)
             pg_conn.commit()
         finally:
             pg_conn.close()
         notify_frontend_db_change("fills", {"fills": 1})
         _notify_trade_manager_positions_updated({"database": "fills"})
     except Exception as e:
-        logger.error("WS fill write failed: %s", e)
+        logger.error("WS fill hot/spool failed: %s", e)
 
 
 def _ws_apply_order_message(ws_outer: dict) -> None:
-    """Persist one order from Kalshi portfolio WS (primary writer path)."""
+    """Hot live_state upsert + spooled PG write for one order."""
     try:
-        msg = ws_outer.get("msg") if isinstance(ws_outer, dict) else None
-        if not isinstance(msg, dict):
-            msg = ws_outer if isinstance(ws_outer, dict) else {}
-        order_id = msg.get("order_id")
-        if not order_id:
+        from backend.core import live_state_kalshi_portfolio as lskp
+        from backend.core.kalshi_portfolio_records import _ws_inner, normalize_order_record, upsert_order_row
+        from backend.core.portfolio_pg_spool import get_portfolio_pg_spool
+
+        user_no = _kas_process_user_no()
+        lskp.upsert_order_from_ws(user_no, ws_outer)
+        rec = normalize_order_record(_ws_inner(ws_outer))
+        if not rec:
             return
-        out_side, ob_side = _direction_from_api_dict(msg)
-        orders_tbl = _legacy_orders_qualified()
+        spool = get_portfolio_pg_spool()
+        if spool:
+            spool.append_order(rec)
+            return
         pg_conn = get_postgresql_connection()
         if not pg_conn:
             return
         try:
             with pg_conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    INSERT INTO {orders_tbl}
-                    (order_id, user_id, ticker, status, action, outcome_side, orderbook_side, type, yes_price_dollars, no_price_dollars,
-                     initial_count_fp, remaining_count_fp, fill_count_fp,
-                     created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
-                     self_trade_prevention_type,
-                     maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
-                     raw_json)
-                    VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
-                    ON CONFLICT (order_id) DO UPDATE SET
-                        status = EXCLUDED.status,
-                        action = EXCLUDED.action,
-                        outcome_side = EXCLUDED.outcome_side,
-                        orderbook_side = EXCLUDED.orderbook_side,
-                        ticker = EXCLUDED.ticker,
-                        type = EXCLUDED.type,
-                        yes_price_dollars = EXCLUDED.yes_price_dollars,
-                        no_price_dollars = EXCLUDED.no_price_dollars,
-                        initial_count_fp = EXCLUDED.initial_count_fp,
-                        remaining_count_fp = EXCLUDED.remaining_count_fp,
-                        fill_count_fp = EXCLUDED.fill_count_fp,
-                        created_time = EXCLUDED.created_time,
-                        expiration_time = EXCLUDED.expiration_time,
-                        last_update_time = EXCLUDED.last_update_time,
-                        client_order_id = EXCLUDED.client_order_id,
-                        order_group_id = EXCLUDED.order_group_id,
-                        queue_position = EXCLUDED.queue_position,
-                        self_trade_prevention_type = EXCLUDED.self_trade_prevention_type,
-                        maker_fees_dollars = EXCLUDED.maker_fees_dollars,
-                        taker_fees_dollars = EXCLUDED.taker_fees_dollars,
-                        maker_fill_cost_dollars = EXCLUDED.maker_fill_cost_dollars,
-                        taker_fill_cost_dollars = EXCLUDED.taker_fill_cost_dollars,
-                        raw_json = EXCLUDED.raw_json,
-                        updated_at = CURRENT_TIMESTAMP
-                    """,
-                    (
-                        order_id,
-                        msg.get("user_id"),
-                        msg.get("ticker"),
-                        msg.get("status"),
-                        msg.get("action"),
-                        out_side,
-                        ob_side,
-                        msg.get("type"),
-                        msg.get("yes_price_dollars"),
-                        msg.get("no_price_dollars"),
-                        _fp_to_numeric(msg.get("initial_count_fp")),
-                        _fp_to_numeric(msg.get("remaining_count_fp")),
-                        _fp_to_numeric(msg.get("fill_count_fp")),
-                        msg.get("created_time"),
-                        msg.get("expiration_time"),
-                        msg.get("last_update_time"),
-                        msg.get("client_order_id"),
-                        msg.get("order_group_id"),
-                        msg.get("queue_position"),
-                        msg.get("self_trade_prevention_type"),
-                        msg.get("maker_fees_dollars"),
-                        msg.get("taker_fees_dollars"),
-                        msg.get("maker_fill_cost_dollars"),
-                        msg.get("taker_fill_cost_dollars"),
-                        json.dumps(msg),
-                    ),
-                )
+                upsert_order_row(cur, _legacy_orders_qualified(), rec)
             pg_conn.commit()
         finally:
             pg_conn.close()
         notify_frontend_db_change("orders", {"orders": 1})
         _notify_trade_manager_positions_updated({"database": "orders"})
     except Exception as e:
-        logger.error("WS order write failed: %s", e)
+        logger.error("WS order hot/spool failed: %s", e)
 
 
 class KalshiWebSocketSync:
@@ -2586,6 +2425,7 @@ class KalshiWebSocketSync:
         self._debounce_sec = _account_sync_debounce_sec()
         self._quick_sec = _account_sync_quick_periodic_sec()
         self._full_sec = _account_sync_full_reconcile_sec()
+        self._positions_prune_sec = _account_sync_positions_prune_sec()
         self._poc_fill_count = 0
         self._poc_order_count = 0
         
@@ -2724,7 +2564,7 @@ class KalshiWebSocketSync:
                 if not pending:
                     return
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _flush_debounced_pending, pending)
+                await loop.run_in_executor(_get_portfolio_rest_executor(), _flush_debounced_pending, pending)
             except asyncio.CancelledError:
                 raise
             finally:
@@ -2755,14 +2595,29 @@ class KalshiWebSocketSync:
                     position_data.get("market_ticker"),
                     position_data.get("position"),
                 )
-                await self._add_pending_and_debounce({"positions", "balance"})
+                loop = asyncio.get_event_loop()
+                user_no = _kas_process_user_no()
+
+                def _apply_position_hot():
+                    from backend.core import live_state_kalshi_portfolio as lskp
+
+                    lskp.upsert_position_from_ws(
+                        user_no,
+                        data,
+                        last_updated_ts=LATEST_WEBSOCKET_TIMESTAMP,
+                    )
+                    notify_frontend_db_change("positions", {"market_positions": 1})
+                    _notify_trade_manager_positions_updated({"database": "positions"})
+
+                await loop.run_in_executor(_get_portfolio_hot_executor(), _apply_position_hot)
+                await self._add_pending_and_debounce({"balance"})
 
             elif t == "fill":
                 if self._poc_fill_count < max_poc:
                     self._poc_fill_count += 1
                     logger.info("PoC fill WS message (compare to REST): %s", json.dumps(data, default=str)[:3000])
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _ws_apply_fill_message, data)
+                await loop.run_in_executor(_get_portfolio_hot_executor(), _ws_apply_fill_message, data)
                 await self._add_pending_and_debounce({"balance"})
 
             elif t in ("order", "user_order", "orders", "order_update"):
@@ -2770,7 +2625,7 @@ class KalshiWebSocketSync:
                     self._poc_order_count += 1
                     logger.info("PoC user_orders WS message (compare to REST): %s", json.dumps(data, default=str)[:3000])
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _ws_apply_order_message, data)
+                await loop.run_in_executor(_get_portfolio_hot_executor(), _ws_apply_order_message, data)
                 await self._add_pending_and_debounce({"balance"})
 
             elif t == "subscribed":
@@ -2810,18 +2665,31 @@ class KalshiWebSocketSync:
                 logger.info("heartbeat")
                 logger.debug("quick periodic: settlements + balance")
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _quick_periodic_sync)
+                await loop.run_in_executor(_get_portfolio_rest_executor(), _quick_periodic_sync)
             except Exception as e:
                 logger.error("Error in quick periodic task: %s", e)
 
+    async def periodic_positions_prune_task(self):
+        """REST prune settled tickers from positions hot hash (default 15m)."""
+        while True:
+            try:
+                await asyncio.sleep(self._positions_prune_sec)
+                logger.debug("positions hot_state REST prune periodic")
+                loop = asyncio.get_event_loop()
+                await loop.run_in_executor(
+                    _get_portfolio_rest_executor(), sync_positions_prune_hot_state
+                )
+            except Exception as e:
+                logger.error("Error in positions prune periodic task: %s", e)
+
     async def periodic_full_task(self):
-        """Full five-way REST reconcile on ACCOUNT_SYNC_FULL_RECONCILE_SEC (default 900s)."""
+        """REST reconcile (fills/orders/settlements/balance) + positions prune on full interval."""
         while True:
             try:
                 await asyncio.sleep(self._full_sec)
                 logger.debug("full reconcile periodic")
                 loop = asyncio.get_event_loop()
-                await loop.run_in_executor(None, _full_reconcile_sync)
+                await loop.run_in_executor(_get_portfolio_rest_executor(), _full_reconcile_sync)
             except Exception as e:
                 logger.error("Error in full reconcile periodic task: %s", e)
 
@@ -2830,10 +2698,12 @@ class KalshiWebSocketSync:
         logger.info("Starting Kalshi Hybrid WebSocket/Polling Sync")
 
         asyncio.create_task(self.periodic_quick_task())
+        asyncio.create_task(self.periodic_positions_prune_task())
         asyncio.create_task(self.periodic_full_task())
         logger.debug(
-            "Started periodic quick every %ss + full reconcile every %ss",
+            "Started periodic quick every %ss + positions prune every %ss + full reconcile every %ss",
             self._quick_sec,
+            self._positions_prune_sec,
             self._full_sec,
         )
 
@@ -2925,9 +2795,18 @@ def main():
 
     _wait_for_trade_manager()
 
+    from backend.core.portfolio_pg_spool import init_portfolio_pg_spool
+
+    init_portfolio_pg_spool(
+        get_pg_connection=get_postgresql_connection,
+        fills_table=_legacy_fills_qualified,
+        orders_table=_legacy_orders_qualified,
+        on_flush=_portfolio_spool_on_flush,
+    )
+
     # Initial sync to establish baseline data (one-time only)
     logger.info("Performing initial baseline data sync")
-    sync_positions()
+    sync_positions_prune_hot_state()
     sync_fills()
     sync_orders()
     sync_settlements()
@@ -2948,6 +2827,8 @@ def main():
         logger.info("Hybrid WebSocket/Polling supervisor stopped by user")
     except Exception as e:
         logger.error("Error in hybrid WebSocket/Polling supervisor: %s", e)
+    finally:
+        _shutdown_portfolio_executors()
 
 if __name__ == "__main__":
     main()

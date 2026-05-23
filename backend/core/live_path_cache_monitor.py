@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from backend.core import live_state_cache as lsc
 from backend.core import live_state_active_trades as ls_at
+from backend.core import live_state_kalshi_portfolio as lskp
 from backend.core.live_state_config import live_state_cache_enabled
 from backend.trading_mode import _norm_slot
 
@@ -20,6 +21,9 @@ SOURCE_ACTIVE_TRADES = "active_trades"
 SOURCE_MARKET = "market"
 SOURCE_SYMBOL = "symbol"
 SOURCE_STRIKE_LADDER = "strike_ladder"
+SOURCE_KALSHI_POSITIONS = "kalshi_positions"
+SOURCE_KALSHI_ORDERS = "kalshi_orders"
+SOURCE_KALSHI_FILLS = "kalshi_fills"
 SOURCE_REDIS_KEY = "redis_key"
 
 
@@ -33,6 +37,13 @@ class LivePathSourceParam:
 
 
 @dataclass(frozen=True)
+class LivePathRowColumn:
+    field: str
+    label: str
+    numeric: bool = False
+
+
+@dataclass(frozen=True)
 class LivePathSourceDef:
     id: str
     label: str
@@ -41,6 +52,8 @@ class LivePathSourceDef:
     live_kind: Optional[str]  # rec_io:live_state:updated kind filter
     params: Tuple[LivePathSourceParam, ...] = ()
     row_mode: bool = False  # table + patch stream (active_trades)
+    row_id_field: str = "row_id"
+    row_columns: Tuple[LivePathRowColumn, ...] = ()
 
 
 def source_catalog() -> List[Dict[str, Any]]:
@@ -53,6 +66,11 @@ def source_catalog() -> List[Dict[str, Any]]:
             "redis_key_template": d.redis_key_template,
             "live_kind": d.live_kind,
             "row_mode": d.row_mode,
+            "row_id_field": d.row_id_field,
+            "row_columns": [
+                {"field": c.field, "label": c.label, "numeric": c.numeric}
+                for c in d.row_columns
+            ],
             "params": [
                 {
                     "name": p.name,
@@ -69,6 +87,15 @@ def source_catalog() -> List[Dict[str, Any]]:
 
 
 def _all_sources() -> List[LivePathSourceDef]:
+    _active_cols = (
+        LivePathRowColumn("trade_id", "trade_id"),
+        LivePathRowColumn("status", "status"),
+        LivePathRowColumn("ticker", "ticker"),
+        LivePathRowColumn("buy_price", "buy", numeric=True),
+        LivePathRowColumn("sell_price", "sell", numeric=True),
+        LivePathRowColumn("pnl", "pnl", numeric=True),
+        LivePathRowColumn("current_probability", "prob", numeric=True),
+    )
     return [
         LivePathSourceDef(
             id=SOURCE_ACTIVE_TRADES,
@@ -77,9 +104,69 @@ def _all_sources() -> List[LivePathSourceDef]:
             redis_key_template="rec_io:live_state:v1:tenant:{user_no}:active_trades",
             live_kind="active_trades",
             row_mode=True,
+            row_id_field="trade_id",
+            row_columns=_active_cols,
             params=(
                 LivePathSourceParam("user_no", "Tenant slot", True, "0001", "0001"),
             ),
+        ),
+        LivePathSourceDef(
+            id=SOURCE_KALSHI_POSITIONS,
+            label="Kalshi positions (hot)",
+            description="Ephemeral open Kalshi market positions from portfolio WS.",
+            redis_key_template="rec_io:live_state:v1:tenant:{user_no}:kalshi:positions",
+            live_kind=lskp.KIND_POSITIONS,
+            row_mode=True,
+            row_id_field="row_id",
+            row_columns=(
+                LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("position_fp", "position_fp"),
+                LivePathRowColumn("position_cost_dollars", "position_cost_dollars"),
+                LivePathRowColumn("realized_pnl_dollars", "realized_pnl_dollars"),
+                LivePathRowColumn("last_updated_ts", "updated"),
+            ),
+            params=(LivePathSourceParam("user_no", "Tenant slot", True, "0001", "0001"),),
+        ),
+        LivePathSourceDef(
+            id=SOURCE_KALSHI_ORDERS,
+            label="Kalshi orders (hot)",
+            description="Recent Kalshi orders from portfolio WS (bounded hash).",
+            redis_key_template="rec_io:live_state:v1:tenant:{user_no}:kalshi:orders",
+            live_kind=lskp.KIND_ORDERS,
+            row_mode=True,
+            row_id_field="row_id",
+            row_columns=(
+                LivePathRowColumn("order_id", "order_id"),
+                LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("status", "status"),
+                LivePathRowColumn("orderbook_side", "orderbook_side"),
+                LivePathRowColumn("outcome_side", "outcome_side"),
+                LivePathRowColumn("initial_count", "initial_count", numeric=True),
+                LivePathRowColumn("fill_count", "fill_count", numeric=True),
+                LivePathRowColumn("remaining_count", "remaining_count", numeric=True),
+                LivePathRowColumn("yes_price_dollars", "yes_px"),
+            ),
+            params=(LivePathSourceParam("user_no", "Tenant slot", True, "0001", "0001"),),
+        ),
+        LivePathSourceDef(
+            id=SOURCE_KALSHI_FILLS,
+            label="Kalshi fills (hot)",
+            description="Recent Kalshi fills from portfolio WS (bounded hash).",
+            redis_key_template="rec_io:live_state:v1:tenant:{user_no}:kalshi:fills",
+            live_kind=lskp.KIND_FILLS,
+            row_mode=True,
+            row_id_field="row_id",
+            row_columns=(
+                LivePathRowColumn("trade_id", "trade_id"),
+                LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("order_id", "order_id"),
+                LivePathRowColumn("orderbook_side", "orderbook_side"),
+                LivePathRowColumn("outcome_side", "outcome_side"),
+                LivePathRowColumn("count_fp", "count", numeric=True),
+                LivePathRowColumn("yes_price_dollars", "yes_px"),
+                LivePathRowColumn("created_time", "created"),
+            ),
+            params=(LivePathSourceParam("user_no", "Tenant slot", True, "0001", "0001"),),
         ),
         LivePathSourceDef(
             id=SOURCE_MARKET,
@@ -158,6 +245,8 @@ class LivePathMonitorSpec:
     def subscription_key(self) -> str:
         if self.source == SOURCE_ACTIVE_TRADES:
             return f"{SOURCE_ACTIVE_TRADES}:{_norm_slot(self.user_no)}"
+        if self.source in (SOURCE_KALSHI_POSITIONS, SOURCE_KALSHI_ORDERS, SOURCE_KALSHI_FILLS):
+            return f"{self.source}:{_norm_slot(self.user_no)}"
         if self.source == SOURCE_REDIS_KEY:
             return f"{SOURCE_REDIS_KEY}:{self.redis_key.strip()}"
         return ":".join(
@@ -175,6 +264,12 @@ class LivePathMonitorSpec:
             return ""
         if self.source == SOURCE_ACTIVE_TRADES:
             return ls_at.tenant_active_trades_key(self.user_no)
+        if self.source == SOURCE_KALSHI_POSITIONS:
+            return lskp.tenant_kalshi_positions_key(self.user_no)
+        if self.source == SOURCE_KALSHI_ORDERS:
+            return lskp.tenant_kalshi_orders_key(self.user_no)
+        if self.source == SOURCE_KALSHI_FILLS:
+            return lskp.tenant_kalshi_fills_key(self.user_no)
         if self.source == SOURCE_REDIS_KEY:
             return self.redis_key.strip()
         if self.source == SOURCE_MARKET:
@@ -234,6 +329,10 @@ def validate_spec(spec: LivePathMonitorSpec) -> Optional[str]:
         if val is None or str(val).strip() == "":
             return f"missing required param: {p.name}"
     if spec.source == SOURCE_ACTIVE_TRADES:
+        u = str(spec.user_no).strip()
+        if not u.isdigit() or len(u) > 4:
+            return "user_no must be a numeric tenant slot (e.g. 0001)"
+    if spec.source in (SOURCE_KALSHI_POSITIONS, SOURCE_KALSHI_ORDERS, SOURCE_KALSHI_FILLS):
         u = str(spec.user_no).strip()
         if not u.isdigit() or len(u) > 4:
             return "user_no must be a numeric tenant slot (e.g. 0001)"
@@ -379,6 +478,45 @@ def build_snapshot(spec: LivePathMonitorSpec) -> Dict[str, Any]:
         base.update(
             {
                 "active_trades_hot_path_enabled": enabled,
+                "record_count": len(rows),
+                "rows": rows,
+                "records": records,
+            }
+        )
+        return base
+    if spec.source == SOURCE_KALSHI_POSITIONS:
+        enabled = lskp.live_state_kalshi_portfolio_enabled()
+        records = lskp.list_positions(spec.user_no) if enabled else []
+        rows = [lskp.position_row_for_monitor(rec) for rec in records]
+        base.update(
+            {
+                "kalshi_portfolio_hot_path_enabled": enabled,
+                "record_count": len(rows),
+                "rows": rows,
+                "records": records,
+            }
+        )
+        return base
+    if spec.source == SOURCE_KALSHI_ORDERS:
+        enabled = lskp.live_state_kalshi_portfolio_enabled()
+        records = lskp.list_orders(spec.user_no) if enabled else []
+        rows = [lskp.order_row_for_monitor(rec) for rec in records]
+        base.update(
+            {
+                "kalshi_portfolio_hot_path_enabled": enabled,
+                "record_count": len(rows),
+                "rows": rows,
+                "records": records,
+            }
+        )
+        return base
+    if spec.source == SOURCE_KALSHI_FILLS:
+        enabled = lskp.live_state_kalshi_portfolio_enabled()
+        records = lskp.list_fills(spec.user_no) if enabled else []
+        rows = [lskp.fill_row_for_monitor(rec) for rec in records]
+        base.update(
+            {
+                "kalshi_portfolio_hot_path_enabled": enabled,
                 "record_count": len(rows),
                 "rows": rows,
                 "records": records,

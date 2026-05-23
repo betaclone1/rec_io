@@ -403,6 +403,16 @@ def kalshi_closing_price_for_ticker_monitoring(
     return None
 
 
+def kalshi_order(user_no: str, order_id: str) -> Optional[Dict[str, Any]]:
+    """Kalshi order row from portfolio hot hash (WS-driven; no PostgreSQL)."""
+    from backend.core import live_state_kalshi_portfolio as lskp
+
+    oid = str(order_id or "").strip()
+    if not oid:
+        return None
+    return lskp.get_order(user_no, oid)
+
+
 def find_ladder_strike_row(
     ladder: Optional[Dict[str, Any]],
     ticker: str,

@@ -75,6 +75,85 @@ def _slot_from_active_trades_redis_key(key: str) -> Optional[str]:
     return m.group(1) if m else None
 
 
+def _portfolio_source_from_redis_key(key: str) -> Optional[tuple[str, str]]:
+    m = _main_re.search(
+        r":tenant:(\d{4}):kalshi:(positions|orders|fills)$",
+        str(key or ""),
+    )
+    if not m:
+        return None
+    suffix = m.group(2)
+    from backend.core.live_path_cache_monitor import (
+        SOURCE_KALSHI_FILLS,
+        SOURCE_KALSHI_ORDERS,
+        SOURCE_KALSHI_POSITIONS,
+    )
+
+    source_map = {
+        "positions": SOURCE_KALSHI_POSITIONS,
+        "orders": SOURCE_KALSHI_ORDERS,
+        "fills": SOURCE_KALSHI_FILLS,
+    }
+    src = source_map.get(suffix)
+    if not src:
+        return None
+    return m.group(1), src
+
+
+async def _push_portfolio_rows_refresh(slot: str, source: str) -> None:
+    """Full snapshot — WS connect init only."""
+    from backend.core.live_path_cache_monitor import build_cache_init_payload
+
+    for client, spec in _iter_live_path_monitor_clients():
+        if spec.source != source or _norm_slot(spec.user_no) != slot:
+            continue
+        await _send_live_path_monitor_payload(client, build_cache_init_payload(spec))
+
+
+async def _push_portfolio_delta_ws(
+    slot: str,
+    source: str,
+    *,
+    upserts: Optional[List[Dict[str, Any]]] = None,
+    removes: Optional[List[str]] = None,
+) -> None:
+    upserts = upserts or []
+    removes = removes or []
+    if not upserts and not removes:
+        return
+    payload = {
+        "type": "cache_delta",
+        "source": source,
+        "upserts": upserts,
+        "removes": removes,
+        "ts": time.time(),
+    }
+    for client, spec in _iter_live_path_monitor_clients():
+        if spec.source != source or _norm_slot(spec.user_no) != slot:
+            continue
+        await _send_live_path_monitor_payload(client, payload)
+
+
+async def _push_portfolio_row_change(slot: str, source: str, obj: dict) -> None:
+    detail = str(obj.get("detail") or "row")
+    removes = [str(x) for x in (obj.get("removes") or []) if x]
+    upserts: List[Dict[str, Any]] = []
+
+    if detail == "remove":
+        field = obj.get("field")
+        if field:
+            removes.append(str(field))
+    elif detail in ("delta", "baseline"):
+        upserts = list(obj.get("rows") or [])
+    elif obj.get("row"):
+        upserts = [obj["row"]]
+    elif detail == "row" and not obj.get("row"):
+        # Legacy / defensive: no embedded row → skip (never full snapshot refresh).
+        return
+
+    await _push_portfolio_delta_ws(slot, source, upserts=upserts, removes=removes)
+
+
 async def _push_active_trades_patches_from_redis(slot: str) -> None:
     """After Redis hot-path write: diff per-client patch scope and push."""
     from backend.core import live_state_active_trades as ls_at
@@ -159,19 +238,32 @@ async def _broadcast_live_state_debug(obj: dict) -> None:
         return
     from backend.core.live_path_cache_monitor import (
         SOURCE_ACTIVE_TRADES,
+        SOURCE_KALSHI_FILLS,
+        SOURCE_KALSHI_ORDERS,
+        SOURCE_KALSHI_POSITIONS,
         build_cache_event_payload,
     )
+    from backend.core import live_state_kalshi_portfolio as lskp
 
     kind = str(obj.get("kind") or "")
     if kind == "active_trades":
         slot = _slot_from_active_trades_redis_key(str(obj.get("key") or ""))
         if slot:
             await _push_active_trades_patches_from_redis(slot)
+    elif kind in (lskp.KIND_POSITIONS, lskp.KIND_ORDERS, lskp.KIND_FILLS):
+        parsed = _portfolio_source_from_redis_key(str(obj.get("key") or ""))
+        if parsed:
+            await _push_portfolio_row_change(parsed[0], parsed[1], obj)
 
+    portfolio_sources = {
+        SOURCE_KALSHI_POSITIONS,
+        SOURCE_KALSHI_ORDERS,
+        SOURCE_KALSHI_FILLS,
+    }
     for client, spec in _iter_live_path_monitor_clients():
         if not spec.matches_live_state_message(obj):
             continue
-        if spec.source == SOURCE_ACTIVE_TRADES:
+        if spec.source == SOURCE_ACTIVE_TRADES or spec.source in portfolio_sources:
             continue
         await _send_live_path_monitor_payload(
             client, build_cache_event_payload(spec, obj)

@@ -11,41 +11,66 @@ flowchart LR
     REST[REST portfolio APIs]
   end
   subgraph sync [kalshi_account_sync_ws]
-    TRG[Debounced resource sync]
+    HOT[live_state hot hash]
+    SPOOL[PG spool fills/orders]
     Q[Quick periodic]
     F[Full reconcile]
   end
-  WS -->|market_position fill user_orders| TRG
+  WS -->|market_position| HOT
+  WS -->|fill user_orders| HOT
+  WS -->|fill user_orders| SPOOL
   Q --> REST
   F --> REST
+  F --> SPOOL
 ```
+
+Portfolio **hot state** for positions/orders/fills is **WebSocket-driven** for upserts. REST reconcile writes PostgreSQL history for fills/orders and updates balance/settlements; it does **not** upsert position rows into the hot hash. **Exception:** `GET /portfolio/positions` runs on a timer (`ACCOUNT_SYNC_POSITIONS_PRUNE_SEC`, default **300s / 5m**) to **remove** hot-state tickers that no longer appear in REST (settled markets). WS handlers and REST polls use **separate thread pools** (`kas_hot` / `kas_rest`).
+
+## Hot path (live_state)
+
+| Entity | Redis key | PG | WS action |
+|--------|-----------|-----|-----------|
+| Positions | `rec_io:live_state:v1:tenant:{slot}:kalshi:positions` | **None** (ephemeral) | Upsert on `market_position` (`position_cost_dollars` from WS); REST prune drops tickers absent from `GET /portfolio/positions` |
+| Orders | `...:kalshi:orders` | Spooled upsert (history) | Upsert hash on WS + enqueue spool |
+| Fills | `...:kalshi:fills` | Spooled upsert (history) | Upsert hash on WS + enqueue spool |
+
+Pub/sub: `rec_io:live_state:updated` with kinds `kalshi_positions`, `kalshi_orders`, `kalshi_fills`.
+
+Monitor: `/live-path-cache-monitor?source=kalshi_positions&user_no=0001` (also `kalshi_orders`, `kalshi_fills`).
+
+Account manager **Open Positions** reads hot state via `GET /api/db/positions` (not PG). **Recent fills** use `GET /api/db/fills` from the hot fills hash (rolling window), not PG.
+
+**Live tradeflow:** `trade_manager` `confirm_open_trade` / `confirm_close_trade` read order status, counts, and fee/cost fields from the **orders hot hash** only (`tradeflow_live_reads.kalshi_order` → `live_state_kalshi_portfolio.get_order`). PostgreSQL `orders_*` is historical spool only. Trade rows (`trades_*`) remain in PG.
+
+Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot window), `PORTFOLIO_PG_SPOOL_FLUSH_MS` (default 250), `PORTFOLIO_PG_SPOOL_MAX_BATCH` (default 50), `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` (default 300), `ACCOUNT_SYNC_HOT_EXECUTOR_WORKERS` (default 4), `ACCOUNT_SYNC_REST_EXECUTOR_WORKERS` (default 1).
 
 ## REST inventory
 
 | Function | HTTP | When it runs |
 |----------|------|--------------|
-| `sync_balance` | `GET /trade-api/v2/portfolio/balance` | After debounced position/fill/order work when needed; quick periodic; full reconcile; hourly/daily schedule; initial baseline |
-| `sync_positions` | `GET .../portfolio/positions?limit=50` | Debounced `market_position` WS; full reconcile; initial baseline |
-| `sync_fills` | `GET .../portfolio/fills?limit=50` | Debounced `fill` WS; full reconcile; initial baseline |
-| `sync_orders` | `GET .../portfolio/orders?limit=50` | Debounced `user_orders` WS; full reconcile; initial baseline |
+| `sync_balance` | `GET /trade-api/v2/portfolio/balance` | Debounced balance; quick periodic; full reconcile; hourly/daily schedule; initial baseline |
+| `sync_positions_prune_hot_state` | `GET .../portfolio/positions?limit=50` | Every `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` (default 300s); initial baseline; **prune only** (no hot upsert) |
+| `sync_fills` | `GET .../portfolio/fills?limit=50` | Full reconcile; initial baseline (**PG only**, not hot hash) |
+| `sync_orders` | `GET .../portfolio/orders?limit=50` | Full reconcile; initial baseline (**PG only**, not hot hash) |
 | `sync_settlements` | `GET .../portfolio/settlements?limit=50` | Quick periodic; full reconcile; initial baseline |
 | `sync_account_history` | v1 paged deposits + withdrawals | Inside `sync_balance` when Kalshi user id is available |
 
-**Note:** `limit=50` on positions/fills/orders/settlements means long-tail completeness depends on **full reconciliation** (`ACCOUNT_SYNC_FULL_RECONCILE_SEC`, default 900s) and periodic quick syncs.
+**Note:** `limit=50` on fills/orders/settlements means long-tail completeness depends on **full reconciliation** (`ACCOUNT_SYNC_FULL_RECONCILE_SEC`, default 900s) and periodic quick syncs.
 
 ## WebSocket
 
 - **URL:** `wss://external-api-ws.kalshi.com/trade-api/ws/v2` (same host as docs; credentials via `KALSHI-ACCESS-*` headers on handshake).
 - **Channels (single subscribe):** `market_positions`, `fill`, `user_orders` (see Kalshi subscribe command).
-- **Behavior:** WS messages **trigger** debounced REST syncs; first N non-control messages for `fill` / `user_orders` are logged at INFO for PoC validation (compare to REST in logs).
+- **Behavior:** `market_position` → live_state positions hash (`position_cost_dollars`, `position_fp`, etc.); balance debounced. `fill` / `user_orders` → live_state hash + PG spool; balance debounced. PoC logging for first N fill/order messages.
 
 ## Timers
 
 | Timer | Env | Default | Purpose |
 |-------|-----|---------|---------|
-| Debounce | `ACCOUNT_SYNC_DEBOUNCE_MS` | 400 | Coalesce rapid WS events before REST |
+| Debounce | `ACCOUNT_SYNC_DEBOUNCE_MS` | 400 | Coalesce rapid WS events before REST (fills/orders PG, balance) |
 | Quick | `ACCOUNT_SYNC_QUICK_PERIODIC_SEC` | 300 | `sync_settlements` + `sync_balance` |
-| Full | `ACCOUNT_SYNC_FULL_RECONCILE_SEC` | 900 | All five syncs (same as legacy 5-minute full cycle) |
+| Positions prune | `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` | 300 | REST positions poll → drop stale hot hash keys |
+| Full | `ACCOUNT_SYNC_FULL_RECONCILE_SEC` | 900 | Fills/orders/settlements/balance REST (not hot hash) |
 
 ## Internal comms (after portfolio-plane Redis work)
 
