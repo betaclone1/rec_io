@@ -1777,7 +1777,6 @@ def sync_portfolio_hot_state_baseline() -> None:
             "positions",
             {"market_positions": len(pos_data.get("market_positions", []) or []), "baseline": upserted},
         )
-        _notify_trade_manager_positions_updated({"database": "positions"})
     else:
         logger.warning("Portfolio hot_state positions REST baseline skipped (REST unavailable)")
 
@@ -1804,7 +1803,6 @@ def sync_portfolio_hot_state_baseline() -> None:
             min_ts,
         )
         notify_frontend_db_change("orders", {"orders": merged, "baseline": True})
-        _notify_trade_manager_positions_updated({"database": "orders"})
     else:
         logger.info("Portfolio hot_state orders REST baseline: no rows (min_ts=%s)", min_ts)
 
@@ -1834,7 +1832,6 @@ def sync_positions_prune_hot_state() -> None:
             "positions",
             {"market_positions": len(rest_tickers), "pruned": removed},
         )
-        _notify_trade_manager_positions_updated({"database": "positions"})
 
 
 def sync_positions():
@@ -2010,8 +2007,6 @@ def sync_fills():
         logger.debug("API returned zero fills")
 
     notify_frontend_db_change("fills", {"fills": len(all_fills)})
-
-    _notify_trade_manager_positions_updated({"database": "fills"})
 
     logger.info("Fills sync OK")
 
@@ -2421,8 +2416,6 @@ def sync_orders():
 
     notify_frontend_db_change("orders", {"orders": len(all_orders)})
 
-    _notify_trade_manager_positions_updated({"database": "orders"})
-
     logger.info("Orders sync OK")
 
 
@@ -2460,7 +2453,6 @@ def _full_reconcile_sync() -> None:
 
 def _portfolio_spool_on_flush(entity: str, count: int) -> None:
     notify_frontend_db_change(entity, {entity: count})
-    _notify_trade_manager_positions_updated({"database": entity})
 
 
 def _ws_apply_fill_message(ws_outer: dict) -> None:
@@ -2478,18 +2470,20 @@ def _ws_apply_fill_message(ws_outer: dict) -> None:
         spool = get_portfolio_pg_spool()
         if spool:
             spool.append_fill(rec)
-            return
-        pg_conn = get_postgresql_connection()
-        if not pg_conn:
-            return
-        try:
-            with pg_conn.cursor() as cur:
-                upsert_fill_row(cur, _legacy_fills_qualified(), rec)
-            pg_conn.commit()
-        finally:
-            pg_conn.close()
-        notify_frontend_db_change("fills", {"fills": 1})
-        _notify_trade_manager_positions_updated({"database": "fills"})
+        else:
+            pg_conn = get_postgresql_connection()
+            if not pg_conn:
+                return
+            try:
+                with pg_conn.cursor() as cur:
+                    upsert_fill_row(cur, _legacy_fills_qualified(), rec)
+                pg_conn.commit()
+            finally:
+                pg_conn.close()
+            notify_frontend_db_change("fills", {"fills": 1})
+        oid = str(rec.get("order_id") or "").strip()
+        if oid:
+            _notify_trade_manager_positions_updated({"database": "fills", "order_id": oid})
     except Exception as e:
         logger.error("WS fill hot/spool failed: %s", e)
 
@@ -2509,18 +2503,20 @@ def _ws_apply_order_message(ws_outer: dict) -> None:
         spool = get_portfolio_pg_spool()
         if spool:
             spool.append_order(rec)
-            return
-        pg_conn = get_postgresql_connection()
-        if not pg_conn:
-            return
-        try:
-            with pg_conn.cursor() as cur:
-                upsert_order_row(cur, _legacy_orders_qualified(), rec)
-            pg_conn.commit()
-        finally:
-            pg_conn.close()
-        notify_frontend_db_change("orders", {"orders": 1})
-        _notify_trade_manager_positions_updated({"database": "orders"})
+        else:
+            pg_conn = get_postgresql_connection()
+            if not pg_conn:
+                return
+            try:
+                with pg_conn.cursor() as cur:
+                    upsert_order_row(cur, _legacy_orders_qualified(), rec)
+                pg_conn.commit()
+            finally:
+                pg_conn.close()
+            notify_frontend_db_change("orders", {"orders": 1})
+        oid = str(rec.get("order_id") or "").strip()
+        if oid:
+            _notify_trade_manager_positions_updated({"database": "orders", "order_id": oid})
     except Exception as e:
         logger.error("WS order hot/spool failed: %s", e)
 
@@ -2719,7 +2715,6 @@ class KalshiWebSocketSync:
                         last_updated_ts=LATEST_WEBSOCKET_TIMESTAMP,
                     )
                     notify_frontend_db_change("positions", {"market_positions": 1})
-                    _notify_trade_manager_positions_updated({"database": "positions"})
 
                 await loop.run_in_executor(_get_portfolio_hot_executor(), _apply_position_hot)
                 await self._add_pending_and_debounce({"balance"})

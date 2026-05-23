@@ -3323,6 +3323,83 @@ def insert_simulated_trade(trade):
     return last_id
 
 
+def wake_confirm_open_for_order(order_id: str) -> None:
+    """Portfolio hot state or executor stored order_id_open — confirm matching pending/partial row."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return
+    threading.Thread(
+        target=confirm_open_trade_for_order_id,
+        args=(oid,),
+        daemon=True,
+    ).start()
+
+
+def wake_confirm_close_for_order(order_id: str) -> None:
+    oid = str(order_id or "").strip()
+    if not oid:
+        return
+    threading.Thread(
+        target=confirm_close_trade_for_order_id,
+        args=(oid,),
+        daemon=True,
+    ).start()
+
+
+def confirm_open_trade_for_order_id(order_id: str) -> None:
+    oid = str(order_id or "").strip()
+    if not oid:
+        return
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, ticket_id FROM {_tm_trades_table()}
+                WHERE order_id_open = %s AND status IN ('pending', 'partial')
+                """,
+                (oid,),
+            )
+            row = cursor.fetchone()
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+    if not row:
+        return
+    confirm_open_trade(int(row[0]), row[1] or "")
+
+
+def confirm_close_trade_for_order_id(order_id: str) -> None:
+    oid = str(order_id or "").strip()
+    if not oid:
+        return
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, ticket_id FROM {_tm_trades_table()}
+                WHERE order_id_close = %s AND status = 'closing'
+                """,
+                (oid,),
+            )
+            row = cursor.fetchone()
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+    if not row:
+        return
+    confirm_close_trade(int(row[0]), row[1] or "")
+
+
 def confirm_open_trade(id: int, ticket_id: str) -> None:
     """Confirms a PENDING trade has been opened by checking Kalshi order hot state for complete fill.
 
@@ -3331,30 +3408,32 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
     order_id_open (WS portfolio hot hash). A per-trade lock prevents overlapping confirms from
     double-counting the same order fee. Uses the same per-id lock as close confirmation.
     """
-    # Get initial trade info including the order_id_open we stored
     pg_conn = get_postgresql_connection()
     if pg_conn:
         with pg_conn.cursor() as cursor:
-            cursor.execute(f"SELECT ticker, symbol, order_id_open FROM {_tm_trades_table()} WHERE id = %s", (id,))
+            cursor.execute(
+                f"SELECT ticker, symbol, order_id_open FROM {_tm_trades_table()} WHERE id = %s",
+                (id,),
+            )
             row = cursor.fetchone()
         pg_conn.close()
     else:
         row = None
-    
+
     if not row:
         log_event(ticket_id, f"MANAGER: No trade found for ID {id}")
         return
-    
+
     symbol = row[1]
     stored_order_id_open = row[2]
-    
+
     if not stored_order_id_open:
         log_event(ticket_id, f"MANAGER: No order_id_open stored for trade ID {id} - cannot confirm via order hot state")
         return
-    
+
     with _trade_confirm_lock(id):
         deadline = time.time() + 30  # 30 second timeout
-        
+
         while time.time() < deadline:
             try:
                 order_rec = _fetch_kalshi_order_for_confirm(stored_order_id_open)
@@ -6810,12 +6889,10 @@ def apply_update_trade_status_payload(data: dict):
                             log_event(ticket_id, f"MANAGER: {log_type} ORDER_ID STORED IN DATABASE: {order_id}")
                     pg_conn.close()
                     
-                    # FAILSAFE: For opening trades, immediately trigger confirm_open_trade after storing order_id
-                    # This catches the edge case where positions_updated arrives before executor callback
-                    # In normal cases (99.9%), trade is already 'open' so confirm_open_trade will skip (no-op)
                     if intent == "open" and order_id:
-                        log(f"🛡️ FAILSAFE: Triggering immediate confirmation for trade {id} after storing order_id")
-                        threading.Thread(target=confirm_open_trade, args=(id, ticket_id), daemon=True).start()
+                        wake_confirm_open_for_order(order_id)
+                    elif intent == "close" and order_id:
+                        wake_confirm_close_for_order(order_id)
                 else:
                     log(f"FAILED TO STORE {log_type} ORDER_ID - NO DATABASE CONNECTION")
                     if ticket_id:
@@ -6865,47 +6942,17 @@ async def update_trade_status_api(request: Request):
 
 
 def apply_positions_updated_payload(data: dict) -> dict:
-    """kalshi_account_sync_ws: same logic as POST /api/positions_updated (HTTP or Redis pub/sub)."""
+    """kalshi_account_sync_ws → trade_manager: targeted confirm wake by Kalshi order_id."""
     try:
         db_name = data.get("database", "positions")
+        order_id = str(data.get("order_id") or "").strip()
 
-        if db_name in ("positions", "orders"):
-            pg_conn = get_postgresql_connection()
-            if pg_conn:
-                with pg_conn.cursor() as cursor:
-                    cursor.execute(f"SELECT id, ticket_id FROM {_tm_trades_table()} WHERE status = 'pending'")
-                    pending_trades = cursor.fetchall()
-            else:
-                pending_trades = []
-
-            if pending_trades:
-                log(f"[🔔 {db_name.upper()} UPDATED] Found {len(pending_trades)} pending trades to confirm")
-                for id, ticket_id in pending_trades:
-                    threading.Thread(target=confirm_open_trade, args=(id, ticket_id), daemon=True).start()
-
-        if db_name == "orders":
-            pg_conn = get_postgresql_connection()
-            if pg_conn:
-                with pg_conn.cursor() as cursor:
-                    cursor.execute(f"SELECT id, ticket_id FROM {_tm_trades_table()} WHERE status = 'closing'")
-                    closing_trades = cursor.fetchall()
-            else:
-                closing_trades = []
-
-            if closing_trades:
-                log(f"[🔔 ORDERS UPDATED] Found {len(closing_trades)} closing trades to confirm")
-                for id, ticket_id in closing_trades:
-                    pg_conn = get_postgresql_connection()
-                    if pg_conn:
-                        with pg_conn.cursor() as cursor:
-                            cursor.execute(f"SELECT status FROM {_tm_trades_table()} WHERE id = %s", (id,))
-                            current_status = cursor.fetchone()
-                    else:
-                        current_status = None
-
-                    if current_status and current_status[0] == "closing":
-                        log(f"[🔔 ORDERS UPDATED] Confirming close for trade {id}")
-                        confirm_close_trade(id, ticket_id)
+        if order_id and db_name in ("orders", "fills", "executor"):
+            log(f"[🔔 PORTFOLIO {db_name.upper()}] confirm open wake order_id={order_id}")
+            wake_confirm_open_for_order(order_id)
+        if order_id and db_name == "orders":
+            log(f"[🔔 PORTFOLIO ORDERS] confirm close wake order_id={order_id}")
+            wake_confirm_close_for_order(order_id)
 
         return {"message": f"{db_name}_updated received"}
     except Exception as e:

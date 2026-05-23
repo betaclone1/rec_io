@@ -307,3 +307,47 @@ def test_merge_fills_baseline_respects_retention(mock_redis_fn, _enabled):
     count = lskp.merge_fills_baseline("0001", fills)
     assert count == 1
     r.hset.assert_called_once()
+
+
+@patch.object(lskp, "live_state_kalshi_portfolio_enabled", return_value=True)
+@patch.object(lskp, "list_fills")
+def test_sum_fill_count_for_order(_list_fills, _enabled):
+    _list_fills.return_value = [
+        {"order_id": "oid-a", "count_fp": 1.0},
+        {"order_id": "oid-a", "count_fp": 50.0},
+        {"order_id": "oid-b", "count_fp": 10.0},
+    ]
+    assert lskp.sum_fill_count_for_order("0001", "oid-a") == 51.0
+    assert lskp.sum_fill_count_for_order("0001", "oid-b") == 10.0
+    assert lskp.sum_fill_count_for_order("0001", "") == 0.0
+
+
+@patch.object(lskp, "live_state_kalshi_portfolio_enabled", return_value=True)
+@patch.object(lskp, "list_fills")
+@patch.object(lskp, "redis_client_optional")
+def test_get_order_merges_fill_legs_when_order_row_stale(mock_redis_fn, mock_list_fills, _enabled):
+    r = MagicMock()
+    mock_redis_fn.return_value = r
+    order = {
+        "order_id": "oid-a",
+        "status": "canceled",
+        "initial_count_fp": 623.0,
+        "fill_count_fp": 0.0,
+        "remaining_count_fp": 623.0,
+        "last_update_time": "2099-01-01T00:00:00Z",
+    }
+    r.hget.return_value = json.dumps(order)
+    mock_list_fills.return_value = [
+        {
+            "order_id": "oid-a",
+            "count_fp": 51.0,
+            "outcome_side": "no",
+            "yes_price_dollars": "0.0500",
+            "raw_json": {"fee_cost": "0.170000"},
+        }
+    ]
+    merged = lskp.get_order("0001", "oid-a")
+    assert merged is not None
+    assert float(merged["fill_count_fp"]) == 51.0
+    assert float(merged["remaining_count_fp"]) == 572.0
+    assert float(merged["taker_fees_dollars"]) == 0.17

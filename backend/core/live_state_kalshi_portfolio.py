@@ -495,7 +495,87 @@ def get_order(user_no: str, order_id: str) -> Optional[Dict[str, Any]]:
         return None
     if not _within_retention(rec, "last_update_time"):
         return None
-    return rec
+    return _merge_order_with_fill_aggregate(user_no, rec)
+
+
+def _fill_leg_cost_dollars(rec: Dict[str, Any]) -> float:
+    try:
+        cnt = float(rec.get("count_fp") or 0.0)
+    except (TypeError, ValueError):
+        return 0.0
+    if cnt <= 0:
+        return 0.0
+    yp_raw = rec.get("yes_price_dollars")
+    if yp_raw is None:
+        return 0.0
+    try:
+        yp = float(yp_raw)
+    except (TypeError, ValueError):
+        return 0.0
+    side = str(rec.get("outcome_side") or "").strip().lower()
+    if side == "no":
+        return cnt * (1.0 - yp)
+    if side == "yes":
+        return cnt * yp
+    return cnt * yp
+
+
+def _fill_leg_fee_dollars(rec: Dict[str, Any]) -> float:
+    raw = rec.get("raw_json") if isinstance(rec.get("raw_json"), dict) else rec
+    for key in ("fee_cost", "taker_fees_dollars", "maker_fees_dollars"):
+        val = raw.get(key)
+        if val is None:
+            continue
+        try:
+            return float(val)
+        except (TypeError, ValueError):
+            continue
+    return 0.0
+
+
+def aggregate_fills_for_order(user_no: str, order_id: str) -> Dict[str, float]:
+    """Sum fill legs in the fills hot hash for one Kalshi order_id."""
+    oid = str(order_id or "").strip()
+    out = {"fill_count": 0.0, "taker_fees": 0.0, "taker_fill_cost": 0.0}
+    if not oid:
+        return out
+    for rec in list_fills(user_no):
+        if str(rec.get("order_id") or "").strip() != oid:
+            continue
+        try:
+            out["fill_count"] += float(rec.get("count_fp") or 0.0)
+        except (TypeError, ValueError):
+            pass
+        out["taker_fees"] += _fill_leg_fee_dollars(rec)
+        out["taker_fill_cost"] += _fill_leg_cost_dollars(rec)
+    return out
+
+
+def _merge_order_with_fill_aggregate(user_no: str, rec: Dict[str, Any]) -> Dict[str, Any]:
+    """Confirm-ready order view: order hash row plus any fill legs not yet on the order row."""
+    oid = str(rec.get("order_id") or "").strip()
+    if not oid:
+        return rec
+    agg = aggregate_fills_for_order(user_no, oid)
+    try:
+        order_fill = float(rec.get("fill_count_fp") or 0.0)
+    except (TypeError, ValueError):
+        order_fill = 0.0
+    if agg["fill_count"] <= order_fill + 1e-9:
+        return rec
+    merged = dict(rec)
+    merged["fill_count_fp"] = agg["fill_count"]
+    if agg["taker_fees"] > 0:
+        merged["taker_fees_dollars"] = f"{agg['taker_fees']:.6f}"
+    if agg["taker_fill_cost"] > 0:
+        merged["taker_fill_cost_dollars"] = f"{agg['taker_fill_cost']:.6f}"
+    try:
+        initial = float(rec.get("initial_count_fp") or 0.0)
+    except (TypeError, ValueError):
+        initial = 0.0
+    if initial > 0:
+        merged["remaining_count_fp"] = max(0.0, initial - agg["fill_count"])
+    return merged
 
 
 def list_orders(user_no: str) -> List[Dict[str, Any]]:
@@ -514,6 +594,11 @@ def list_fills(user_no: str) -> List[Dict[str, Any]]:
         sort_field="created_time",
         retention_field="created_time",
     )
+
+
+def sum_fill_count_for_order(user_no: str, order_id: str) -> float:
+    """Sum fill count_fp rows in the fills hot hash for one Kalshi order_id."""
+    return aggregate_fills_for_order(user_no, order_id)["fill_count"]
 
 
 def position_row_for_monitor(rec: Dict[str, Any]) -> Dict[str, Any]:
