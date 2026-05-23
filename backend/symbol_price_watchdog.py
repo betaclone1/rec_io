@@ -138,6 +138,40 @@ MOVEMENT_PROFILES = {}
 
 CRYPTO_LIVE_STATE_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP"})
 
+# Per-symbol monotonic time of last live_state publish (hot path throttle).
+_last_hot_publish_mono: Dict[str, float] = {}
+
+
+def _symbol_hot_publish_min_interval_sec() -> float:
+    """Min seconds between Redis live_state publishes per symbol (buffer still gets every tick).
+
+    ``SYMBOL_HOT_PUBLISH_MAX_HZ`` defaults to 1 (one publish/sec). Set <= 0 to disable cap.
+    """
+    raw = os.getenv("SYMBOL_HOT_PUBLISH_MAX_HZ", "1").strip()
+    try:
+        hz = float(raw)
+    except (TypeError, ValueError):
+        hz = 1.0
+    if hz <= 0:
+        return 0.0
+    return 1.0 / hz
+
+
+def _hot_publish_allowed(symbol: str, *, force: bool = False) -> bool:
+    if force:
+        return True
+    min_iv = _symbol_hot_publish_min_interval_sec()
+    if min_iv <= 0:
+        return True
+    sym = str(symbol or "").strip().upper()
+    now = time.monotonic()
+    last = _last_hot_publish_mono.get(sym, 0.0)
+    if now - last < min_iv:
+        return False
+    _last_hot_publish_mono[sym] = now
+    return True
+
+
 def _hot_wall_timestamp_ms() -> str:
     """Eastern wall time with millisecond precision for live_state hot path."""
     now = datetime.now(ZoneInfo("America/New_York"))
@@ -145,7 +179,7 @@ def _hot_wall_timestamp_ms() -> str:
 
 
 def _coinbase_live_hot_path(symbol: str) -> bool:
-    """Coinbase crypto: every WS tick → Redis live_state; history via spool only."""
+    """Coinbase crypto: WS ticks → tick buffer; live_state publish rate-capped (default 1 Hz)."""
     try:
         from backend.core.live_state_config import live_state_cache_enabled
 
@@ -291,8 +325,9 @@ def publish_crypto_symbol_hot(
     price: float,
     *,
     ws_received_mono: float,
+    force: bool = False,
 ) -> None:
-    """Every Coinbase tick → full live_state row + strike regen (no rate cap)."""
+    """Coinbase tick → tick buffer every message; live_state + strike regen at most 1 Hz (default)."""
     if not _coinbase_live_hot_path(symbol):
         return
 
@@ -302,6 +337,8 @@ def publish_crypto_symbol_hot(
         from backend.core.symbol_tick_buffer import append_tick
 
         append_tick(symbol, ts, px)
+    if not _hot_publish_allowed(symbol, force=force):
+        return
     tick_row, table_name = build_symbol_tick_row(
         symbol, ts, price, ws_received_mono=ws_received_mono
     )
@@ -1415,6 +1452,7 @@ async def log_symbol_price(symbol: str):
                                     symbol,
                                     last_distinct_price,
                                     ws_received_mono=time.monotonic(),
+                                    force=True,
                                 )
                             except Exception:
                                 pass
