@@ -390,8 +390,32 @@ def _numeric_strike_from_market(market: dict[str, Any]) -> Optional[float]:
 
 
 def _hourly_spot_price(sym_u: str) -> Optional[float]:
-    """Same sources as ``market_watchdog_ws._hourly_spot_price`` (live_symbol_status → 1s log)."""
+    """Spot for hourly ATM window: live_state first, then PG 1s log.
+
+    ``live_symbol_status`` price columns are LP-only legacy fields and are not
+    tick-maintained; using them mis-centers the hourly subscription window.
+    """
     sym_u = sym_u.upper().strip()
+    try:
+        from backend.core.tradeflow_live_reads import symbol_spot_price_for_monitoring
+
+        spot = symbol_spot_price_for_monitoring(
+            sym_u,
+            prefer_max_age_sec=120.0,
+            allow_stale_max_age_sec=300.0,
+        )
+        if spot is not None:
+            return float(spot)
+    except Exception as e:
+        log.debug("hourly spot live_state lookup failed for %s: %s", sym_u, e)
+
+    pt = {
+        "BTC": "live_price_log_1s_btc",
+        "ETH": "live_price_log_1s_eth",
+        "SOL": "live_price_log_1s_sol",
+    }.get(sym_u)
+    if not pt:
+        return None
     try:
         import psycopg2
     except ImportError:
@@ -406,30 +430,12 @@ def _hourly_spot_price(sym_u: str) -> Optional[float]:
             password=os.getenv("REC_DB_PASSWORD", os.getenv("POSTGRES_PASSWORD", "")),
         )
         cur = conn.cursor()
-        cur.execute(
-            """
-            SELECT COALESCE(one_minute_avg, price)
-            FROM live_data.live_symbol_status
-            WHERE symbol = %s
-            LIMIT 1
-            """,
-            (sym_u,),
-        )
+        cur.execute(f"SELECT price FROM live_data.{pt} ORDER BY timestamp DESC LIMIT 1")
         row = cur.fetchone()
         if row and row[0] is not None:
             return float(row[0])
-        pt = {
-            "BTC": "live_price_log_1s_btc",
-            "ETH": "live_price_log_1s_eth",
-            "SOL": "live_price_log_1s_sol",
-        }.get(sym_u)
-        if pt:
-            cur.execute(f"SELECT price FROM live_data.{pt} ORDER BY timestamp DESC LIMIT 1")
-            row2 = cur.fetchone()
-            if row2 and row2[0] is not None:
-                return float(row2[0])
     except Exception as e:
-        log.debug("hourly spot lookup failed for %s: %s", sym_u, e)
+        log.debug("hourly spot PG fallback failed for %s: %s", sym_u, e)
     finally:
         if conn is not None:
             try:
