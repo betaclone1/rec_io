@@ -3294,6 +3294,23 @@ def get_current_closing_price_for_trade(
         if direct is not None:
             return direct
 
+        from backend.core.tradeflow_live_reads import strike_ladder
+
+        ladder = strike_ladder(sym_fb or "BTC", mkt_fb or "hourly", DEFAULT_EXCHANGE)
+        ladder_row = find_ladder_strike_by_ticker(ladder, trade_ticker)
+        if ladder_row:
+            if side_u == "Y":
+                ask = ladder_row.get("no_ask_dollars")
+            elif side_u == "N":
+                ask = ladder_row.get("yes_ask_dollars")
+            else:
+                ask = None
+            if ask is not None:
+                try:
+                    return float(ask)
+                except (TypeError, ValueError):
+                    pass
+
         _log_market_notfound_throttled(trade_ticker)
         return None
 
@@ -3633,16 +3650,27 @@ def _update_monitoring_marks_redis(
     """Write marks to Redis active_trades only (no PG pool or trades_* mirror)."""
     from backend.core import live_state_active_trades as ls_at
 
-    def _snapshot_for_trade_symbol(trade_symbol) -> Dict[str, Any]:
+    def _trade_market_interval(trade_rec: Dict[str, Any]) -> str:
+        raw = str(
+            trade_rec.get("market") or trade_rec.get("exchange") or mkt or "hourly"
+        ).strip().lower()
+        if raw in ("hourly", "15m"):
+            return raw
+        return (mkt or "hourly").strip().lower()
+
+    def _snapshot_for_trade_symbol(trade_symbol, trade_market: str) -> Dict[str, Any]:
         base = sym or "BTC"
         tsu = (
             str(trade_symbol).strip().upper()
             if trade_symbol is not None and str(trade_symbol).strip()
             else str(base).strip().upper()
         )
-        key = _kalshi_snapshot_cache_key(tsu, mkt)
+        mkt_u = (trade_market or mkt or "hourly").strip().lower()
+        if mkt_u not in ("hourly", "15m"):
+            mkt_u = (mkt or "hourly").strip().lower()
+        key = _kalshi_snapshot_cache_key(tsu, mkt_u)
         if key not in snap_cache:
-            sd = get_kalshi_market_snapshot_cached(symbol=tsu, market=mkt)
+            sd = get_kalshi_market_snapshot_cached(symbol=tsu, market=mkt_u)
             snap_cache[key] = sd if sd else {"markets": [], "timestamp": None}
         out = snap_cache[key]
         if "markets" not in out:
@@ -3699,18 +3727,21 @@ def _update_monitoring_marks_redis(
                 if symbol is not None and str(symbol).strip()
                 else str(sym or "BTC").strip().upper()
             )
-            snapshot_data = _snapshot_for_trade_symbol(trade_sym_u)
+            trade_mkt = _trade_market_interval(tr)
+            snapshot_data = _snapshot_for_trade_symbol(trade_sym_u, trade_mkt)
             current_market_price = get_current_closing_price_for_trade(
                 ticker,
                 side,
                 snapshot_data=snapshot_data,
                 symbol=trade_sym_u,
-                market=mkt,
+                market=trade_mkt,
             )
             if current_market_price is None and current_close_price_db is not None:
                 current_market_price = float(current_close_price_db)
             if current_market_price is None:
-                log(f"⚠️ Could not get market price for trade {trade_id} ({ticker}), skipping")
+                log(
+                    f"⚠️ Could not get market price for trade {trade_id} ({ticker}, market={trade_mkt}), skipping"
+                )
                 continue
 
             raw_buffer = current_symbol_price - strike_price
@@ -3829,23 +3860,26 @@ def update_active_trade_monitoring_data():
         sym, mkt = get_current_monitor_symbol_and_market()
         snap_cache: Dict[str, Dict[str, Any]] = {}
 
-        def _snapshot_for_trade_symbol(trade_symbol) -> Dict[str, Any]:
+        def _snapshot_for_trade_symbol(trade_symbol, trade_market: str) -> Dict[str, Any]:
             base = sym or "BTC"
             ts = trade_symbol
             if ts is not None and str(ts).strip():
                 tsu = str(ts).strip().upper()
             else:
                 tsu = str(base).strip().upper()
-            key = _kalshi_snapshot_cache_key(tsu, mkt)
+            mkt_u = (trade_market or mkt or "hourly").strip().lower()
+            if mkt_u not in ("hourly", "15m"):
+                mkt_u = (mkt or "hourly").strip().lower()
+            key = _kalshi_snapshot_cache_key(tsu, mkt_u)
             if key not in snap_cache:
-                sd = get_kalshi_market_snapshot_cached(symbol=tsu, market=mkt)
+                sd = get_kalshi_market_snapshot_cached(symbol=tsu, market=mkt_u)
                 snap_cache[key] = sd if sd else {"markets": [], "timestamp": None}
             out = snap_cache[key]
             if "markets" not in out:
                 out["markets"] = []
             return out
 
-        if not _snapshot_for_trade_symbol(sym).get("markets"):
+        if not _snapshot_for_trade_symbol(sym, mkt).get("markets"):
             log_debug("⚠️ Kalshi snapshot empty; using per-trade DB fallbacks where possible")
 
         if _redis_active_trades_on():

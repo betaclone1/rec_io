@@ -1282,6 +1282,54 @@ def _live_price_log_timestamp_cutoff_str(expiration_est: datetime) -> str:
     return exp.strftime("%Y-%m-%dT%H:%M:%S")
 
 
+def _fetch_one_minute_avg_from_live_state_near_cutoff(
+    symbol: str,
+    expiration_est: datetime,
+    *,
+    max_gap_seconds: Optional[int] = None,
+) -> Optional[float]:
+    """Fallback when PG ``live_price_log_1s_*`` is stale (crypto hot path skips per-tick inserts).
+
+    Expiry sweeps and closes run at/just after contract end; live_state spot is authoritative then.
+    """
+    if not symbol or expiration_est is None:
+        return None
+    try:
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core.tradeflow_live_reads import symbol_spot_price_for_monitoring
+
+        if not live_state_cache_enabled():
+            return None
+        if expiration_est.tzinfo is None:
+            cutoff_dt = expiration_est.replace(tzinfo=EST_ZONE)
+        else:
+            cutoff_dt = expiration_est.astimezone(EST_ZONE)
+        now_est = datetime.now(EST_ZONE)
+        delta_s = (now_est - cutoff_dt).total_seconds()
+        window = float(max_gap_seconds) if max_gap_seconds is not None else 120.0
+        # Sweep runs on the boundary; allow slightly early scheduler skew.
+        if delta_s < -45.0 or delta_s > max(window, 300.0):
+            return None
+        sym_u = str(symbol).strip().upper()
+        spot = symbol_spot_price_for_monitoring(
+            sym_u,
+            prefer_max_age_sec=min(120.0, max(window, 30.0)),
+            allow_stale_max_age_sec=max(window, 180.0),
+        )
+        if spot is None:
+            return None
+        out = normalize_trade_spot_price(symbol, spot)
+        if out is not None:
+            log(
+                f"ℹ️ one_minute_avg for {sym_u} from live_state near cutoff "
+                f"(cutoff={_live_price_log_timestamp_cutoff_str(expiration_est)}, delta_s={delta_s:.1f})"
+            )
+        return out
+    except Exception as e:
+        log(f"⚠️ live_state one_minute_avg near cutoff for {symbol}: {e}")
+        return None
+
+
 def _fetch_one_minute_avg_at_or_before(
     symbol,
     expiration_est,
@@ -1316,7 +1364,9 @@ def _fetch_one_minute_avg_at_or_before(
             row = cursor.fetchone()
         pg_conn.close()
         if not row or row[0] is None:
-            return None
+            return _fetch_one_minute_avg_from_live_state_near_cutoff(
+                symbol, expiration_est, max_gap_seconds=max_gap_seconds
+            )
         if max_gap_seconds is not None and row[1]:
             try:
                 row_ts = datetime.strptime(str(row[1]), "%Y-%m-%dT%H:%M:%S").replace(
@@ -1333,10 +1383,14 @@ def _fetch_one_minute_avg_at_or_before(
                         f"row_ts={row[1]} cutoff={cutoff_str} gap_s={gap_s:.1f} "
                         f"(max={max_gap_seconds})"
                     )
-                    return None
+                    return _fetch_one_minute_avg_from_live_state_near_cutoff(
+                        symbol, expiration_est, max_gap_seconds=max_gap_seconds
+                    )
             except Exception as gap_err:
                 log(f"⚠️ one_minute_avg gap check failed for {symbol}: {gap_err}")
-                return None
+                return _fetch_one_minute_avg_from_live_state_near_cutoff(
+                    symbol, expiration_est, max_gap_seconds=max_gap_seconds
+                )
         return normalize_trade_spot_price(symbol, row[0])
     except Exception as e:
         log(f"⚠️ one_minute_avg lookup at/before {cutoff_str} for {symbol}: {e}")
@@ -1345,7 +1399,9 @@ def _fetch_one_minute_avg_at_or_before(
                 pg_conn.close()
             except Exception:
                 pass
-        return None
+        return _fetch_one_minute_avg_from_live_state_near_cutoff(
+            symbol, expiration_est, max_gap_seconds=max_gap_seconds
+        )
 
 
 def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_date, contract: str) -> int:
@@ -1595,6 +1651,67 @@ def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
     log(f"📝 Settling {len(rows)} stuck expired paper trade(s) missing symbol_close")
     for tid, tkr, sym in rows:
         _settle_one_expired_paper_trade(now_est, tid, tkr, sym)
+
+
+def _repair_missing_symbol_close_recent(now_est: datetime) -> None:
+    """Backfill ``symbol_close`` on recent closed/expired rows (hot-path PG gap failures)."""
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        window_start = (now_est - timedelta(hours=6)).date()
+        with pg.cursor() as c:
+            c.execute(
+                f"""
+                SELECT id, symbol, contract, date, status
+                FROM {_tm_trades_table()}
+                WHERE symbol_close IS NULL
+                  AND symbol IS NOT NULL
+                  AND status IN ('closed', 'expired')
+                  AND date IS NOT NULL
+                  AND (trim(both from date::text))::date >= %s::date
+                ORDER BY id DESC
+                LIMIT 50
+                """,
+                (window_start,),
+            )
+            rows = c.fetchall()
+        if not rows:
+            pg.close()
+            return
+        repaired = 0
+        with pg.cursor() as c:
+            for trade_id, symbol, contract, trade_date, _status in rows:
+                exp_est = _contract_expiration_est(trade_date, contract, now_est)
+                px = _fetch_one_minute_avg_at_or_before(
+                    symbol, exp_est, max_gap_seconds=300
+                )
+                if px is None:
+                    px = _resolve_symbol_close_for_finalize(
+                        int(trade_id), symbol, as_of_est=exp_est
+                    )
+                if px is None:
+                    continue
+                c.execute(
+                    f"""
+                    UPDATE {_tm_trades_table()}
+                    SET symbol_close = %s
+                    WHERE id = %s AND symbol_close IS NULL
+                    """,
+                    (px, trade_id),
+                )
+                if c.rowcount:
+                    repaired += 1
+            pg.commit()
+        pg.close()
+        if repaired:
+            log(f"ℹ️ Repaired symbol_close on {repaired} recent closed/expired trade(s)")
+    except Exception as e:
+        log(f"⚠️ symbol_close recent repair failed: {e}")
+        try:
+            pg.close()
+        except Exception:
+            pass
 
 
 def _tm_symbol_open_from_live_state(symbol: str):
@@ -7275,6 +7392,7 @@ def check_expired_trades():
 
         # Paper trades can be stuck ``expired`` if symbol_close failed during sweep (e.g. text vs timestamp bug).
         _settle_stuck_expired_paper_trades(now_est)
+        _repair_missing_symbol_close_recent(now_est)
 
         closed_at = now_est.strftime("%H:%M:%S")
         current_minute = now_est.minute

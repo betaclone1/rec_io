@@ -1409,10 +1409,34 @@ async def log_symbol_price(symbol: str):
                             last_heartbeat = time.time()
 
                     except asyncio.TimeoutError:
+                        if last_distinct_price is not None and _coinbase_live_hot_path(symbol):
+                            try:
+                                publish_crypto_symbol_hot(
+                                    symbol,
+                                    last_distinct_price,
+                                    ws_received_mono=time.monotonic(),
+                                )
+                            except Exception:
+                                pass
                         logger.warning("[%s] WebSocket timeout, reconnecting", symbol)
                         break
                     except (ConnectionClosedError, ConnectionClosedOK) as e:
                         logger.warning("[%s] WebSocket connection closed: %s. Reconnecting.", symbol, e)
+                        break
+                    except AttributeError as e:
+                        if "resume_reading" in str(e):
+                            logger.warning(
+                                "[%s] WebSocket transport closed (%s); reconnecting",
+                                symbol,
+                                e,
+                            )
+                        else:
+                            logger.error(
+                                "[%s] Unexpected WebSocket error: %s. Reconnecting.",
+                                symbol,
+                                e,
+                                exc_info=True,
+                            )
                         break
                     except Exception as e:
                         logger.error("[%s] Unexpected WebSocket error: %s. Reconnecting.", symbol, e, exc_info=True)
