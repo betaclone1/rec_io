@@ -10,6 +10,19 @@ from backend.core.kalshi_portfolio_records import (
 from backend.core.portfolio_pg_spool import PortfolioPgSpool
 
 
+def test_normalize_position_record_maps_rest_market_exposure_to_cost():
+    rec = normalize_position_record(
+        {
+            "ticker": "KXBTC-1",
+            "position_fp": "2",
+            "market_exposure_dollars": "1.500000",
+        }
+    )
+    assert rec is not None
+    assert rec["position_cost_dollars"] == "1.500000"
+    assert "market_exposure_dollars" not in rec
+
+
 def test_normalize_position_record_keeps_zero():
     rec = normalize_position_record({"ticker": "KXBTC-1", "position_fp": "0"})
     assert rec is not None
@@ -172,23 +185,32 @@ def test_upsert_position_zero_keeps_row_in_hot_cache(mock_redis_fn, _enabled):
 
 @patch.object(lskp, "live_state_kalshi_portfolio_enabled", return_value=True)
 @patch.object(lskp, "redis_client_optional")
-def test_replace_positions_baseline_is_ws_only_noop(mock_redis_fn, _enabled):
+def test_replace_positions_baseline_seeds_rest_snapshot(mock_redis_fn, _enabled):
     r = MagicMock()
     mock_redis_fn.return_value = r
+    r.hgetall.return_value = {"OLD": "{}"}
+    published = []
+
+    def _capture_publish(channel, payload):
+        published.append(json.loads(payload))
+
+    r.publish.side_effect = _capture_publish
     count = lskp.replace_positions_baseline(
         "0001",
         [
             {
                 "ticker": "T1",
                 "position_fp": "1",
-                "position_cost_dollars": "0.950000",
+                "market_exposure_dollars": "0.950000",
                 "realized_pnl_dollars": "-0.060000",
             }
         ],
     )
-    assert count == 0
-    r.hset.assert_not_called()
-    r.publish.assert_not_called()
+    assert count == 1
+    r.hset.assert_called()
+    r.hdel.assert_called_with(lskp.tenant_kalshi_positions_key("0001"), "OLD")
+    assert published
+    assert published[-1].get("detail") == "baseline"
 
 
 def test_portfolio_spool_flush_calls_upsert():
@@ -275,7 +297,7 @@ def test_prune_positions_to_rest_tickers(mock_redis_fn, _enabled):
 
 @patch.object(lskp, "live_state_kalshi_portfolio_enabled", return_value=True)
 @patch.object(lskp, "redis_client_optional")
-def test_merge_fills_baseline_is_ws_only_noop(mock_redis_fn, _enabled):
+def test_merge_fills_baseline_respects_retention(mock_redis_fn, _enabled):
     r = MagicMock()
     mock_redis_fn.return_value = r
     fills = [
@@ -283,5 +305,5 @@ def test_merge_fills_baseline_is_ws_only_noop(mock_redis_fn, _enabled):
         {"trade_id": "old", "created_time": "2020-01-01T00:00:00Z", "action": "buy", "count_fp": "1"},
     ]
     count = lskp.merge_fills_baseline("0001", fills)
-    assert count == 0
-    r.pipeline.assert_not_called()
+    assert count == 1
+    r.hset.assert_called_once()

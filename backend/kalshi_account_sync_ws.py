@@ -61,7 +61,7 @@ import schedule
 from concurrent.futures import ThreadPoolExecutor
 from decimal import Decimal
 import logging
-from typing import Optional
+from typing import List, Optional
 
 # Add project root to path for imports
 import sys
@@ -1659,7 +1659,7 @@ def _fetch_portfolio_positions_rest() -> Optional[dict]:
     """GET /portfolio/positions (no DB writes). Returns None on failure."""
     method = "GET"
     path = "/portfolio/positions"
-    query = "?limit=50"
+    query = "?limit=200"
     timestamp = str(int(time.time() * 1000))
     url = f"{get_base_url()}{path}{query}"
     full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
@@ -1695,6 +1695,118 @@ def _fetch_portfolio_positions_rest() -> Optional[dict]:
     except Exception as exc:
         logger.warning("positions REST fetch failed: %s", exc)
         return None
+
+
+def _kalshi_portfolio_get_paged(
+    path: str,
+    list_key: str,
+    *,
+    min_ts: Optional[int] = None,
+    limit: int = 200,
+) -> List[dict]:
+    """Paginated GET for /portfolio/fills or /portfolio/orders."""
+    out: List[dict] = []
+    cursor = ""
+    page_limit = max(1, min(int(limit), 200))
+    while True:
+        params = [("limit", str(page_limit))]
+        if min_ts is not None:
+            params.append(("min_ts", str(int(min_ts))))
+        if cursor:
+            params.append(("cursor", cursor))
+        query = "?" + "&".join(f"{k}={v}" for k, v in params)
+        method = "GET"
+        timestamp = str(int(time.time() * 1000))
+        url = f"{get_base_url()}{path}{query}"
+        full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
+        signature = generate_kalshi_signature(
+            method, full_path_for_signature, timestamp, str(KEY_PATH)
+        )
+        headers = {
+            "Accept": "application/json",
+            "User-Agent": "KalshiWatcher/1.0",
+            "KALSHI-ACCESS-KEY": KEY_ID,
+            "KALSHI-ACCESS-TIMESTAMP": timestamp,
+            "KALSHI-ACCESS-SIGNATURE": signature,
+        }
+        try:
+            response = requests.get(url, headers=headers, timeout=15)
+            response.raise_for_status()
+            data = response.json()
+            if "error" in data:
+                logger.warning("%s REST API error: %s", path, data["error"])
+                break
+            batch = data.get(list_key) or []
+            if batch:
+                out.extend(batch)
+            cursor = data.get("cursor") or ""
+            if not cursor:
+                break
+        except Exception as exc:
+            logger.warning("%s REST paged fetch failed: %s", path, exc)
+            break
+    return out
+
+
+def _fetch_portfolio_fills_rest_since(min_ts: int) -> List[dict]:
+    return _kalshi_portfolio_get_paged("/portfolio/fills", "fills", min_ts=min_ts)
+
+
+def _fetch_portfolio_orders_rest_since(min_ts: int) -> List[dict]:
+    return _kalshi_portfolio_get_paged("/portfolio/orders", "orders", min_ts=min_ts)
+
+
+def sync_portfolio_hot_state_baseline() -> None:
+    """Startup: seed portfolio hot hashes from REST (positions snapshot + 1h fills/orders)."""
+    from backend.core import live_state_kalshi_portfolio as lskp
+
+    user_no = _kas_process_user_no()
+    min_ts = int(time.time() - lskp.portfolio_hot_retention_sec())
+
+    pos_data = _fetch_portfolio_positions_rest()
+    if pos_data is not None:
+        upserted = lskp.replace_positions_baseline(
+            user_no, pos_data.get("market_positions", []) or []
+        )
+        logger.info(
+            "Portfolio hot_state positions REST baseline: rest=%s upserted=%s",
+            len(pos_data.get("market_positions", []) or []),
+            upserted,
+        )
+        notify_frontend_db_change(
+            "positions",
+            {"market_positions": len(pos_data.get("market_positions", []) or []), "baseline": upserted},
+        )
+        _notify_trade_manager_positions_updated({"database": "positions"})
+    else:
+        logger.warning("Portfolio hot_state positions REST baseline skipped (REST unavailable)")
+
+    fills = _fetch_portfolio_fills_rest_since(min_ts)
+    if fills:
+        merged = lskp.merge_fills_baseline(user_no, fills)
+        logger.info(
+            "Portfolio hot_state fills REST baseline: fetched=%s merged=%s min_ts=%s",
+            len(fills),
+            merged,
+            min_ts,
+        )
+        notify_frontend_db_change("fills", {"fills": merged, "baseline": True})
+    else:
+        logger.info("Portfolio hot_state fills REST baseline: no rows (min_ts=%s)", min_ts)
+
+    orders = _fetch_portfolio_orders_rest_since(min_ts)
+    if orders:
+        merged = lskp.merge_orders_baseline(user_no, orders)
+        logger.info(
+            "Portfolio hot_state orders REST baseline: fetched=%s merged=%s min_ts=%s",
+            len(orders),
+            merged,
+            min_ts,
+        )
+        notify_frontend_db_change("orders", {"orders": merged, "baseline": True})
+        _notify_trade_manager_positions_updated({"database": "orders"})
+    else:
+        logger.info("Portfolio hot_state orders REST baseline: no rows (min_ts=%s)", min_ts)
 
 
 def sync_positions_prune_hot_state() -> None:
@@ -2806,7 +2918,7 @@ def main():
 
     # Initial sync to establish baseline data (one-time only)
     logger.info("Performing initial baseline data sync")
-    sync_positions_prune_hot_state()
+    sync_portfolio_hot_state_baseline()
     sync_fills()
     sync_orders()
     sync_settlements()

@@ -281,34 +281,129 @@ def prune_positions_to_rest_tickers(user_no: str, rest_tickers: List[str]) -> in
     return removed
 
 
+def portfolio_hot_retention_sec() -> float:
+    """Rolling window for fills/orders hot hash (default 1 hour)."""
+    return _retention_sec()
+
+
 def replace_positions_baseline(user_no: str, market_positions: List[dict]) -> int:
-    """Deprecated for hot path — portfolio positions hash is WS-only."""
-    logger.debug(
-        "replace_positions_baseline skipped (WS-only hot path) user=%s rows=%s",
-        user_no,
-        len(market_positions or []),
-    )
-    return 0
+    """Startup/REST snapshot: set hot positions hash to match GET /portfolio/positions."""
+    if not live_state_kalshi_portfolio_enabled():
+        return 0
+    r = redis_client_optional()
+    if not r:
+        return 0
+    key = tenant_kalshi_positions_key(user_no)
+    now_iso = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    allowed: set[str] = set()
+    upserted = 0
+    monitor_rows: List[Dict[str, Any]] = []
+    for raw in market_positions or []:
+        rec = normalize_position_record(raw)
+        if not rec:
+            continue
+        field = str(rec.get("ticker") or "")
+        if not field:
+            continue
+        allowed.add(field)
+        if not rec.get("last_updated_ts"):
+            rec["last_updated_ts"] = now_iso
+        rec["updated_at"] = time.time()
+        if _hset_record(user_no, key, field, rec, kind=KIND_POSITIONS, publish=False):
+            upserted += 1
+            row = _monitor_row_for_kind(KIND_POSITIONS, rec)
+            if row:
+                monitor_rows.append(row)
+    stale: List[str] = []
+    try:
+        raw_map = r.hgetall(key) or {}
+        stale = [str(field) for field in raw_map if str(field) not in allowed]
+        for field in stale:
+            try:
+                r.hdel(key, field)
+            except Exception:
+                pass
+    except Exception as exc:
+        logger.warning("portfolio positions baseline prune failed: %s", exc)
+    if upserted or stale:
+        _publish_portfolio_updated(
+            KIND_POSITIONS,
+            user_no,
+            detail="baseline",
+            rows=monitor_rows if monitor_rows else None,
+            removes=stale if stale else None,
+        )
+    return upserted
 
 
 def merge_fills_baseline(user_no: str, fills: List[dict]) -> int:
-    """Deprecated for hot path — portfolio fills hash is WS-only."""
-    logger.debug(
-        "merge_fills_baseline skipped (WS-only hot path) user=%s rows=%s",
-        user_no,
-        len(fills or []),
-    )
-    return 0
+    """Startup/REST backfill: merge fills into hot hash (retention window applies)."""
+    if not live_state_kalshi_portfolio_enabled():
+        return 0
+    r = redis_client_optional()
+    if not r:
+        return 0
+    key = tenant_kalshi_fills_key(user_no)
+    merged = 0
+    monitor_rows: List[Dict[str, Any]] = []
+    for raw in fills or []:
+        rec = normalize_fill_record(raw)
+        if not rec:
+            continue
+        if not _within_retention(rec, "created_time"):
+            continue
+        field = str(rec.get("trade_id") or "")
+        if not field:
+            continue
+        if _hset_record(user_no, key, field, rec, kind=KIND_FILLS, publish=False):
+            merged += 1
+            row = _monitor_row_for_kind(KIND_FILLS, rec)
+            if row:
+                monitor_rows.append(row)
+    if merged:
+        _trim_hash(r, key, sort_field="created_time")
+        _publish_portfolio_updated(
+            KIND_FILLS,
+            user_no,
+            detail="baseline",
+            rows=monitor_rows if monitor_rows else None,
+        )
+    return merged
 
 
 def merge_orders_baseline(user_no: str, orders: List[dict]) -> int:
-    """Deprecated for hot path — portfolio orders hash is WS-only."""
-    logger.debug(
-        "merge_orders_baseline skipped (WS-only hot path) user=%s rows=%s",
-        user_no,
-        len(orders or []),
-    )
-    return 0
+    """Startup/REST backfill: merge orders into hot hash (retention window applies)."""
+    if not live_state_kalshi_portfolio_enabled():
+        return 0
+    r = redis_client_optional()
+    if not r:
+        return 0
+    key = tenant_kalshi_orders_key(user_no)
+    merged = 0
+    monitor_rows: List[Dict[str, Any]] = []
+    for raw in orders or []:
+        rec = normalize_order_record(raw)
+        if not rec:
+            continue
+        if not _within_retention(rec, "last_update_time"):
+            continue
+        field = str(rec.get("order_id") or "")
+        if not field:
+            continue
+        if _hset_record(user_no, key, field, rec, kind=KIND_ORDERS, publish=False):
+            merged += 1
+            row = _monitor_row_for_kind(KIND_ORDERS, rec)
+            if row:
+                monitor_rows.append(row)
+    if merged:
+        _trim_hash(r, key, sort_field="last_update_time")
+        _publish_portfolio_updated(
+            KIND_ORDERS,
+            user_no,
+            detail="baseline",
+            rows=monitor_rows if monitor_rows else None,
+        )
+    return merged
 
 
 def upsert_fill_from_ws(user_no: str, ws_outer: dict) -> bool:

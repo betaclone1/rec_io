@@ -24,15 +24,15 @@ flowchart LR
   F --> SPOOL
 ```
 
-Portfolio **hot state** for positions/orders/fills is **WebSocket-driven** for upserts. REST reconcile writes PostgreSQL history for fills/orders and updates balance/settlements; it does **not** upsert position rows into the hot hash. **Exception:** `GET /portfolio/positions` runs on a timer (`ACCOUNT_SYNC_POSITIONS_PRUNE_SEC`, default **300s / 5m**) to **remove** hot-state tickers that no longer appear in REST (settled markets). WS handlers and REST polls use **separate thread pools** (`kas_hot` / `kas_rest`).
+Portfolio **hot state** is **WebSocket-driven** for live upserts. **Startup baseline** seeds Redis from REST: current positions snapshot plus the prior **`LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS`** (default 1h) of fills and orders via paginated `min_ts` polls. Ongoing: positions use WS upserts with periodic REST **prune only** (no REST upsert on the timer); fills/orders stay WS + spool.
 
 ## Hot path (live_state)
 
 | Entity | Redis key | PG | WS action |
 |--------|-----------|-----|-----------|
-| Positions | `rec_io:live_state:v1:tenant:{slot}:kalshi:positions` | **None** (ephemeral) | Upsert on `market_position` (`position_cost_dollars` from WS); REST prune drops tickers absent from `GET /portfolio/positions` |
-| Orders | `...:kalshi:orders` | Spooled upsert (history) | Upsert hash on WS + enqueue spool |
-| Fills | `...:kalshi:fills` | Spooled upsert (history) | Upsert hash on WS + enqueue spool |
+| Positions | `rec_io:live_state:v1:tenant:{slot}:kalshi:positions` | **None** (ephemeral) | REST baseline on startup; WS upserts live; REST timer prune only |
+| Orders | `...:kalshi:orders` | Spooled upsert (history) | REST baseline (1h) on startup; WS upserts + spool live |
+| Fills | `...:kalshi:fills` | Spooled upsert (history) | REST baseline (1h) on startup; WS upserts + spool live |
 
 Pub/sub: `rec_io:live_state:updated` with kinds `kalshi_positions`, `kalshi_orders`, `kalshi_fills`.
 
@@ -49,7 +49,8 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 | Function | HTTP | When it runs |
 |----------|------|--------------|
 | `sync_balance` | `GET /trade-api/v2/portfolio/balance` | Debounced balance; quick periodic; full reconcile; hourly/daily schedule; initial baseline |
-| `sync_positions_prune_hot_state` | `GET .../portfolio/positions?limit=50` | Every `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` (default 300s); initial baseline; **prune only** (no hot upsert) |
+| `sync_portfolio_hot_state_baseline` | positions + fills + orders REST | **Startup only** — positions snapshot; fills/orders paginated with `min_ts` = retention window |
+| `sync_positions_prune_hot_state` | `GET .../portfolio/positions?limit=200` | Every `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` (default 300s); **prune only** (no hot upsert) |
 | `sync_fills` | `GET .../portfolio/fills?limit=50` | Full reconcile; initial baseline (**PG only**, not hot hash) |
 | `sync_orders` | `GET .../portfolio/orders?limit=50` | Full reconcile; initial baseline (**PG only**, not hot hash) |
 | `sync_settlements` | `GET .../portfolio/settlements?limit=50` | Quick periodic; full reconcile; initial baseline |

@@ -161,6 +161,10 @@ def _finalize_position_record(out: Dict[str, Any]) -> Dict[str, Any]:
 def normalize_position_record(raw: dict) -> Optional[Dict[str, Any]]:
     if not raw:
         return None
+    raw = dict(raw)
+    # REST GET /portfolio/positions exposes market_exposure_dollars; WS uses position_cost_dollars.
+    if not raw.get("position_cost_dollars") and raw.get("market_exposure_dollars"):
+        raw["position_cost_dollars"] = raw["market_exposure_dollars"]
     ticker = raw.get("ticker") or raw.get("market_ticker")
     if not ticker:
         return None
