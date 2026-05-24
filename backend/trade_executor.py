@@ -419,6 +419,8 @@ def process_trigger_trade_request(data: dict):
         "self_trade_prevention_type": "maker",
         "client_order_id": str(uuid.uuid4()),
         "cancel_order_on_pause": True,
+        # Master Trading Bankroll (Kalshi subaccount 1); monitor-configurable later.
+        "subaccount": int(data.get("subaccount", 1)),
     }
     if intent != "open":
         order_payload["post_only"] = False

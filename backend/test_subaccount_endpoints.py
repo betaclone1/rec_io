@@ -17,6 +17,7 @@ from backend.account_mode import get_account_mode
 import requests
 import json
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from dotenv import dotenv_values
@@ -30,6 +31,7 @@ from cryptography.hazmat.primitives import hashes
 sys.path.insert(0, get_project_root())
 
 from backend.util.paths import get_kalshi_credentials_dir
+from backend.core.kalshi_money import normalize_kalshi_subaccount_balances_response
 
 # Dynamically select API base URL based on account mode
 def get_base_url():
@@ -133,11 +135,17 @@ def make_api_request(method, path, body=None):
         return None
 
 def test_get_subaccount_balances():
-    """Test GET /portfolio/subaccounts/balances"""
+    """Test GET /portfolio/subaccounts/balances (balance normalized to integer cents)."""
     print("\n" + "="*60)
     print("TEST 1: GET /portfolio/subaccounts/balances")
     print("="*60)
-    return make_api_request("GET", "/portfolio/subaccounts/balances")
+    raw = make_api_request("GET", "/portfolio/subaccounts/balances")
+    if not raw or "error" in raw:
+        return raw
+    normalized = normalize_kalshi_subaccount_balances_response(raw)
+    print("\n📄 Normalized (balance in cents, balance_dollars = API string):")
+    print(json.dumps(normalized, indent=2))
+    return normalized
 
 def test_get_subaccount_transfers():
     """Test GET /portfolio/subaccounts/transfers"""
@@ -165,10 +173,10 @@ def test_transfer_between_subaccounts():
     # We'll use placeholder data to test if the endpoint exists
     # The user should replace these with actual subaccount IDs if they want to test transfers
     body = {
-        "from_subaccount_id": "test_from_id",
-        "to_subaccount_id": "test_to_id",
+        "from_subaccount": 0,
+        "to_subaccount": 2,
         "amount_cents": 1000,
-        "client_transfer_id": f"test_{int(time.time())}"
+        "client_transfer_id": str(uuid.uuid4()),
     }
     print("⚠️ Using placeholder data - replace with actual subaccount IDs to test real transfers")
     return make_api_request("POST", "/portfolio/subaccounts/transfer", body)

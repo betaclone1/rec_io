@@ -180,13 +180,13 @@ def _grant_schema_usage(cur, target_schema: str, app_role: str) -> None:
 
 
 def _minimal_subaccount_seed(cur, target_schema: str, dst_tbl: str) -> None:
-    """PRIMARY + MTB + Cash Transfer rows so balance_snapshot UPDATEs never no-op on new tenants."""
+    """CASH + MTB + undefined_2 rows so balance_snapshot UPDATEs never no-op on new tenants."""
     cur.execute(
         psql.SQL(
             """
             INSERT INTO {t_s}.{t_tbl} (subaccount, balance, automatic_transfers)
             SELECT v.sa, 0, FALSE
-            FROM (VALUES ('PRIMARY'), ('Master Trading Bankroll'), ('Cash Transfer')) AS v(sa)
+            FROM (VALUES ('CASH'), ('Master Trading Bankroll'), ('undefined_2')) AS v(sa)
             WHERE NOT EXISTS (
                 SELECT 1 FROM {t_s}.{t_tbl} x WHERE x.subaccount = v.sa
             )
@@ -358,10 +358,10 @@ def _seed_subaccounts_from_template(
         _minimal_subaccount_seed(cur, target_schema, dst_tbl)
 
 
-def _align_paper_primary_with_account_balance(
+def _align_paper_cash_with_account_balance(
     cur, target_schema: str, target_no: str
 ) -> None:
-    """If paper history exists but PRIMARY was just seeded at 0, match PRIMARY to latest portfolio."""
+    """If paper history exists but CASH was just seeded at 0, match CASH to latest portfolio."""
     cur.execute(
         "SELECT set_config('rec.tenant_pg_schema', %s, false)",
         (target_schema,),
@@ -404,7 +404,7 @@ def _align_paper_primary_with_account_balance(
     pv = int(row[0])
     cur.execute(
         psql.SQL(
-            "UPDATE {}.{} SET balance = %s WHERE subaccount = 'PRIMARY'"
+            "UPDATE {}.{} SET balance = %s WHERE subaccount = 'CASH'"
         ).format(
             psql.Identifier(target_schema),
             psql.Identifier(sa_tbl),
@@ -514,7 +514,7 @@ def provision_tenant_schema_clone(
         target_schema=tgt_schema,
         target_no=target_user_no,
     )
-    _align_paper_primary_with_account_balance(cur, tgt_schema, target_user_no)
+    _align_paper_cash_with_account_balance(cur, tgt_schema, target_user_no)
     return created
 
 

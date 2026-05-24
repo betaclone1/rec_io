@@ -6,6 +6,34 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-24 — Release v3.7.1: Kalshi subaccount balance pipeline, MTB rake to CASH, account manager UX
+
+**Summary**
+- **Release: v3.7.1**
+- **Balance pipeline (live):** `sync_balance` polls `GET /portfolio/subaccounts/balances`, per-subaccount `GET /portfolio/balance?subaccount=N` into `subaccount_balance_*_<n>`, aggregates hero `account_balance_*`; startup baseline uses `sync_balance(full=True)` (no 120s throttle).
+- **Subaccounts:** Kalshi #0 = **CASH**, #1 = **Master Trading Bankroll**, #2+ = `undefined_*`; removed deposit routing; `trade_executor` defaults orders to subaccount **1**.
+- **Automatic MTB rake (live):** When `automatic_transfers` and PnL target met, `POST /portfolio/subaccounts/transfer` **#1 → #0** (CASH), updates MTB `base_value`, then full balance repoll; paper simulates MTB → CASH in DB.
+- **Account manager:** Initiate Transfer modal closes immediately on Submit (transfer continues in background); desktop + mobile.
+- **Database:** Migrations **`20260523_1200_subaccount_balance_polling`** (rename CASH/`undefined_2`, create `subaccount_balance_*_0/_1/_2` per tenant) and **`20260524_1200_subaccount_balance_3_table`** (`subaccount_balance_*_3`); `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `docs/PORTFOLIO_ACCOUNT_SYNC.md` updated.
+- **Tests:** Unit coverage for subaccount balance polling, Kalshi transfer mapping, automatic MTB rake.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260523_1200_subaccount_balance_polling.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260524_1200_subaccount_balance_3_table.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_executor`, `kalshi_account_sync_*`; confirm startup log lines `Full account/subaccount balance sync` and `Full live balance poll` without balance poll errors.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.1`
+
+---
+
 ## 2026-05-22 — Release v3.7.0: Unified Kalshi live_state ingest, trade log hot path, expiry fix
 
 **Summary**

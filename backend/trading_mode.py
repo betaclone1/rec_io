@@ -308,6 +308,13 @@ def transfers_table_for_user(
     return f"users_{u}.transfers_{u}"
 
 
+def subaccount_balance_table_fqn(user_number: str, subaccount_number: int) -> str:
+    """Live per-subaccount balance history (Kalshi GET /portfolio/balance?subaccount=N)."""
+    u = _norm_slot(user_number)
+    n = int(subaccount_number)
+    return f"users_{u}.subaccount_balance_{u}_{n}"
+
+
 def paper_account_balance_fqn(user_number: str) -> str:
     """Always paper balance table for this slot (ignores global trading_mode)."""
     u = _norm_slot(user_number)

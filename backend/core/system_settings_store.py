@@ -102,9 +102,19 @@ def trading_halt_ui_fields_from_snapshot(
 
 
 def parse_user_number_from_account_balance_table(account_balance_table: str) -> Optional[str]:
-    """Derive user numeric suffix from users.account_balance_0001 or users.account_balance_paper_0001."""
+    """Derive four-digit user slot from account_balance / subaccount_balance table FQNs."""
     if not account_balance_table:
         return None
+    tbl = str(account_balance_table).strip().split(".")[-1]
+    m = re.search(r"^subaccount_balance_(\d{4})_\d+$", tbl)
+    if m:
+        return m.group(1)
+    m = re.search(r"^account_balance(?:_paper)?_(\d{4})$", tbl)
+    if m:
+        return m.group(1)
+    m = re.search(r"_(\d{4})$", tbl)
+    if m:
+        return m.group(1)
     m = re.search(r"_(\d+)$", str(account_balance_table).strip())
     return m.group(1) if m else None
 

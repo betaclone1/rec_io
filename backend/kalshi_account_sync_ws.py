@@ -13,17 +13,11 @@ HYBRID APPROACH:
 
 This balances responsiveness with data freshness and API efficiency.
 
-SUBACCOUNTS:
-Subaccounts (users.subaccounts_0001) are an internal approximation of Kalshi subaccounts
-and work in tandem with account_balance (users.account_balance_0001). All subaccount
-logic—reading/writing subaccount balances and keeping them consistent with the main
-portfolio—is the purview of this service (kalshi_account_sync).
-
-Invariant: At ALL times the sum of all subaccount balances EXCEPT PRIMARY must equal
-the PRIMARY balance. So PRIMARY = total portfolio; every other subaccount allocates
-that total (e.g. Master Trading Bankroll + Cash Transfer + ... = PRIMARY). Whenever
-the subaccounts table is updated, we should verify this reconciliation (to be implemented
-when non-PRIMARY balances are written).
+SUBACCOUNTS (Kalshi-native):
+On each balance poll: GET /portfolio/subaccounts/balances → users.subaccounts_*; then
+GET /portfolio/balance?subaccount=N per active subaccount → subaccount_balance_*_<n>;
+aggregate sums into account_balance_* with bankroll fields from subaccount 1 (MTB).
+Kalshi #0 = CASH, #1 = Master Trading Bankroll, #2 = undefined_2. Paper mode unchanged.
 """
 
 import sys
@@ -715,6 +709,109 @@ def _sql_qual_table(qualified: str):
     return psql.SQL("{}.{}").format(psql.Identifier(sch), psql.Identifier(tbl))
 
 
+from backend.bookkeeper.kalshi_subaccount_transfer import (
+    KALSHI_SUBACCOUNT_NUMBER_TO_NAME,
+    kalshi_subaccount_row_name,
+)
+
+
+def _upsert_subaccount_balance(
+    cursor,
+    table_ident,
+    table_fqn: str,
+    subaccount_name: str,
+    balance_cents: int,
+) -> None:
+    try:
+        cursor.execute(
+            psql.SQL("UPDATE {} SET balance = %s WHERE subaccount = %s").format(table_ident),
+            (int(balance_cents), subaccount_name),
+        )
+        if cursor.rowcount == 0:
+            # Seed rows use explicit id 0,1,2; the serial may still point at 2 — allocate id manually.
+            cursor.execute(psql.SQL("SELECT COALESCE(MAX(id), -1) + 1 FROM {}").format(table_ident))
+            new_id = int(cursor.fetchone()[0])
+            cursor.execute(
+                psql.SQL(
+                    "INSERT INTO {} (id, subaccount, balance, automatic_transfers) VALUES (%s, %s, %s, FALSE)"
+                ).format(table_ident),
+                (new_id, subaccount_name, int(balance_cents)),
+            )
+            cursor.execute(
+                "SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, true)",
+                (table_fqn, new_id),
+            )
+            logger.info(
+                "Inserted subaccount row %s balance=%s cents on %s",
+                subaccount_name,
+                balance_cents,
+                table_fqn,
+            )
+    except Exception as exc:
+        logger.error(
+            "Failed to upsert subaccount %s on %s: %s",
+            subaccount_name,
+            table_fqn,
+            exc,
+        )
+        raise
+
+
+def _fetch_kalshi_subaccount_balances_cents():
+    """
+    GET /portfolio/subaccounts/balances; return {subaccount_number: balance_cents}.
+
+    Uses per-tenant Kalshi credentials (worker ``process_tenant_context`` user_no), not the
+    module-level default path used for legacy sync helpers.
+    """
+    from backend.bookkeeper.kalshi_portfolio_balance import fetch_subaccount_balances_cents_map
+
+    return fetch_subaccount_balances_cents_map(_kas_process_user_no())
+
+
+def _sync_subaccounts_from_kalshi_poll(cursor, subaccounts_table, balances_by_number):
+    """
+    Write Kalshi subaccount cash balances into users.subaccounts_* (live).
+
+    One row per entry in GET /portfolio/subaccounts/balances (including #0 CASH).
+    Unmapped subaccount numbers are stored as ``undefined_<n>``.
+    """
+    from backend.balance_snapshot import refresh_mtb_realized_pnl_from_balance
+    from backend.trading_mode import sql_ident_qualified_table
+
+    if not balances_by_number:
+        return None
+    ident = sql_ident_qualified_table(subaccounts_table)
+    synced = []
+    for num in sorted(balances_by_number.keys()):
+        cents = balances_by_number[num]
+        name = kalshi_subaccount_row_name(num)
+        _upsert_subaccount_balance(cursor, ident, subaccounts_table, name, int(cents))
+        synced.append(name)
+    if synced:
+        logger.debug(
+            "Kalshi subaccount balances synced on %s: %s",
+            subaccounts_table,
+            ", ".join(synced),
+        )
+    return refresh_mtb_realized_pnl_from_balance(cursor, subaccounts_table)
+
+
+def refresh_live_subaccounts_from_kalshi(
+    cursor,
+    user_no: str,
+    subaccounts_table: str,
+    portfolio_total_cents=None,
+):
+    """Poll Kalshi subaccount balances and upsert users.subaccounts_* (live)."""
+    from backend.bookkeeper.kalshi_portfolio_balance import fetch_subaccount_balances_cents_map
+
+    balances = fetch_subaccount_balances_cents_map(user_no)
+    if balances is None:
+        return None
+    return _sync_subaccounts_from_kalshi_poll(cursor, subaccounts_table, balances)
+
+
 def _kalshi_v2_get_json(path_and_query: str):
     """GET signed Trade API v2. path_and_query starts with /portfolio/... and includes query string."""
     if not path_and_query.startswith("/"):
@@ -1310,11 +1407,17 @@ def fetch_event_json(event_ticker):
         return None
 
 
-def sync_balance():
-    logger.debug("Sync attempt...")
-    method = "GET"
-    path = "/portfolio/balance"
-    url = f"{get_base_url()}{path}"
+def sync_balance(*, full: bool = False):
+    """
+    Live balance + account history sync.
+
+    full=True: always write per-subaccount and hero rows (no 120s throttle). Use on
+    kalshi_account_sync startup baseline so restarts refresh all balances.
+    """
+    if full:
+        logger.info("Full account/subaccount balance sync (startup or forced)")
+    else:
+        logger.debug("Sync attempt...")
 
     if not KEY_ID or not KEY_PATH.exists():
         logger.error("Missing Kalshi API credentials or PEM file")
@@ -1333,10 +1436,6 @@ def sync_balance():
     if pg_conn:
         try:
             from backend.core.tenant_context import process_tenant_context
-            from backend.trading_mode import (
-                sql_ident_qualified_table,
-                subaccounts_table_for_user,
-            )
 
             _slot = process_tenant_context().user_no
             n_upserted, sync_err, new_deposit_events, new_withdrawal_events = sync_account_history(
@@ -1348,24 +1447,6 @@ def sync_balance():
                 new_withdrawal_events = []
             else:
                 logger.debug("Account history: %s entries synced to users.account_history_0001", n_upserted)
-
-            if new_deposit_events:
-                _sa_id = sql_ident_qualified_table(
-                    subaccounts_table_for_user(_slot, force_live=True)
-                )
-                with pg_conn.cursor() as cur:
-                    for amount_net in _event_amounts(new_deposit_events):
-                        cur.execute(
-                            psql.SQL(
-                                "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
-                            ).format(_sa_id),
-                            (amount_net,),
-                        )
-                pg_conn.commit()
-                logger.debug(
-                    "New deposit(s) pre-applied to Cash Transfer before balance snapshot: %s cents total",
-                    sum(_event_amounts(new_deposit_events)),
-                )
         except Exception as sync_exc:
             logger.warning("Account history pre-sync error: %s", sync_exc)
             new_deposit_events = []
@@ -1373,225 +1454,44 @@ def sync_balance():
     else:
         logger.warning("Skipping account history pre-sync - no PostgreSQL connection available")
 
-    timestamp = str(int(time.time() * 1000))  # milliseconds
-    signature = generate_kalshi_signature(method, f"/trade-api/v2{path}", timestamp, str(KEY_PATH))
-
-    headers = {
-        "Accept": "application/json",
-        "User-Agent": "KalshiWatcher/1.0",
-        "KALSHI-ACCESS-KEY": KEY_ID,
-        "KALSHI-ACCESS-TIMESTAMP": timestamp,
-        "KALSHI-ACCESS-SIGNATURE": signature,
-    }
-
     try:
-        response = requests.get(url, headers=headers, timeout=10)
-        response.raise_for_status()
-        data = response.json()
-        balance_amount = data.get('balance')
-        portfolio_value_raw = data.get('portfolio_value')  # Current value of open positions from Kalshi API
-        total_portfolio_value = balance_amount + portfolio_value_raw  # Total portfolio = cash + positions
-        logger.debug("Balance (cash): %s, Open Positions Value: %s, Total Portfolio: %s", balance_amount, portfolio_value_raw, total_portfolio_value)
+        if pg_conn:
+            from backend.balance_snapshot import poll_live_account_balances
+            from backend.core.tenant_context import process_tenant_context
 
-        # Write to PostgreSQL only
-        try:
-            if pg_conn:
-                with pg_conn.cursor() as cursor:
-                    current_timestamp = now_est().isoformat()
-
-                    from backend.balance_snapshot import (
-                        append_account_balance_after_withdrawal_cycle,
-                        apply_balance_snapshot,
-                        update_mtb_balance_from_primary_and_ct,
+            if _slot is None:
+                _slot = process_tenant_context().user_no
+            with pg_conn.cursor() as cursor:
+                inserted = poll_live_account_balances(
+                    cursor, _slot, throttle=not full
+                )
+                pg_conn.commit()
+                if full:
+                    logger.info(
+                        "Full live balance poll for user %s (hero row written=%s)",
+                        _slot,
+                        inserted,
                     )
-                    from backend.core.tenant_context import process_tenant_context
-                    from backend.trading_mode import (
-                        account_balance_table_for_user,
-                        sql_ident_qualified_table,
-                        subaccounts_table_for_user,
-                        transfers_table_for_user,
-                    )
-
-                    portfolio_value = int(total_portfolio_value)
-                    positions_value = int(portfolio_value_raw)
-                    total_exposure = positions_value
-                    if _slot is None:
-                        _slot = process_tenant_context().user_no
-                    _ab_fqn = account_balance_table_for_user(
-                        _slot, force_live=True
-                    )
-                    _sa_fqn = subaccounts_table_for_user(_slot, force_live=True)
-                    pre_deposit_bankroll_current = (
-                        _bankroll_current_before_deposit_events(
-                            cursor,
-                            _ab_fqn,
-                            new_deposit_events,
-                        )
-                        if new_deposit_events
-                        else None
-                    )
-
-                    if new_deposit_events:
-                        _sa_id = sql_ident_qualified_table(_sa_fqn)
-                        cursor.execute(
-                            psql.SQL(
-                                "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
-                            ).format(_sa_id),
-                            (portfolio_value,),
-                        )
-                        update_mtb_balance_from_primary_and_ct(cursor, _sa_fqn, portfolio_value)
-
-                    inserted, _ = apply_balance_snapshot(
-                        cursor,
-                        balance_amount=balance_amount,
-                        portfolio_value_raw=portfolio_value_raw,
-                        positions_value=positions_value,
-                        total_exposure=total_exposure,
-                        portfolio_value=portfolio_value,
-                        account_balance_table=_ab_fqn,
-                        subaccounts_table=_sa_fqn,
-                        current_timestamp=current_timestamp,
-                        throttle=True,
-                        notify_db_name="account_balance",
-                        record_internal_transfers=True,
-                    )
-                    deposit_bankroll_stepped_down = False
-                    if new_deposit_events:
-                        cursor.execute(
-                            psql.SQL(
-                                "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
-                            ).format(sql_ident_qualified_table(_sa_fqn)),
-                            (portfolio_value,),
-                        )
-                        update_mtb_balance_from_primary_and_ct(cursor, _sa_fqn, portfolio_value)
-                        updated_latest, deposit_bankroll_stepped_down = _force_latest_balance_deposit_bankroll(
-                            cursor,
-                            account_balance_table=_ab_fqn,
-                            subaccounts_table=_sa_fqn,
-                            user_no=_slot,
-                            portfolio_value=portfolio_value,
-                            pre_deposit_bankroll_current=pre_deposit_bankroll_current,
-                        )
-                        if not updated_latest:
-                            logger.warning(
-                                "Deposit cycle: latest account_balance bankroll preservation skipped"
-                            )
-                    pg_conn.commit()
-                    if inserted:
-                        logger.debug(
-                            "Balance written to %s (portfolio=%s)",
-                            _ab_fqn,
-                            portfolio_value,
-                        )
-                if new_deposit_events:
-                    notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
-                    notify_frontend_db_change("transfers", {"source": "external_deposit"})
-                    notify_monitor_manager(bankroll_stepped_down=deposit_bankroll_stepped_down)
-                    logger.debug("New deposit(s) applied to Cash Transfer + PRIMARY: %s cents total", sum(_event_amounts(new_deposit_events)))
-                if new_withdrawal_events:
-                    _sa_fqn = subaccounts_table_for_user(_slot, force_live=True)
-                    _ab_fqn = account_balance_table_for_user(_slot, force_live=True)
-                    _sa_id = sql_ident_qualified_table(_sa_fqn)
-                    _ab_id = sql_ident_qualified_table(_ab_fqn)
-                    _xfer_id = sql_ident_qualified_table(
-                        transfers_table_for_user(_slot, force_live=True)
-                    )
-                    _ts_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
-                    inserted_w, stepped = False, False
-                    with pg_conn.cursor() as cur:
-                        for amount_net in _event_amounts(new_withdrawal_events):
-                            cur.execute(
-                                psql.SQL(
-                                    "UPDATE {} SET balance = balance - %s WHERE subaccount = 'Cash Transfer'"
-                                ).format(_sa_id),
-                                (int(amount_net),),
-                            )
-                        cur.execute(
-                            psql.SQL("SELECT portfolio FROM {} ORDER BY id DESC LIMIT 1").format(
-                                _ab_id
-                            )
-                        )
-                        row = cur.fetchone()
-                        primary_cents = int(row[0]) if row and row[0] is not None else None
-                        if primary_cents is not None:
-                            cur.execute(
-                                psql.SQL(
-                                    "UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'"
-                                ).format(_sa_id),
-                                (primary_cents,),
-                            )
-                            update_mtb_balance_from_primary_and_ct(cur, _sa_fqn, primary_cents)
-                        cur.execute(
-                            psql.SQL(
-                                "SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'"
-                            ).format(_sa_id)
-                        )
-                        ct_after = int((cur.fetchone() or (0,))[0])
-                        if ct_after < 0:
-                            topup = -ct_after
-                            cur.execute(
-                                psql.SQL(
-                                    "UPDATE {} SET balance = balance - %s WHERE subaccount = 'Master Trading Bankroll'"
-                                ).format(_sa_id),
-                                (topup,),
-                            )
-                            cur.execute(
-                                psql.SQL(
-                                    "UPDATE {} SET balance = balance + %s WHERE subaccount = 'Cash Transfer'"
-                                ).format(_sa_id),
-                                (topup,),
-                            )
-                            cur.execute(
-                                psql.SQL(
-                                    """
-                                    INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
-                                    VALUES (%s, %s, %s, %s, %s, %s)
-                                    """
-                                ).format(_xfer_id),
-                                (
-                                    _ts_est,
-                                    "internal",
-                                    "Master Trading Bankroll",
-                                    "Cash Transfer",
-                                    topup,
-                                    "automatic",
-                                ),
-                            )
-                            if primary_cents is not None:
-                                update_mtb_balance_from_primary_and_ct(cur, _sa_fqn, primary_cents)
-                        if primary_cents is not None:
-                            inserted_w, stepped = append_account_balance_after_withdrawal_cycle(
-                                cur,
-                                account_balance_table=_ab_fqn,
-                                subaccounts_table=_sa_fqn,
-                                current_timestamp=current_timestamp,
-                            )
-                            if not inserted_w:
-                                logger.warning(
-                                    "Withdrawal cycle: append account_balance after drawdown ratchet skipped (no prior row?)"
-                                )
-                        else:
-                            logger.warning(
-                                "external withdrawal: skipping MTB reconcile and bankroll append (no portfolio row)"
-                            )
-                    pg_conn.commit()
-                    notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
-                    notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
-                    if not inserted_w:
-                        notify_monitor_manager()
-                    logger.debug(
-                        "New withdrawal(s): CT reduced by net %s; MTB reconciled; drawdown row inserted=%s stepped=%s",
-                        sum(_event_amounts(new_withdrawal_events)),
-                        inserted_w,
-                        stepped,
-                    )
-            else:
-                logger.warning("Skipping PostgreSQL write - no connection available")
-        except Exception as pg_err:
-            logger.error("Failed to write balance to PostgreSQL: %s", pg_err)
-
-    except Exception as e:
-        logger.error("Failed to fetch balance: %s", e)
+                elif inserted:
+                    logger.debug("Live balance poll wrote hero account_balance for user %s", _slot)
+            if new_deposit_events:
+                notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
+                notify_frontend_db_change("transfers", {"source": "external_deposit"})
+                logger.debug(
+                    "New deposit(s) in account history: %s cents net",
+                    sum(_event_amounts(new_deposit_events)),
+                )
+            if new_withdrawal_events:
+                notify_frontend_db_change("subaccounts", {"source": "external_withdrawal"})
+                notify_frontend_db_change("transfers", {"source": "external_withdrawal"})
+                logger.debug(
+                    "New withdrawal(s) in account history: %s cents net",
+                    sum(_event_amounts(new_withdrawal_events)),
+                )
+        else:
+            logger.warning("Skipping PostgreSQL write - no connection available")
+    except Exception as pg_err:
+        logger.error("Failed to write balance to PostgreSQL: %s", pg_err)
         return
     finally:
         if pg_conn:
@@ -2917,7 +2817,7 @@ def main():
     sync_fills()
     sync_orders()
     sync_settlements()
-    sync_balance()  # Update balance LAST so it can reference latest positions data
+    sync_balance(full=True)  # Full subaccount + hero refresh (no throttle)
 
     logger.info("Initial baseline sync complete; starting hybrid mode (WS debounced + quick + full reconcile)")
 

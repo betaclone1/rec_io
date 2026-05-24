@@ -33,6 +33,10 @@ _AB_FQN_RE = re.compile(
     r"^users\.account_balance(?:_paper)?_\d{4}$"
     r"|^users_(?P<s>\d{4})\.account_balance(?:_paper)?_(?P=s)$"
 )
+_SAB_FQN_RE = re.compile(
+    r"^users\.subaccount_balance_\d{4}_\d+$"
+    r"|^users_(?P<s>\d{4})\.subaccount_balance_(?P=s)_\d+$"
+)
 
 
 def _allowed_subaccounts_fqn(fqn: str) -> bool:
@@ -40,7 +44,49 @@ def _allowed_subaccounts_fqn(fqn: str) -> bool:
 
 
 def _allowed_account_balance_fqn(fqn: str) -> bool:
-    return bool(fqn and _AB_FQN_RE.match(str(fqn).strip()))
+    f = str(fqn).strip()
+    return bool(f and (_AB_FQN_RE.match(f) or _SAB_FQN_RE.match(f)))
+
+
+def _is_subaccount_balance_fqn(fqn: str) -> bool:
+    return bool(fqn and _SAB_FQN_RE.match(str(fqn).strip()))
+
+
+def _subaccount_number_from_balance_fqn(fqn: str) -> Optional[int]:
+    m = re.search(r"_(\d+)$", str(fqn).strip())
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def ensure_subaccount_balance_table(cursor, table_fqn: str) -> None:
+    """CREATE TABLE IF NOT EXISTS subaccount_balance_<slot>_<n> LIKE account_balance_<slot>."""
+    if not _is_subaccount_balance_fqn(table_fqn):
+        raise ValueError(f"not a subaccount_balance table: {table_fqn!r}")
+    sch, tbl = _split_fqn(table_fqn)
+    slot_m = re.search(r"subaccount_balance_(\d{4})_\d+$", tbl)
+    if not slot_m:
+        raise ValueError(f"cannot parse slot from {table_fqn!r}")
+    slot = slot_m.group(1)
+    ab_tbl = f"account_balance_{slot}"
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        """
+        SELECT 1 FROM information_schema.tables
+        WHERE table_schema = %s AND table_name = %s
+        """,
+        (sch, tbl),
+    )
+    if cursor.fetchone():
+        return
+    cursor.execute(
+        sql.SQL("CREATE TABLE {} (LIKE {}.{} INCLUDING ALL)").format(
+            ident,
+            sql.Identifier(sch),
+            sql.Identifier(ab_tbl),
+        )
+    )
+    _LOG.info("Created subaccount balance table %s", table_fqn)
 
 
 def _transfers_fqn_for_subaccounts_fqn(subaccounts_table: str) -> str:
@@ -100,11 +146,11 @@ def subaccounts_update(
     ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
 
     cursor.execute(
-        sql.SQL("UPDATE {} SET balance = %s WHERE subaccount = 'PRIMARY'").format(ident),
+        sql.SQL("UPDATE {} SET balance = %s WHERE subaccount = 'CASH'").format(ident),
         (portfolio_value,),
     )
     cursor.execute(
-        sql.SQL("SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'").format(ident),
+        sql.SQL("SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'undefined_2'").format(ident),
     )
     cash_transfer_row = cursor.fetchone()
     cash_transfer_balance = int(cash_transfer_row[0]) if cash_transfer_row else 0
@@ -137,58 +183,28 @@ def subaccounts_update(
     )
 
     transfer_triggered = False
-    post_transfer_realized_pnl = None
-    post_transfer_realized_pnl_pct = None
 
-    if (
-        record_internal_transfers
-        and automatic_transfers
-        and base_value is not None
-        and base_value != 0
-        and target_pnl_pct is not None
-        and transfer_amt is not None
-        and realized_pnl_pct is not None
-        and realized_pnl_pct >= target_pnl_pct
-    ):
-        transfer_amount = int(round(transfer_amt * base_value))
-        new_cash_transfer_balance = cash_transfer_balance + transfer_amount
-        cursor.execute(
-            sql.SQL("UPDATE {} SET balance = %s WHERE subaccount = 'Cash Transfer'").format(ident),
-            (new_cash_transfer_balance,),
-        )
-        new_mtb_balance = portfolio_value - new_cash_transfer_balance
-        base_step_pct = target_pnl_pct - transfer_amt
-        new_base_value = int(round(base_value * (1 + base_step_pct)))
-        post_transfer_realized_pnl = new_mtb_balance - new_base_value
-        post_transfer_ratio = (new_mtb_balance - new_base_value) / new_base_value if new_base_value else 0
-        post_transfer_realized_pnl_pct = float(int(post_transfer_ratio * 10000)) / 10000.0
-        cursor.execute(
-            sql.SQL(
-                "UPDATE {} SET balance = %s, base_value = %s, realized_pnl = %s, realized_pnl_pct = %s WHERE subaccount = 'Master Trading Bankroll'"
-            ).format(ident),
-            (new_mtb_balance, new_base_value, post_transfer_realized_pnl, post_transfer_realized_pnl_pct),
-        )
-        master_bankroll_balance = new_mtb_balance
-        transfer_triggered = True
-        from backend.core.time_eastern import now_est
-
-        transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
-        xfer_row = (
-            transfer_timestamp_est,
-            "internal",
-            "Master Trading Bankroll",
-            "Cash Transfer",
-            transfer_amount,
-            "automatic",
-        )
-        xfer_tbl = _transfers_fqn_for_subaccounts_fqn(subaccounts_table)
-        cursor.execute(
-            f"""
-            INSERT INTO {xfer_tbl} (timestamp, type, "from", "to", amount, initiated)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """,
-            xfer_row,
-        )
+    if record_internal_transfers:
+        transfer_amount = compute_automatic_mtb_rake_amount_cents(cursor, subaccounts_table)
+        if transfer_amount is not None:
+            new_mtb_balance = int(master_bankroll_balance) - int(transfer_amount)
+            cursor.execute(
+                sql.SQL("SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'CASH'").format(ident),
+            )
+            cash_row = cursor.fetchone()
+            cash_balance = int(cash_row[0]) if cash_row else 0
+            cursor.execute(
+                sql.SQL("UPDATE {} SET balance = %s WHERE subaccount = 'CASH'").format(ident),
+                (cash_balance + int(transfer_amount),),
+            )
+            apply_automatic_mtb_rake_post_transfer_db(
+                cursor,
+                subaccounts_table,
+                int(transfer_amount),
+                new_mtb_balance,
+            )
+            master_bankroll_balance = new_mtb_balance
+            transfer_triggered = True
 
     return (master_bankroll_balance, transfer_triggered)
 
@@ -210,7 +226,7 @@ def update_mtb_balance_from_primary_and_ct(
     sch, tbl = _split_fqn(subaccounts_table)
     ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
     cursor.execute(
-        sql.SQL("SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'Cash Transfer'").format(ident),
+        sql.SQL("SELECT COALESCE(balance, 0) FROM {} WHERE subaccount = 'undefined_2'").format(ident),
     )
     cash_transfer_row = cursor.fetchone()
     cash_transfer_balance = int(cash_transfer_row[0]) if cash_transfer_row else 0
@@ -236,6 +252,49 @@ def update_mtb_balance_from_primary_and_ct(
             "UPDATE {} SET balance = %s, realized_pnl = %s, realized_pnl_pct = %s WHERE subaccount = 'Master Trading Bankroll'"
         ).format(ident),
         (master_bankroll_balance, realized_pnl, realized_pnl_pct),
+    )
+    return master_bankroll_balance
+
+
+def _mtb_balance_base_from_row(row: Any) -> Tuple[Any, Any]:
+    """Tuple row or RealDictCursor dict → (balance, base_value)."""
+    if isinstance(row, dict):
+        return row.get("balance"), row.get("base_value")
+    return row[0], row[1]
+
+
+def refresh_mtb_realized_pnl_from_balance(cursor, subaccounts_table: str) -> Optional[int]:
+    """
+    Recompute MTB realized_pnl / realized_pnl_pct from current MTB balance and base_value.
+    Used after live Kalshi subaccount balance sync (no synthetic PRIMARY − Cash Transfer math).
+    """
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+    sch, tbl = _split_fqn(subaccounts_table)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL("SELECT balance, base_value FROM {} WHERE subaccount = 'Master Trading Bankroll'").format(ident),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    master_bankroll_balance, base_value = _mtb_balance_base_from_row(row)
+    if master_bankroll_balance is None:
+        return None
+    master_bankroll_balance = int(master_bankroll_balance)
+    base_value = int(base_value) if base_value is not None else None
+    if base_value is not None and base_value != 0:
+        realized_pnl = master_bankroll_balance - base_value
+        ratio = (master_bankroll_balance - base_value) / base_value
+        realized_pnl_pct = float(int(ratio * 10000)) / 10000.0
+    else:
+        realized_pnl = None
+        realized_pnl_pct = None
+    cursor.execute(
+        sql.SQL(
+            "UPDATE {} SET realized_pnl = %s, realized_pnl_pct = %s WHERE subaccount = 'Master Trading Bankroll'"
+        ).format(ident),
+        (realized_pnl, realized_pnl_pct),
     )
     return master_bankroll_balance
 
@@ -388,11 +447,199 @@ def get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table: str = "users.su
     row = cursor.fetchone()
     if not row:
         return None, None
-    balance, base_value = row
+    balance, base_value = _mtb_balance_base_from_row(row)
     return (
         int(balance) if balance is not None else None,
         int(base_value) if base_value is not None else None,
     )
+
+
+AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT = "CASH"
+KALSHI_MTB_SUBACCOUNT_NUMBER = 1
+KALSHI_CASH_SUBACCOUNT_NUMBER = 0
+
+
+def _mtb_realized_pnl_pct(mtb_balance: int, base_value: Optional[int]) -> Optional[float]:
+    if base_value is None or base_value == 0:
+        return None
+    ratio = (int(mtb_balance) - int(base_value)) / int(base_value)
+    return float(int(ratio * 10000)) / 10000.0
+
+
+def compute_automatic_mtb_rake_amount_cents(
+    cursor,
+    subaccounts_table: str,
+) -> Optional[int]:
+    """
+    If MTB automatic-transfers settings are met, return rake amount in cents; else None.
+    Caller should refresh MTB realized_pnl from Kalshi-synced balance first when live.
+    """
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+    sch, tbl = _split_fqn(subaccounts_table)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL(
+            """
+            SELECT balance, base_value, target_pnl__pct, transfer_amt, automatic_transfers
+            FROM {} WHERE subaccount = 'Master Trading Bankroll'
+            """
+        ).format(ident),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    if isinstance(row, dict):
+        mtb_balance = row.get("balance")
+        base_value = row.get("base_value")
+        target_pnl_pct = row.get("target_pnl__pct")
+        transfer_amt = row.get("transfer_amt")
+        automatic_transfers = row.get("automatic_transfers")
+    else:
+        mtb_balance, base_value, target_pnl_pct, transfer_amt, automatic_transfers = row
+    if not automatic_transfers:
+        return None
+    if base_value is None or int(base_value) == 0:
+        return None
+    if target_pnl_pct is None or transfer_amt is None:
+        return None
+    if mtb_balance is None:
+        return None
+    mtb_balance = int(mtb_balance)
+    base_value = int(base_value)
+    realized_pnl_pct = _mtb_realized_pnl_pct(mtb_balance, base_value)
+    if realized_pnl_pct is None or realized_pnl_pct < float(target_pnl_pct):
+        return None
+    transfer_amount = int(round(float(transfer_amt) * base_value))
+    return transfer_amount if transfer_amount > 0 else None
+
+
+def apply_automatic_mtb_rake_post_transfer_db(
+    cursor,
+    subaccounts_table: str,
+    transfer_amount: int,
+    new_mtb_balance: int,
+    *,
+    to_subaccount: str = AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT,
+) -> None:
+    """Reset MTB base_value after rake and log transfer (balances come from Kalshi repoll when live)."""
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+    sch, tbl = _split_fqn(subaccounts_table)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL(
+            "SELECT base_value, target_pnl__pct, transfer_amt FROM {} WHERE subaccount = 'Master Trading Bankroll'"
+        ).format(ident),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return
+    if isinstance(row, dict):
+        base_value = row.get("base_value")
+        target_pnl_pct = row.get("target_pnl__pct")
+        transfer_amt = row.get("transfer_amt")
+    else:
+        base_value, target_pnl_pct, transfer_amt = row
+    if base_value is None or target_pnl_pct is None or transfer_amt is None:
+        return
+    base_value = int(base_value)
+    base_step_pct = float(target_pnl_pct) - float(transfer_amt)
+    new_base_value = int(round(base_value * (1 + base_step_pct)))
+    post_transfer_realized_pnl = int(new_mtb_balance) - new_base_value
+    post_transfer_ratio = (
+        (int(new_mtb_balance) - new_base_value) / new_base_value if new_base_value else 0
+    )
+    post_transfer_realized_pnl_pct = float(int(post_transfer_ratio * 10000)) / 10000.0
+    cursor.execute(
+        sql.SQL(
+            """
+            UPDATE {} SET balance = %s, base_value = %s, realized_pnl = %s, realized_pnl_pct = %s
+            WHERE subaccount = 'Master Trading Bankroll'
+            """
+        ).format(ident),
+        (
+            int(new_mtb_balance),
+            new_base_value,
+            post_transfer_realized_pnl,
+            post_transfer_realized_pnl_pct,
+        ),
+    )
+    from backend.core.time_eastern import now_est
+
+    transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
+    xfer_tbl = _transfers_fqn_for_subaccounts_fqn(subaccounts_table)
+    cursor.execute(
+        f"""
+        INSERT INTO {xfer_tbl} (timestamp, type, "from", "to", amount, initiated)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """,
+        (
+            transfer_timestamp_est,
+            "internal",
+            "Master Trading Bankroll",
+            to_subaccount,
+            int(transfer_amount),
+            "automatic",
+        ),
+    )
+
+
+def maybe_execute_live_automatic_mtb_rake(
+    cursor,
+    user_no: str,
+    *,
+    subaccounts_table: str,
+) -> bool:
+    """
+    Live: POST Kalshi transfer MTB (#1) → CASH (#0) when automatic rake triggers.
+    Updates MTB base_value in DB; caller should repoll all subaccount balances afterward.
+    """
+    slot = str(user_no).zfill(4)[-4:]
+    refresh_mtb_realized_pnl_from_balance(cursor, subaccounts_table)
+    transfer_amount = compute_automatic_mtb_rake_amount_cents(cursor, subaccounts_table)
+    if transfer_amount is None:
+        return False
+    mtb_balance, _ = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+    if mtb_balance is None:
+        _LOG.warning("Automatic MTB rake skipped: no MTB balance for user %s", slot)
+        return False
+    if int(mtb_balance) < int(transfer_amount):
+        _LOG.warning(
+            "Automatic MTB rake skipped: MTB balance %s < transfer %s (user %s)",
+            mtb_balance,
+            transfer_amount,
+            slot,
+        )
+        return False
+    import uuid
+
+    from backend.bookkeeper.kalshi_subaccount_transfer import apply_subaccount_transfer
+
+    try:
+        apply_subaccount_transfer(
+            slot,
+            KALSHI_MTB_SUBACCOUNT_NUMBER,
+            KALSHI_CASH_SUBACCOUNT_NUMBER,
+            int(transfer_amount),
+            str(uuid.uuid4()),
+        )
+    except Exception as exc:
+        _LOG.warning("Automatic MTB rake Kalshi transfer failed for user %s: %s", slot, exc)
+        return False
+    new_mtb_balance = int(mtb_balance) - int(transfer_amount)
+    apply_automatic_mtb_rake_post_transfer_db(
+        cursor,
+        subaccounts_table,
+        int(transfer_amount),
+        new_mtb_balance,
+    )
+    _LOG.info(
+        "Automatic MTB rake: user %s transferred %s cents MTB→CASH via Kalshi API",
+        slot,
+        transfer_amount,
+    )
+    return True
 
 
 def apply_balance_snapshot(
@@ -410,6 +657,10 @@ def apply_balance_snapshot(
     notify_db_name: str = "account_balance",
     record_internal_transfers: bool = True,
     paper_bankroll_force_match: bool = False,
+    live_mtb_balance_cents: Optional[int] = None,
+    skip_bankroll_ratchet: bool = False,
+    notify_frontend: bool = True,
+    notify_monitors: bool = True,
 ) -> Tuple[bool, bool]:
     """
     One full tick: ratchet bankroll, optional INSERT, notify frontend + monitor_manager.
@@ -418,6 +669,9 @@ def apply_balance_snapshot(
     ``paper_bankroll_force_match`` (paper only): set ``bankroll_current`` to MTB / portfolio for this
     tick instead of the sticky ratchet — used when the user explicitly seeds paper bankroll so a
     lower total is not masked by the previous row's ``bankroll_current``.
+
+    ``skip_bankroll_ratchet`` (live only): keep ``bankroll_current`` sticky while updating cash /
+    portfolio / MTB columns — used on deposit/withdrawal routing ticks (0↔2 Kalshi transfers).
     """
     if not _allowed_account_balance_fqn(account_balance_table):
         raise ValueError(f"Invalid account_balance table: {account_balance_table}")
@@ -439,6 +693,8 @@ def apply_balance_snapshot(
             f"{account_balance_table!r} vs {subaccounts_table!r}"
         )
     is_paper = paper_ab
+    is_subaccount_balance = _is_subaccount_balance_fqn(account_balance_table)
+    subaccount_number = _subaccount_number_from_balance_fqn(account_balance_table) if is_subaccount_balance else None
 
     balance_amount = _balance_cents_int(balance_amount)
     # Paper simulates Kalshi GET /portfolio/balance: balance = cash, portfolio_value = open-position mark, both >= 0.
@@ -473,22 +729,49 @@ def apply_balance_snapshot(
         _dd_ratio = 0.5
 
     bankroll_stepped_down = False
-    # Live: only ripple subaccounts when flat (matches historical Kalshi sync behavior).
-    # Paper: ripple every tick so PRIMARY/MTB match simulated total portfolio like a real balance payload.
-    if positions_value == 0 or is_paper:
+    transfer_triggered = False
+    if is_subaccount_balance and subaccount_number != 1:
+        master_bankroll_balance = portfolio_value
+        if prev_bankroll is None:
+            bankroll_current = portfolio_value
+        elif portfolio_value > prev_bankroll:
+            bankroll_current = portfolio_value
+        else:
+            bankroll_current = prev_bankroll
+        bankroll_stepped_down = False
+    elif is_paper:
         master_bankroll_balance, transfer_triggered = subaccounts_update(
             cursor,
             portfolio_value,
             subaccounts_table=subaccounts_table,
             record_internal_transfers=record_internal_transfers,
         )
+    elif live_mtb_balance_cents is not None:
+        master_bankroll_balance = int(live_mtb_balance_cents)
+    elif positions_value == 0:
+        master_bankroll_balance, transfer_triggered = subaccounts_update(
+            cursor,
+            portfolio_value,
+            subaccounts_table=subaccounts_table,
+            record_internal_transfers=record_internal_transfers,
+        )
+    else:
+        mtb_snap, _ = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+        master_bankroll_balance = mtb_snap if mtb_snap is not None else (prev_bankroll or portfolio_value)
+
+    if is_subaccount_balance and subaccount_number != 1:
+        pass  # bankroll_current already set above
+    elif skip_bankroll_ratchet and not is_paper and not is_subaccount_balance:
+        bankroll_current = (
+            int(prev_bankroll) if prev_bankroll is not None else int(master_bankroll_balance)
+        )
+        bankroll_stepped_down = False
+    elif is_paper or live_mtb_balance_cents is not None or positions_value == 0:
         if transfer_triggered:
             bankroll_current = master_bankroll_balance
         elif paper_bankroll_force_match and is_paper:
-            # User seed / explicit reset: do not keep a sticky bankroll above the new portfolio total.
             bankroll_current = master_bankroll_balance
         else:
-            # Step down when MTB <= (1 - drawdown_pct/100) * sticky bankroll (if drawdown_trading_halt on).
             drawdown_threshold = (int(round(prev_bankroll * _dd_ratio)) if prev_bankroll else None)
             if prev_bankroll is None:
                 bankroll_current = master_bankroll_balance
@@ -506,6 +789,11 @@ def apply_balance_snapshot(
                 bankroll_current = prev_bankroll
     else:
         bankroll_current = prev_bankroll if prev_bankroll is not None else portfolio_value
+
+    if is_subaccount_balance and subaccount_number != 1:
+        mtb_balance, mtb_base = None, None
+    else:
+        mtb_balance, mtb_base = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
 
     skip_balance_write = False
     if throttle:
@@ -534,7 +822,6 @@ def apply_balance_snapshot(
     if skip_balance_write:
         return False, bankroll_stepped_down
 
-    mtb_balance, mtb_base = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
     cursor.execute(
         sql.SQL(
             """
@@ -559,23 +846,229 @@ def apply_balance_snapshot(
         ),
     )
 
-    from backend.kalshi_account_sync_ws import notify_frontend_db_change, notify_monitor_manager
+    if notify_frontend:
+        from backend.kalshi_account_sync_ws import notify_frontend_db_change
 
-    total_portfolio_value = int(balance_amount or 0) + int(portfolio_value_raw or 0)
-    notify_frontend_db_change(
-        notify_db_name,
-        {
-            "balance": balance_amount,
-            "exposure": total_exposure,
-            "positions": positions_value,
-            "portfolio": portfolio_value,
-            "portfolio_value_raw": portfolio_value_raw,
-            "total_portfolio": total_portfolio_value,
-        },
-    )
-    # monitor_manager: update bankroll_allotment_total + total_position per monitor (live or paper table).
-    notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
+        total_portfolio_value = int(balance_amount or 0) + int(portfolio_value_raw or 0)
+        notify_frontend_db_change(
+            notify_db_name,
+            {
+                "balance": balance_amount,
+                "exposure": total_exposure,
+                "positions": positions_value,
+                "portfolio": portfolio_value,
+                "portfolio_value_raw": portfolio_value_raw,
+                "total_portfolio": total_portfolio_value,
+            },
+        )
+    if notify_monitors and not (skip_bankroll_ratchet and not is_paper):
+        from backend.kalshi_account_sync_ws import notify_monitor_manager
+
+        notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
     return True, bankroll_stepped_down
+
+
+def _latest_subaccount_balance_row(cursor, table_fqn: str) -> Optional[dict]:
+    sch, tbl = _split_fqn(table_fqn)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL(
+            """
+            SELECT balance, exposure, positions, portfolio, portfolio_value,
+                   bankroll_current, master_trading_bankroll, mtb_base_value
+            FROM {} ORDER BY id DESC LIMIT 1
+            """
+        ).format(ident),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None
+    keys = (
+        "balance",
+        "exposure",
+        "positions",
+        "portfolio",
+        "portfolio_value",
+        "bankroll_current",
+        "master_trading_bankroll",
+        "mtb_base_value",
+    )
+    return {k: row[i] for i, k in enumerate(keys)}
+
+
+def aggregate_account_balance_from_subaccounts(
+    cursor,
+    *,
+    user_no: str,
+    account_balance_table: str,
+    subaccount_numbers: list[int],
+    current_timestamp: str,
+    throttle: bool = True,
+) -> Tuple[bool, bool]:
+    """
+    Sum latest per-subaccount balance snapshots; copy MTB bankroll fields from subaccount 1.
+  Insert one hero row into account_balance_<slot>.
+    """
+    from backend.trading_mode import subaccount_balance_table_fqn
+
+    if not _AB_FQN_RE.match(account_balance_table.strip()):
+        raise ValueError(f"hero table required, got {account_balance_table!r}")
+
+    sums = {k: 0 for k in ("balance", "exposure", "positions", "portfolio", "portfolio_value")}
+    mtb_row: Optional[dict] = None
+    for n in sorted(set(int(x) for x in subaccount_numbers)):
+        sab_fqn = subaccount_balance_table_fqn(user_no, n)
+        latest = _latest_subaccount_balance_row(cursor, sab_fqn)
+        if not latest:
+            continue
+        for k in sums:
+            sums[k] += int(latest.get(k) or 0)
+        if int(n) == 1:
+            mtb_row = latest
+
+    if mtb_row is None:
+        mtb_row = _latest_subaccount_balance_row(
+            cursor, subaccount_balance_table_fqn(user_no, 1)
+        )
+
+    bankroll_current = int(mtb_row["bankroll_current"]) if mtb_row and mtb_row.get("bankroll_current") is not None else sums["portfolio"]
+    mtb_balance = mtb_row.get("master_trading_bankroll") if mtb_row else None
+    mtb_base = mtb_row.get("mtb_base_value") if mtb_row else None
+
+    return apply_balance_snapshot(
+        cursor,
+        balance_amount=sums["balance"],
+        portfolio_value_raw=sums["portfolio_value"],
+        positions_value=sums["positions"],
+        total_exposure=sums["exposure"],
+        portfolio_value=sums["portfolio"],
+        account_balance_table=account_balance_table,
+        subaccounts_table=f"users_{user_no}.subaccounts_{user_no}",
+        current_timestamp=current_timestamp,
+        throttle=throttle,
+        notify_db_name="account_balance",
+        record_internal_transfers=False,
+        live_mtb_balance_cents=bankroll_current,
+        notify_frontend=True,
+        notify_monitors=True,
+    )
+
+
+def _subaccount_numbers_from_subaccounts_table(cursor, subaccounts_table: str) -> list[int]:
+    """Kalshi subaccount numbers implied by rows in users.subaccounts_* (incl. undefined_N)."""
+    from backend.bookkeeper.kalshi_subaccount_transfer import subaccount_name_to_number
+    from backend.trading_mode import sql_ident_qualified_table
+
+    ident = sql_ident_qualified_table(subaccounts_table)
+    cursor.execute(sql.SQL("SELECT subaccount FROM {}").format(ident))
+    out: set[int] = set()
+    for (name,) in cursor.fetchall() or []:
+        if not name:
+            continue
+        try:
+            out.add(int(subaccount_name_to_number(str(name))))
+        except ValueError:
+            continue
+    return sorted(out)
+
+
+def poll_live_account_balances(
+    cursor,
+    user_no: str,
+    *,
+    throttle: bool = True,
+    _after_automatic_rake: bool = False,
+) -> bool:
+    """
+    Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
+
+    When automatic MTB rake fires, posts Kalshi transfer #1→#0 and repolls once (full refresh).
+    """
+    from backend.bookkeeper.kalshi_portfolio_balance import (
+        fetch_portfolio_balance_detail,
+        fetch_subaccount_balances_cents_map,
+    )
+    from backend.core.time_eastern import now_est
+    from backend.kalshi_account_sync_ws import _sync_subaccounts_from_kalshi_poll
+    from backend.trading_mode import (
+        account_balance_table_for_user,
+        subaccount_balance_table_fqn,
+        subaccounts_table_for_user,
+    )
+
+    slot = str(user_no).zfill(4)[-4:]
+    sa_fqn = subaccounts_table_for_user(slot, force_live=True)
+    ab_fqn = account_balance_table_for_user(slot, force_live=True)
+    ts = now_est().isoformat()
+
+    balances_by_number = fetch_subaccount_balances_cents_map(slot)
+    if balances_by_number is None:
+        _LOG.warning("Kalshi subaccount balances unavailable for user %s", slot)
+        balances_by_number = {}
+
+    _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_by_number)
+    refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
+    if not _after_automatic_rake and maybe_execute_live_automatic_mtb_rake(
+        cursor, slot, subaccounts_table=sa_fqn
+    ):
+        return poll_live_account_balances(
+            cursor,
+            user_no,
+            throttle=False,
+            _after_automatic_rake=True,
+        )
+
+    active_numbers = sorted(
+        set(int(n) for n in balances_by_number.keys())
+        | set(_subaccount_numbers_from_subaccounts_table(cursor, sa_fqn))
+    )
+    if not active_numbers:
+        active_numbers = [0, 1]
+
+    polled: list[int] = []
+    for n in active_numbers:
+        detail = fetch_portfolio_balance_detail(slot, subaccount=n)
+        if detail is None:
+            _LOG.warning("Kalshi balance poll failed for user %s subaccount %s", slot, n)
+            continue
+        sab_fqn = subaccount_balance_table_fqn(slot, n)
+        ensure_subaccount_balance_table(cursor, sab_fqn)
+        cash = int(detail["balance_cents"])
+        pos = int(detail["portfolio_value_cents"])
+        total = int(detail["total_portfolio_cents"])
+        live_mtb = total if n == 1 else None
+        apply_balance_snapshot(
+            cursor,
+            balance_amount=cash,
+            portfolio_value_raw=pos,
+            positions_value=pos,
+            total_exposure=pos,
+            portfolio_value=total,
+            account_balance_table=sab_fqn,
+            subaccounts_table=sa_fqn,
+            current_timestamp=ts,
+            throttle=False,
+            notify_db_name="account_balance",
+            record_internal_transfers=False,
+            live_mtb_balance_cents=live_mtb,
+            notify_frontend=False,
+            notify_monitors=False,
+        )
+        polled.append(n)
+
+    if not polled:
+        _LOG.warning("No subaccount balance polls succeeded for user %s", slot)
+        return False
+
+    inserted, _ = aggregate_account_balance_from_subaccounts(
+        cursor,
+        user_no=slot,
+        account_balance_table=ab_fqn,
+        subaccount_numbers=polled,
+        current_timestamp=ts,
+        throttle=throttle,
+    )
+    return inserted
 
 
 def estimate_kalshi_taker_fee_dollars(position, price: float) -> float:
@@ -698,7 +1191,7 @@ def read_paper_primary_total_cents() -> Optional[int]:
                     """
                     SELECT COALESCE(balance, 0)
                     FROM {}
-                    WHERE subaccount = 'PRIMARY'
+                    WHERE subaccount = 'CASH'
                     """
                 ).format(ident)
             )
@@ -783,7 +1276,7 @@ def _paper_equity_baseline_cents_cursor(cursor, ab_ident, sa_ident) -> Optional[
     ``FOR UPDATE`` locks that predecessor row until commit so this baseline stays tied to the row
     we are extending. Call only after :func:`_paper_aggregate_xact_lock` so writers are serialized.
 
-    If the paper balance table is empty, fall back to ``subaccounts_paper.PRIMARY`` (bootstrap).
+    If the paper balance table is empty, fall back to ``subaccounts_paper.CASH`` (bootstrap).
     """
     cursor.execute(
         sql.SQL("SELECT portfolio FROM {} ORDER BY id DESC LIMIT 1 FOR UPDATE").format(ab_ident)
@@ -792,7 +1285,7 @@ def _paper_equity_baseline_cents_cursor(cursor, ab_ident, sa_ident) -> Optional[
     if row and row[0] is not None:
         return int(row[0])
     cursor.execute(
-        sql.SQL("SELECT balance FROM {} WHERE subaccount = 'PRIMARY' LIMIT 1").format(sa_ident)
+        sql.SQL("SELECT balance FROM {} WHERE subaccount = 'CASH' LIMIT 1").format(sa_ident)
     )
     prow = cursor.fetchone()
     if prow is not None and prow[0] is not None:
@@ -971,8 +1464,8 @@ def apply_paper_aggregate_snapshot(
     rules never change ``balance`` / ``portfolio`` / ``positions`` / ``exposure`` on the row.
 
     Subaccounts_paper still run full ``subaccounts_update`` (including automatic internal transfers when
-    enabled). Transfers move slices between MTB and Cash Transfer and affect ``bankroll_current`` /
-    monitor bankroll — the same as live — without mutating total portfolio or cash+positions math.
+    enabled). Transfers move slices from MTB to CASH and affect ``bankroll_current`` / monitor bankroll
+    — the same as live — without mutating total portfolio or cash+positions math.
     """
     from backend.core.config.database import get_postgresql_connection
     from backend.core.time_eastern import now_est

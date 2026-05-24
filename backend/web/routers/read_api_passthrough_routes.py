@@ -150,13 +150,11 @@ async def get_account_balance(
 
 
 @read_api_passthrough_router.get("/api/subaccounts")
-async def get_subaccounts(
-    request: Request, response: Response, trading_mode: Optional[str] = None
-):
+async def get_subaccounts(request: Request, response: Response):
+    """Forward full query string so ``trading_mode=paper|live`` always reaches read_api."""
     _ = response
-    path = "/api/subaccounts"
-    if trading_mode:
-        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    q = request.url.query
+    path = f"/api/subaccounts?{q}" if q else "/api/subaccounts"
     return await _get(request, path)
 
 

@@ -707,6 +707,13 @@
             if (transfersBody) transfersBody.innerHTML = "<tr><td colspan=\"5\">Syncing...</td></tr>";
         }
 
+        function escapeHtmlAccountMobile(str) {
+            return String(str == null ? "" : str)
+                .replace(/&/g, "&amp;")
+                .replace(/</g, "&lt;")
+                .replace(/"/g, "&quot;");
+        }
+
         async function loadAccountData() {
             try {
                 const fetchOpts = { cache: "no-store" };
@@ -748,8 +755,15 @@
             const positionsJson = isPaper ? { positions: [] } : await positionsRes.json();
             const subaccounts = subaccountsJson.subaccounts || [];
             const transfers = transfersJson.transfers || [];
-
-            window.subaccountsForTransfer = (subaccounts || []).filter(s => s.subaccount !== "PRIMARY");
+            const primaryCashCents = activeBal.balance != null
+                ? Number(activeBal.balance)
+                : Math.max(0, Number(activeBal.portfolio ?? 0) - Number(activeBal.positions ?? 0));
+            window.subaccountsForTransfer = (subaccounts || []).map((s) => {
+                if (s.subaccount === "CASH" || s.subaccount === "PRIMARY") {
+                    return { ...s, subaccount: "CASH", balance: s.balance != null ? s.balance : primaryCashCents };
+                }
+                return s;
+            });
 
             const settlements = settlementsJson.settlements || [];
             const fills = fillsJson.fills || [];
@@ -757,15 +771,17 @@
 
             window.fills = fills;
 
-            // Subaccounts table
+            // Subaccounts: all wallets including CASH
             const subaccountsBody = document.getElementById("subaccounts-body");
             if (subaccountsBody) {
-                const displayNames = ["Master Trading Bankroll", "Cash Transfer"];
-                const toShow = subaccounts.filter(s => displayNames.includes(s.subaccount));
-                subaccountsBody.innerHTML = toShow.map(s => {
+                const toShow = subaccounts
+                    .slice()
+                    .sort((a, b) => (Number(a.id) || 0) - (Number(b.id) || 0));
+                subaccountsBody.innerHTML = toShow.map((s) => {
                     const cents = s.balance != null ? s.balance : 0;
                     const dollars = (cents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-                    return `<tr><td style="text-align: left;">${s.subaccount}</td><td style="text-align: right;">$${dollars}</td></tr>`;
+                    const label = escapeHtmlAccountMobile(s.subaccount);
+                    return `<tr><td style="text-align: left;">${label}</td><td style="text-align: right;">$${dollars}</td></tr>`;
                 }).join("") || "<tr><td colspan=\"2\">No data</td></tr>";
             }
 
@@ -873,6 +889,15 @@
             const availableEl = document.getElementById("initiate-transfer-available");
             if (!availableEl) return;
             if (!fromVal || fromVal === "External") { availableEl.textContent = ""; return; }
+            if (fromVal === "CASH" || fromVal === "PRIMARY") {
+                const cashCents = window.subaccountsForTransfer?.find(s => s.subaccount === "CASH")?.balance;
+                if (cashCents != null) {
+                    availableEl.textContent = "Available: $" + (Number(cashCents) / 100).toFixed(2) + " (CASH)";
+                } else {
+                    availableEl.textContent = "";
+                }
+                return;
+            }
             const sub = (window.subaccountsForTransfer || []).find(s => s.subaccount === fromVal);
             if (!sub || sub.balance == null) { availableEl.textContent = ""; return; }
             availableEl.textContent = "Available: $" + (Number(sub.balance) / 100).toFixed(2);
@@ -1069,7 +1094,7 @@
         document.getElementById("initiate-transfer-from")?.addEventListener("change", updateInitiateTransferAvailable);
         document.getElementById("initiate-transfer-btn")?.addEventListener("click", openInitiateTransferModal);
         document.getElementById("initiate-transfer-cancel")?.addEventListener("click", closeInitiateTransferModal);
-        document.getElementById("initiate-transfer-submit")?.addEventListener("click", async function() {
+        document.getElementById("initiate-transfer-submit")?.addEventListener("click", function() {
             const fromVal = document.getElementById("initiate-transfer-from")?.value;
             const toVal = document.getElementById("initiate-transfer-to")?.value;
             const amountVal = document.getElementById("initiate-transfer-amount")?.value;
@@ -1077,19 +1102,21 @@
             if (fromVal === "External" || toVal === "External") { alert("External transfers are not supported yet."); return; }
             const amount = parseFloat(amountVal);
             if (isNaN(amount) || amount <= 0) { alert("Please enter a positive amount."); return; }
-            try {
-                const res = await fetch(window.location.origin + "/api/subaccounts/initiate-transfer", {
-                    method: "POST", headers: { "Content-Type": "application/json" },
-                    body: JSON.stringify({ from: fromVal, to: toVal, amount: amount })
-                });
-                const data = await res.json();
-                if (!data.ok) { alert(data.error || "Transfer failed."); return; }
-                closeInitiateTransferModal();
-                loadAccountData();
-            } catch (err) {
-                console.error("Initiate transfer error:", err);
-                alert("Request failed.");
-            }
+            closeInitiateTransferModal();
+            void (async function() {
+                try {
+                    const res = await fetch(window.location.origin + "/api/subaccounts/initiate-transfer", {
+                        method: "POST", headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ from: fromVal, to: toVal, amount: amount })
+                    });
+                    const data = await res.json();
+                    if (!data.ok) { alert(data.error || "Transfer failed."); return; }
+                    loadAccountData();
+                } catch (err) {
+                    console.error("Initiate transfer error:", err);
+                    alert("Request failed.");
+                }
+            })();
         });
 
         let accountSyncFallbackTimer = null;

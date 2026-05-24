@@ -1,7 +1,7 @@
 """Subaccount PATCH/POST mutations on main_app (PostgreSQL + db_change fanout)."""
 
 import logging
-import threading
+import uuid
 
 from fastapi import APIRouter, Request
 from psycopg2 import sql
@@ -21,6 +21,70 @@ from backend.web.main_realtime import broadcast_db_change
 _log = logging.getLogger("main_app")
 
 subaccount_router = APIRouter()
+
+
+def _latest_account_cash_cents(cursor, account_balance_table: str) -> int | None:
+    ab_ident = sql_ident_qualified_table(account_balance_table)
+    cursor.execute(
+        sql.SQL("SELECT balance FROM {} ORDER BY id DESC LIMIT 1").format(ab_ident),
+    )
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
+def _cash_balance_cents_live(user_no: str) -> int | None:
+    """Kalshi subaccount #0 (CASH wallet cash), not total portfolio."""
+    from backend.bookkeeper.kalshi_portfolio_balance import (
+        fetch_portfolio_balance_detail,
+        fetch_subaccount_balances_cents_map,
+    )
+
+    balances = fetch_subaccount_balances_cents_map(user_no)
+    if balances is not None and 0 in balances:
+        return int(balances[0])
+    detail = fetch_portfolio_balance_detail(user_no)
+    if detail is not None:
+        return int(detail["balance_cents"])
+    return None
+
+
+def _from_transfer_balance_cents(
+    cursor,
+    *,
+    user_no: str,
+    from_name: str,
+    paper: bool,
+    subaccounts_ident,
+    account_balance_table: str,
+) -> tuple[int | None, str | None]:
+    if from_name in ("CASH", "PRIMARY"):
+        if paper:
+            cash = _latest_account_cash_cents(cursor, account_balance_table)
+            if cash is None:
+                return None, "Unable to read CASH balance"
+            return cash, None
+        cash = _cash_balance_cents_live(user_no)
+        if cash is None:
+            return None, "Unable to read CASH (Kalshi #0) balance"
+        return cash, None
+    cursor.execute(
+        sql.SQL("SELECT balance FROM {} WHERE subaccount = %s").format(subaccounts_ident),
+        (from_name,),
+    )
+    row = cursor.fetchone()
+    if not row:
+        return None, f"subaccount not found: {from_name}"
+    return int(row[0]) if row[0] is not None else 0, None
+
+
+def _subaccount_row_exists(cursor, subaccounts_ident, name: str) -> bool:
+    cursor.execute(
+        sql.SQL("SELECT 1 FROM {} WHERE subaccount = %s").format(subaccounts_ident),
+        (name,),
+    )
+    return cursor.fetchone() is not None
 
 
 @subaccount_router.patch("/api/subaccounts/automatic-transfers")
@@ -137,13 +201,10 @@ async def update_subaccount_base_value(request: Request):
 @subaccount_router.post("/api/subaccounts/initiate-transfer")
 async def initiate_transfer(request: Request):
     """
-    Manual internal transfer between subaccounts (e.g. Cash Transfer ↔ Master Trading Bankroll).
-    Body: { "from": "...", "to": "...", "amount": 100 } (amount in dollars).
-    Inserts into transfers (live or paper), updates subaccounts. If Master Trading Bankroll is the
-    from or to side, appends an account_balance row with bankroll_current and master_trading_bankroll
-    set to the new MTB balance and notifies monitor_manager to refresh monitor allocations (live and paper).
-    In live mode, kalshi_account_sync sync_balance runs only when MTB is not involved (rare); CT↔MTB
-    reshuffles local slices only and does not change Kalshi totals.
+    Manual internal transfer between subaccounts (including PRIMARY / Kalshi #0).
+
+    Live: POST Kalshi /portfolio/subaccounts/transfer, record transfer row, repoll via sync_balance.
+    Paper: local balance UPDATE only (simulation).
     """
     try:
         payload = await request.json()
@@ -152,8 +213,6 @@ async def initiate_transfer(request: Request):
         amount_dollars = payload.get("amount")
         if not from_name or not to_name:
             return {"ok": False, "error": "from and to required"}
-        if from_name == "PRIMARY" or to_name == "PRIMARY":
-            return {"ok": False, "error": "PRIMARY cannot be from or to"}
         if from_name == "External" or to_name == "External":
             return {"ok": False, "error": "External transfers not supported yet"}
         if from_name == to_name:
@@ -167,72 +226,159 @@ async def initiate_transfer(request: Request):
         amount_cents = int(round(amount_val * 100))
 
         transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
+        slot = resolved_tenant_user_no_for_app()
+        paper = is_paper_trading()
+        mtb_affected = from_name == "Master Trading Bankroll" or to_name == "Master Trading Bankroll"
 
-        conn = get_postgresql_connection()
-        try:
-            with conn.cursor() as cursor:
-                sa_ident = sql_ident_qualified_table(
-                    subaccounts_table_for_user(resolved_tenant_user_no_for_app())
-                )
-                cursor.execute(
-                    sql.SQL("SELECT balance FROM {} WHERE subaccount = %s").format(sa_ident),
-                    (from_name,),
-                )
-                row = cursor.fetchone()
-                if not row:
-                    return {"ok": False, "error": f"subaccount not found: {from_name}"}
-                from_balance = int(row[0]) if row[0] is not None else 0
-                if from_balance < amount_cents:
-                    return {"ok": False, "error": f"insufficient balance in {from_name}"}
-                cursor.execute(
-                    sql.SQL("SELECT 1 FROM {} WHERE subaccount = %s").format(sa_ident),
-                    (to_name,),
-                )
-                if not cursor.fetchone():
-                    return {"ok": False, "error": f"subaccount not found: {to_name}"}
+        if not paper:
+            from backend.bookkeeper.kalshi_subaccount_transfer import (
+                apply_subaccount_transfer,
+                subaccount_name_to_number,
+            )
 
-                xfer_ident = sql_ident_qualified_table(
-                    transfers_table_for_user(resolved_tenant_user_no_for_app())
+            try:
+                from_num = subaccount_name_to_number(from_name)
+                to_num = subaccount_name_to_number(to_name)
+            except ValueError as exc:
+                return {"ok": False, "error": str(exc)}
+
+            sa_ident = sql_ident_qualified_table(subaccounts_table_for_user(slot))
+            ab_fqn = account_balance_table_for_user(slot)
+            conn = get_postgresql_connection()
+            try:
+                with conn.cursor() as cursor:
+                    from_balance, bal_err = _from_transfer_balance_cents(
+                        cursor,
+                        user_no=slot,
+                        from_name=from_name,
+                        paper=False,
+                        subaccounts_ident=sa_ident,
+                        account_balance_table=ab_fqn,
+                    )
+                    if bal_err:
+                        return {"ok": False, "error": bal_err}
+                    if from_balance < amount_cents:
+                        return {"ok": False, "error": f"insufficient balance in {from_name}"}
+                    if not _subaccount_row_exists(cursor, sa_ident, to_name):
+                        return {"ok": False, "error": f"subaccount not found: {to_name}"}
+            finally:
+                conn.close()
+
+            try:
+                apply_subaccount_transfer(
+                    slot,
+                    from_num,
+                    to_num,
+                    amount_cents,
+                    str(uuid.uuid4()),
                 )
-                insert_xfer = sql.SQL(
-                    """
-                    INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
-                    VALUES (%s, %s, %s, %s, %s, %s)
-                    """
-                ).format(xfer_ident)
-                cursor.execute(
-                    insert_xfer,
-                    (transfer_timestamp_est, "internal", from_name, to_name, amount_cents, "manual"),
-                )
-                cursor.execute(
-                    sql.SQL("UPDATE {} SET balance = balance - %s WHERE subaccount = %s").format(sa_ident),
-                    (amount_cents, from_name),
-                )
-                cursor.execute(
-                    sql.SQL("UPDATE {} SET balance = balance + %s WHERE subaccount = %s").format(sa_ident),
-                    (amount_cents, to_name),
-                )
-                conn.commit()
-        finally:
-            conn.close()
+            except Exception as exc:
+                _log.warning("Kalshi subaccount transfer failed: %s", exc)
+                return {"ok": False, "error": f"Kalshi transfer failed: {exc}"}
+
+            conn = get_postgresql_connection()
+            try:
+                with conn.cursor() as cursor:
+                    xfer_ident = sql_ident_qualified_table(transfers_table_for_user(slot))
+                    insert_xfer = sql.SQL(
+                        """
+                        INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """
+                    ).format(xfer_ident)
+                    cursor.execute(
+                        insert_xfer,
+                        (
+                            transfer_timestamp_est,
+                            "internal",
+                            from_name,
+                            to_name,
+                            amount_cents,
+                            "manual",
+                        ),
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
+            try:
+                from backend.kalshi_account_sync_ws import sync_balance
+
+                sync_balance()
+            except Exception as exc:
+                _log.warning("initiate-transfer: sync_balance after Kalshi transfer failed: %s", exc)
+        else:
+            conn = get_postgresql_connection()
+            try:
+                with conn.cursor() as cursor:
+                    sa_ident = sql_ident_qualified_table(subaccounts_table_for_user(slot))
+                    ab_fqn = account_balance_table_for_user(slot)
+                    from_balance, bal_err = _from_transfer_balance_cents(
+                        cursor,
+                        user_no=slot,
+                        from_name=from_name,
+                        paper=True,
+                        subaccounts_ident=sa_ident,
+                        account_balance_table=ab_fqn,
+                    )
+                    if bal_err:
+                        return {"ok": False, "error": bal_err}
+                    if from_balance < amount_cents:
+                        return {"ok": False, "error": f"insufficient balance in {from_name}"}
+                    if not _subaccount_row_exists(cursor, sa_ident, to_name):
+                        return {"ok": False, "error": f"subaccount not found: {to_name}"}
+
+                    xfer_ident = sql_ident_qualified_table(transfers_table_for_user(slot))
+                    insert_xfer = sql.SQL(
+                        """
+                        INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
+                        VALUES (%s, %s, %s, %s, %s, %s)
+                        """
+                    ).format(xfer_ident)
+                    cursor.execute(
+                        insert_xfer,
+                        (
+                            transfer_timestamp_est,
+                            "internal",
+                            from_name,
+                            to_name,
+                            amount_cents,
+                            "manual",
+                        ),
+                    )
+                    if from_name not in ("PRIMARY", "CASH"):
+                        cursor.execute(
+                            sql.SQL(
+                                "UPDATE {} SET balance = balance - %s WHERE subaccount = %s"
+                            ).format(sa_ident),
+                            (amount_cents, from_name),
+                        )
+                    if to_name not in ("PRIMARY", "CASH"):
+                        cursor.execute(
+                            sql.SQL(
+                                "UPDATE {} SET balance = balance + %s WHERE subaccount = %s"
+                            ).format(sa_ident),
+                            (amount_cents, to_name),
+                        )
+                    conn.commit()
+            finally:
+                conn.close()
 
         await broadcast_db_change("subaccounts", {"source": "initiate_transfer"})
-        if is_paper_trading():
+        if paper:
             await broadcast_db_change("transfers_paper", {"source": "initiate_transfer"})
         else:
             await broadcast_db_change("transfers", {"source": "initiate_transfer"})
 
-        mtb_affected = from_name == "Master Trading Bankroll" or to_name == "Master Trading Bankroll"
         if mtb_affected:
             try:
                 from backend.balance_snapshot import (
                     insert_account_balance_snapshot_after_mtb_subaccount_internal_transfer,
                 )
 
-                slot = resolved_tenant_user_no_for_app()
                 ab_tbl = account_balance_table_for_user(slot)
                 sa_tbl = subaccounts_table_for_user(slot)
-                notify_name = "account_balance_paper" if is_paper_trading() else "account_balance"
+                notify_name = "account_balance_paper" if paper else "account_balance"
                 insert_account_balance_snapshot_after_mtb_subaccount_internal_transfer(
                     account_balance_table=ab_tbl,
                     subaccounts_table=sa_tbl,
@@ -240,18 +386,6 @@ async def initiate_transfer(request: Request):
                 )
             except Exception as e:
                 _log.warning("initiate-transfer: MTB account_balance snapshot failed: %s", e)
-
-        if not is_paper_trading() and not mtb_affected:
-
-            def _run_sync():
-                try:
-                    from backend.kalshi_account_sync_ws import sync_balance
-
-                    sync_balance()
-                except Exception as e:
-                    _log.warning("initiate-transfer: sync_balance failed: %s", e)
-
-            threading.Thread(target=_run_sync, daemon=True).start()
 
         return {"ok": True}
     except Exception as e:

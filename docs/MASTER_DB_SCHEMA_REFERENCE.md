@@ -9654,6 +9654,16 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 
 ---
 
+### Table: `users.subaccount_balance_0001_0` (and `_1`, `_2`, …)
+
+Per-subaccount balance history (live Kalshi). Same column shape as `users.account_balance_0001`. One table per Kalshi subaccount number (`subaccount_balance_<slot>_<n>`). Populated by `poll_live_account_balances` via `GET /portfolio/balance?subaccount=N`. Hero `account_balance_<slot>` aggregates latest rows from all active subaccount tables; `bankroll_current` / MTB columns on the hero row copy subaccount **1** only.
+
+#### Columns
+
+Same as `users.account_balance_0001` (`balance`, `exposure`, `positions`, `portfolio`, `bankroll_current`, `portfolio_value`, `master_trading_bankroll`, `mtb_base_value`, timestamps).
+
+---
+
 ### Table: `users.account_balance_paper_0001`
 
 Parallel balance history when **`trading_mode=paper`**. Same column shape as `users.account_balance_0001`. Rows are written from paper trade open/close (and seed), not from Kalshi. NOTIFY trigger `account_balance_paper_0001_db_notify` → `rec_io_db_notify`; stream key **`account_balance_paper`**.
@@ -10563,7 +10573,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 
 ### Table: `users.subaccounts_0001`
 
-Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Master Trading Bankroll, Cash Transfer) sum to PRIMARY. Updated by kalshi_account_sync when positions = 0; also on external deposits (add to Cash Transfer + PRIMARY) and external withdrawals (subtract from Cash Transfer, floor at 0, and reduce PRIMARY by same amount). Balances in cents.
+Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (cash + positions) on each `sync_balance` tick; **Master Trading Bankroll** = Kalshi #1; **Cash Transfer** = Kalshi #2; unmapped numbers → `undefined_N`. Balances written from `GET /portfolio/subaccounts/balances` (no client-side or synthetic slice math). External deposits: cash-only delta triggers Kalshi transfer 0→2; withdrawals 2→0. Manual internal moves: `POST /portfolio/subaccounts/transfer` then repoll. Balances in cents.
 
 #### Columns
 
@@ -10571,7 +10581,7 @@ Internal allocation of portfolio: PRIMARY = total at Kalshi; other rows (e.g. Ma
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.subaccounts_0001_id_seq'::regclass) | |
 | `subaccount` | `text` | NO | '*** SUBACCOUNT NAME ***'::text | Name: PRIMARY, Master Trading Bankroll, Cash Transfer |
-| `balance` | `integer(32)` | NO | 0 | Balance in cents. PRIMARY = total portfolio; MTB = PRIMARY − Cash Transfer |
+| `balance` | `integer(32)` | NO | 0 | Balance in cents from Kalshi poll (PRIMARY = total portfolio; MTB/CT = Kalshi #1/#2) |
 | `base_value` | `integer(32)` | YES | - | Starting value in cents (MTB). Used for realized_pnl and rake reset |
 | `realized_pnl` | `integer(32)` | YES | - | balance − base_value in cents (MTB) |
 | `realized_pnl_pct` | `real(24)` | YES | - | (balance − base_value) / base_value as fraction, 4 decimal places (e.g. 0.0148) |

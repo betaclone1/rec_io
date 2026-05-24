@@ -413,10 +413,18 @@ async def get_account_balance(
 
 
 @app.get("/api/subaccounts")
-async def get_subaccounts(response: Response, trading_mode: Optional[str] = None):
+async def get_subaccounts(
+    response: Response,
+    trading_mode: Optional[str] = Query(
+        None,
+        description="paper|live — must match UI toggle (same table selection as account balance)",
+    ),
+):
     _api_no_store_headers(response)
     try:
         from psycopg2.extras import RealDictCursor
+
+        from backend.trading_mode import use_paper_for_request
 
         slot = resolved_tenant_user_no_for_app()
         conn = get_postgresql_connection()
@@ -424,9 +432,35 @@ async def get_subaccounts(response: Response, trading_mode: Optional[str] = None
             return {"subaccounts": []}
         try:
             with conn.cursor(cursor_factory=RealDictCursor) as cursor:
-                sa_ident = sql_ident_qualified_table(
-                    subaccounts_table_for_user(slot, client_trading_mode=trading_mode)
+                sa_fqn = subaccounts_table_for_user(
+                    slot,
+                    client_trading_mode=trading_mode,
+                    force_live=not use_paper_for_request(trading_mode),
                 )
+                if not use_paper_for_request(trading_mode):
+                    from backend.bookkeeper.kalshi_portfolio_balance import (
+                        fetch_subaccount_balances_cents_map,
+                    )
+
+                    kalshi_balances = fetch_subaccount_balances_cents_map(slot)
+                    if kalshi_balances is None:
+                        _read_logger.warning(
+                            "subaccounts read: Kalshi subaccount balances unavailable for user %s "
+                            "(credentials or API); rows may be stale",
+                            slot,
+                        )
+                    if kalshi_balances is not None:
+                        from backend.kalshi_account_sync_ws import (
+                            refresh_live_subaccounts_from_kalshi,
+                        )
+
+                        refresh_live_subaccounts_from_kalshi(
+                            cursor,
+                            slot,
+                            sa_fqn,
+                            None,
+                        )
+                sa_ident = sql_ident_qualified_table(sa_fqn)
                 cursor.execute(
                     sql.SQL(
                         """
@@ -438,6 +472,7 @@ async def get_subaccounts(response: Response, trading_mode: Optional[str] = None
                     ).format(sa_ident)
                 )
                 rows = cursor.fetchall()
+            conn.commit()
             return {"subaccounts": [dict(r) for r in rows]}
         finally:
             conn.close()
