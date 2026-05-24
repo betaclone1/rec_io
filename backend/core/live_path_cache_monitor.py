@@ -370,10 +370,14 @@ def _sell_and_pnl_patch_fields(rec: dict) -> Dict[str, Any]:
         except (TypeError, ValueError):
             pass
     pnl = rec.get("current_pnl")
-    return {
-        "sell": sell,
+    out: Dict[str, Any] = {
         "pnl": str(pnl).strip() if pnl is not None else None,
     }
+    if sell is not None:
+        # trade monitor WS uses ``sell``; live path monitor row columns use ``sell_price``.
+        out["sell"] = sell
+        out["sell_price"] = sell
+    return out
 
 
 def trade_log_live_patch_fields(rec: dict) -> Dict[str, Any]:
@@ -387,7 +391,10 @@ def active_trades_ui_live_patch_fields(rec: dict) -> Dict[str, Any]:
     prob = rec.get("current_probability")
     if prob is not None:
         try:
-            out["prob"] = float(prob)
+            prob_f = float(prob)
+            # trade monitor WS uses ``prob``; live path monitor row columns use ``current_probability``.
+            out["prob"] = prob_f
+            out["current_probability"] = prob_f
         except (TypeError, ValueError):
             pass
     return out
