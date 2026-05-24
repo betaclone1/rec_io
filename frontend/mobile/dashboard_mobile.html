@@ -5084,7 +5084,8 @@
         if (!response.ok) return;
         const data = await response.json();
         const subaccounts = data.subaccounts || [];
-        const cash = subaccounts.find(s => s.subaccount === 'Cash Transfer');
+        const cash = subaccounts.find(s => s.subaccount === 'CASH' || s.subaccount === 'PRIMARY')
+          || subaccounts.find(s => s.subaccount === 'Cash Transfer');
         const el = document.getElementById('perf-cash-balance');
         if (!el) return;
         if (cash && cash.balance != null) {
