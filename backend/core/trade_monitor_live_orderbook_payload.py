@@ -638,6 +638,12 @@ def build_live_orderbook_ws_payload(market_ticker: str) -> Optional[dict[str, An
     }
     if book_seq is not None:
         payload["book_seq"] = book_seq
+    ts_ms = data.get("ts_ms")
+    if ts_ms is not None:
+        try:
+            payload["ts_ms"] = int(ts_ms)
+        except (TypeError, ValueError):
+            pass
     return payload
 
 
@@ -761,6 +767,7 @@ def build_trade_monitor_orderbook_payload(
     settlement_end_ms = int(settle_end.timestamp() * 1000) if settle_end else None
 
     book_seq = None
+    ts_ms_out = None
     if levels_from_redis:
         snap = load_orderbook_snapshot_from_redis(mt)
         if snap and snap.get("seq") is not None:
@@ -768,6 +775,11 @@ def build_trade_monitor_orderbook_payload(
                 book_seq = int(snap["seq"])
             except (TypeError, ValueError):
                 book_seq = None
+        if snap and snap.get("ts_ms") is not None:
+            try:
+                ts_ms_out = int(snap["ts_ms"])
+            except (TypeError, ValueError):
+                ts_ms_out = None
 
     out = {
         "market_ticker": mt,
@@ -802,6 +814,8 @@ def build_trade_monitor_orderbook_payload(
     }
     if book_seq is not None:
         out["book_seq"] = book_seq
+    if ts_ms_out is not None:
+        out["ts_ms"] = ts_ms_out
     return out
 
 

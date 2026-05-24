@@ -24,6 +24,7 @@ def symbol_metrics_from_cache(symbol: str) -> Optional[Dict[str, Any]]:
         "momentum_percentile": data.get("momentum_percentile"),
         "momentum_5s_avg": data.get("momentum_5s_avg"),
         "momentum_30s_avg": data.get("momentum_30s_avg"),
+        "momentum_1m_avg": data.get("momentum_1m_avg"),
         "move_1m": data.get("move_1m"),
         "move_2m": data.get("move_2m"),
         "move_3m": data.get("move_3m"),

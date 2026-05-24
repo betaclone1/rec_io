@@ -234,6 +234,10 @@ def build_symbol_tick_row(
         momentum_30s_avg = calculate_30s_momentum_average(symbol)
     except Exception:
         momentum_30s_avg = None
+    try:
+        momentum_1m_avg = calculate_1m_momentum_average(symbol)
+    except Exception:
+        momentum_1m_avg = None
 
     minute_key = timestamp[:16]
     volatility_value, volatility_percentile = get_volatility_for_minute(symbol, minute_key)
@@ -268,6 +272,7 @@ def build_symbol_tick_row(
         "momentum_percentile": momentum_percentile,
         "momentum_5s_avg": momentum_5s_avg,
         "momentum_30s_avg": momentum_30s_avg,
+        "momentum_1m_avg": momentum_1m_avg,
         "volatility": volatility_value,
         "volatility_percentile": volatility_percentile,
         "move_1m": movement_data.get("move_1m"),
@@ -999,6 +1004,50 @@ def calculate_30s_momentum_average(symbol: str = 'BTC') -> Optional[float]:
         
     except Exception as e:
         logger.debug("30s momentum average calculation failed: %s", e)
+        return None
+
+def calculate_1m_momentum_average(symbol: str = 'BTC') -> Optional[float]:
+    """1-minute mean of momentum scores, as percentile (same scale as legacy Mom header)."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import momentum_tail
+
+        vals = momentum_tail(symbol, 60)
+        if not vals:
+            return None
+        avg = sum(vals) / len(vals)
+        pct = calculate_momentum_percentile(symbol, avg)
+        if pct is not None:
+            return pct
+        return avg
+    try:
+        conn = get_postgres_connection()
+        cursor = conn.cursor()
+
+        table_name = SYMBOL_CONFIG[symbol]['table_name']
+
+        cursor.execute(f"""
+            SELECT momentum
+            FROM live_data.{table_name}
+            WHERE momentum IS NOT NULL
+            ORDER BY timestamp DESC
+            LIMIT 60
+        """)
+
+        results = cursor.fetchall()
+
+        if len(results) < 1:
+            conn.close()
+            return None
+
+        momentum_values = [float(row[0]) for row in results]
+        momentum_1m_avg = sum(momentum_values) / len(momentum_values)
+        momentum_1m_percentile = calculate_momentum_percentile(symbol, momentum_1m_avg)
+
+        conn.close()
+        return momentum_1m_percentile
+
+    except Exception as e:
+        logger.debug("1m momentum average calculation failed: %s", e)
         return None
 
 def calculate_native_momentum(symbol: str = 'BTC') -> Dict[str, Any]:

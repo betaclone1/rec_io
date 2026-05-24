@@ -844,6 +844,7 @@ def _orderbook_redis_payload(master: KalshiMarketWsMaster, mt: str) -> Optional[
         "yes": dict(b["yes"]),
         "no": dict(b["no"]),
         "seq": b.get("last_seq"),
+        "ts_ms": b.get("ts_ms"),
         "valid": True,
     }
 
@@ -1126,6 +1127,7 @@ def _apply_snapshot(
     now_wall = time.time()
     b["last_book_mono"] = time.monotonic()
     b["last_book_wall_at"] = now_wall
+    b["ts_ms"] = int(now_wall * 1000)
     if publish:
         _publish_book(master, mt)
     _emit_event("orderbook_snapshot", market_ticker=mt, seq=seq)
@@ -1189,6 +1191,7 @@ def _apply_delta(
     b["last_seq"] = seq
     b["last_book_mono"] = time.monotonic()
     b["last_book_wall_at"] = time.time()
+    b["ts_ms"] = int(time.time() * 1000)
     if publish:
         _publish_book(master, mt)
 

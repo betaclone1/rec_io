@@ -201,6 +201,38 @@ def _momentum_by_symbol_from_rows(row_dicts: list) -> dict:
     return out
 
 
+def _momentum_1m_avg_for_symbol(sym_key: str) -> Optional[float]:
+    """1m momentum average (percentile scale); always computed fresh for WS payloads."""
+    try:
+        from backend.symbol_price_watchdog import calculate_1m_momentum_average
+
+        return calculate_1m_momentum_average(sym_key)
+    except Exception as e:
+        logger.debug("_momentum_1m_avg_for_symbol %s: %s", sym_key, e)
+        return None
+
+
+def _momentum_1m_avg_by_symbol_from_rows(row_dicts: list) -> dict:
+    """Trade-monitor orderbook mid row: 1m smoothed momentum (percentile scale)."""
+    out: dict = {}
+    for r in row_dicts or []:
+        sym = r.get("symbol")
+        if sym is None:
+            continue
+        key = str(sym).strip().upper()
+        if not key or key in out:
+            continue
+        raw = r.get("momentum_1m_avg")
+        if raw is None:
+            raw = _momentum_1m_avg_for_symbol(key)
+        if raw is not None:
+            try:
+                out[key] = float(raw)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
 def _publish_to_db_changes_bus(text: str) -> None:
     """Fan out to main_app (Redis pub/sub) and switchboard WS bridge (local queue)."""
     try:
@@ -247,6 +279,7 @@ def build_live_symbol_spot_from_cache():
         "spot_by_symbol": spot_by_symbol,
         "changes_by_symbol": _fetch_changes_by_symbol(),
         "momentum_by_symbol": _momentum_by_symbol_from_rows(row_dicts),
+        "momentum_1m_avg_by_symbol": _momentum_1m_avg_by_symbol_from_rows(row_dicts),
         "rows": row_dicts,
     }
 
@@ -320,6 +353,7 @@ def build_live_symbol_spot_payload():
             "spot_by_symbol": spot_by_symbol,
             "changes_by_symbol": changes_by_symbol,
             "momentum_by_symbol": _momentum_by_symbol_from_rows(row_dicts),
+            "momentum_1m_avg_by_symbol": _momentum_1m_avg_by_symbol_from_rows(row_dicts),
             "rows": row_dicts,
         }
     except Exception as e:

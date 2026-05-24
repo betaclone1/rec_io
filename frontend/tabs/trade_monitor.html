@@ -1796,6 +1796,43 @@ body.trade-monitor-new-page #container {
   color: #6ee7b7;
 }
 
+.trade-monitor-new .book-table td.book-price-cell--fair {
+  position: relative;
+}
+
+.trade-monitor-new .book-table td.book-price-cell--fair .book-fair-price {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  text-align: left;
+  font-weight: 600;
+  font-size: calc(85% * 1.15);
+  color: #e2e8f0;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.trade-monitor-new .book-fair-diff {
+  font-weight: 700;
+  font-size: 1em;
+}
+
+.trade-monitor-new .book-fair-diff--pos {
+  color: #6ee7b7;
+}
+
+.trade-monitor-new .book-fair-diff--neg {
+  color: #fda4af;
+}
+
+.trade-monitor-new .book-fair-diff--zero {
+  color: #94a3b8;
+}
+
 .trade-monitor-new .mid-row {
   text-align: center;
   font-weight: 400;
@@ -1806,12 +1843,55 @@ body.trade-monitor-new-page #container {
 }
 
 .trade-monitor-new .mid-inner {
-  display: inline-flex;
+  display: flex;
+  justify-content: center;
   align-items: baseline;
-        justify-content: center;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   width: 100%;
   box-sizing: border-box;
+}
+
+.trade-monitor-new .mid-center-group {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.trade-monitor-new .mid-gap {
+  display: inline-block;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.trade-monitor-new .mid-mom {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  margin-left: 10px;
+  flex-shrink: 0;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.trade-monitor-new .mid-last-wrap {
+  font-weight: 600;
+  font-size: 1em;
+}
+
+.trade-monitor-new .mid-mom--up {
+  color: #6ee7b7;
+}
+
+.trade-monitor-new .mid-mom--down {
+  color: #fda4af;
+}
+
+.trade-monitor-new .mid-mom--flat {
+  color: #94a3b8;
+}
+
+.trade-monitor-new .mid-mom-arrow {
+  font-size: 0.85em;
 }
 
 .trade-monitor-new .mid-side {
@@ -1827,17 +1907,6 @@ body.trade-monitor-new-page #container {
   color: #f87171;
 }
 
-.trade-monitor-new .mid-gap {
-  display: inline-block;
-  width: 12px;
-  flex-shrink: 0;
-}
-
-.trade-monitor-new .mid-last-wrap {
-  font-weight: 400;
-  font-size: 80%;
-}
-
 .trade-monitor-new .mid-yes .mid-last-wrap {
   color: #34d399;
 }
@@ -1848,7 +1917,7 @@ body.trade-monitor-new-page #container {
 
 .trade-monitor-new .mid-price {
   margin-left: 4px;
-  font-weight: 400;
+  font-weight: 600;
 }
 
 .trade-monitor-new-page .panel-table {

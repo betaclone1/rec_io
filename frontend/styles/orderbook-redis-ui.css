@@ -193,6 +193,43 @@ body.orderbook-redis-ui {
   color: #176f57;
 }
 
+.orderbook-redis-ui .book-table td.book-price-cell--fair {
+  position: relative;
+}
+
+.orderbook-redis-ui .book-table td.book-price-cell--fair .book-fair-price {
+  position: absolute;
+  left: 8px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 0.85em;
+  color: #333;
+  pointer-events: none;
+  white-space: nowrap;
+}
+
+.orderbook-redis-ui .book-fair-diff {
+  font-weight: 700;
+  font-size: 1em;
+}
+
+.orderbook-redis-ui .book-fair-diff--pos {
+  color: #176f57;
+}
+
+.orderbook-redis-ui .book-fair-diff--neg {
+  color: #b33;
+}
+
+.orderbook-redis-ui .book-fair-diff--zero {
+  color: #666;
+}
+
 .orderbook-redis-ui .mid-row {
   text-align: center;
   font-weight: normal;
@@ -203,12 +240,59 @@ body.orderbook-redis-ui {
 }
 
 .orderbook-redis-ui .mid-inner {
-  display: inline-flex;
-  align-items: baseline;
+  display: flex;
   justify-content: center;
-  flex-wrap: wrap;
+  align-items: baseline;
+  flex-wrap: nowrap;
   width: 100%;
   box-sizing: border-box;
+}
+
+.orderbook-redis-ui .mid-center-group {
+  display: inline-flex;
+  align-items: baseline;
+}
+
+.orderbook-redis-ui .mid-gap {
+  display: inline-block;
+  width: 12px;
+  flex-shrink: 0;
+}
+
+.orderbook-redis-ui .mid-mom {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 3px;
+  margin-left: 10px;
+  flex-shrink: 0;
+  font-size: 1em;
+  font-weight: 600;
+  line-height: 1;
+}
+
+.orderbook-redis-ui .mid-mom--up {
+  color: #176f57;
+}
+
+.orderbook-redis-ui .mid-mom--down {
+  color: #b33;
+}
+
+.orderbook-redis-ui .mid-mom--flat {
+  color: #666;
+}
+
+.orderbook-redis-ui .mid-mom-arrow {
+  font-size: 0.85em;
+}
+
+.orderbook-redis-ui .mid-latency {
+  margin-left: 10px;
+  flex-shrink: 0;
+  font-size: 0.75em;
+  font-weight: 500;
+  color: #888;
+  line-height: 1;
 }
 
 .orderbook-redis-ui .mid-side {
@@ -224,15 +308,9 @@ body.orderbook-redis-ui {
   color: #b33;
 }
 
-.orderbook-redis-ui .mid-gap {
-  display: inline-block;
-  width: 12px;
-  flex-shrink: 0;
-}
-
 .orderbook-redis-ui .mid-last-wrap {
-  font-weight: 400;
-  font-size: 80%;
+  font-weight: 600;
+  font-size: 1em;
 }
 
 .orderbook-redis-ui .mid-yes .mid-last-wrap {
@@ -245,5 +323,5 @@ body.orderbook-redis-ui {
 
 .orderbook-redis-ui .mid-price {
   margin-left: 4px;
-  font-weight: 400;
+  font-weight: 600;
 }

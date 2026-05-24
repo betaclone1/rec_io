@@ -186,6 +186,7 @@ def orderbook_redis_payload(master: Any, mt: str) -> Optional[dict[str, Any]]:
         "yes": dict(b["yes"]),
         "no": dict(b["no"]),
         "seq": b.get("last_seq"),
+        "ts_ms": b.get("ts_ms"),
         "valid": True,
     }
 

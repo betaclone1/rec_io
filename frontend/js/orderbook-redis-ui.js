@@ -193,6 +193,83 @@
     return 'Mom: ' + sign + num.toFixed(1);
   }
 
+  function symbolMomentumFromSpotMsg(sym) {
+    const raw = (lastLiveSymbolSpotMsg && lastLiveSymbolSpotMsg.momentum_by_symbol) || {};
+    let val = raw[sym];
+    if (val == null) {
+      Object.keys(raw).forEach(function (k) {
+        if (String(k).trim().toUpperCase() === sym && val == null) val = raw[k];
+      });
+    }
+    if (val != null && Number.isFinite(Number(val))) return Number(val);
+    return null;
+  }
+
+  function resolveOrderbookMomDisplay(oneM, sym) {
+    if (oneM == null || !Number.isFinite(Number(oneM))) return symbolMomentumFromSpotMsg(sym);
+    const n = Number(oneM);
+    if (n !== 0) return n;
+    const spotMom = symbolMomentumFromSpotMsg(sym);
+    if (spotMom != null && spotMom !== 0) return spotMom;
+    return n;
+  }
+
+  function symbolMomentum1mAvg() {
+    const sym = currentSymbol();
+    try {
+      const bag = window.__liveMomentum1mAvgBySymbol;
+      if (bag && bag[sym] != null && Number.isFinite(Number(bag[sym]))) {
+        return resolveOrderbookMomDisplay(Number(bag[sym]), sym);
+      }
+    } catch (eBag) {}
+    const raw = (lastLiveSymbolSpotMsg && lastLiveSymbolSpotMsg.momentum_1m_avg_by_symbol) || {};
+    let val = raw[sym];
+    if (val == null) {
+      Object.keys(raw).forEach(function (k) {
+        if (String(k).trim().toUpperCase() === sym && val == null) val = raw[k];
+      });
+    }
+    if (val != null && Number.isFinite(Number(val))) return resolveOrderbookMomDisplay(Number(val), sym);
+    const rows = (lastLiveSymbolSpotMsg && lastLiveSymbolSpotMsg.rows) || [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || String(r.symbol || '').trim().toUpperCase() !== sym) continue;
+      const rowVal = r.momentum_1m_avg;
+      if (rowVal != null && Number.isFinite(Number(rowVal))) {
+        return resolveOrderbookMomDisplay(Number(rowVal), sym);
+      }
+    }
+    return symbolMomentumFromSpotMsg(sym);
+  }
+
+  function fmtMidMomHtml(val) {
+    const num = Number(val);
+    if (!Number.isFinite(num)) return '';
+    const snapped = Math.abs(num) < 0.05 ? 0 : num;
+    let arrow = '';
+    let cls = 'mid-mom mid-mom--flat';
+    if (snapped > 0) {
+      arrow = '▲';
+      cls = 'mid-mom mid-mom--up';
+    } else if (snapped < 0) {
+      arrow = '▼';
+      cls = 'mid-mom mid-mom--down';
+    }
+    const text = snapped === 0 ? '0' : (snapped > 0 ? '+' : '') + snapped.toFixed(1);
+    if (!arrow) {
+      return '<span class="' + cls + '"><span class="mid-mom-val">' + text + '</span></span>';
+    }
+    return (
+      '<span class="' +
+      cls +
+      '"><span class="mid-mom-arrow" aria-hidden="true">' +
+      arrow +
+      '</span><span class="mid-mom-val">' +
+      text +
+      '</span></span>'
+    );
+  }
+
   /**
    * Postgres live_data → NOTIFY → redis_switchboard → Redis → same-origin `/ws/db_changes`.
    * Payload built in ``backend/redis_switchboard.build_live_symbol_spot_payload``.
@@ -218,6 +295,12 @@
       chNorm[String(k).trim().toUpperCase()] = rawCh[k];
     });
     window.__livePriceChangesBySymbol = chNorm;
+    const rawMom1m = msg.momentum_1m_avg_by_symbol || {};
+    const mom1mNorm = {};
+    Object.keys(rawMom1m).forEach(function (k) {
+      mom1mNorm[String(k).trim().toUpperCase()] = rawMom1m[k];
+    });
+    window.__liveMomentum1mAvgBySymbol = mom1mNorm;
 
     const sym = currentSymbol();
 
@@ -249,6 +332,7 @@
     try {
       window.dispatchEvent(new CustomEvent('rec:live-symbol-spot', { detail: msg }));
     } catch (e) {}
+    refreshExpandedOrderbookMidMom();
   }
 
   const tmSpotUiThrottle = createTmUiPassthrough(applyLiveSymbolSpotMessageNow);
@@ -331,7 +415,129 @@
     return Number.isFinite(n) ? n : null;
   }
 
-  function rowsToHtml(rows, sideLabel, labelRowIndex) {
+  function fairYesDollarsForTicker(ticker) {
+    const mt = String(ticker || '').trim();
+    if (!mt) return null;
+    const row = hourlyRawStrikeRows.find((r) => String(r.ticker) === mt);
+    if (!row) return null;
+    return parseDollarField(row.fairPrice);
+  }
+
+  function fairBookDollarsForMode(fairYesDollars, bookMode) {
+    if (fairYesDollars == null || !Number.isFinite(fairYesDollars)) return null;
+    return bookMode === 'no' ? 1 - fairYesDollars : fairYesDollars;
+  }
+
+  function closestFairPriceMatch(asks, bids, fairBookDollars) {
+    if (fairBookDollars == null || !Number.isFinite(fairBookDollars)) return null;
+    let best = null;
+    let bestDist = Infinity;
+    (asks || []).forEach((r, i) => {
+      const p = Number(r.price || 0);
+      if (!Number.isFinite(p)) return;
+      const d = Math.abs(p - fairBookDollars);
+      if (d < bestDist) {
+        bestDist = d;
+        best = { section: 'asks', index: i, fairDollars: fairBookDollars };
+      }
+    });
+    (bids || []).forEach((r, i) => {
+      const p = Number(r.price || 0);
+      if (!Number.isFinite(p)) return;
+      const d = Math.abs(p - fairBookDollars);
+      if (d < bestDist) {
+        bestDist = d;
+        best = { section: 'bids', index: i, fairDollars: fairBookDollars };
+      }
+    });
+    return best;
+  }
+
+  function bestTouchPricesDollars(asks, bids) {
+    let bestAsk = null;
+    (asks || []).forEach((r) => {
+      const p = Number(r.price);
+      if (!Number.isFinite(p)) return;
+      if (bestAsk == null || p < bestAsk) bestAsk = p;
+    });
+    let bestBid = null;
+    (bids || []).forEach((r) => {
+      const p = Number(r.price);
+      if (!Number.isFinite(p)) return;
+      if (bestBid == null || p > bestBid) bestBid = p;
+    });
+    return { bestAsk: bestAsk, bestBid: bestBid };
+  }
+
+  function bookMidpointDollars(asks, bids) {
+    const touch = bestTouchPricesDollars(asks, bids);
+    if (touch.bestAsk == null || touch.bestBid == null) return null;
+    return (touch.bestAsk + touch.bestBid) / 2;
+  }
+
+  function enrichOrderbookLiveStats(msg, ticker) {
+    if (!msg) return msg;
+    const fairYes = fairYesDollarsForTicker(ticker);
+    const bookLive = { yes: {}, no: {} };
+    ['yes', 'no'].forEach((bookMode) => {
+      const book = bookMode === 'yes' ? msg.trade_yes || {} : msg.trade_no || {};
+      const asks = book.asks || [];
+      const bids = book.bids || [];
+      const midpoint = bookMidpointDollars(asks, bids);
+      const fairBook = fairBookDollarsForMode(fairYes, bookMode);
+      const fairPriceDiff =
+        midpoint != null && fairBook != null ? fairBook - midpoint : null;
+      bookLive[bookMode] = {
+        midpoint: midpoint,
+        fair_price_diff: fairPriceDiff,
+        best_ask: bestTouchPricesDollars(asks, bids).bestAsk,
+        best_bid: bestTouchPricesDollars(asks, bids).bestBid,
+      };
+    });
+    msg.book_live = bookLive;
+    return msg;
+  }
+
+  function buildFairMatch(asks, bids, ticker, bookMode) {
+    const fairYes = fairYesDollarsForTicker(ticker);
+    const fairBook = fairBookDollarsForMode(fairYes, bookMode);
+    const fairMatch = closestFairPriceMatch(asks, bids, fairBook);
+    if (!fairMatch) return fairMatch;
+    const midpoint = bookMidpointDollars(asks, bids);
+    fairMatch.midpoint = midpoint;
+    fairMatch.fairPriceDiff =
+      midpoint != null && fairBook != null ? fairBook - midpoint : null;
+    return fairMatch;
+  }
+
+  function fmtFairPriceDiffHtml(diffDollars) {
+    if (diffDollars == null || !Number.isFinite(diffDollars)) return '';
+    const cents = Math.round(diffDollars * 100);
+    const text = cents > 0 ? '+' + String(cents) : String(cents);
+    let cls = 'book-fair-diff book-fair-diff--zero';
+    if (cents > 0) cls = 'book-fair-diff book-fair-diff--pos';
+    else if (cents < 0) cls = 'book-fair-diff book-fair-diff--neg';
+    return '<span class="' + cls + '">' + text + '</span>';
+  }
+
+  function fmtBookPriceCell(levelPriceDollars, fairMatch, section, rowIndex) {
+    const levelHtml = fmtPrice(levelPriceDollars);
+    const isFair =
+      fairMatch && fairMatch.section === section && fairMatch.index === rowIndex;
+    if (!isFair) return levelHtml;
+    const fairHtml = fmtWholeCentsFromDollars(fairMatch.fairDollars);
+    const diffHtml = fmtFairPriceDiffHtml(fairMatch.fairPriceDiff);
+    return (
+      '<span class="book-fair-price">' +
+      'Fair price: ' +
+      fairHtml +
+      diffHtml +
+      '</span>' +
+      levelHtml
+    );
+  }
+
+  function rowsToHtml(rows, sideLabel, labelRowIndex, section, fairMatch) {
     return (rows || [])
       .map((r, i) => {
         const p = Number(r.price || 0);
@@ -339,22 +545,81 @@
         const t = Number(r.total_dollars || 0);
         const side = i === labelRowIndex ? sideLabel : '';
         const sideCls = side ? 'book-side-label' : 'side-col';
-        return `<tr><td class="${sideCls}">${side}</td><td>${fmtPrice(p)}</td><td>${fmtContracts(c)}</td><td>${fmtTotalDollars(t)}</td></tr>`;
+        const isFair =
+          fairMatch && fairMatch.section === section && fairMatch.index === i;
+        const priceCls = isFair ? 'book-price-cell book-price-cell--fair' : 'book-price-cell';
+        const priceInner = fmtBookPriceCell(p, fairMatch, section, i);
+        return `<tr><td class="${sideCls}">${side}</td><td class="${priceCls}">${priceInner}</td><td>${fmtContracts(c)}</td><td>${fmtTotalDollars(t)}</td></tr>`;
       })
       .join('');
   }
 
-  function buildMidCellInner(mode, lastTrade) {
+  function refreshExpandedOrderbookFairMarker() {
+    const mt = String(expandedHourlyTicker || '').trim();
+    if (!mt) return;
+    const cached = lastLiveOrderbookByTicker[mt];
+    if (!cached) return;
+    const root = document.getElementById('hourlyStrikeList');
+    if (!root) return;
+    const mount = root.querySelector('[data-hourly-expanded="' + mt + '"]');
+    if (!mount || !mount.querySelector('[data-hourly-scroll]')) return;
+    enrichOrderbookLiveStats(cached, mt);
+    patchOrderbookInto(mount, cached, mt);
+  }
+
+  function refreshExpandedOrderbookMidMom() {
+    const mt = String(expandedHourlyTicker || '').trim();
+    if (!mt) return;
+    const cached = lastLiveOrderbookByTicker[mt];
+    if (!cached) return;
+    const root = document.getElementById('hourlyStrikeList');
+    if (!root) return;
+    const mount = root.querySelector('[data-hourly-expanded="' + mt + '"]');
+    if (!mount) return;
+    const midEl = mount.querySelector('[data-hourly-mid="' + mt + '"]');
+    if (!midEl) return;
+    midEl.innerHTML = buildMidCellInner(mode, cached.last_trade, cached.receive_latency_ms);
+  }
+
+  /** ms from server delta stamp (msg.ts_ms) to client receive/cache apply. */
+  function stampReceiveLatencyMs(msg) {
+    if (!msg) return null;
+    if (Number.isFinite(msg.receive_latency_ms) && msg.receive_latency_ms >= 0) {
+      return msg.receive_latency_ms;
+    }
+    const tsMs = Number(msg.ts_ms);
+    if (!Number.isFinite(tsMs) || tsMs <= 0) {
+      delete msg.receive_latency_ms;
+      return null;
+    }
+    const latencyMs = Date.now() - tsMs;
+    msg.receive_latency_ms = latencyMs;
+    return latencyMs;
+  }
+
+  function fmtMidLatencyHtml(latencyMs) {
+    if (!obLatencyTestEnabled()) return '';
+    if (!Number.isFinite(latencyMs) || latencyMs < 0) return '';
+    return (
+      '<span class="mid-latency" title="ms since server recorded delta">' +
+      Math.round(latencyMs) +
+      'ms</span>'
+    );
+  }
+
+  function buildMidCellInner(mode, lastTrade, receiveLatencyMs) {
     const lt = lastTrade || {};
     const cents = mode === 'yes' ? lt.yes_cents || '' : lt.no_cents || '';
-    const side = mode === 'yes' ? 'Trade Yes' : 'Trade No';
     const price = cents || '—';
+    const momHtml = fmtMidMomHtml(symbolMomentum1mAvg());
+    const latHtml = fmtMidLatencyHtml(receiveLatencyMs);
     return (
-      '<span class="mid-inner"><span class="mid-side">' +
-      side +
-      '</span><span class="mid-gap"></span><span class="mid-last-wrap"><span class="mid-last">Last</span><span class="mid-price">' +
+      '<span class="mid-inner"><span class="mid-center-group"><span class="mid-last-wrap"><span class="mid-last">Last</span><span class="mid-price">' +
       price +
-      '</span></span></span>'
+      '</span></span></span>' +
+      momHtml +
+      latHtml +
+      '</span>'
     );
   }
 
@@ -860,9 +1125,70 @@
     return out;
   }
 
+  const obLatencyStats = {
+    samples: [],
+    last: null,
+    p50_ms: null,
+    p95_ms: null,
+  };
+
+  function obLatencyTestEnabled() {
+    try {
+      if (window.__REC_OB_LATENCY_TEST__) return true;
+      return new URLSearchParams(window.location.search || '').get('ob_latency') === '1';
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function recordOrderbookCacheApplyLatency(msg) {
+    if (!msg) return;
+    const latencyMs = msg.receive_latency_ms;
+    if (!Number.isFinite(latencyMs) || latencyMs < 0) return;
+    window.__recObLastReceiveLatency = {
+      market_ticker: String(msg.market_ticker || ''),
+      book_seq: msg.book_seq != null ? msg.book_seq : null,
+      ts_ms: msg.ts_ms != null ? Number(msg.ts_ms) : null,
+      receive_latency_ms: latencyMs,
+      received_ms: Date.now(),
+    };
+    if (!obLatencyTestEnabled()) return;
+    const tsMs = Number(msg.ts_ms);
+    if (!Number.isFinite(tsMs) || tsMs <= 0) return;
+    const appliedMs = Date.now();
+    obLatencyStats.last = {
+      market_ticker: String(msg.market_ticker || ''),
+      book_seq: msg.book_seq != null ? msg.book_seq : null,
+      ts_ms: tsMs,
+      applied_ms: appliedMs,
+      latency_ms: latencyMs,
+    };
+    obLatencyStats.samples.push(latencyMs);
+    if (obLatencyStats.samples.length > 500) obLatencyStats.samples.shift();
+    const sorted = obLatencyStats.samples.slice().sort(function (a, b) {
+      return a - b;
+    });
+    const n = sorted.length;
+    obLatencyStats.p50_ms = sorted[Math.floor(n * 0.5)] || latencyMs;
+    obLatencyStats.p95_ms = sorted[Math.floor(Math.min(n - 1, Math.floor(n * 0.95)))] || latencyMs;
+    window.__recObLatencyStats = obLatencyStats;
+    console.log(
+      '[ob-latency]',
+      obLatencyStats.last.market_ticker,
+      'seq=' + String(obLatencyStats.last.book_seq),
+      latencyMs + 'ms',
+      'p50=' + obLatencyStats.p50_ms + 'ms',
+      'p95=' + obLatencyStats.p95_ms + 'ms',
+      'n=' + n
+    );
+  }
+
   function cacheLiveOrderbookPayload(msg) {
     const mt = String((msg && msg.market_ticker) || '').trim();
     if (!mt || !msg) return;
+    stampReceiveLatencyMs(msg);
+    recordOrderbookCacheApplyLatency(msg);
+    enrichOrderbookLiveStats(msg, mt);
     lastLiveOrderbookByTicker[mt] = msg;
   }
 
@@ -982,6 +1308,7 @@
         lastHourlyRowsSignature = nextSig;
         patchHourlyRowQuotesInPlace();
       }
+      refreshExpandedOrderbookFairMarker();
     } else if (errEl) {
       errEl.classList.remove('u-hidden');
       errEl.textContent = 'No strike table data';
@@ -1044,6 +1371,7 @@
           probActive: s.probability,
           yesDiff: s.yes_diff != null && s.yes_diff !== '' ? Number(s.yes_diff) : null,
           noDiff: s.no_diff != null && s.no_diff !== '' ? Number(s.no_diff) : null,
+          fairPrice: parseDollarField(s.fair_price),
         }))
         .sort((a, b) => Number(a.strike || 0) - Number(b.strike || 0));
       pack.fetchFailed = false;
@@ -1100,6 +1428,7 @@
       trade_no: d.trade_no || { asks: [], bids: [] },
       last_trade: d.last_trade || {},
       book_seq: d.book_seq,
+      ts_ms: d.ts_ms,
     };
   }
 
@@ -1218,6 +1547,7 @@
 
   function applyLiveOrderbookWsNow(msg) {
     if (!msg || msg.type !== 'live_orderbook') return;
+    stampReceiveLatencyMs(msg);
     const mtStale = String(msg.market_ticker || '').trim();
     if (msg.orderbook_stale || msg.stale) {
       if (mtStale) delete lastLiveOrderbookByTicker[mtStale];
@@ -1342,6 +1672,7 @@
           r.probActive,
           r.yesDiff,
           r.noDiff,
+          r.fairPrice,
         ].join('|')
       )
       .join('||');
@@ -1713,6 +2044,7 @@
   /** Update ask/bid rows in place — spread row stays anchored in the viewport. */
   function patchOrderbookInto(containerEl, d, ticker) {
     if (!containerEl || !d) return false;
+    stampReceiveLatencyMs(d);
     const t = String(ticker || d.market_ticker || '');
     const scrollEl = containerEl.querySelector('[data-hourly-scroll="' + t + '"]');
     if (!scrollEl) return false;
@@ -1728,10 +2060,11 @@
     const bids = book.bids || [];
     const askLabelIdx = asks.length > 0 ? asks.length - 1 : -1;
     const bidLabelIdx = bids.length > 0 ? 0 : -1;
+    const fairMatch = buildFairMatch(asks, bids, ticker, mode);
 
-    asksBody.innerHTML = rowsToHtml(asks, 'Asks', askLabelIdx);
-    bidsBody.innerHTML = rowsToHtml(bids, 'Bids', bidLabelIdx);
-    midEl.innerHTML = buildMidCellInner(mode, d.last_trade);
+    asksBody.innerHTML = rowsToHtml(asks, 'Asks', askLabelIdx, 'asks', fairMatch);
+    bidsBody.innerHTML = rowsToHtml(bids, 'Bids', bidLabelIdx, 'bids', fairMatch);
+    midEl.innerHTML = buildMidCellInner(mode, d.last_trade, d.receive_latency_ms);
     midEl.className = mode === 'yes' ? 'mid-row mid-yes' : 'mid-row mid-no';
     containerEl.querySelectorAll('[data-hourly-book-side]').forEach((btn) => {
       const s = String(btn.getAttribute('data-hourly-book-side') || '');
@@ -1753,6 +2086,7 @@
       cacheLiveOrderbookPayload(d);
       return;
     }
+    stampReceiveLatencyMs(d);
     const st = hourlyExpandedState(ticker);
     const prevScroll = st && Number.isFinite(st.lastScrollTop) ? Number(st.lastScrollTop) : 0;
     const book = mode === 'yes' ? d.trade_yes : d.trade_no;
@@ -1760,6 +2094,7 @@
     const bids = book.bids || [];
     const askLabelIdx = asks.length > 0 ? asks.length - 1 : -1;
     const bidLabelIdx = bids.length > 0 ? 0 : -1;
+    const fairMatch = buildFairMatch(asks, bids, ticker, mode);
     const midClass = mode === 'yes' ? 'mid-row mid-yes' : 'mid-row mid-no';
     const bookYesOn = mode === 'yes' ? ' is-active' : '';
     const bookNoOn = mode === 'no' ? ' is-active' : '';
@@ -1786,17 +2121,17 @@
       '<table class="book-table">' +
       '<colgroup><col class="side"/><col class="price"/><col class="contracts"/><col class="total"/></colgroup>' +
       '<tbody class="asks">' +
-      rowsToHtml(asks, 'Asks', askLabelIdx) +
+      rowsToHtml(asks, 'Asks', askLabelIdx, 'asks', fairMatch) +
       '</tbody>' +
       '<tbody><tr><td colspan="4" class="' +
       midClass +
       '" data-hourly-mid="' +
       String(ticker || '') +
       '">' +
-      buildMidCellInner(mode, d.last_trade) +
+      buildMidCellInner(mode, d.last_trade, d.receive_latency_ms) +
       '</td></tr></tbody>' +
       '<tbody class="bids">' +
-      rowsToHtml(bids, 'Bids', bidLabelIdx) +
+      rowsToHtml(bids, 'Bids', bidLabelIdx, 'bids', fairMatch) +
       '</tbody>' +
       '</table></div></div>';
 
@@ -1820,6 +2155,7 @@
     }
     bindOrderbookSideButtons(containerEl, d, ticker);
     cacheLiveOrderbookPayload(d);
+    refreshExpandedOrderbookMidMom();
   }
 
   function disconnectStrikeTableDbWs() {
