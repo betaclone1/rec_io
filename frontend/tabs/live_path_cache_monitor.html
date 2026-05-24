@@ -80,6 +80,18 @@
       word-break: break-word;
     }
     .hidden { display: none !important; }
+    .table-wrap {
+      max-height: 520px;
+      overflow: auto;
+    }
+    tr.row-selected td {
+      background: rgba(88, 166, 255, 0.12);
+    }
+    #ladder-meta {
+      color: var(--muted);
+      margin-left: 8px;
+    }
+    #ladder-meta .hl { color: var(--accent); }
   </style>
 </head>
 <body>
@@ -104,16 +116,19 @@
     · <span id="event-count">0 events</span>
     · <span id="patch-count">0 patches</span>
     · age <span id="age">—</span>
+    · <span id="ladder-meta"></span>
     · <span id="redis-key"></span>
   </div>
 
   <div class="panels">
     <div class="panel" id="panel-table">
       <h2 id="panel-table-title">Row view</h2>
-      <table>
-        <thead><tr id="rows-head"></tr></thead>
-        <tbody id="rows-body"></tbody>
-      </table>
+      <div class="table-wrap">
+        <table>
+          <thead><tr id="rows-head"></tr></thead>
+          <tbody id="rows-body"></tbody>
+        </table>
+      </div>
     </div>
     <div class="panel">
       <h2>Snapshot / last event</h2>
@@ -171,7 +186,7 @@
     var source = q.get('source') || 'active_trades';
     document.getElementById('source').value = source;
     renderParamFields();
-    ['user_no', 'exchange', 'market', 'symbol', 'redis_key'].forEach(function (name) {
+    ['user_no', 'exchange', 'market', 'symbol', 'redis_key', 'ticker'].forEach(function (name) {
       var el = document.getElementById('p-' + name);
       if (el && q.has(name)) el.value = q.get(name);
     });
@@ -232,9 +247,27 @@
     renderTableHead(def);
   }
 
-  function setCell(tr, field, text) {
-    var el = tr.querySelector('[data-f="' + field + '"]');
-    if (el) el.textContent = text;
+  function selectedTickerFilter() {
+    var el = document.getElementById('p-ticker');
+    return el ? String(el.value || '').trim().toUpperCase() : '';
+  }
+
+  function updateLadderMeta(meta) {
+    var host = document.getElementById('ladder-meta');
+    if (!host) return;
+    if (!meta || typeof meta !== 'object') {
+      host.textContent = '';
+      return;
+    }
+    var bits = [];
+    if (meta.market_title) bits.push(String(meta.market_title));
+    if (meta.event_ticker) bits.push('event ' + meta.event_ticker);
+    if (meta.current_price != null) bits.push('spot ' + fmtNum(meta.current_price));
+    if (meta.ttc_seconds != null) bits.push('ttc ' + meta.ttc_seconds + 's');
+    if (meta.generation_id) bits.push('gen ' + String(meta.generation_id).slice(0, 8));
+    host.innerHTML = bits.length
+      ? bits.map(function (b) { return '<span class="hl">' + b + '</span>'; }).join(' · ')
+      : '';
   }
 
   function cellText(t, field) {
@@ -243,6 +276,17 @@
     var cols = rowColumns.filter(function (c) { return c.field === field; });
     if (cols.length && cols[0].numeric) return fmtNum(v);
     return String(v);
+  }
+
+  function applyRowHighlight(tr, row) {
+    if (!tr || !row) return;
+    var filter = selectedTickerFilter();
+    var ticker = String(row.ticker || '').trim().toUpperCase();
+    tr.classList.toggle('row-selected', !!(filter && ticker === filter));
+  }
+
+  function refreshTableRows(list) {
+    bootstrapTable(list || []);
   }
 
   function rowIdFrom(t) {
@@ -297,6 +341,7 @@
         var el = rows[id].querySelector('[data-f="' + col.field + '"]');
         if (el && el.textContent !== next) el.textContent = next;
       });
+      applyRowHighlight(rows[id], t);
       return rows[id];
     }
     var tr = document.createElement('tr');
@@ -309,6 +354,7 @@
     });
     document.getElementById('rows-body').appendChild(tr);
     rows[id] = tr;
+    applyRowHighlight(tr, t);
     return tr;
   }
 
@@ -317,6 +363,7 @@
     if (snap.age_sec != null) {
       document.getElementById('age').textContent = snap.age_sec + 's';
     }
+    updateLadderMeta(snap.ladder_meta || null);
   }
 
   function showJson(obj) {
@@ -398,6 +445,11 @@
       if (msg.age_sec != null) {
         document.getElementById('age').textContent = msg.age_sec + 's';
       }
+      if (msg.ladder_meta) updateLadderMeta(msg.ladder_meta);
+      var def = currentSourceDef();
+      if (def && def.row_mode && Array.isArray(msg.rows)) {
+        refreshTableRows(msg.rows);
+      }
       showJson(msg);
     }
   }
@@ -440,6 +492,7 @@
       document.getElementById('patch-count').textContent = '0 patches';
       document.getElementById('redis-key').textContent = '';
       document.getElementById('age').textContent = '—';
+      updateLadderMeta(null);
     }
     document.getElementById('ws-status').textContent = 'connecting…';
     var sock = new WebSocket(wsUrl());

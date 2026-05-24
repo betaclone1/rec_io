@@ -816,6 +816,7 @@ async def websocket_debug_live_path_cache(
     market: str = "15m",
     symbol: str = "BTC",
     redis_key: str = "",
+    ticker: str = "",
 ):
     """No auth — query params select cache source (local monitor UI)."""
     from backend.core.live_path_cache_monitor import parse_spec_from_query
@@ -827,6 +828,7 @@ async def websocket_debug_live_path_cache(
         market=market,
         symbol=symbol,
         redis_key=redis_key,
+        ticker=ticker,
     )
     await _serve_live_path_cache_monitor_ws(websocket, spec)
 

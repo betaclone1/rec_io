@@ -8906,7 +8906,7 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 | `no_prob_hourly` | `decimal(5,2)` | YES | - | Lookup negative leg (hourly TTC); NULL on 15m rows. |
 | `yes_prob_15m` | `decimal(5,2)` | YES | - | Lookup positive leg for 15m TTC. |
 | `no_prob_15m` | `decimal(5,2)` | YES | - | Lookup negative leg for 15m TTC. |
-| `fair_price` | `numeric(12,8)` | YES | - | YES fair in Kalshi dollars (positive lookup leg ÷ 100). Hourly rows use hourly `pos_prob`; 15m rows use `pos_prob_15m`. |
+| `fair_price` | `numeric(12,8)` | YES | - | YES win fair in Kalshi dollars (0–1). Spot above floor strike → `yes_prob_*` ÷ 100; at/below → `(100 - no_prob_*)` ÷ 100 for the row's market leg (hourly vs 15m). |
 | `yes_ask_dollars` / `no_ask_dollars` | `text` | YES | - | |
 | `yes_bid_dollars` / `no_bid_dollars` | `text` | YES | - | |
 | `yes_price_spread` / `no_price_spread` | `numeric(6,4)` | YES | - | |

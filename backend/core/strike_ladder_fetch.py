@@ -63,6 +63,42 @@ def _coerce_prob_float(v: Any) -> Optional[float]:
         return None
 
 
+def yes_fair_price_dollars_from_strike_row(
+    row: Dict[str, Any],
+    *,
+    market: str,
+    current_price: Any = None,
+) -> Optional[float]:
+    """
+    YES fair in Kalshi dollars (0–1): probability YES wins at settlement.
+
+    Spot above floor strike → ``yes_prob`` for the row's market (hourly or 15m leg).
+    At or below floor strike → ``1 - no_prob`` on the 0–100 probability scale.
+    """
+    cp = _coerce_prob_float(
+        current_price if current_price is not None else row.get("current_price")
+    )
+    strike = _coerce_prob_float(row.get("strike"))
+    if cp is None or strike is None:
+        return _coerce_prob_float(row.get("fair_price"))
+
+    mk = (market or "15m").strip().lower()
+    if mk == "15m":
+        yes_p = _coerce_prob_float(row.get("yes_prob_15m"))
+        no_p = _coerce_prob_float(row.get("no_prob_15m"))
+    else:
+        yes_p = _coerce_prob_float(row.get("yes_prob_hourly"))
+        no_p = _coerce_prob_float(row.get("no_prob_hourly"))
+
+    if strike < cp:
+        prob_pct = yes_p
+    else:
+        prob_pct = (100.0 - float(no_p)) if no_p is not None else None
+
+    if prob_pct is None:
+        return None
+    return round(float(prob_pct) / 100.0, 8)
+
 def find_ladder_strike_by_ticker(
     ladder: Optional[Dict[str, Any]],
     ticker: str,

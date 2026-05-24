@@ -29,6 +29,7 @@ async def live_path_cache_snapshot(
     market: str = Query("15m"),
     symbol: str = Query("BTC"),
     redis_key: str = Query(""),
+    ticker: str = Query(""),
 ) -> JSONResponse:
     spec = parse_spec_from_query(
         source=source,
@@ -37,6 +38,7 @@ async def live_path_cache_snapshot(
         market=market,
         symbol=symbol,
         redis_key=redis_key,
+        ticker=ticker,
     )
     err = validate_spec(spec)
     if err:

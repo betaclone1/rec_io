@@ -1489,18 +1489,19 @@ class StrikeTableGenerator:
                     no_prob_hourly_store = neg_prob if self.interval == "hourly" else None
                     yes_prob_15m_store = pos_prob_15m if pos_prob_15m is not None else None
                     no_prob_15m_store = neg_prob_15m if neg_prob_15m is not None else None
-                    if self.interval == "hourly":
-                        fair_price_store = (
-                            round(float(pos_prob) / 100.0, 8)
-                            if pos_prob is not None
-                            else None
-                        )
-                    else:
-                        fair_price_store = (
-                            round(float(pos_prob_15m) / 100.0, 8)
-                            if pos_prob_15m is not None
-                            else None
-                        )
+                    from backend.core.strike_ladder_fetch import yes_fair_price_dollars_from_strike_row
+
+                    fair_price_store = yes_fair_price_dollars_from_strike_row(
+                        {
+                            "strike": strike,
+                            "yes_prob_hourly": yes_prob_hourly_store,
+                            "no_prob_hourly": no_prob_hourly_store,
+                            "yes_prob_15m": yes_prob_15m_store,
+                            "no_prob_15m": no_prob_15m_store,
+                        },
+                        market=self.interval,
+                        current_price=current_price,
+                    )
 
                     # Get market data for this strike (Kalshi _dollars + fp-derived depth only)
                     yes_ask_dollars = None
@@ -1698,6 +1699,7 @@ class StrikeTableGenerator:
                                 "buffer": float(buffer),
                                 "buffer_pct": float(buffer_pct) if buffer_pct is not None else None,
                                 "probability": float(prob_out) if prob_out is not None else float(probability),
+                                "fair_price": fair_price_store,
                                 "yes_prob_hourly": float(yes_prob_hourly_store)
                                 if yes_prob_hourly_store is not None
                                 else None,

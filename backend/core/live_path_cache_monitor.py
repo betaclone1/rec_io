@@ -191,13 +191,35 @@ def _all_sources() -> List[LivePathSourceDef]:
         LivePathSourceDef(
             id=SOURCE_STRIKE_LADDER,
             label="Strike ladder",
-            description="Generated strike table rows in live_state.",
+            description="Generated strike table rows in live_state (hot-path strike table).",
             redis_key_template="rec_io:live_state:v1:strike_ladder:{exchange}:{market}:{symbol}",
             live_kind="strike_ladder",
+            row_mode=True,
+            row_id_field="ticker",
+            row_columns=(
+                LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("strike", "strike", numeric=True),
+                LivePathRowColumn("buffer", "buffer", numeric=True),
+                LivePathRowColumn("buffer_pct", "buf%", numeric=True),
+                LivePathRowColumn("probability", "prob", numeric=True),
+                LivePathRowColumn("fair_price", "fair", numeric=True),
+                LivePathRowColumn("yes_ask_dollars", "yes", numeric=True),
+                LivePathRowColumn("no_ask_dollars", "no", numeric=True),
+                LivePathRowColumn("active_side", "side"),
+                LivePathRowColumn("yes_diff", "yesΔ", numeric=True),
+                LivePathRowColumn("no_diff", "noΔ", numeric=True),
+            ),
             params=(
                 LivePathSourceParam("exchange", "Exchange", False, "kalshi"),
                 LivePathSourceParam("market", "Market", False, "15m"),
                 LivePathSourceParam("symbol", "Symbol", True, "BTC"),
+                LivePathSourceParam(
+                    "ticker",
+                    "Contract ticker (optional)",
+                    False,
+                    "",
+                    "KXBTCD-…",
+                ),
             ),
         ),
         LivePathSourceDef(
@@ -239,6 +261,7 @@ class LivePathMonitorSpec:
     market: str = "15m"
     symbol: str = "BTC"
     redis_key: str = ""
+    ticker: str = ""
     # active_trades WS only: trade_log = sell/pnl (history); active_trades_ui adds live prob.
     patch_scope: str = PATCH_SCOPE_ACTIVE_TRADES_UI
 
@@ -300,6 +323,7 @@ def parse_spec_from_query(
     market: str = "15m",
     symbol: str = "BTC",
     redis_key: str = "",
+    ticker: str = "",
     patch_scope: str = PATCH_SCOPE_ACTIVE_TRADES_UI,
 ) -> LivePathMonitorSpec:
     scope = str(patch_scope or PATCH_SCOPE_ACTIVE_TRADES_UI).strip()
@@ -312,6 +336,7 @@ def parse_spec_from_query(
         market=str(market or "15m").strip().lower(),
         symbol=str(symbol or "BTC").strip().upper(),
         redis_key=str(redis_key or "").strip(),
+        ticker=str(ticker or "").strip(),
         patch_scope=scope,
     )
 
@@ -445,20 +470,99 @@ def _compact_symbol_summary(data: Dict[str, Any]) -> Dict[str, Any]:
     return {k: data.get(k) for k in keys if k in data}
 
 
-def _compact_ladder_summary(data: Any) -> Dict[str, Any]:
-    rows = data if isinstance(data, list) else []
+def _strike_ladder_probability(row: Dict[str, Any], *, market: str) -> Any:
+    prob = row.get("probability")
+    if prob is not None:
+        return prob
+    mk = str(market or "15m").strip().lower()
+    if mk == "15m":
+        return row.get("probability_15m")
+    return row.get("probability_hourly")
+
+
+def _strike_ladder_row_for_monitor(
+    row: Dict[str, Any], *, market: str, current_price: Any = None
+) -> Dict[str, Any]:
+    ticker = str(row.get("ticker") or row.get("market_ticker") or "").strip()
+    if not ticker:
+        return {}
+    from backend.core.strike_ladder_fetch import yes_fair_price_dollars_from_strike_row
+
+    fair = yes_fair_price_dollars_from_strike_row(
+        row, market=market, current_price=current_price
+    )
+    return {
+        "ticker": ticker,
+        "strike": row.get("strike"),
+        "buffer": row.get("buffer"),
+        "buffer_pct": row.get("buffer_pct"),
+        "probability": _strike_ladder_probability(row, market=market),
+        "fair_price": fair,
+        "yes_ask_dollars": row.get("yes_ask_dollars"),
+        "no_ask_dollars": row.get("no_ask_dollars"),
+        "active_side": row.get("active_side"),
+        "yes_diff": row.get("yes_diff"),
+        "no_diff": row.get("no_diff"),
+    }
+
+
+def _strike_ladder_meta_from_envelope(env: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+    if not env:
+        return {}
+    data = env.get("data") or {}
+    meta = data.get("meta") if isinstance(data.get("meta"), dict) else {}
+    out: Dict[str, Any] = {
+        "generation_id": data.get("generation_id"),
+        "event_ticker": meta.get("event_ticker"),
+        "market_title": meta.get("market_title"),
+        "current_price": meta.get("current_price"),
+        "ttc_seconds": meta.get("ttc_seconds") if meta.get("ttc_seconds") is not None else meta.get("ttc"),
+        "market_status": meta.get("market_status"),
+        "strike_tier": meta.get("strike_tier"),
+    }
+    return {k: v for k, v in out.items() if v is not None}
+
+
+def _strike_ladder_rows_for_monitor(
+    spec: LivePathMonitorSpec, *, current_price: Any = None
+) -> List[Dict[str, Any]]:
+    mk = str(spec.market or "15m").strip().lower()
+    raw_rows = lsc.get_strike_ladder_rows(spec.exchange, mk, spec.symbol)
+    rows: List[Dict[str, Any]] = []
+    ticker_filter = str(spec.ticker or "").strip().upper()
+    for raw in raw_rows:
+        if not isinstance(raw, dict):
+            continue
+        row = _strike_ladder_row_for_monitor(raw, market=mk, current_price=current_price)
+        if not row:
+            continue
+        if ticker_filter:
+            row_ticker = str(row.get("ticker") or "").strip().upper()
+            if row_ticker != ticker_filter:
+                continue
+        rows.append(row)
+    rows.sort(key=lambda r: (r.get("strike") is None, float(r.get("strike") or 0)))
+    return rows
+
+
+def _compact_ladder_summary(rows: List[Dict[str, Any]], meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     preview = []
     for row in rows[:8]:
-        if isinstance(row, dict):
-            preview.append(
-                {
-                    "strike": row.get("strike"),
-                    "probability": row.get("probability") or row.get("probability_15m"),
-                    "yes_ask": row.get("yes_ask_dollars"),
-                    "buffer": row.get("buffer"),
-                }
-            )
-    return {"row_count": len(rows), "rows_preview": preview}
+        preview.append(
+            {
+                "strike": row.get("strike"),
+                "probability": row.get("probability"),
+                "yes_ask": row.get("yes_ask_dollars"),
+                "buffer": row.get("buffer"),
+                "ticker": row.get("ticker"),
+            }
+        )
+    out: Dict[str, Any] = {"row_count": len(rows), "rows_preview": preview}
+    if meta:
+        for k in ("event_ticker", "market_title", "current_price", "ttc_seconds"):
+            if meta.get(k) is not None:
+                out[k] = meta.get(k)
+    return out
 
 
 def build_snapshot(spec: LivePathMonitorSpec) -> Dict[str, Any]:
@@ -532,6 +636,26 @@ def build_snapshot(spec: LivePathMonitorSpec) -> Dict[str, Any]:
         return base
     if spec.source == SOURCE_REDIS_KEY:
         return {**base, **_read_raw_redis_key(key)}
+    if spec.source == SOURCE_STRIKE_LADDER:
+        env = _read_envelope_for_spec(spec)
+        meta = _strike_ladder_meta_from_envelope(env)
+        cp = meta.get("current_price")
+        rows = _strike_ladder_rows_for_monitor(spec, current_price=cp)
+        age = lsc.cache_age_sec(env) if env else float("inf")
+        base.update(
+            {
+                "record_count": len(rows),
+                "rows": rows,
+                "ladder_meta": meta,
+                "age_sec": round(age, 3) if age != float("inf") else None,
+                "summary": _compact_ladder_summary(rows, meta),
+            }
+        )
+        if env is not None:
+            base["envelope"] = env
+        else:
+            base["envelope"] = None
+        return base
     env = _read_envelope_for_spec(spec)
     if env is None:
         base["envelope"] = None
@@ -545,8 +669,6 @@ def build_snapshot(spec: LivePathMonitorSpec) -> Dict[str, Any]:
         summary = _compact_market_summary(data)
     elif spec.source == SOURCE_SYMBOL and isinstance(data, dict):
         summary = _compact_symbol_summary(data)
-    elif spec.source == SOURCE_STRIKE_LADDER:
-        summary = _compact_ladder_summary(data)
     base["envelope"] = env
     base["age_sec"] = round(age, 3) if age != float("inf") else None
     base["summary"] = summary
@@ -596,7 +718,7 @@ def _read_raw_redis_key(key: str) -> Dict[str, Any]:
 
 def build_cache_event_payload(spec: LivePathMonitorSpec, obj: Dict[str, Any]) -> Dict[str, Any]:
     snap = build_snapshot(spec)
-    return {
+    payload: Dict[str, Any] = {
         "type": "cache_event",
         "source": spec.source,
         "redis_key": spec.resolved_redis_key(),
@@ -610,6 +732,11 @@ def build_cache_event_payload(spec: LivePathMonitorSpec, obj: Dict[str, Any]) ->
         "record_count": snap.get("record_count"),
         "ts": time.time(),
     }
+    if snap.get("rows") is not None:
+        payload["rows"] = snap.get("rows")
+    if snap.get("ladder_meta") is not None:
+        payload["ladder_meta"] = snap.get("ladder_meta")
+    return payload
 
 
 def build_cache_init_payload(spec: LivePathMonitorSpec) -> Dict[str, Any]:
