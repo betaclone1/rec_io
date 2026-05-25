@@ -584,6 +584,27 @@ def _fanout_live_state_updated(payload: dict) -> None:
             )
         )
         return
+    _PORTFOLIO_KINDS = {"kalshi_orders", "kalshi_positions", "kalshi_fills"}
+    if kind in _PORTFOLIO_KINDS:
+        now = datetime.now(timezone.utc).isoformat()
+        _publish_to_db_changes_bus(
+            json.dumps(
+                {
+                    "type": "db_change",
+                    "database": "portfolio_" + kind.replace("kalshi_", ""),
+                    "data": {
+                        "timestamp": now,
+                        "change_data": {
+                            "schema": "portfolio",
+                            "table": kind,
+                            "op": payload.get("detail", "update"),
+                        },
+                    },
+                    "timestamp": now,
+                }
+            )
+        )
+        return
     mk = _market_from_live_state_key(parts)
     if not mk:
         return

@@ -27,10 +27,19 @@
   let hourlyHeaderLastFetchSymbol = '';
   let hourlyStrikeTableDbWsUnsub = null;
   let hourlyMonitorListDbWsUnsub = null;
+  let portfolioDbWsUnsub = null;
   /** Last `live_symbol_spot` frame (Redis → main `/ws/db_changes`); used when symbol/monitor changes. */
   let lastLiveSymbolSpotMsg = null;
   /** Renew server watch while a strike row book stays expanded (hot cache is not throttled). */
   let lastExpandedOrderbookEventTicker = '';
+
+  /** Cached portfolio positions keyed by ticker → {position_fp, avg_price_dollars}. */
+  let positionsByTicker = Object.create(null);
+  let positionsFetchInFlight = false;
+
+  /** Cached resting orders keyed by ticker → [{price_dollars, remaining_fp, side}]. */
+  let restingOrdersByTicker = Object.create(null);
+  let ordersFetchInFlight = false;
 
   /** Strikes with 100¢ on either side are hidden except this many kept around the money line. */
   const MIN_HOURLY_VISIBLE_AROUND_MONEY_LINE = 3;
@@ -374,6 +383,126 @@
   }
 
 
+  function fetchPortfolioPositions() {
+    if (positionsFetchInFlight) return;
+    positionsFetchInFlight = true;
+    tmMainApiFetch('/api/db/positions', { cache: 'no-store' })
+      .then(function (res) { return res && res.ok ? res.json() : null; })
+      .then(function (data) {
+        positionsFetchInFlight = false;
+        if (!data || !Array.isArray(data.positions)) return;
+        var next = Object.create(null);
+        data.positions.forEach(function (p) {
+          var tk = p.ticker || p.market_ticker;
+          var fp = Number(p.position_fp);
+          var cost = Number(p.position_cost_dollars);
+          if (!tk || !Number.isFinite(fp) || fp === 0) return;
+          var avg = Math.abs(cost / fp);
+          next[tk] = { position_fp: fp, avg_price_dollars: avg };
+        });
+        positionsByTicker = next;
+      })
+      .catch(function () { positionsFetchInFlight = false; });
+  }
+
+  function fetchRestingOrders() {
+    if (ordersFetchInFlight) return;
+    ordersFetchInFlight = true;
+    tmMainApiFetch('/api/db/orders', { cache: 'no-store' })
+      .then(function (res) { return res && res.ok ? res.json() : null; })
+      .then(function (data) {
+        ordersFetchInFlight = false;
+        if (!data || !Array.isArray(data.orders)) return;
+        var next = Object.create(null);
+        data.orders.forEach(function (o) {
+          if (o.status !== 'resting') return;
+          var sa = Number(o.subaccount || 1);
+          if (sa !== 1) return;
+          var tk = o.ticker || o.market_ticker;
+          if (!tk) return;
+          var rem = Number(o.remaining_count_fp);
+          if (!Number.isFinite(rem) || rem <= 0) return;
+          var side = o.orderbook_side;
+          var yesDollars = Number(o.yes_price_dollars);
+          var noDollars = o.no_price_dollars != null ? Number(o.no_price_dollars) : null;
+          if (!Number.isFinite(yesDollars)) return;
+          if (!next[tk]) next[tk] = [];
+          next[tk].push({
+            yes_price_dollars: yesDollars,
+            no_price_dollars: Number.isFinite(noDollars) ? noDollars : 1 - yesDollars,
+            remaining_fp: rem,
+            side: side,
+          });
+        });
+        restingOrdersByTicker = next;
+      })
+      .catch(function () { ordersFetchInFlight = false; });
+  }
+
+  function restingOrdersForTicker(ticker) {
+    return restingOrdersByTicker[String(ticker || '').trim()] || [];
+  }
+
+  function restingOrderBadgeHtml(remaining, side) {
+    var sign = side === 'bid' ? '+' : '-';
+    var qty = trimFracZeros(remaining.toFixed(2));
+    return '<span class="ob-resting-badge"><span class="ob-resting-clock">\u25F7</span>' + sign + qty + '</span>';
+  }
+
+  function buildRestingByPrice(orders, bookMode) {
+    var byPrice = Object.create(null);
+    if (!orders || !orders.length) return byPrice;
+    orders.forEach(function (o) {
+      var priceDollars = bookMode === 'no' ? o.no_price_dollars : o.yes_price_dollars;
+      var key = Math.round(priceDollars * 100);
+      if (byPrice[key]) {
+        byPrice[key].remaining_fp += o.remaining_fp;
+      } else {
+        byPrice[key] = { remaining_fp: o.remaining_fp, side: o.side };
+      }
+    });
+    return byPrice;
+  }
+
+  function positionForTicker(ticker) {
+    return positionsByTicker[String(ticker || '').trim()] || null;
+  }
+
+  function positionBadgeHtml(pos, bookMode) {
+    if (!pos) return '';
+    var fp = pos.position_fp;
+    var avgYes = pos.avg_price_dollars;
+    if (!Number.isFinite(avgYes) || avgYes <= 0 || avgYes >= 1) return '';
+    var avgCents = Math.round((bookMode === 'no' ? 1 - avgYes : avgYes) * 100);
+    var sign = fp > 0 ? '+' : '';
+    var qty = trimFracZeros(Math.abs(fp).toFixed(2));
+    return '<span class="ob-position-badge">' + sign + (fp > 0 ? '' : '\u2212') + qty + ' @ ' + avgCents + '\u00A2</span>';
+  }
+
+  function positionAvgBookPrice(pos, bookMode) {
+    if (!pos) return null;
+    var avgYes = pos.avg_price_dollars;
+    if (!Number.isFinite(avgYes) || avgYes <= 0 || avgYes >= 1) return null;
+    return bookMode === 'no' ? 1 - avgYes : avgYes;
+  }
+
+  function closestPositionRowMatch(rows, pos, bookMode) {
+    var avgBook = positionAvgBookPrice(pos, bookMode);
+    if (avgBook == null || !rows || !rows.length) return { idx: -1, dist: Infinity };
+    var bestIdx = -1;
+    var bestDist = Infinity;
+    for (var i = 0; i < rows.length; i++) {
+      var p = Number(rows[i].price || 0);
+      if (!Number.isFinite(p)) continue;
+      var d = Math.abs(p - avgBook);
+      if (d < bestDist) {
+        bestDist = d;
+        bestIdx = i;
+      }
+    }
+    return { idx: bestIdx, dist: bestDist };
+  }
+
   function trimFracZeros(s) {
     if (!s.includes('.')) return s;
     return s.replace(/\.?0+$/, '');
@@ -537,7 +666,7 @@
     );
   }
 
-  function rowsToHtml(rows, sideLabel, labelRowIndex, section, fairMatch) {
+  function rowsToHtml(rows, sideLabel, labelRowIndex, section, fairMatch, posIdx, pos, restingByPrice) {
     return (rows || [])
       .map((r, i) => {
         const p = Number(r.price || 0);
@@ -549,7 +678,11 @@
           fairMatch && fairMatch.section === section && fairMatch.index === i;
         const priceCls = isFair ? 'book-price-cell book-price-cell--fair' : 'book-price-cell';
         const priceInner = fmtBookPriceCell(p, fairMatch, section, i);
-        return `<tr><td class="${sideCls}">${side}</td><td class="${priceCls}">${priceInner}</td><td>${fmtContracts(c)}</td><td>${fmtTotalDollars(t)}</td></tr>`;
+        const posBadge = i === posIdx ? positionBadgeHtml(pos, mode) : '';
+        const priceKey = Math.round(p * 100);
+        const resting = restingByPrice && restingByPrice[priceKey];
+        const restBadge = resting ? restingOrderBadgeHtml(resting.remaining_fp, resting.side) : '';
+        return `<tr><td class="${sideCls}">${side}</td><td class="${priceCls}">${priceInner}</td><td class="book-contracts-cell">${posBadge}<span class="book-contracts-val">${fmtContracts(c)}${restBadge}</span></td><td>${fmtTotalDollars(t)}</td></tr>`;
       })
       .join('');
   }
@@ -1493,6 +1626,9 @@
       void refreshOrderbookWatchAndSnapshot('', {});
       return;
     }
+    fetchPortfolioPositions();
+    fetchRestingOrders();
+    connectPortfolioDbWs();
     void refreshOrderbookWatchAndSnapshot(mt, { immediateFetch: true });
   }
 
@@ -2062,9 +2198,15 @@
     const askLabelIdx = asks.length > 0 ? asks.length - 1 : -1;
     const bidLabelIdx = bids.length > 0 ? 0 : -1;
     const fairMatch = buildFairMatch(asks, bids, ticker, mode);
+    const pos = positionForTicker(ticker);
+    const askMatch = closestPositionRowMatch(asks, pos, mode);
+    const bidMatch = closestPositionRowMatch(bids, pos, mode);
+    const askPosIdx = askMatch.dist <= bidMatch.dist ? askMatch.idx : -1;
+    const bidPosIdx = bidMatch.dist < askMatch.dist ? bidMatch.idx : -1;
+    const resting = buildRestingByPrice(restingOrdersForTicker(ticker), mode);
 
-    asksBody.innerHTML = rowsToHtml(asks, 'Asks', askLabelIdx, 'asks', fairMatch);
-    bidsBody.innerHTML = rowsToHtml(bids, 'Bids', bidLabelIdx, 'bids', fairMatch);
+    asksBody.innerHTML = rowsToHtml(asks, 'Asks', askLabelIdx, 'asks', fairMatch, askPosIdx, pos, resting);
+    bidsBody.innerHTML = rowsToHtml(bids, 'Bids', bidLabelIdx, 'bids', fairMatch, bidPosIdx, pos, resting);
     midEl.innerHTML = buildMidCellInner(mode, d.last_trade, d.receive_latency_ms);
     midEl.className = mode === 'yes' ? 'mid-row mid-yes' : 'mid-row mid-no';
     containerEl.querySelectorAll('[data-hourly-book-side]').forEach((btn) => {
@@ -2096,6 +2238,12 @@
     const askLabelIdx = asks.length > 0 ? asks.length - 1 : -1;
     const bidLabelIdx = bids.length > 0 ? 0 : -1;
     const fairMatch = buildFairMatch(asks, bids, ticker, mode);
+    const pos = positionForTicker(ticker);
+    const askMatch = closestPositionRowMatch(asks, pos, mode);
+    const bidMatch = closestPositionRowMatch(bids, pos, mode);
+    const askPosIdx = askMatch.dist <= bidMatch.dist ? askMatch.idx : -1;
+    const bidPosIdx = bidMatch.dist < askMatch.dist ? bidMatch.idx : -1;
+    const resting = buildRestingByPrice(restingOrdersForTicker(ticker), mode);
     const midClass = mode === 'yes' ? 'mid-row mid-yes' : 'mid-row mid-no';
     const bookYesOn = mode === 'yes' ? ' is-active' : '';
     const bookNoOn = mode === 'no' ? ' is-active' : '';
@@ -2122,7 +2270,7 @@
       '<table class="book-table">' +
       '<colgroup><col class="side"/><col class="price"/><col class="contracts"/><col class="total"/></colgroup>' +
       '<tbody class="asks">' +
-      rowsToHtml(asks, 'Asks', askLabelIdx, 'asks', fairMatch) +
+      rowsToHtml(asks, 'Asks', askLabelIdx, 'asks', fairMatch, askPosIdx, pos, resting) +
       '</tbody>' +
       '<tbody><tr><td colspan="4" class="' +
       midClass +
@@ -2132,7 +2280,7 @@
       buildMidCellInner(mode, d.last_trade, d.receive_latency_ms) +
       '</td></tr></tbody>' +
       '<tbody class="bids">' +
-      rowsToHtml(bids, 'Bids', bidLabelIdx, 'bids', fairMatch) +
+      rowsToHtml(bids, 'Bids', bidLabelIdx, 'bids', fairMatch, bidPosIdx, pos, resting) +
       '</tbody>' +
       '</table></div></div>';
 
@@ -2192,6 +2340,31 @@
             try {
               window.dispatchEvent(new CustomEvent('rec:tm-db-monitor-list'));
             } catch (e3) {}
+          }
+        } catch (e2) {}
+      },
+    });
+  }
+
+  function connectPortfolioDbWs() {
+    if (!tmHasAuthSession()) return;
+    if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+      return;
+    }
+    if (portfolioDbWsUnsub) return;
+    portfolioDbWsUnsub = window.recRealtimeWsCoordinator.subscribe(dbChangesWebSocketUrl(), {
+      onlyDbStreams: ['portfolio_orders', 'portfolio_positions', 'portfolio_fills'],
+      onMessage: function (event) {
+        try {
+          const parse =
+            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+          const msg = parse;
+          if (msg && msg.type === 'db_change') {
+            if (msg.database === 'portfolio_orders') {
+              fetchRestingOrders();
+            } else if (msg.database === 'portfolio_positions') {
+              fetchPortfolioPositions();
+            }
           }
         } catch (e2) {}
       },

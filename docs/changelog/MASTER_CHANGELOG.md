@@ -18,18 +18,18 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Plans: `subaccount_tracking_d3aad9b4`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260525_0830_portfolio_subaccount_column.up.sql`, `.down.sql`,  
   `scripts/migrations/20260525_0855_trades_subaccount_column.up.sql`, `.down.sql`
-- [ ] Apply pending migrations from repo root before restart:  
+- [x] Apply pending migrations from repo root before restart:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health/logs for `main_app`, `trade_executor`, `kalshi_account_sync_*`, `market_watchdog_ws_kalshi`; confirm hot-path and subaccount changes are live.
-- [ ] Record release in DB:  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh`
+- [x] Verify health/logs for `main_app`, `trade_executor`, `kalshi_account_sync_*`, `market_watchdog_ws_kalshi`; confirm hot-path and subaccount changes are live.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.2`
 
 ---

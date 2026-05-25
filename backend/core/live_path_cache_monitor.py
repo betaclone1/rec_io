@@ -122,6 +122,7 @@ def _all_sources() -> List[LivePathSourceDef]:
                 LivePathRowColumn("ticker", "ticker"),
                 LivePathRowColumn("subaccount", "sa"),
                 LivePathRowColumn("position_fp", "position_fp"),
+                LivePathRowColumn("volume_fp", "volume"),
                 LivePathRowColumn("position_cost_dollars", "position_cost_dollars"),
                 LivePathRowColumn("realized_pnl_dollars", "realized_pnl_dollars"),
                 LivePathRowColumn("last_updated_ts", "updated"),

@@ -183,6 +183,15 @@ async def get_fills(request: Request, response: Response, trading_mode: Optional
     return await _get(request, path)
 
 
+@read_api_passthrough_router.get("/api/db/orders")
+async def get_orders(request: Request, response: Response, trading_mode: Optional[str] = None):
+    _ = response
+    path = "/api/db/orders"
+    if trading_mode:
+        path += f"?trading_mode={quote_plus(str(trading_mode))}"
+    return await _get(request, path)
+
+
 @read_api_passthrough_router.get("/api/db/positions")
 async def get_positions(request: Request, response: Response, trading_mode: Optional[str] = None):
     _ = response

@@ -472,7 +472,6 @@ def write_positions_to_db():
                 market_exposure_dollars TEXT,
                 realized_pnl_dollars TEXT,
                 fees_paid_dollars TEXT,
-                total_traded_fp NUMERIC(12,2),
                 position_fp NUMERIC(12,2)
             )
         """)
@@ -490,7 +489,6 @@ def write_positions_to_db():
                 market_exposure_dollars = p.get("market_exposure_dollars")
                 realized_pnl_dollars = p.get("realized_pnl_dollars")
                 fees_paid_dollars = p.get("fees_paid_dollars")
-                total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
                 position_fp = _fp_to_numeric(p.get("position_fp"))
 
                 subaccount = int(p.get("subaccount") or p.get("subaccount_number") or 1)
@@ -498,11 +496,11 @@ def write_positions_to_db():
                     INSERT INTO users.positions_0001
                     (ticker, subaccount, last_updated_ts, raw_json,
                      total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
-                     total_traded_fp, position_fp)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                     position_fp)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """, (ticker, subaccount, last_updated_ts, raw_json,
                       total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
-                      total_traded_fp, position_fp))
+                      position_fp))
             except Exception as e:
                 print(f"❌ Failed to insert position {p.get('ticker')}: {e}")
 

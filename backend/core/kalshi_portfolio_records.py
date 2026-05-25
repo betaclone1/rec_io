@@ -213,7 +213,9 @@ def normalize_position_record(raw: dict) -> Optional[Dict[str, Any]]:
         "fees_paid_dollars": _position_dollar_field(
             raw, dollars_keys=("fees_paid_dollars",), centi_keys=("fees_paid",)
         ),
-        "total_traded_fp": _serialize_value(fp_to_numeric(raw.get("total_traded_fp"))),
+        "volume_fp": _serialize_value(
+            fp_to_numeric(raw.get("volume_fp") or raw.get("total_traded_fp"))
+        ),
         "position_fp": _fp_display(raw, position_fp),
         "position": raw.get("position"),
         "raw_json": raw if isinstance(raw.get("raw_json"), dict) else raw,

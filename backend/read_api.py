@@ -555,6 +555,21 @@ async def get_fills(response: Response, trading_mode: Optional[str] = None):
         return {"fills": []}
 
 
+@app.get("/api/db/orders")
+async def get_orders(response: Response, trading_mode: Optional[str] = None):
+    _api_no_store_headers(response)
+    if trading_mode == "paper":
+        return {"orders": []}
+    try:
+        from backend.core import live_state_kalshi_portfolio as lskp
+
+        slot = resolved_tenant_user_no_for_app()
+        rows = lskp.list_orders(slot)
+        return {"orders": [dict(r) for r in rows]}
+    except Exception:
+        return {"orders": []}
+
+
 @app.get("/api/db/positions")
 async def get_positions(response: Response, trading_mode: Optional[str] = None):
     _api_no_store_headers(response)
@@ -573,9 +588,10 @@ async def get_positions(response: Response, trading_mode: Optional[str] = None):
                     d["position"] = int(round(float(d["position_fp"])))
                 except (TypeError, ValueError):
                     pass
-            if d.get("total_traded_fp") is not None:
+            vol = d.get("volume_fp") or d.get("total_traded_fp")
+            if vol is not None:
                 try:
-                    d["total_traded"] = int(round(float(d["total_traded_fp"])))
+                    d["total_traded"] = int(round(float(vol)))
                 except (TypeError, ValueError):
                     pass
             out.append(d)

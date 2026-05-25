@@ -624,6 +624,7 @@ def position_row_for_monitor(rec: Dict[str, Any]) -> Dict[str, Any]:
         "ticker": rec.get("ticker"),
         "subaccount": rec.get("subaccount", _SUBACCOUNT_DEFAULT),
         "position_fp": rec.get("position_fp"),
+        "volume_fp": rec.get("volume_fp"),
         "position_cost_dollars": rec.get("position_cost_dollars"),
         "realized_pnl_dollars": rec.get("realized_pnl_dollars"),
         "last_updated_ts": rec.get("last_updated_ts"),

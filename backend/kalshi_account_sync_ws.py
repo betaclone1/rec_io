@@ -1556,10 +1556,14 @@ def _notify_trade_manager_positions_updated(payload):
 
 
 def _fetch_portfolio_positions_rest() -> Optional[dict]:
-    """GET /portfolio/positions (no DB writes). Returns None on failure."""
+    """GET /portfolio/positions (no DB writes). Returns None on failure.
+
+    Kalshi REST scopes to subaccount 0 (CASH) when no subaccount is given.
+    Trading happens on subaccount 1, so we must pass it explicitly.
+    """
     method = "GET"
     path = "/portfolio/positions"
-    query = "?limit=200"
+    query = "?limit=200&subaccount=1"
     timestamp = str(int(time.time() * 1000))
     url = f"{get_base_url()}{path}{query}"
     full_path_for_signature = _kalshi_trade_api_v2_signing_path(path + query)
