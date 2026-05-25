@@ -32,6 +32,14 @@ def tradeflow_trigger_min_interval_sec() -> float:
         return 0.2
 
 
+def tradeflow_orderbook_trigger_min_interval_sec() -> float:
+    raw = os.getenv("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", "0.05").strip()
+    try:
+        return max(0.01, float(raw))
+    except (TypeError, ValueError):
+        return 0.05
+
+
 class TradeflowLiveStateCoalescer:
     """Rate-limit evaluate callbacks per (symbol, market) or special keys."""
 
@@ -61,6 +69,19 @@ def parse_tradeflow_symbol_market(payload: dict) -> List[Tuple[str, str]]:
     """Extract (symbol, market) pairs from a live_state_updated message."""
     kind = str(payload.get("kind") or "").strip()
     if kind == "orderbook":
+        mt = str(payload.get("market_ticker") or "").strip()
+        if not mt:
+            return []
+        from backend.core.orderbook_hot_publish_registry import (
+            is_hot_tradeflow_orderbook_ticker,
+            symbol_market_from_orderbook_ticker,
+        )
+
+        if not is_hot_tradeflow_orderbook_ticker(mt):
+            return []
+        sym, mkt = symbol_market_from_orderbook_ticker(mt)
+        if sym and mkt:
+            return [(sym, mkt)]
         return []
     key = str(payload.get("key") or "")
     parts = key.split(":")
@@ -103,6 +124,7 @@ def start_tradeflow_live_state_listener(
             return True
 
         coalescer = TradeflowLiveStateCoalescer(tradeflow_trigger_min_interval_sec())
+        ob_coalescer = TradeflowLiveStateCoalescer(tradeflow_orderbook_trigger_min_interval_sec())
 
         def _worker() -> None:
             from backend.core.live_state_cache import UPDATED_CHANNEL, redis_client_optional
@@ -141,6 +163,14 @@ def start_tradeflow_live_state_listener(
                     if kind == "active_trades":
                         if coalescer.should_fire("__ACTIVE_TRADES__", "all"):
                             fired = True
+                    elif kind == "orderbook":
+                        for sym, mkt in parse_tradeflow_symbol_market(payload):
+                            if symbol_market_filter and not symbol_market_filter(
+                                sym, mkt
+                            ):
+                                continue
+                            if ob_coalescer.should_fire(sym, mkt):
+                                fired = True
                     else:
                         for sym, mkt in parse_tradeflow_symbol_market(payload):
                             if symbol_market_filter and not symbol_market_filter(

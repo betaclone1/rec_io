@@ -77,6 +77,26 @@ def centi_cents_to_dollar_str(v: Any) -> Optional[str]:
         return None
 
 
+_SUBACCOUNT_DEFAULT = 1
+
+
+def _extract_subaccount(raw: dict) -> int:
+    """Return integer subaccount from raw WS/REST payload.
+
+    Kalshi uses ``subaccount`` on fills/positions and ``subaccount_number``
+    on orders.  Missing / None → primary (1).
+    """
+    v = raw.get("subaccount")
+    if v is None:
+        v = raw.get("subaccount_number")
+    if v is None:
+        return _SUBACCOUNT_DEFAULT
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return _SUBACCOUNT_DEFAULT
+
+
 def _fp_display(raw: dict, position_fp: Optional[Decimal]) -> Any:
     for k in ("position_fp", "position"):
         if k in raw and isinstance(raw.get(k), str):
@@ -175,6 +195,7 @@ def normalize_position_record(raw: dict) -> Optional[Dict[str, Any]]:
         position_fp = fp_to_numeric(raw.get("position"))
     out: Dict[str, Any] = {
         "ticker": str(ticker),
+        "subaccount": _extract_subaccount(raw),
         "last_updated_ts": raw.get("last_updated_ts"),
         "total_traded_dollars": _position_dollar_field(
             raw, dollars_keys=("total_traded_dollars",), centi_keys=()
@@ -211,6 +232,7 @@ def normalize_fill_record(raw: dict) -> Optional[Dict[str, Any]]:
         "trade_id": str(trade_id),
         "ticker": raw.get("ticker") or raw.get("market_ticker"),
         "order_id": raw.get("order_id"),
+        "subaccount": _extract_subaccount(raw),
         "outcome_side": out_side,
         "orderbook_side": ob_side,
         "action": raw.get("action"),
@@ -240,6 +262,7 @@ def normalize_order_record(raw: dict) -> Optional[Dict[str, Any]]:
         "order_id": str(order_id),
         "user_id": raw.get("user_id"),
         "ticker": raw.get("ticker"),
+        "subaccount": _extract_subaccount(raw),
         "status": raw.get("status"),
         "action": raw.get("action"),
         "outcome_side": out_side,
@@ -270,12 +293,13 @@ def upsert_fill_row(cur, fills_tbl: str, rec: Dict[str, Any]) -> None:
     cur.execute(
         f"""
         INSERT INTO {fills_tbl}
-        (trade_id, ticker, order_id, outcome_side, orderbook_side, action, count_fp,
+        (trade_id, ticker, order_id, subaccount, outcome_side, orderbook_side, action, count_fp,
          yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (trade_id) DO UPDATE SET
             ticker = EXCLUDED.ticker,
             order_id = EXCLUDED.order_id,
+            subaccount = EXCLUDED.subaccount,
             outcome_side = EXCLUDED.outcome_side,
             orderbook_side = EXCLUDED.orderbook_side,
             action = EXCLUDED.action,
@@ -290,6 +314,7 @@ def upsert_fill_row(cur, fills_tbl: str, rec: Dict[str, Any]) -> None:
             rec.get("trade_id"),
             rec.get("ticker"),
             rec.get("order_id"),
+            rec.get("subaccount", _SUBACCOUNT_DEFAULT),
             rec.get("outcome_side"),
             rec.get("orderbook_side"),
             rec.get("action"),
@@ -308,16 +333,18 @@ def upsert_order_row(cur, orders_tbl: str, rec: Dict[str, Any]) -> None:
     cur.execute(
         f"""
         INSERT INTO {orders_tbl}
-        (order_id, user_id, ticker, status, action, outcome_side, orderbook_side, type, yes_price_dollars, no_price_dollars,
+        (order_id, user_id, ticker, subaccount, status, action, outcome_side, orderbook_side, type,
+         yes_price_dollars, no_price_dollars,
          initial_count_fp, remaining_count_fp, fill_count_fp,
          created_time, expiration_time, last_update_time, client_order_id, order_group_id, queue_position,
          self_trade_prevention_type,
          maker_fees_dollars, taker_fees_dollars, maker_fill_cost_dollars, taker_fill_cost_dollars,
          raw_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)
         ON CONFLICT (order_id) DO UPDATE SET
             status = EXCLUDED.status,
             action = EXCLUDED.action,
+            subaccount = EXCLUDED.subaccount,
             outcome_side = EXCLUDED.outcome_side,
             orderbook_side = EXCLUDED.orderbook_side,
             ticker = EXCLUDED.ticker,
@@ -345,6 +372,7 @@ def upsert_order_row(cur, orders_tbl: str, rec: Dict[str, Any]) -> None:
             rec.get("order_id"),
             rec.get("user_id"),
             rec.get("ticker"),
+            rec.get("subaccount", _SUBACCOUNT_DEFAULT),
             rec.get("status"),
             rec.get("action"),
             rec.get("outcome_side"),

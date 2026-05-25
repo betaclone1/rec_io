@@ -1429,6 +1429,7 @@
       last_trade: d.last_trade || {},
       book_seq: d.book_seq,
       ts_ms: d.ts_ms,
+      redis_written_ms: d.redis_written_ms,
     };
   }
 

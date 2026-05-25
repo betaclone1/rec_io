@@ -68,6 +68,9 @@ logger = logging.getLogger("redis_switchboard")
 
 STREAM_LIVE_SYMBOL_STATUS = "live_symbol_status"
 
+# Last book_seq fanout per ticker (skip stale switchboard rebuilds).
+_last_ob_fanout_seq: dict[str, int] = {}
+
 # NOTIFY from these tables only fans out ``live_symbol_spot`` (no separate db_change).
 _PRICE_CHANGE_NOTIFY_TABLES = frozenset(
     {"price_change_btc", "price_change_eth", "price_change_sol", "price_change_xrp"}
@@ -520,6 +523,32 @@ def _fanout_live_state_updated(payload: dict) -> None:
         except Exception:
             pass
         event_seq = payload.get("book_seq")
+        if event_seq is not None:
+            try:
+                seq_i = int(event_seq)
+                last = _last_ob_fanout_seq.get(mt)
+                if last is not None and seq_i <= last:
+                    return
+                _last_ob_fanout_seq[mt] = seq_i
+            except (TypeError, ValueError):
+                pass
+        prebuilt: Optional[str] = None
+        raw_prebuild = os.getenv("ORDERBOOK_PREBUILD_WS_PAYLOAD", "1").strip().lower()
+        if raw_prebuild not in ("0", "false", "no", "off"):
+            try:
+                from backend.core.trade_monitor_orderbook_keys import (
+                    trade_monitor_orderbook_ws_redis_key,
+                )
+
+                r = get_redis_client()
+                prebuilt = r.get(trade_monitor_orderbook_ws_redis_key(mt))
+                if isinstance(prebuilt, bytes):
+                    prebuilt = prebuilt.decode("utf-8", errors="replace")
+            except Exception:
+                prebuilt = None
+        if prebuilt:
+            _publish_to_db_changes_bus(prebuilt)
+            return
         try:
             from backend.core.trade_monitor_live_orderbook_payload import (
                 build_live_orderbook_ws_payload,

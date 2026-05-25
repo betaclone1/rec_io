@@ -360,6 +360,7 @@ def write_fills_to_db():
                 trade_id TEXT PRIMARY KEY,
                 ticker TEXT,
                 order_id TEXT,
+                subaccount INTEGER NOT NULL DEFAULT 1,
                 outcome_side TEXT,
                 orderbook_side TEXT,
                 action TEXT,
@@ -385,13 +386,14 @@ def write_fills_to_db():
             created_time = fill.get("created_time")
             raw_json = json.dumps(fill)
 
+            subaccount = fill.get("subaccount") or fill.get("subaccount_number") or 1
             try:
                 c.execute("""
                     INSERT INTO users.fills_0001
-                    (trade_id, ticker, order_id, outcome_side, orderbook_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    (trade_id, ticker, order_id, subaccount, outcome_side, orderbook_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                     ON CONFLICT (trade_id) DO NOTHING
-                """, (trade_id, ticker, order_id, out_side, ob_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
+                """, (trade_id, ticker, order_id, int(subaccount), out_side, ob_side, action, count_fp, yes_price_dollars, no_price_dollars, is_taker, created_time, raw_json))
             except Exception as e:
                 print(f"❌ Failed to insert fill {trade_id}: {e}")
 
@@ -463,6 +465,7 @@ def write_positions_to_db():
             CREATE TABLE IF NOT EXISTS users.positions_0001 (
                 id SERIAL PRIMARY KEY,
                 ticker TEXT,
+                subaccount INTEGER NOT NULL DEFAULT 1,
                 last_updated_ts TEXT,
                 raw_json TEXT,
                 total_traded_dollars TEXT,
@@ -490,13 +493,14 @@ def write_positions_to_db():
                 total_traded_fp = _fp_to_numeric(p.get("total_traded_fp"))
                 position_fp = _fp_to_numeric(p.get("position_fp"))
 
+                subaccount = int(p.get("subaccount") or p.get("subaccount_number") or 1)
                 c.execute("""
                     INSERT INTO users.positions_0001
-                    (ticker, last_updated_ts, raw_json,
+                    (ticker, subaccount, last_updated_ts, raw_json,
                      total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
                      total_traded_fp, position_fp)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
-                """, (ticker, last_updated_ts, raw_json,
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (ticker, subaccount, last_updated_ts, raw_json,
                       total_traded_dollars, market_exposure_dollars, realized_pnl_dollars, fees_paid_dollars,
                       total_traded_fp, position_fp))
             except Exception as e:

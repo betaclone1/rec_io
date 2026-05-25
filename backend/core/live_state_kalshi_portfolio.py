@@ -15,6 +15,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from backend.core.kalshi_portfolio_records import (
+    _SUBACCOUNT_DEFAULT,
     _strip_legacy_position_cost_fields,
     _ws_inner,
     normalize_fill_record,
@@ -88,6 +89,11 @@ def tenant_kalshi_orders_key(user_no: str) -> str:
 def tenant_kalshi_fills_key(user_no: str) -> str:
     slot = _norm_slot(str(user_no))
     return f"{KEY_PREFIX}:tenant:{slot}:kalshi:fills"
+
+
+def _position_hash_field(ticker: str, subaccount: int = _SUBACCOUNT_DEFAULT) -> str:
+    """Composite hash field for positions: ``{ticker}:{subaccount}``."""
+    return f"{ticker}:{subaccount}"
 
 
 def _monitor_row_for_kind(kind: str, rec: Dict[str, Any]) -> Optional[Dict[str, Any]]:
@@ -211,27 +217,27 @@ def upsert_position_from_ws(
 ) -> bool:
     msg = _ws_inner(ws_outer)
     rec = normalize_position_record(msg)
-    key = tenant_kalshi_positions_key(user_no)
-    ticker = msg.get("market_ticker") or msg.get("ticker")
-    if not ticker:
-        return False
-    field = str(ticker)
     if rec is None:
         return False
+    key = tenant_kalshi_positions_key(user_no)
+    ticker = rec.get("ticker") or ""
+    if not ticker:
+        return False
+    field = _position_hash_field(ticker, rec.get("subaccount", _SUBACCOUNT_DEFAULT))
     if not rec.get("last_updated_ts") and last_updated_ts:
         rec["last_updated_ts"] = last_updated_ts
     rec["updated_at"] = time.time()
     return _hset_record(user_no, key, field, rec, kind=KIND_POSITIONS)
 
 
-def remove_position(user_no: str, ticker: str) -> bool:
+def remove_position(user_no: str, ticker: str, subaccount: int = _SUBACCOUNT_DEFAULT) -> bool:
     if not live_state_kalshi_portfolio_enabled():
         return False
     r = redis_client_optional()
     if not r or not ticker:
         return False
     key = tenant_kalshi_positions_key(user_no)
-    field = str(ticker)
+    field = _position_hash_field(str(ticker), subaccount)
     try:
         r.hdel(key, field)
         _publish_portfolio_updated(
@@ -243,12 +249,16 @@ def remove_position(user_no: str, ticker: str) -> bool:
         )
         return True
     except Exception as exc:
-        logger.warning("portfolio position remove failed ticker=%s: %s", ticker, exc)
+        logger.warning("portfolio position remove failed ticker=%s sa=%s: %s", ticker, subaccount, exc)
         return False
 
 
 def prune_positions_to_rest_tickers(user_no: str, rest_tickers: List[str]) -> int:
-    """Drop hot-state rows whose ticker is absent from REST GET /portfolio/positions."""
+    """Drop hot-state rows whose ticker is absent from REST GET /portfolio/positions.
+
+    Hash fields are ``{ticker}:{subaccount}`` -- we extract the ticker part
+    for the membership check against the REST snapshot.
+    """
     if not live_state_kalshi_portfolio_enabled():
         return 0
     r = redis_client_optional()
@@ -261,7 +271,12 @@ def prune_positions_to_rest_tickers(user_no: str, rest_tickers: List[str]) -> in
     except Exception as exc:
         logger.warning("portfolio positions prune list failed: %s", exc)
         return 0
-    stale = [str(field) for field in raw_map if str(field) not in allowed]
+    stale: List[str] = []
+    for field_raw in raw_map:
+        field = str(field_raw)
+        ticker = field.rsplit(":", 1)[0] if ":" in field else field
+        if ticker not in allowed:
+            stale.append(field)
     if not stale:
         return 0
     removed = 0
@@ -270,7 +285,7 @@ def prune_positions_to_rest_tickers(user_no: str, rest_tickers: List[str]) -> in
             if r.hdel(key, field):
                 removed += 1
         except Exception as exc:
-            logger.debug("portfolio position prune hdel failed ticker=%s: %s", field, exc)
+            logger.debug("portfolio position prune hdel failed field=%s: %s", field, exc)
     if removed:
         _publish_portfolio_updated(
             KIND_POSITIONS,
@@ -302,9 +317,11 @@ def replace_positions_baseline(user_no: str, market_positions: List[dict]) -> in
         rec = normalize_position_record(raw)
         if not rec:
             continue
-        field = str(rec.get("ticker") or "")
-        if not field:
+        ticker = str(rec.get("ticker") or "")
+        if not ticker:
             continue
+        sa = rec.get("subaccount", _SUBACCOUNT_DEFAULT)
+        field = _position_hash_field(ticker, sa)
         allowed.add(field)
         if not rec.get("last_updated_ts"):
             rec["last_updated_ts"] = now_iso
@@ -317,10 +334,10 @@ def replace_positions_baseline(user_no: str, market_positions: List[dict]) -> in
     stale: List[str] = []
     try:
         raw_map = r.hgetall(key) or {}
-        stale = [str(field) for field in raw_map if str(field) not in allowed]
-        for field in stale:
+        stale = [str(f) for f in raw_map if str(f) not in allowed]
+        for f in stale:
             try:
-                r.hdel(key, field)
+                r.hdel(key, f)
             except Exception:
                 pass
     except Exception as exc:
@@ -605,6 +622,7 @@ def position_row_for_monitor(rec: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "row_id": rec.get("ticker"),
         "ticker": rec.get("ticker"),
+        "subaccount": rec.get("subaccount", _SUBACCOUNT_DEFAULT),
         "position_fp": rec.get("position_fp"),
         "position_cost_dollars": rec.get("position_cost_dollars"),
         "realized_pnl_dollars": rec.get("realized_pnl_dollars"),
@@ -617,6 +635,7 @@ def order_row_for_monitor(rec: Dict[str, Any]) -> Dict[str, Any]:
         "row_id": rec.get("order_id"),
         "order_id": rec.get("order_id"),
         "ticker": rec.get("ticker"),
+        "subaccount": rec.get("subaccount", _SUBACCOUNT_DEFAULT),
         "status": rec.get("status"),
         "orderbook_side": rec.get("orderbook_side"),
         "outcome_side": rec.get("outcome_side"),
@@ -632,6 +651,7 @@ def fill_row_for_monitor(rec: Dict[str, Any]) -> Dict[str, Any]:
         "row_id": rec.get("trade_id"),
         "trade_id": rec.get("trade_id"),
         "ticker": rec.get("ticker"),
+        "subaccount": rec.get("subaccount", _SUBACCOUNT_DEFAULT),
         "order_id": rec.get("order_id"),
         "orderbook_side": rec.get("orderbook_side"),
         "outcome_side": rec.get("outcome_side"),

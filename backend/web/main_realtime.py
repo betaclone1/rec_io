@@ -373,10 +373,14 @@ LIVE_MARKET_WS_TYPES = frozenset(
 def _is_live_market_ws_message(text: str) -> bool:
     if not text or not text.lstrip().startswith("{"):
         return False
-    try:
-        return json.loads(text).get("type") in LIVE_MARKET_WS_TYPES
-    except Exception:
-        return False
+    # Fast path: avoid full JSON parse on every db_changes fanout frame.
+    if '"type":"live_orderbook"' in text or '"type": "live_orderbook"' in text:
+        return True
+    if '"type":"live_strike_ladder"' in text or '"type": "live_strike_ladder"' in text:
+        return True
+    if '"type":"live_symbol_spot"' in text or '"type": "live_symbol_spot"' in text:
+        return True
+    return False
 
 
 async def _broadcast_live_market_message_text(message: str) -> None:

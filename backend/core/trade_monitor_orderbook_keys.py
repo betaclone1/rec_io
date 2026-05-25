@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 
 _OB_REDIS_PREFIX = "trade_monitor:orderbook_levels:v1:"
+_OB_WS_REDIS_PREFIX = "trade_monitor:orderbook_ws:v1:"
 _PG_TABLE_PREFIX = "orderbook_kalshi_"
 
 
@@ -17,6 +18,12 @@ def _sanitize_ticker_for_table(market_ticker: str) -> str:
 def trade_monitor_orderbook_redis_key(market_ticker: str) -> str:
     mt = str(market_ticker or "").strip()
     return f"{_OB_REDIS_PREFIX}{mt}"
+
+
+def trade_monitor_orderbook_ws_redis_key(market_ticker: str) -> str:
+    """Pre-serialized ``live_orderbook`` JSON for switchboard fanout (optional)."""
+    mt = str(market_ticker or "").strip()
+    return f"{_OB_WS_REDIS_PREFIX}{mt}"
 
 
 def physical_table_name(market_ticker: str) -> str:

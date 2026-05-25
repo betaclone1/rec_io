@@ -3035,8 +3035,9 @@ def insert_trade(trade):
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         time_in_force, order_type,
+                        subaccount,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -3069,6 +3070,7 @@ def insert_trade(trade):
                     test_filter_for_db,
                     trade.get("time_in_force"),
                     trade.get("order_type"),
+                    int(trade.get("subaccount", 1)),
                 ))
                 last_id = cursor.fetchone()[0]
                 pg_conn.commit()
@@ -4886,7 +4888,8 @@ def init_trades_db():
                     loss_prevention BOOLEAN DEFAULT FALSE,
                     multiplier DECIMAL(10,2),
                     paper_trade BOOLEAN DEFAULT FALSE,
-                    cooldown_timer INTEGER
+                    cooldown_timer INTEGER,
+                    subaccount INTEGER NOT NULL DEFAULT 1
                 )
             """)
             
@@ -4905,6 +4908,7 @@ def init_trades_db():
                     trade_id TEXT UNIQUE,
                     ticker TEXT,
                     order_id TEXT,
+                    subaccount INTEGER NOT NULL DEFAULT 1,
                     outcome_side TEXT,
                     orderbook_side TEXT,
                     action TEXT,
@@ -4940,6 +4944,7 @@ def init_trades_db():
                 CREATE TABLE IF NOT EXISTS users.positions_0001 (
                     id SERIAL PRIMARY KEY,
                     ticker TEXT,
+                    subaccount INTEGER NOT NULL DEFAULT 1,
                     last_updated_ts TEXT,
                     raw_json TEXT,
                     total_traded_dollars TEXT,

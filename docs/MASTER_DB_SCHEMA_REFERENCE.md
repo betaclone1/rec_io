@@ -9991,6 +9991,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 | `trade_id` | `text` | YES | - | |
 | `ticker` | `text` | YES | - | |
 | `order_id` | `text` | YES | - | |
+| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (1 = primary). Migration **`20260525_0830_portfolio_subaccount_column`**. |
 | `outcome_side` | `text` | YES | - | Kalshi contract outcome (`yes` / `no`); migration **`20260513120000_account_sync_direction_credits`**. |
 | `orderbook_side` | `text` | YES | - | Bid/ask on the book (`bid` / `ask`); backfilled from `outcome_side` where unknown. Same migration. |
 | `action` | `text` | YES | - | |
@@ -10356,6 +10357,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `order_id` | `text` | YES | - | |
 | `user_id` | `text` | YES | - | |
 | `ticker` | `text` | YES | - | |
+| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (1 = primary). Migration **`20260525_0830_portfolio_subaccount_column`**. |
 | `status` | `text` | YES | - | |
 | `action` | `text` | YES | - | |
 | `outcome_side` | `text` | YES | - | Kalshi outcome side; renamed from `side` in migration **`20260513120000_account_sync_direction_credits`**. |
@@ -10408,6 +10410,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.positions_0001_id_seq'::regclass) | |
 | `ticker` | `text` | YES | - | |
+| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (1 = primary). Migration **`20260525_0830_portfolio_subaccount_column`**. |
 | `total_traded` | `integer(32)` | YES | - | |
 | `total_traded_fp` | `numeric(12,2)` | YES | - | Fixed-point (Kalshi migration). |
 | `position` | `integer(32)` | YES | - | |
@@ -10430,13 +10433,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 
 #### Indexes
 
-- `idx_positions_0001_ticker`
+- `idx_positions_0001_ticker_subaccount`
   ```sql
-  CREATE UNIQUE INDEX idx_positions_0001_ticker ON users.positions_0001 USING btree (ticker)
-  ```
-- `idx_positions_0001_ticker_unique`
-  ```sql
-  CREATE UNIQUE INDEX idx_positions_0001_ticker_unique ON users.positions_0001 USING btree (ticker)
+  CREATE UNIQUE INDEX idx_positions_0001_ticker_subaccount ON users.positions_0001 USING btree (ticker, subaccount)
   ```
 - `positions_0001_pkey`
   ```sql
@@ -10783,6 +10782,7 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `cooldown_timer` | `integer(32)` | YES | - | |
 | `monitor_confirmed` | `boolean` | YES | **NULL** | Default **NULL** on insert; app sets true/false when the trade is finalized. Migration `20260410_1000_trades_monitor_confirmed_default_null`. |
 | `ats_updated` | `timestamptz` | YES | - | Last successful ATS strike-join telemetry refresh while **open**. Migration `20260402_2310_trades_ats_updated`. |
+| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (1 = primary). Migration **`20260525_0855_trades_subaccount_column`**. |
 | `cycle_win_loss` | `text` | YES | - | |
 | `cycle_pnl` | `real(24)` | YES | - | |
 | `cycle_ret_pct` | `real(24)` | YES | - | |

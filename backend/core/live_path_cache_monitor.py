@@ -120,6 +120,7 @@ def _all_sources() -> List[LivePathSourceDef]:
             row_id_field="row_id",
             row_columns=(
                 LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("subaccount", "sa"),
                 LivePathRowColumn("position_fp", "position_fp"),
                 LivePathRowColumn("position_cost_dollars", "position_cost_dollars"),
                 LivePathRowColumn("realized_pnl_dollars", "realized_pnl_dollars"),
@@ -138,6 +139,7 @@ def _all_sources() -> List[LivePathSourceDef]:
             row_columns=(
                 LivePathRowColumn("order_id", "order_id"),
                 LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("subaccount", "sa"),
                 LivePathRowColumn("status", "status"),
                 LivePathRowColumn("orderbook_side", "orderbook_side"),
                 LivePathRowColumn("outcome_side", "outcome_side"),
@@ -159,6 +161,7 @@ def _all_sources() -> List[LivePathSourceDef]:
             row_columns=(
                 LivePathRowColumn("trade_id", "trade_id"),
                 LivePathRowColumn("ticker", "ticker"),
+                LivePathRowColumn("subaccount", "sa"),
                 LivePathRowColumn("order_id", "order_id"),
                 LivePathRowColumn("orderbook_side", "orderbook_side"),
                 LivePathRowColumn("outcome_side", "outcome_side"),

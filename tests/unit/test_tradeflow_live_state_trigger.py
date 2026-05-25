@@ -32,6 +32,30 @@ def test_parse_active_trades_returns_empty_use_kind_branch():
     )
 
 
+def test_parse_orderbook_hot_ticker(monkeypatch):
+    monkeypatch.setenv("MARKET_WATCHDOG_HOT_ORDERBOOK_TICKERS", "KXBTC15M-26MAY241845-45")
+    from backend.core.orderbook_hot_publish_registry import refresh_hot_tickers_if_stale
+
+    refresh_hot_tickers_if_stale(force=True)
+    pairs = parse_tradeflow_symbol_market(
+        {
+            "kind": "orderbook",
+            "market_ticker": "KXBTC15M-26MAY241845-45",
+        }
+    )
+    assert pairs == [("BTC", "15m")]
+
+
+def test_parse_orderbook_cold_ticker_empty():
+    pairs = parse_tradeflow_symbol_market(
+        {
+            "kind": "orderbook",
+            "market_ticker": "KXBTC15M-26MAY241899-99",
+        }
+    )
+    assert pairs == []
+
+
 def test_coalescer_rate_limits():
     c = TradeflowLiveStateCoalescer(10.0)
     assert c.should_fire("BTC", "15m")

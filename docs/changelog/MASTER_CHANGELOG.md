@@ -6,6 +6,34 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-25 — Release v3.7.2: HF orderbook hot path, subaccount tracking for portfolio + trades
+
+**Summary**
+- **Release: v3.7.2**
+- **HF orderbook hot path:** Tiered hot/cold flush in `market_watchdog_ws_kalshi` — hot tickers flush immediately to Redis with `redis_written_ms` timestamp; cold tickers continue on coalesced timer. Pre-built WS payloads skip rebuild in switchboard; sequence-number dedup prevents stale frames. Dedicated `OrderbookHotSubscriber` API for backend HF scripts. New `ob_latency_probe.py` dev tool and `docs/ORDERBOOK_HOT_CACHE.md`.
+- **Subaccount tracking (portfolio):** Fills, orders, and positions now carry `subaccount` (integer, default 1 = primary) from Kalshi WS through Redis hot state and PG. Positions unique index changed from `(ticker)` to `(ticker, subaccount)`. Redis hash field for positions is now `{ticker}:{subaccount}`. Live Path Cache Monitor displays subaccount column for all three tables.
+- **Subaccount tracking (trades):** `trades_NNNN` and `trades_simulated_NNNN` gain `subaccount INTEGER NOT NULL DEFAULT 1`; `insert_trade()` records `trade.get("subaccount", 1)` from the execution flow. All existing rows backfilled as subaccount 1.
+- **Database:** Migrations **`20260525_0830_portfolio_subaccount_column`** (fills/orders/positions subaccount + positions composite index) and **`20260525_0855_trades_subaccount_column`** (trades/trades_simulated subaccount). `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated.
+- **Tradeflow:** AES/ATS wake on orderbook hints for hot tickers with separate `TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC` coalesce.
+- Plans: `subaccount_tracking_d3aad9b4`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260525_0830_portfolio_subaccount_column.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260525_0855_trades_subaccount_column.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_executor`, `kalshi_account_sync_*`, `market_watchdog_ws_kalshi`; confirm hot-path and subaccount changes are live.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.2`
+
+---
+
 ## 2026-05-24 — Release v3.7.1: Kalshi subaccount balance pipeline, MTB rake to CASH, account manager UX
 
 **Summary**

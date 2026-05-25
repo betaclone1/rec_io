@@ -644,6 +644,12 @@ def build_live_orderbook_ws_payload(market_ticker: str) -> Optional[dict[str, An
             payload["ts_ms"] = int(ts_ms)
         except (TypeError, ValueError):
             pass
+    rw_ms = data.get("redis_written_ms")
+    if rw_ms is not None:
+        try:
+            payload["redis_written_ms"] = int(rw_ms)
+        except (TypeError, ValueError):
+            pass
     return payload
 
 

@@ -804,6 +804,11 @@ environment={env_vars}
             if not has_redis_url and not has_redis_port:
                 env_vars.append('REDIS_PORT="6379"')
 
+            # Strike-table historical archive: disabled to cap PG growth.
+            # Set REC_STRIKE_TABLE_ARCHIVE="1" to re-enable.
+            if not any(x.startswith("REC_STRIKE_TABLE_ARCHIVE=") for x in env_vars):
+                env_vars.append('REC_STRIKE_TABLE_ARCHIVE="0"')
+
             # HTTP fallback should be opt-in during Redis cutover.
             if not any(x.startswith("ATS_HTTP_FALLBACK_ENABLED=") for x in env_vars):
                 env_vars.append('ATS_HTTP_FALLBACK_ENABLED="0"')
@@ -848,6 +853,30 @@ environment={env_vars}
                     continue
                 esc = str(_ls_val).replace("\\", "\\\\").replace('"', '\\"')
                 env_vars.append(f'{_ls_key}="{esc}"')
+            # HF orderbook hot path (market_watchdog + switchboard + AES tradeflow wake).
+            for _hf_key, _hf_default in (
+                ("MARKET_WATCHDOG_HOT_TICKER_FLUSH", "1"),
+                ("ORDERBOOK_PREBUILD_WS_PAYLOAD", "1"),
+                ("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", "0.05"),
+            ):
+                if any(x.startswith(f"{_hf_key}=") for x in env_vars):
+                    continue
+                _hf_val = os.getenv(_hf_key, _hf_default)
+                if _hf_val is None or str(_hf_val).strip() == "":
+                    continue
+                esc = str(_hf_val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{_hf_key}="{esc}"')
+            for _hf_opt in (
+                "MARKET_WATCHDOG_HOT_ORDERBOOK_TICKERS",
+                "MARKET_WATCHDOG_PUBLISH_COALESCE_MS",
+            ):
+                if any(x.startswith(f"{_hf_opt}=") for x in env_vars):
+                    continue
+                _hf_val = os.getenv(_hf_opt)
+                if _hf_val is None or str(_hf_val).strip() == "":
+                    continue
+                esc = str(_hf_val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{_hf_opt}="{esc}"')
             # v3.7+ hot path defaults ON in backend/core/live_state_config.py (no env required).
             # Still propagate explicit overrides from shell or config.local.json "live_state".
 

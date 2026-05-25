@@ -537,6 +537,8 @@ class KalshiMarketWsMaster:
     resync_task: Optional[asyncio.Task[Any]] = None
     dirty_ob: set[str] = field(default_factory=set)
     dirty_ticker: set[str] = field(default_factory=set)
+    hot_ob_flush_scheduled: set[str] = field(default_factory=set)
+    hot_ticker_flush_scheduled: set[str] = field(default_factory=set)
     ticker_pending: dict[str, dict[str, Any]] = field(default_factory=dict)
     ticker_rest_meta: dict[str, dict[str, Any]] = field(default_factory=dict)
     hourly_markets_raw: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
@@ -834,6 +836,185 @@ def _mark_ob_dirty(master: KalshiMarketWsMaster, mt: str) -> None:
         master.dirty_ob.add(mt)
 
 
+def _maybe_prebuild_orderbook_ws_payload(mt: str, *, redis_written_ms: int) -> None:
+    """Write pre-serialized live_orderbook JSON when watch is active (switchboard fast path)."""
+    raw_flag = os.getenv("ORDERBOOK_PREBUILD_WS_PAYLOAD", "1").strip().lower()
+    if raw_flag in ("0", "false", "no", "off"):
+        return
+    try:
+        from backend.core.trade_monitor_orderbook_watch import (
+            should_fanout_orderbook_live_ws,
+        )
+        from backend.core.trade_monitor_live_orderbook_payload import (
+            build_live_orderbook_ws_payload,
+        )
+        from backend.core.trade_monitor_orderbook_keys import (
+            trade_monitor_orderbook_ws_redis_key,
+        )
+
+        if not should_fanout_orderbook_live_ws(mt):
+            return
+        ob_msg = build_live_orderbook_ws_payload(mt)
+        if not ob_msg:
+            return
+        if ob_msg.get("redis_written_ms") is None:
+            ob_msg["redis_written_ms"] = redis_written_ms
+        r = _redis()
+        r.set(
+            trade_monitor_orderbook_ws_redis_key(mt),
+            json.dumps(ob_msg, default=str),
+            ex=7200,
+        )
+    except Exception:
+        log.debug("prebuild orderbook ws payload failed for %s", mt, exc_info=True)
+
+
+def _flush_orderbook_tickers_sync(
+    master: KalshiMarketWsMaster, ob_tickers: list[str]
+) -> None:
+    """Write orderbook level keys + pub/sub hints (shared by hot and bulk flush)."""
+    if not ob_tickers:
+        return
+    r = _redis()
+    pipe = r.pipeline()
+    published_ob: list[str] = []
+    redis_written_ms = int(time.time() * 1000)
+    for mt in ob_tickers:
+        payload = _orderbook_redis_payload(master, mt)
+        if not payload:
+            continue
+        payload["redis_written_ms"] = redis_written_ms
+        pipe.set(_rkey_orderbook(mt), json.dumps(payload, default=str), ex=7200)
+        published_ob.append(mt)
+    if published_ob:
+        pipe.execute()
+    for mt in published_ob:
+        _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
+        b = master.books.get(mt) or {}
+        _redis_publish_push(
+            {
+                "kind": "orderbook",
+                "market_ticker": mt,
+                "book_seq": b.get("last_seq"),
+                "ts_ms": b.get("ts_ms"),
+                "redis_written_ms": redis_written_ms,
+            }
+        )
+
+
+def _flush_ticker_tickers_sync(
+    master: KalshiMarketWsMaster, ticker_tickers: list[str]
+) -> None:
+    if not ticker_tickers:
+        return
+    r = _redis()
+    pipe = r.pipeline()
+    published_ticker: list[str] = []
+    for mt in ticker_tickers:
+        msg = master.ticker_pending.pop(mt, None)
+        if not msg:
+            continue
+        existing = _json_get(_rkey_ticker(mt)) or {}
+        body: dict[str, Any] = {
+            "market_ticker": mt,
+            "yes_ask_dollars": msg.get("yes_ask_dollars") or msg.get("yes_ask"),
+            "no_ask_dollars": msg.get("no_ask_dollars") or msg.get("no_ask"),
+            "yes_bid_dollars": msg.get("yes_bid_dollars") or msg.get("yes_bid"),
+            "no_bid_dollars": msg.get("no_bid_dollars") or msg.get("no_bid"),
+            "last_price_dollars": _last_price_dollars_from_ticker_msg(msg, existing=existing),
+            "volume_fp": msg.get("volume_fp") or msg.get("volume"),
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+        }
+        mr = _extract_market_result(msg)
+        if mr:
+            body["market_result"] = mr
+        elif existing.get("market_result"):
+            body["market_result"] = existing["market_result"]
+        elif existing.get("result"):
+            body["market_result"] = existing["result"]
+        _apply_ticker_complement(body)
+        pipe.set(_rkey_ticker(mt), json.dumps(body, default=str), ex=7200)
+        published_ticker.append(mt)
+    if published_ticker:
+        pipe.execute()
+    for mt in published_ticker:
+        _redis_publish_push({"kind": "ticker", "market_ticker": mt})
+    if published_ticker:
+        _live_state_strike_feed_sync(master)
+
+
+def _flush_dirty_redis_sync(master: KalshiMarketWsMaster, ob_tickers: list[str], ticker_tickers: list[str]) -> None:
+    """Batch Redis writes off the WS hot path (pipelined SET + pub/sub hints)."""
+    try:
+        _flush_orderbook_tickers_sync(master, ob_tickers)
+        _flush_ticker_tickers_sync(master, ticker_tickers)
+    except Exception:
+        log.debug("flush_dirty_redis failed", exc_info=True)
+
+
+async def _hot_ob_flush_worker(master: KalshiMarketWsMaster, mt: str) -> None:
+    """Immediate flush for hot orderbook tickers (no coalesce wait)."""
+    from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+
+    ticker = str(mt or "").strip()
+    if not ticker:
+        master.hot_ob_flush_scheduled.discard(ticker)
+        return
+    try:
+        while True:
+            async with master.lock:
+                if ticker not in master.dirty_ob:
+                    break
+                master.dirty_ob.discard(ticker)
+            await asyncio.to_thread(_flush_dirty_redis_sync, master, [ticker], [])
+            async with master.lock:
+                if ticker not in master.dirty_ob:
+                    break
+                if not is_hot_orderbook_ticker(ticker):
+                    break
+    finally:
+        master.hot_ob_flush_scheduled.discard(ticker)
+
+
+async def _hot_ticker_flush_worker(master: KalshiMarketWsMaster, mt: str) -> None:
+    from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+
+    ticker = str(mt or "").strip()
+    if not ticker:
+        master.hot_ticker_flush_scheduled.discard(ticker)
+        return
+    try:
+        while True:
+            async with master.lock:
+                if ticker not in master.dirty_ticker:
+                    break
+                master.dirty_ticker.discard(ticker)
+            await asyncio.to_thread(_flush_dirty_redis_sync, master, [], [ticker])
+            async with master.lock:
+                if ticker not in master.dirty_ticker:
+                    break
+                if not is_hot_orderbook_ticker(ticker):
+                    break
+    finally:
+        master.hot_ticker_flush_scheduled.discard(ticker)
+
+
+def _schedule_hot_ob_flush(master: KalshiMarketWsMaster, mt: str) -> None:
+    ticker = str(mt or "").strip()
+    if not ticker or ticker in master.hot_ob_flush_scheduled:
+        return
+    master.hot_ob_flush_scheduled.add(ticker)
+    asyncio.create_task(_hot_ob_flush_worker(master, ticker))
+
+
+def _schedule_hot_ticker_flush(master: KalshiMarketWsMaster, mt: str) -> None:
+    ticker = str(mt or "").strip()
+    if not ticker or ticker in master.hot_ticker_flush_scheduled:
+        return
+    master.hot_ticker_flush_scheduled.add(ticker)
+    asyncio.create_task(_hot_ticker_flush_worker(master, ticker))
+
+
 def _orderbook_redis_payload(master: KalshiMarketWsMaster, mt: str) -> Optional[dict[str, Any]]:
     b = master.books.get(mt)
     if not b or not b.get("valid"):
@@ -1013,63 +1194,6 @@ def _live_state_strike_feed_sync(master: KalshiMarketWsMaster) -> None:
                     "markets": markets},
                     source_event_at=ts,
                 )
-
-
-def _flush_dirty_redis_sync(master: KalshiMarketWsMaster, ob_tickers: list[str], ticker_tickers: list[str]) -> None:
-    """Batch Redis writes off the WS hot path (pipelined SET + pub/sub hints)."""
-    try:
-        r = _redis()
-        pipe = r.pipeline()
-        published_ob: list[str] = []
-        for mt in ob_tickers:
-            payload = _orderbook_redis_payload(master, mt)
-            if not payload:
-                continue
-            pipe.set(_rkey_orderbook(mt), json.dumps(payload, default=str), ex=7200)
-            published_ob.append(mt)
-        published_ticker: list[str] = []
-        for mt in ticker_tickers:
-            msg = master.ticker_pending.pop(mt, None)
-            if not msg:
-                continue
-            existing = _json_get(_rkey_ticker(mt)) or {}
-            body: dict[str, Any] = {
-                "market_ticker": mt,
-                "yes_ask_dollars": msg.get("yes_ask_dollars") or msg.get("yes_ask"),
-                "no_ask_dollars": msg.get("no_ask_dollars") or msg.get("no_ask"),
-                "yes_bid_dollars": msg.get("yes_bid_dollars") or msg.get("yes_bid"),
-                "no_bid_dollars": msg.get("no_bid_dollars") or msg.get("no_bid"),
-                "last_price_dollars": _last_price_dollars_from_ticker_msg(msg, existing=existing),
-                "volume_fp": msg.get("volume_fp") or msg.get("volume"),
-                "updated_at": datetime.now(timezone.utc).isoformat(),
-            }
-            mr = _extract_market_result(msg)
-            if mr:
-                body["market_result"] = mr
-            elif existing.get("market_result"):
-                body["market_result"] = existing["market_result"]
-            elif existing.get("result"):
-                body["market_result"] = existing["result"]
-            _apply_ticker_complement(body)
-            pipe.set(_rkey_ticker(mt), json.dumps(body, default=str), ex=7200)
-            published_ticker.append(mt)
-        if published_ob or published_ticker:
-            pipe.execute()
-        for mt in published_ob:
-            b = master.books.get(mt) or {}
-            _redis_publish_push(
-                {
-                    "kind": "orderbook",
-                    "market_ticker": mt,
-                    "book_seq": b.get("last_seq"),
-                }
-            )
-        for mt in published_ticker:
-            _redis_publish_push({"kind": "ticker", "market_ticker": mt})
-        if published_ticker:
-            _live_state_strike_feed_sync(master)
-    except Exception:
-        log.debug("flush_dirty_redis failed", exc_info=True)
 
 
 def _publish_book(master: KalshiMarketWsMaster, mt: str) -> None:
@@ -1646,16 +1770,36 @@ def _write_meta_transport_pulse(master: KalshiMarketWsMaster) -> None:
 
 
 async def _publish_coalesce_loop(master: KalshiMarketWsMaster) -> None:
-    """Flush dirty books/tickers on an interval — never block WS on per-delta Redis I/O."""
+    """Flush cold dirty books/tickers on an interval; hot tickers use immediate flush."""
+    from backend.core.orderbook_hot_publish_registry import (
+        is_hot_orderbook_ticker,
+        refresh_hot_tickers_if_stale,
+    )
+
     while True:
         await asyncio.sleep(PUBLISH_COALESCE_SEC)
+        refresh_hot_tickers_if_stale()
         async with master.lock:
-            ob_batch = sorted(master.dirty_ob)
-            master.dirty_ob.clear()
-            ticker_batch = sorted(master.dirty_ticker)
-            master.dirty_ticker.clear()
+            ob_batch = sorted(
+                mt for mt in master.dirty_ob if not is_hot_orderbook_ticker(mt)
+            )
+            for mt in ob_batch:
+                master.dirty_ob.discard(mt)
+            ticker_batch = sorted(
+                mt for mt in master.dirty_ticker if not is_hot_orderbook_ticker(mt)
+            )
+            for mt in ticker_batch:
+                master.dirty_ticker.discard(mt)
         if ob_batch or ticker_batch:
             await asyncio.to_thread(_flush_dirty_redis_sync, master, ob_batch, ticker_batch)
+
+
+async def _hot_registry_refresh_loop() -> None:
+    from backend.core.orderbook_hot_publish_registry import refresh_hot_tickers_if_stale
+
+    while True:
+        refresh_hot_tickers_if_stale(force=True)
+        await asyncio.sleep(1.0)
 
 
 async def _meta_heartbeat_loop(master: KalshiMarketWsMaster) -> None:
@@ -1837,11 +1981,16 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 b["last_ticker_wall_at"] = now_wall
             _mark_ticker_dirty(master, mt, msg)
             _emit_event("ticker", market_ticker=mt)
+            from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+
+            if is_hot_orderbook_ticker(mt):
+                _schedule_hot_ticker_flush(master, mt)
         return
 
     if dtype not in ("orderbook_snapshot", "orderbook_delta"):
         return
 
+    ob_dirty_mt: Optional[str] = None
     async with master.lock:
         msg = data.get("msg") or {}
         mt = str(msg.get("market_ticker") or "").strip()
@@ -1853,6 +2002,7 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
             seq = int(data["seq"]) if data.get("seq") is not None else None
             _apply_snapshot(master, mt, msg, seq, sid, publish=False)
             _mark_ob_dirty(master, mt)
+            ob_dirty_mt = mt
         else:
             action, _seq_i = _consume_ob_channel_seq(master, data.get("seq"))
             if action == "gap":
@@ -1861,6 +2011,13 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
             elif action == "apply":
                 _apply_delta(master, mt, msg, int(data["seq"]), publish=False)
                 _mark_ob_dirty(master, mt)
+                ob_dirty_mt = mt
+
+    if ob_dirty_mt:
+        from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+
+        if is_hot_orderbook_ticker(ob_dirty_mt):
+            _schedule_hot_ob_flush(master, ob_dirty_mt)
 
 
 async def _ws_loop(master: KalshiMarketWsMaster) -> None:
@@ -1994,6 +2151,7 @@ async def run_ingest(cfg: IngestConfig) -> None:
         _schedule_loop(master),
         _lifecycle_loop(master),
         _publish_coalesce_loop(master),
+        _hot_registry_refresh_loop(),
         _ws_loop(master),
     ]
     if cfg.event_log_enabled or cfg.disturbance_log_enabled:
