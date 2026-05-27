@@ -19,11 +19,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Database:** No new migrations in this release (code-only union fix for performance rollups).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health/logs for `main_app`, `read_api`, `redis_switchboard`, `kalshi_account_sync_*`; dashboard Performance strip shows period values (not em dashes); trade history open rows update PnL without full page refresh.
-- [ ] Record release in DB:  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh`
+- [x] Verify health/logs for `main_app`, `read_api`, `redis_switchboard`, `kalshi_account_sync_*`; dashboard Performance strip shows period values (not em dashes); trade history open rows update PnL without full page refresh.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.3`
 
 ---
