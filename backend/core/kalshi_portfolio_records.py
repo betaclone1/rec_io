@@ -230,6 +230,11 @@ def normalize_fill_record(raw: dict) -> Optional[Dict[str, Any]]:
     if not trade_id:
         return None
     out_side, ob_side = direction_from_api_dict(raw)
+    from datetime import datetime, timezone
+
+    created = raw.get("created_time")
+    if not created:
+        created = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     return {
         "trade_id": str(trade_id),
         "ticker": raw.get("ticker") or raw.get("market_ticker"),
@@ -242,7 +247,7 @@ def normalize_fill_record(raw: dict) -> Optional[Dict[str, Any]]:
         "yes_price_dollars": raw.get("yes_price_dollars") or raw.get("yes_price_fixed"),
         "no_price_dollars": raw.get("no_price_dollars") or raw.get("no_price_fixed"),
         "is_taker": bool(raw.get("is_taker")) if raw.get("is_taker") is not None else None,
-        "created_time": raw.get("created_time"),
+        "created_time": created,
         "raw_json": raw,
     }
 

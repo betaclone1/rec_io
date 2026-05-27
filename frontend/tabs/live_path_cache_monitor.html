@@ -304,7 +304,7 @@
   function bootstrapTable(list) {
     resetTable();
     (list || []).forEach(function (t) {
-      ensureRow(t);
+      ensureRow(t, { keepOrder: true });
     });
     tableBootstrapped = true;
   }
@@ -332,7 +332,16 @@
     });
   }
 
-  function ensureRow(t) {
+  var PORTFOLIO_SOURCES = {
+    kalshi_positions: true, kalshi_orders: true, kalshi_fills: true
+  };
+
+  function isPortfolioSource() {
+    return !!PORTFOLIO_SOURCES[document.getElementById('source').value];
+  }
+
+  function ensureRow(t, opts) {
+    opts = opts || {};
     var id = rowIdFrom(t);
     if (!id) return null;
     if (rows[id]) {
@@ -352,7 +361,12 @@
       td.textContent = cellText(t, col.field);
       tr.appendChild(td);
     });
-    document.getElementById('rows-body').appendChild(tr);
+    var body = document.getElementById('rows-body');
+    if (!opts.keepOrder && isPortfolioSource()) {
+      body.insertBefore(tr, body.firstChild);
+    } else {
+      body.appendChild(tr);
+    }
     rows[id] = tr;
     applyRowHighlight(tr, t);
     return tr;

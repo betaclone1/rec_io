@@ -1683,6 +1683,257 @@
             }
         }
 
+        const _thmHotPathMarks = new Map();
+        let _thmHotPathWsUnsub = null;
+
+        function thmRetPctFromPnlAndBankroll(pnlVal, bankroll) {
+            const pnl = Number(pnlVal);
+            const br = Number(bankroll);
+            if (!Number.isFinite(pnl) || !Number.isFinite(br) || br <= 0) return null;
+            return Math.round((pnl / (br / 100)) * 100 * 100000) / 100000;
+        }
+
+        let _thmTradeLogColIndex = null;
+        function thmTradeLogColIndex() {
+            if (_thmTradeLogColIndex) return _thmTradeLogColIndex;
+            const map = {};
+            document.querySelectorAll('#trade-log-table thead th[data-key]').forEach(function (th, i) {
+                const key = th.getAttribute('data-key');
+                if (key) map[key] = i;
+            });
+            _thmTradeLogColIndex = map;
+            return map;
+        }
+
+        function thmIsOpenTrade(trade) {
+            const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
+            return st === 'open' || st === 'partial';
+        }
+
+        function thmApplyMarkToTradeObject(t, m) {
+            if (!t || !m) return false;
+            let changed = false;
+            if (m.pnl != null) {
+                t.pnl = m.pnl;
+                changed = true;
+            }
+            if (m.sell_price != null) {
+                t.sell_price = m.sell_price;
+                changed = true;
+            }
+            if (m.ret_pct != null) {
+                t.ret_pct = m.ret_pct;
+                changed = true;
+            } else if (m.pnl != null) {
+                const computed = thmRetPctFromPnlAndBankroll(m.pnl, t.bankroll);
+                if (computed != null) {
+                    t.ret_pct = computed;
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+
+        function thmMergeHotMarkIntoTrade(trade) {
+            if (!trade || trade.id == null) return;
+            const tid = Number(trade.id);
+            if (!thmIsOpenTrade(trade)) {
+                _thmHotPathMarks.delete(tid);
+                return;
+            }
+            const m = _thmHotPathMarks.get(tid);
+            if (m) thmApplyMarkToTradeObject(trade, m);
+        }
+
+        function thmMergeHotMarksIntoAllTrades() {
+            if (!Array.isArray(trades)) return;
+            trades.forEach(thmMergeHotMarkIntoTrade);
+            if (Array.isArray(filteredTrades)) filteredTrades.forEach(thmMergeHotMarkIntoTrade);
+        }
+
+        function thmPatchMarkCellsDom(byId) {
+            const tbody = document.querySelector('#trade-log-table tbody');
+            if (!tbody || !byId || !byId.size) return false;
+            const cols = thmTradeLogColIndex();
+            const sellIdx = cols.sell_price;
+            const pnlIdx = cols.pnl;
+            const retIdx = cols.ret_pct;
+            const isPercentMode = document.body.classList.contains('percent-mode');
+            let patched = 0;
+            byId.forEach(function (m, tradeId) {
+                const tr = tbody.querySelector('tr[data-trade-id="' + tradeId + '"]');
+                if (!tr) return;
+                const cells = tr.children;
+                if (sellIdx != null && sellIdx < cells.length && m.sell_price != null) {
+                    const sp = Number(m.sell_price);
+                    cells[sellIdx].textContent = Number.isFinite(sp) ? sp.toFixed(2) : '';
+                }
+                const pnlVal =
+                    m.pnl != null
+                        ? Number(m.pnl)
+                        : m.current_pnl != null
+                          ? Number(m.current_pnl)
+                          : null;
+                if (
+                    !isPercentMode &&
+                    pnlIdx != null &&
+                    pnlIdx < cells.length &&
+                    pnlVal != null &&
+                    Number.isFinite(pnlVal)
+                ) {
+                    cells[pnlIdx].textContent = pnlVal.toFixed(2);
+                }
+                if (retIdx != null && retIdx < cells.length) {
+                    if (m.ret_pct != null) {
+                        const rv = Number(m.ret_pct);
+                        if (Number.isFinite(rv)) cells[retIdx].textContent = rv.toFixed(2);
+                    } else if (pnlVal != null && Number.isFinite(pnlVal)) {
+                        const t = trades.find(function (x) { return Number(x.id) === tradeId; });
+                        const computed = t ? thmRetPctFromPnlAndBankroll(pnlVal, t.bankroll) : null;
+                        if (computed != null) cells[retIdx].textContent = computed.toFixed(2);
+                    }
+                }
+                patched += 1;
+            });
+            return patched > 0;
+        }
+
+        function thmMarkFromActiveTradeRecord(t) {
+            if (!t || t.trade_id == null) return null;
+            const mark = { trade_id: Number(t.trade_id) };
+            const mcp = t.current_close_price;
+            if (mcp != null && mcp !== '') {
+                const mp = Number(mcp);
+                if (Number.isFinite(mp)) mark.sell_price = Math.round((1.0 - mp) * 1000000) / 1000000;
+            }
+            const cp = t.current_pnl;
+            if (cp != null && String(cp).trim() !== '') {
+                const pv = Number(String(cp).replace(/,/g, ''));
+                if (Number.isFinite(pv)) mark.pnl = pv;
+            }
+            return mark.trade_id != null && (mark.sell_price != null || mark.pnl != null) ? mark : null;
+        }
+
+        function thmMarkFromInitRow(t) {
+            if (!t || t.trade_id == null) return null;
+            const mark = { trade_id: Number(t.trade_id) };
+            if (t.sell_price != null) mark.sell_price = t.sell_price;
+            if (t.pnl != null) mark.pnl = t.pnl;
+            if (mark.sell_price == null && mark.pnl == null) return null;
+            return mark;
+        }
+
+        function thmApplyMarksToCache(marks) {
+            if (!Array.isArray(marks) || !marks.length) return false;
+            marks.forEach(function (m) {
+                if (m && m.trade_id != null) _thmHotPathMarks.set(Number(m.trade_id), m);
+            });
+            thmMergeHotMarksIntoAllTrades();
+            const domPatched = thmPatchMarkCellsDom(_thmHotPathMarks);
+            if (domPatched) updateSummary(Array.isArray(filteredTrades) ? filteredTrades : []);
+            return domPatched;
+        }
+
+        function thmApplyPatches(patches) {
+            if (!Array.isArray(patches) || !patches.length) return false;
+            patches.forEach(function (p) {
+                if (!p || p.trade_id == null) return;
+                const tid = Number(p.trade_id);
+                const prev = _thmHotPathMarks.get(tid) || { trade_id: tid };
+                const next = Object.assign({}, prev);
+                if (p.sell != null) next.sell_price = p.sell;
+                if (p.pnl != null) next.pnl = p.pnl;
+                if (p.ret_pct != null) next.ret_pct = p.ret_pct;
+                _thmHotPathMarks.set(tid, next);
+            });
+            thmMergeHotMarksIntoAllTrades();
+            const domPatched = thmPatchMarkCellsDom(_thmHotPathMarks);
+            if (domPatched) updateSummary(Array.isArray(filteredTrades) ? filteredTrades : []);
+            return domPatched;
+        }
+
+        async function thmFetchHotPathMarks() {
+            try {
+                const res = await fetch(getMainAppUrl() + '/api/trades/hot_marks', {
+                    cache: 'no-store',
+                    credentials: 'same-origin',
+                });
+                if (!res.ok) return;
+                const data = await res.json();
+                thmApplyMarksToCache(data.marks);
+            } catch (e) { /* optional */ }
+        }
+
+        function thmMarksFromActiveTradesPayload(data) {
+            const body = data && data.data ? data.data : data;
+            const list = body && body.active_trades;
+            if (!Array.isArray(list)) return [];
+            const out = [];
+            list.forEach(function (t) {
+                const m = thmMarkFromActiveTradeRecord(t);
+                if (m) out.push(m);
+            });
+            return out;
+        }
+
+        function recThmTenantMatches(msgTenant) {
+            if (msgTenant == null || msgTenant === '') return true;
+            if (typeof recSessionUserSlot !== 'function') return true;
+            var slot = recSessionUserSlot();
+            if (!slot) return true;
+            var mt = String(msgTenant).trim();
+            if (!/^\d+$/.test(mt)) return true;
+            while (mt.length < 4) mt = '0' + mt;
+            if (mt.length > 4) mt = mt.slice(-4);
+            return mt === slot;
+        }
+
+        function onThmHotPathMessage(event) {
+            try {
+                const data =
+                    typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                if (!data || typeof data !== 'object') return;
+                if (data.type === 'active_trades_init' || data.type === 'cache_init') {
+                    const rows =
+                        data.type === 'cache_init'
+                            ? (data.snapshot && data.snapshot.rows) || []
+                            : data.trades || [];
+                    const marks = [];
+                    rows.forEach(function (t) {
+                        const m = thmMarkFromInitRow(t) || thmMarkFromActiveTradeRecord(t);
+                        if (m) marks.push(m);
+                    });
+                    thmApplyMarksToCache(marks);
+                    return;
+                }
+                if (data.type === 'trade_patch' || data.type === 'cache_patch') {
+                    thmApplyPatches(data.patches);
+                }
+            } catch (err) {
+                console.error('active-trades hot path WS (mobile):', err);
+            }
+        }
+
+        function teardownThmHotPathWs() {
+            if (_thmHotPathWsUnsub) {
+                try { _thmHotPathWsUnsub(); } catch (e) {}
+                _thmHotPathWsUnsub = null;
+            }
+        }
+
+        function setupThmHotPathWs() {
+            if (window.TRADE_HISTORY_MOBILE_PAUSED) return;
+            if (_thmHotPathWsUnsub) return;
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+                return;
+            }
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const wsUrl = protocol + '//' + window.location.host + '/ws/active-trades-hot-path';
+            _thmHotPathWsUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+                onMessage: onThmHotPathMessage,
+            });
+        }
+
         function _thmGetTradeHistoryResultsScrollEl() {
             return document.querySelector('.results-section');
         }
@@ -1746,6 +1997,7 @@
                     lastContract = trade.contract;
 
                     const tr = document.createElement('tr');
+                    if (trade.id != null) tr.setAttribute('data-trade-id', String(trade.id));
                     tr.style.borderTop = isNewGroup ? '2px solid #666' : '';
                     tr.classList.add(groupIndex % 2 === 1 ? 'group-odd' : 'group-even');
                     if (trade.paper_trade === true || trade.paper_trade === 1 || trade.paper_trade === 'true' || trade.paper_trade === '1' || trade.paper_trade === 'True') {
@@ -2880,6 +3132,7 @@
                 }
                 if (!Array.isArray(trades)) throw new Error('Invalid trades response');
                 _thmSetFetchBanner('', false);
+                thmMergeHotMarksIntoAllTrades();
                 applyFilters({ preserveResultsScroll: _thmTradeFetchSilentFooterProgress(r) });
             } catch (error) {
                 const hadRows = Array.isArray(trades) && trades.length > 0;
@@ -3786,6 +4039,8 @@
                 console.warn('[trade_history_mobile] tradeHistoryDateRangeInit:', e);
             }
             fetchAllTrades('initial-load');
+            thmFetchHotPathMarks();
+            setupThmHotPathWs();
         });
         
         let _thmTradeDbRefreshTimer = null;
@@ -3809,6 +4064,7 @@
 
         let _thmDbChangesUnsub = null;
         function teardownTradeHistoryMobileDbWs() {
+            teardownThmHotPathWs();
             if (_thmDbChangesUnsub) {
                 try { _thmDbChangesUnsub(); } catch (e) {}
                 _thmDbChangesUnsub = null;
@@ -3827,10 +4083,17 @@
             window._thmDbChangesWs = true;
             _thmDbChangesUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
                 onlyDbStreams: ['trades'],
+                includeTradeMarksUpdated: true,
                 onMessage: function (event) {
                     try {
                         const data =
                             typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(event) : JSON.parse(event.data);
+                        if (data && data.type === 'trade_marks_updated') {
+                            if (!recThmTenantMatches(data.tenant_user_no)) return;
+                            const marks = data.marks || (data.data && data.data.marks);
+                            thmApplyMarksToCache(marks);
+                            return;
+                        }
                         if (data && data.type === 'db_change' && data.database === 'trades') {
                             scheduleTradeHistoryMobileRefetchFromWs();
                         }
@@ -3840,6 +4103,27 @@
                 },
             });
         }
+
+        (function connectThmPreferencesMarks() {
+            if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== 'function') {
+                return;
+            }
+            const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+            const prefsUrl = protocol + '//' + window.location.host + '/ws/preferences';
+            window.recRealtimeWsCoordinator.subscribe(prefsUrl, {
+                onMessage: function (ev) {
+                    try {
+                        const data =
+                            typeof recRealtimeWsJson === 'function' ? recRealtimeWsJson(ev) : JSON.parse(ev.data);
+                        if (!data || typeof data !== 'object') return;
+                        if (!recThmTenantMatches(data.tenant_user_no)) return;
+                        if (data.type === 'active_trades_change') {
+                            thmApplyMarksToCache(thmMarksFromActiveTradesPayload(data));
+                        }
+                    } catch (e) { /* ignore */ }
+                },
+            });
+        })();
         
         setupTradeHistoryWebSocket();
         
@@ -3853,6 +4137,8 @@
                         _thmTradeDbRefreshTimer = null;
                     }
                     setupTradeHistoryWebSocket();
+                    setupThmHotPathWs();
+                    thmFetchHotPathMarks();
                     fetchAllTrades('tab-visible');
                 } else {
                     if (_thmTradeDbRefreshTimer) {

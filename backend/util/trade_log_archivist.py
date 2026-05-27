@@ -42,7 +42,7 @@ def canonical_monitor_key(user_number: str, monitor_id: str) -> str:
     return f"mon_{user_number}_{monitor_id}"
 
 
-def fetch_master_trades_column_names(cursor, user_number: str) -> List[str]:
+def fetch_table_column_names(cursor, schema: str, table: str) -> List[str]:
     cursor.execute(
         """
         SELECT column_name
@@ -50,9 +50,35 @@ def fetch_master_trades_column_names(cursor, user_number: str) -> List[str]:
         WHERE table_schema = %s AND table_name = %s
         ORDER BY ordinal_position
         """,
-        (tenant_trades_schema(user_number), master_trades_table(user_number)),
+        (schema, table),
     )
     return [r[0] for r in cursor.fetchall()]
+
+
+def fetch_master_trades_column_names(cursor, user_number: str) -> List[str]:
+    return fetch_table_column_names(
+        cursor, tenant_trades_schema(user_number), master_trades_table(user_number)
+    )
+
+
+def union_trades_column_names(cursor, user_number: str) -> List[str]:
+    """
+    Master trades columns that exist on every UNION branch (master + archive live/paper).
+
+    New master-only columns (e.g. ``subaccount``) are omitted from the union until archive
+    tables are migrated to match, so ``UNION ALL`` stays valid.
+    """
+    cols = fetch_master_trades_column_names(cursor, user_number)
+    if not cols:
+        return []
+    allowed = set(cols)
+    live_arch = archive_table_live(user_number)
+    paper_arch = archive_table_paper(user_number)
+    for arch_schema, arch_tbl in (("archive", live_arch), ("archive", paper_arch)):
+        if _information_schema_table_exists(cursor, arch_schema, arch_tbl):
+            arch_cols = set(fetch_table_column_names(cursor, arch_schema, arch_tbl))
+            allowed &= arch_cols
+    return [c for c in cols if c in allowed]
 
 
 def _information_schema_table_exists(cursor, schema: str, table: str) -> bool:
@@ -334,7 +360,7 @@ def union_trades_with_archives_select(
     ts = tenant_trades_schema(user_number)
     mt = master_trades_table(user_number)
 
-    cols = fetch_master_trades_column_names(cursor, user_number)
+    cols = union_trades_column_names(cursor, user_number)
     if not cols:
         raise RuntimeError(f"{ts}.{mt} column list empty")
 

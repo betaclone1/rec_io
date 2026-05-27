@@ -1,0 +1,625 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/js/rec_session.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>HF Trade Monitor</title>
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;600;700&family=IBM+Plex+Mono&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="/styles/global.css" />
+  <link rel="stylesheet" href="/styles/trade-monitor-orderbook.css" />
+<style>
+html, body {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: #0a0a14;
+  color: #e0e6f0;
+  font-family: 'IBM Plex Sans', sans-serif;
+}
+
+#hf-container {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+  padding: 12px;
+  gap: 10px;
+  box-sizing: border-box;
+}
+
+/* ---- Top bar ---- */
+.hf-top-bar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 16px;
+  background: #12121e;
+  border: 1px solid #1e2a3a;
+  border-radius: 8px;
+  flex-shrink: 0;
+}
+
+.hf-badge {
+  font-family: 'IBM Plex Mono', monospace;
+  font-weight: 700;
+  font-size: 13px;
+  letter-spacing: 1.5px;
+  color: #0ff;
+  background: rgba(0, 255, 255, 0.08);
+  border: 1px solid rgba(0, 255, 255, 0.25);
+  border-radius: 4px;
+  padding: 4px 10px;
+}
+
+.hf-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #c8d0e0;
+  flex: 1;
+}
+
+.hf-ttc-chip {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  color: #8892a4;
+  background: #1a1a2e;
+  padding: 4px 10px;
+  border-radius: 4px;
+  border: 1px solid #252540;
+}
+
+/* ---- Auto-trade toggle ---- */
+.hf-auto-trade-block {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.hf-auto-trade-label {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.8px;
+  color: #8892a4;
+  text-transform: uppercase;
+}
+
+.hf-auto-trade-toggle {
+  width: 44px;
+  height: 22px;
+  background: #2a2a3e;
+  border-radius: 12px;
+  cursor: pointer;
+  position: relative;
+  transition: background 0.15s;
+  border: 1px solid #3a3a50;
+}
+
+.hf-auto-trade-toggle::after {
+  content: '';
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  background: #555;
+  transition: transform 0.15s, background 0.15s;
+}
+
+.hf-auto-trade-toggle.active {
+  background: rgba(0, 255, 255, 0.2);
+  border-color: rgba(0, 255, 255, 0.4);
+}
+
+.hf-auto-trade-toggle.active::after {
+  transform: translateX(22px);
+  background: #0ff;
+}
+
+/* ---- Main grid ---- */
+.hf-main {
+  display: grid;
+  grid-template-columns: 1fr 320px;
+  gap: 10px;
+  flex: 1;
+  min-height: 0;
+}
+
+.hf-left-col {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+  min-width: 0;
+}
+
+.hf-panel--engine {
+  flex-shrink: 0;
+}
+
+.hf-orderbook-host {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background: #12121e;
+  border: 1px solid #1e2a3a;
+  border-radius: 8px;
+}
+
+.hf-orderbook-host .tm-new-orderbook-stack {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+}
+
+.hf-orderbook-host .panel-container.trade-monitor-new {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin: 0;
+  padding: 0;
+  border: none;
+  background: transparent;
+}
+
+.hf-orderbook-host #hourlyStrikeList {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.hf-orderbook-host .hourly-strike-scroll {
+  max-height: none;
+  flex: 1;
+  min-height: 0;
+}
+
+.hf-panel--log {
+  flex-shrink: 0;
+  padding: 8px 12px;
+}
+
+.hf-panel--log .hf-panel-header {
+  margin-bottom: 6px;
+}
+
+/* ---- State panel ---- */
+.hf-panel {
+  background: #12121e;
+  border: 1px solid #1e2a3a;
+  border-radius: 8px;
+  padding: 14px 16px;
+  overflow-y: auto;
+}
+
+.hf-panel-header {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.8px;
+  color: #6a7590;
+  text-transform: uppercase;
+  margin-bottom: 12px;
+}
+
+/* State indicator */
+.hf-state-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 16px;
+}
+
+.hf-state-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #555;
+  flex-shrink: 0;
+}
+
+.hf-state-dot[data-state="IDLE"] { background: #555; }
+.hf-state-dot[data-state="ACQUISITION"] { background: #0ff; }
+.hf-state-dot[data-state="PENDING"] { background: #f0c040; }
+.hf-state-dot[data-state="LIQUIDATION"] { background: #e05050; }
+
+.hf-state-label {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 1px;
+}
+
+/* Gate rows */
+.hf-gates-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.hf-gate {
+  background: #1a1a2e;
+  border: 1px solid #252540;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.hf-gate-name {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  color: #6a7590;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.hf-gate-value {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 16px;
+  font-weight: 600;
+  color: #c8d0e0;
+}
+
+.hf-gate.pass { border-color: rgba(0, 200, 120, 0.3); }
+.hf-gate.pass .hf-gate-value { color: #0c8; }
+.hf-gate.fail { border-color: rgba(200, 80, 80, 0.3); }
+.hf-gate.fail .hf-gate-value { color: #c55; }
+
+/* Orderbook summary */
+.hf-ob-row {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.hf-ob-cell {
+  flex: 1;
+  background: #1a1a2e;
+  border: 1px solid #252540;
+  border-radius: 6px;
+  padding: 10px 12px;
+}
+
+.hf-ob-cell-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.6px;
+  color: #6a7590;
+  text-transform: uppercase;
+  margin-bottom: 4px;
+}
+
+.hf-ob-cell-value {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.hf-ob-cell-value.bid { color: #3cba6c; }
+.hf-ob-cell-value.ask { color: #e05050; }
+
+/* ---- Right sidebar ---- */
+.hf-sidebar {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-height: 0;
+}
+
+/* Order config panel */
+.hf-config-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.hf-config-label {
+  font-size: 12px;
+  color: #8892a4;
+  width: 90px;
+  flex-shrink: 0;
+}
+
+.hf-config-input {
+  background: #1a1a2e;
+  border: 1px solid #252540;
+  border-radius: 4px;
+  color: #e0e6f0;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 13px;
+  padding: 6px 10px;
+  width: 80px;
+  outline: none;
+}
+
+.hf-config-input:focus {
+  border-color: rgba(0, 255, 255, 0.4);
+}
+
+.hf-config-btn {
+  background: rgba(0, 255, 255, 0.1);
+  border: 1px solid rgba(0, 255, 255, 0.25);
+  border-radius: 4px;
+  color: #0ff;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+
+.hf-config-btn:hover {
+  background: rgba(0, 255, 255, 0.2);
+}
+
+/* Positions table */
+.hf-positions-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+}
+
+.hf-positions-table th {
+  text-align: left;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.5px;
+  color: #6a7590;
+  text-transform: uppercase;
+  padding: 6px 8px;
+  border-bottom: 1px solid #252540;
+}
+
+.hf-positions-table td {
+  padding: 8px;
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 12px;
+  color: #c8d0e0;
+  border-bottom: 1px solid #1a1a2e;
+}
+
+#hfPositionsBody .hf-positions-table th:nth-child(2),
+#hfPositionsBody .hf-positions-table th:nth-child(3),
+#hfPositionsBody .hf-positions-table th:nth-child(4),
+#hfPositionsBody .hf-positions-table td:nth-child(2),
+#hfPositionsBody .hf-positions-table td:nth-child(3),
+#hfPositionsBody .hf-positions-table td:nth-child(4) {
+  text-align: right;
+}
+
+.hf-positions-empty {
+  color: #555;
+  font-size: 12px;
+  padding: 16px 0;
+  text-align: center;
+}
+
+.hf-positions-empty.hf-resting-seeking {
+  color: #c9a227;
+  font-style: italic;
+}
+
+.hf-positions-table td.pnl-positive { color: #3cba6c; }
+.hf-positions-table td.pnl-negative { color: #e05050; }
+
+/* ---- Activity log (minimized strip) ---- */
+.hf-log {
+  max-height: 56px;
+  overflow-y: auto;
+  flex: none;
+}
+
+.hf-log-entry {
+  font-family: 'IBM Plex Mono', monospace;
+  font-size: 11px;
+  color: #6a7590;
+  padding: 3px 0;
+  border-bottom: 1px solid #15152a;
+}
+
+.hf-log-entry .ts { color: #444; margin-right: 6px; }
+.hf-log-entry .ev { color: #0ff; }
+</style>
+</head>
+<body class="hf-trade-monitor-page trade-monitor-new-page" data-current-symbol="BTC" data-current-market="15m">
+  <div id="hf-container">
+    <!-- Top bar -->
+    <div class="hf-top-bar">
+      <span class="hf-badge">HF MODE</span>
+      <span class="hf-title" id="hfTitle">BTC 15m -- Market Making</span>
+      <div class="hf-auto-trade-block">
+        <span class="hf-auto-trade-label">AUTO TRADE</span>
+        <div
+          class="hf-auto-trade-toggle"
+          id="hfAutoTradeToggle"
+          role="switch"
+          tabindex="0"
+          aria-checked="false"
+          aria-label="HFT auto trade toggle"
+        ></div>
+      </div>
+      <span class="hf-ttc-chip" id="hfTtcChip">TTC --:--</span>
+    </div>
+
+    <!-- Main grid -->
+    <div class="hf-main">
+      <div class="hf-left-col">
+        <div class="hf-panel hf-panel--engine">
+          <div class="hf-panel-header">Engine State</div>
+          <div class="hf-state-row">
+            <div class="hf-state-dot" id="hfStateDot" data-state="IDLE"></div>
+            <span class="hf-state-label" id="hfStateLabel">IDLE</span>
+          </div>
+
+          <div class="hf-panel-header" style="margin-top:8px">Gate Status</div>
+          <div class="hf-gates-grid">
+            <div class="hf-gate" id="hfGateTtc">
+              <div class="hf-gate-name">TTC (sec)</div>
+              <div class="hf-gate-value" id="hfGateTtcVal">--</div>
+            </div>
+            <div class="hf-gate" id="hfGateBuffer">
+              <div class="hf-gate-name">Buffer %</div>
+              <div class="hf-gate-value" id="hfGateBufferVal">--</div>
+            </div>
+            <div class="hf-gate" id="hfGateMom">
+              <div class="hf-gate-name">Mom 1m</div>
+              <div class="hf-gate-value" id="hfGateMomVal">--</div>
+            </div>
+            <div class="hf-gate" id="hfGateSpread">
+              <div class="hf-gate-name">Spread</div>
+              <div class="hf-gate-value" id="hfGateSpreadVal">--</div>
+            </div>
+          </div>
+
+          <div class="hf-ob-row">
+            <div class="hf-ob-cell">
+              <div class="hf-ob-cell-label">Best Bid</div>
+              <div class="hf-ob-cell-value bid" id="hfBestBid">--</div>
+            </div>
+            <div class="hf-ob-cell">
+              <div class="hf-ob-cell-label">Best Ask</div>
+              <div class="hf-ob-cell-value ask" id="hfBestAsk">--</div>
+            </div>
+            <div class="hf-ob-cell">
+              <div class="hf-ob-cell-label">Active Ticker</div>
+              <div class="hf-ob-cell-value" id="hfActiveTicker" style="font-size:11px;color:#8892a4">--</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Trade Monitor orderbook mirror (same DOM + orderbook-redis-ui.js) -->
+        <div class="hf-orderbook-host trade-monitor-new">
+          <div class="tm-new-orderbook-stack">
+            <div class="panel-container trade-monitor-new" id="tmNewRoot">
+              <div id="loadErr" class="load-err u-hidden"></div>
+
+              <div class="quote-row u-hidden" id="quoteRow" onclick="toggleOrderbook()" aria-hidden="true">
+                <div class="quote-strike quote-strike--stack" id="quoteStrike">
+                  <span class="quote-strike-value">—</span>
+                </div>
+                <div class="tabs">
+                  <div class="tab active tab-yes" id="tabYes" onclick="setMode(event, 'yes')">Yes —</div>
+                  <div class="tab tab-no" id="tabNo" onclick="setMode(event, 'no')">No —</div>
+                </div>
+              </div>
+
+              <div class="book-panel u-hidden" id="bookPanel" aria-hidden="true">
+                <table class="book-table panel-head">
+                  <colgroup><col class="side"/><col class="price"/><col class="contracts"/><col class="total"/></colgroup>
+                  <thead><tr><th></th><th>Price</th><th>Contracts</th><th>Total</th></tr></thead>
+                </table>
+                <div class="panel-scroll" id="bookScroll">
+                  <table class="book-table">
+                    <colgroup><col class="side"/><col class="price"/><col class="contracts"/><col class="total"/></colgroup>
+                    <tbody id="asks" class="asks"></tbody>
+                    <tbody>
+                      <tr><td colspan="4" id="midPrice" class="mid-row mid-yes"></td></tr>
+                    </tbody>
+                    <tbody id="bids" class="bids"></tbody>
+                  </table>
+                </div>
+              </div>
+              <div class="hourly-strike-list" id="hourlyStrikeList"></div>
+            </div>
+          </div>
+        </div>
+
+        <div class="hf-panel hf-panel--log">
+          <div class="hf-panel-header">Activity Log</div>
+          <div class="hf-log" id="hfLog"></div>
+        </div>
+      </div>
+
+      <!-- Right sidebar -->
+      <div class="hf-sidebar">
+        <!-- Order config -->
+        <div class="hf-panel">
+          <div class="hf-panel-header">Order Config</div>
+          <div class="hf-config-row">
+            <span class="hf-config-label">Contracts</span>
+            <input type="number" class="hf-config-input" id="hfConfigCount" min="1" step="1" value="1" />
+          </div>
+          <div class="hf-config-row">
+            <span class="hf-config-label">Subaccount</span>
+            <input type="number" class="hf-config-input" id="hfConfigSubaccount" min="0" step="1" value="2" />
+          </div>
+          <div class="hf-config-row" style="justify-content:flex-end">
+            <button type="button" class="hf-config-btn" id="hfConfigSaveBtn">Save Config</button>
+          </div>
+        </div>
+
+        <!-- Positions -->
+        <div class="hf-panel" style="flex:1;min-height:0;overflow-y:auto">
+          <div class="hf-panel-header">HFT Positions</div>
+          <div id="hfPositionsBody">
+            <table class="hf-positions-table">
+              <thead>
+                <tr>
+                  <th>Ticker</th>
+                  <th>Position</th>
+                  <th>PNL</th>
+                  <th>Volume</th>
+                </tr>
+              </thead>
+              <tbody id="hfPositionsTableBody">
+              </tbody>
+            </table>
+            <div class="hf-positions-empty" id="hfPositionsEmpty">No positions</div>
+          </div>
+        </div>
+
+        <!-- Resting orders -->
+        <div class="hf-panel">
+          <div class="hf-panel-header">Resting Orders</div>
+          <div id="hfRestingOrdersBody">
+            <table class="hf-positions-table">
+              <thead>
+                <tr>
+                  <th>Side</th>
+                  <th>Price</th>
+                  <th>Remaining</th>
+                  <th>Dir</th>
+                </tr>
+              </thead>
+              <tbody id="hfRestingOrdersTableBody">
+              </tbody>
+            </table>
+            <div class="hf-positions-empty" id="hfRestingOrdersEmpty" aria-live="polite">No resting orders</div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <select id="ticker-picker" class="u-hidden" aria-hidden="true" tabindex="-1">
+    <option value="BTC" selected>BTC</option>
+  </select>
+
+  <script>
+    (function () {
+      var sym = 'BTC';
+      var mkt = '15m';
+      var apiOrigin = window.location.origin;
+      window.__ORDERBOOK_API__ =
+        apiOrigin +
+        '/api/trade-monitor/orderbook?symbol=' + encodeURIComponent(sym) +
+        '&market=' + encodeURIComponent(mkt);
+      window.__HFT_ORDERBOOK_SUBACCOUNT__ = 2;
+      try {
+        document.body.dataset.currentSymbol = sym;
+        document.body.dataset.currentMarket = mkt;
+      } catch (e) {}
+    })();
+  </script>
+  <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
+  <script src="/js/orderbook-redis-ui.js?v=20260518-expanded-rollover-only"></script>
+  <script src="/js/hf-trade-monitor.js?v=20260527d"></script>
+</body>
+</html>

@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-05-27 — Release v3.7.3: Dashboard performance snapshot, trade history live marks, HF trade monitor, orderbook resting orders
+
+**Summary**
+- **Release: v3.7.3**
+- **Dashboard performance:** Fix rollup recompute when master `trades_*` has columns (e.g. `subaccount`) not yet on archive tables — union uses column intersection; `main_app` warms Redis `performance_snapshot` on startup and lazy-fills on `GET /api/dashboard/performance-snapshot` when missing.
+- **Trade history (desktop + mobile):** Live open-trade PnL/ret via `/ws/active-trades-hot-path` and `trade_marks_updated`; refetch on `UPDATE` (not only INSERT/DELETE); mobile parity with hot-path marks and `data-trade-id` DOM patches.
+- **Orderbook UI:** Resting-order badges (clock + signed remaining count) on trade monitor orderbook; portfolio orders API passthrough; live WS updates for orders/positions/fills.
+- **Strike table / Rising Devil:** Carry forward 15m ask min/max from Redis ladder when PG strike writes are skipped (`LIVE_STATE_PG_WRITES=off`).
+- **HF trade monitor:** New `backend/hft_engine.py`, `hf_trade_monitor.html`, routes, and orderbook-redis UI integration.
+- **Live path cache monitor:** Portfolio tables sort newest-first; fill `created_time` stamped when missing from WS.
+- **Database:** No new migrations in this release (code-only union fix for performance rollups).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `read_api`, `redis_switchboard`, `kalshi_account_sync_*`; dashboard Performance strip shows period values (not em dashes); trade history open rows update PnL without full page refresh.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.3`
+
+---
+
 ## 2026-05-25 — Release v3.7.2: HF orderbook hot path, subaccount tracking for portfolio + trades
 
 **Summary**

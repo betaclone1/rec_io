@@ -148,6 +148,7 @@ def _all_sources() -> List[LivePathSourceDef]:
                 LivePathRowColumn("fill_count", "fill_count", numeric=True),
                 LivePathRowColumn("remaining_count", "remaining_count", numeric=True),
                 LivePathRowColumn("yes_price_dollars", "yes_px"),
+                LivePathRowColumn("last_update_time", "updated"),
             ),
             params=(LivePathSourceParam("user_no", "Tenant slot", True, "0001", "0001"),),
         ),

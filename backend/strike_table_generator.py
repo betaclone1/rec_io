@@ -1400,7 +1400,50 @@ class StrikeTableGenerator:
             table_name = self._strike_table_name()
             # Carry forward ask extrema across DELETE/INSERT (same Kalshi event_ticker + market ticker).
             prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
-            if not skip_strike_table_pg_dml and cursor is not None:
+            if skip_strike_table_pg_dml:
+                try:
+                    from backend.core import live_state_cache
+
+                    mk_prev = "15m" if self.interval == "15m" else "hourly"
+                    env = live_state_cache.get_strike_ladder(
+                        self.data_exchange, mk_prev, self.symbol.upper()
+                    )
+                    meta = {}
+                    if env and isinstance(env.get("data"), dict):
+                        meta = env["data"].get("meta") or {}
+                        if not isinstance(meta, dict):
+                            meta = {}
+                    ev_from_meta = meta.get("event_ticker")
+                    ttc_prev = meta.get("ttc_15m")
+                    if ttc_prev is None:
+                        ttc_prev = meta.get("ttc")
+                    for row in live_state_cache.get_strike_ladder_rows(
+                        self.data_exchange, mk_prev, self.symbol.upper()
+                    ):
+                        tk = row.get("ticker")
+                        if tk is None:
+                            continue
+                        ev = row.get("event_ticker") or ev_from_meta
+                        if ev is None:
+                            continue
+                        prev_final_ask_map[(str(ev), str(tk))] = (
+                            str(ev),
+                            str(tk),
+                            row.get("yes_ask_min_15m"),
+                            row.get("yes_ask_max_15m"),
+                            row.get("no_ask_min_15m"),
+                            row.get("no_ask_max_15m"),
+                            ttc_prev,
+                        )
+                except Exception as ex:
+                    logger.warning(
+                        "Could not load prior final-quarter ask columns from live_state ladder for %s/%s: %s",
+                        self.symbol.upper(),
+                        self.interval,
+                        ex,
+                    )
+                    prev_final_ask_map = {}
+            elif not skip_strike_table_pg_dml and cursor is not None:
                 try:
                     sel = (
                         f"SELECT event_ticker, ticker, yes_ask_min_15m, yes_ask_max_15m, "

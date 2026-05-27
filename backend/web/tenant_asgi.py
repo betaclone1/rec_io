@@ -201,6 +201,8 @@ def _http_path_allowed_without_tenant(path: str, method: str) -> bool:
         return True
     if path == "/api/trade-monitor/orderbook_watch" and m == "POST":
         return True
+    if path.startswith("/api/hft/"):
+        return True
     return False
 
 

@@ -27,7 +27,20 @@ from backend.core.config.database import get_postgresql_connection
 from backend.trading_mode import _norm_slot, trades_table_fqn
 from backend.util.trade_log_archivist import (
     fetch_master_trades_column_names,
-    union_trades_with_archives_select,
+    union_trades_with_archives_select_columns,
+)
+
+_PERFORMANCE_ROLLUP_TRADE_COLS = (
+    "monitor",
+    "paper_trade",
+    "test_filter",
+    "pnl",
+    "ret_pct",
+    "fees",
+    "win_loss",
+    "date",
+    "closed_at",
+    "status",
 )
 
 _log = logging.getLogger(__name__)
@@ -256,7 +269,7 @@ def recompute_performance_rollups_for_slot(slot: Optional[str] = None) -> Dict[s
     if not u:
         return {"status": "error", "message": "missing slot"}
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return {"status": "error", "message": "no db"}
 
@@ -278,7 +291,9 @@ def recompute_performance_rollups_for_slot(slot: Optional[str] = None) -> Dict[s
         with conn.cursor() as cur:
             if not fetch_master_trades_column_names(cur, u):
                 return {"status": "skipped", "message": "no trades table"}
-            union_sql, _params = union_trades_with_archives_select(cur, u)
+            union_sql, _params = union_trades_with_archives_select_columns(
+                cur, u, _PERFORMANCE_ROLLUP_TRADE_COLS
+            )
             cur.execute(
                 f"""
                 SELECT LOWER(TRIM(monitor)), paper_trade, test_filter,
@@ -683,7 +698,7 @@ def build_performance_rollups_ws_snapshot(slot: str) -> Optional[Dict[str, Any]]
     if not u:
         return None
 
-    conn = get_postgresql_connection()
+    conn = get_postgresql_connection(tenant_user_no=u)
     if not conn:
         return None
 
@@ -795,3 +810,65 @@ def publish_performance_rollups_ws_snapshot(slot: str) -> None:
         write_dashboard_performance_snapshot_redis(snap, payload=payload)
     except Exception as e:
         _log.warning("publish_performance_rollups_ws_snapshot failed: %s", e)
+
+
+def _discover_performance_rollup_slots() -> List[str]:
+    """Tenant slots with ``performance_total_<slot>`` (users / users_NNNN)."""
+    from backend.core.config.database import get_system_postgresql_connection
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return []
+    slots: List[str] = []
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT DISTINCT
+                  CASE
+                    WHEN n.nspname = 'users' THEN '0001'
+                    ELSE substring(n.nspname FROM '^users_([0-9]{4})$')
+                  END AS slot
+                FROM pg_namespace n
+                JOIN information_schema.tables t
+                  ON t.table_schema = n.nspname
+                 AND t.table_name = CASE
+                       WHEN n.nspname = 'users' THEN 'performance_total_0001'
+                       ELSE 'performance_total_' || substring(n.nspname FROM '^users_([0-9]{4})$')
+                     END
+                WHERE n.nspname = 'users'
+                   OR n.nspname ~ '^users_[0-9]{4}$'
+                """
+            )
+            for row in cur.fetchall() or []:
+                s = str(row[0] or "").strip()
+                if s.isdigit() and len(s) <= 4:
+                    slots.append(_norm_slot(s))
+        return sorted(set(slots))
+    except Exception as e:
+        _log.warning("_discover_performance_rollup_slots failed: %s", e)
+        return []
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+def warm_dashboard_performance_snapshots() -> None:
+    """Best-effort Redis bootstrap for ``GET /api/dashboard/performance-snapshot`` (all tenant slots)."""
+    for slot in _discover_performance_rollup_slots():
+        try:
+            publish_performance_rollups_ws_snapshot(slot)
+        except Exception as e:
+            _log.warning("warm_dashboard_performance_snapshots slot=%s: %s", slot, e)
+
+
+def warm_dashboard_performance_snapshots_async() -> None:
+    """Non-blocking startup warm (main_app lifespan)."""
+    t = threading.Thread(
+        target=warm_dashboard_performance_snapshots,
+        daemon=True,
+        name="dashboard_perf_snapshot_warm",
+    )
+    t.start()

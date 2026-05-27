@@ -10,6 +10,7 @@ from backend.web.routers.auto_entry_main_routes import auto_entry_main_router
 from backend.web.routers.debug_hot_path_routes import debug_hot_path_router
 from backend.web.routers.dashboard_read_proxy_routes import dashboard_read_proxy_router
 from backend.web.routers.frontend_html_routes import frontend_html_router
+from backend.web.routers.hft_routes import hft_router
 from backend.web.routers.internal_service_proxy_routes import internal_service_proxy_router
 from backend.web.routers.intuit_oauth_routes import intuit_oauth_router
 from backend.web.routers.main_health_routes import main_health_router
@@ -38,4 +39,5 @@ def register_main_app_routers(app: FastAPI) -> None:
     app.include_router(monitor_command_router)
     app.include_router(internal_service_proxy_router)
     app.include_router(main_misc_router)
+    app.include_router(hft_router)
     app.include_router(auto_entry_main_router)

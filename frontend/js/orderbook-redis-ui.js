@@ -328,12 +328,21 @@
     decorateTmPctChangeCell(document.getElementById('change-3h'), ch.change3h);
     decorateTmPctChangeCell(document.getElementById('change-1d'), ch.change1d);
 
-    const rawMom = msg.momentum_by_symbol || {};
-    let momVal = rawMom[sym];
+    const rawMom1mAvg = msg.momentum_1m_avg_by_symbol || {};
+    let momVal = rawMom1mAvg[sym];
     if (momVal == null) {
-      Object.keys(rawMom).forEach(function (k) {
-        if (String(k).trim().toUpperCase() === sym && momVal == null) momVal = rawMom[k];
+      Object.keys(rawMom1mAvg).forEach(function (k) {
+        if (String(k).trim().toUpperCase() === sym && momVal == null) momVal = rawMom1mAvg[k];
       });
+    }
+    if (momVal == null) {
+      const rawMom = msg.momentum_by_symbol || {};
+      momVal = rawMom[sym];
+      if (momVal == null) {
+        Object.keys(rawMom).forEach(function (k) {
+          if (String(k).trim().toUpperCase() === sym && momVal == null) momVal = rawMom[k];
+        });
+      }
     }
     const elMom = document.getElementById('symbol-momentum-value');
     if (elMom) elMom.textContent = formatTmMomPercentile(momVal);
@@ -383,9 +392,141 @@
   }
 
 
+  function orderbookPortfolioSubaccount() {
+    var raw = typeof window !== 'undefined' && window.__HFT_ORDERBOOK_SUBACCOUNT__;
+    if (raw != null && raw !== '') {
+      var n = Number(raw);
+      if (Number.isFinite(n)) return n;
+    }
+    return 1;
+  }
+
+  function parseRemainingFp(o) {
+    var rem = o.remaining_count_fp;
+    if (rem == null || rem === '') rem = o.remaining_count;
+    var n = Number(rem);
+    return Number.isFinite(n) ? n : 0;
+  }
+
+  function parseYesPriceDollars(o) {
+    var yp = o.yes_price_dollars;
+    if (yp != null && yp !== '') {
+      var n = Number(yp);
+      if (Number.isFinite(n)) return n;
+    }
+    var p = o.price;
+    if (p != null && p !== '' && p !== '--') {
+      var n2 = Number(p);
+      if (Number.isFinite(n2)) return n2;
+    }
+    return NaN;
+  }
+
+  function avgYesPriceFromPosition(p, fallbackYes) {
+    var fp = Number(p.position_fp);
+    if (!Number.isFinite(fp) || Math.abs(fp) < 1e-6) return NaN;
+    var cost = Number(p.position_cost_dollars);
+    if (Number.isFinite(cost) && Math.abs(cost) > 0) {
+      var avg = Math.abs(cost / fp);
+      if (avg > 0 && avg < 1) return avg;
+    }
+    var exp = Number(p.market_exposure_dollars);
+    if (Number.isFinite(exp) && Math.abs(exp) > 0) {
+      var avgExp = Math.abs(exp / fp);
+      if (avgExp > 0 && avgExp < 1) return avgExp;
+    }
+    var fb = Number(fallbackYes);
+    if (Number.isFinite(fb) && fb > 0 && fb < 1) return fb;
+    return NaN;
+  }
+
+  function ingestRestingOrderRow(next, o, fallbackTicker) {
+    var tk = String(o.ticker || fallbackTicker || '').trim();
+    if (!tk) return;
+    var rem = parseRemainingFp(o);
+    if (rem <= 0) return;
+    var yesD = parseYesPriceDollars(o);
+    if (!Number.isFinite(yesD)) return;
+    var side = String(o.orderbook_side || o.side || '').toLowerCase();
+    if (side !== 'bid' && side !== 'ask') return;
+    if (!next[tk]) next[tk] = [];
+    var key = Math.round(yesD * 100) + ':' + side;
+    for (var i = 0; i < next[tk].length; i++) {
+      var ex = next[tk][i];
+      var exKey = Math.round(ex.yes_price_dollars * 100) + ':' + ex.side;
+      if (exKey === key) {
+        ex.remaining_fp += rem;
+        return;
+      }
+    }
+    next[tk].push({
+      yes_price_dollars: yesD,
+      no_price_dollars: 1 - yesD,
+      remaining_fp: rem,
+      side: side,
+    });
+  }
+
+  function applyHftPortfolioSnapshot(positions, orders, opts) {
+    opts = opts || {};
+    if (opts.subaccount != null) window.__HFT_ORDERBOOK_SUBACCOUNT__ = Number(opts.subaccount);
+    var subFilter = orderbookPortfolioSubaccount();
+    var activeTicker = String(opts.activeTicker || '').trim();
+    var entryPrice = opts.entryPrice;
+
+    var nextPos = Object.create(null);
+    (positions || []).forEach(function (p) {
+      if (Number(p.subaccount || 1) !== subFilter) return;
+      var tk = String(p.ticker || p.market_ticker || '').trim();
+      var fp = Number(p.position_fp);
+      if (!tk || !Number.isFinite(fp) || Math.abs(fp) < 1e-6) return;
+      var fb = tk === activeTicker ? entryPrice : null;
+      var avg = avgYesPriceFromPosition(p, fb);
+      if (!Number.isFinite(avg)) return;
+      nextPos[tk] = { position_fp: fp, avg_price_dollars: avg };
+    });
+    positionsByTicker = nextPos;
+
+    var nextOrd = Object.create(null);
+    (orders || []).forEach(function (o) {
+      ingestRestingOrderRow(nextOrd, o, activeTicker);
+    });
+    restingOrdersByTicker = nextOrd;
+    restoreExpandedOrderbookAfterStrikeRender();
+  }
+
+  function expandOrderbookTicker(ticker) {
+    var t = String(ticker || '').trim();
+    if (!t) return;
+    if (!hourlyStrikeRows.length || !hourlyStrikeRows.some(function (r) { return r.ticker === t; })) {
+      window.__HFT_PENDING_EXPAND_TICKER__ = t;
+      return;
+    }
+    window.__HFT_PENDING_EXPAND_TICKER__ = '';
+    if (expandedHourlyTicker === t) {
+      fetchPortfolioPositions();
+      fetchRestingOrders();
+      restoreExpandedOrderbookAfterStrikeRender();
+      return;
+    }
+    expandedHourlyTicker = t;
+    var st = hourlyExpandedState(t);
+    st.autoCenter = true;
+    st.userScrolled = false;
+    st.lastScrollTop = 0;
+    setTradeMonitorOrderbookWatch(t);
+    renderHourlyRows();
+  }
+
+  function refreshOrderbookPortfolio() {
+    fetchPortfolioPositions();
+    fetchRestingOrders();
+  }
+
   function fetchPortfolioPositions() {
     if (positionsFetchInFlight) return;
     positionsFetchInFlight = true;
+    var subFilter = orderbookPortfolioSubaccount();
     tmMainApiFetch('/api/db/positions', { cache: 'no-store' })
       .then(function (res) { return res && res.ok ? res.json() : null; })
       .then(function (data) {
@@ -393,14 +534,16 @@
         if (!data || !Array.isArray(data.positions)) return;
         var next = Object.create(null);
         data.positions.forEach(function (p) {
-          var tk = p.ticker || p.market_ticker;
+          if (Number(p.subaccount || 1) !== subFilter) return;
+          var tk = String(p.ticker || p.market_ticker || '').trim();
           var fp = Number(p.position_fp);
-          var cost = Number(p.position_cost_dollars);
-          if (!tk || !Number.isFinite(fp) || fp === 0) return;
-          var avg = Math.abs(cost / fp);
+          if (!tk || !Number.isFinite(fp) || Math.abs(fp) < 1e-6) return;
+          var avg = avgYesPriceFromPosition(p, null);
+          if (!Number.isFinite(avg)) return;
           next[tk] = { position_fp: fp, avg_price_dollars: avg };
         });
         positionsByTicker = next;
+        restoreExpandedOrderbookAfterStrikeRender();
       })
       .catch(function () { positionsFetchInFlight = false; });
   }
@@ -414,27 +557,15 @@
         ordersFetchInFlight = false;
         if (!data || !Array.isArray(data.orders)) return;
         var next = Object.create(null);
+        var subFilter = orderbookPortfolioSubaccount();
         data.orders.forEach(function (o) {
-          if (o.status !== 'resting') return;
+          if (String(o.status || '').toLowerCase() !== 'resting') return;
           var sa = Number(o.subaccount || 1);
-          if (sa !== 1) return;
-          var tk = o.ticker || o.market_ticker;
-          if (!tk) return;
-          var rem = Number(o.remaining_count_fp);
-          if (!Number.isFinite(rem) || rem <= 0) return;
-          var side = o.orderbook_side;
-          var yesDollars = Number(o.yes_price_dollars);
-          var noDollars = o.no_price_dollars != null ? Number(o.no_price_dollars) : null;
-          if (!Number.isFinite(yesDollars)) return;
-          if (!next[tk]) next[tk] = [];
-          next[tk].push({
-            yes_price_dollars: yesDollars,
-            no_price_dollars: Number.isFinite(noDollars) ? noDollars : 1 - yesDollars,
-            remaining_fp: rem,
-            side: side,
-          });
+          if (sa !== subFilter) return;
+          ingestRestingOrderRow(next, o, '');
         });
         restingOrdersByTicker = next;
+        restoreExpandedOrderbookAfterStrikeRender();
       })
       .catch(function () { ordersFetchInFlight = false; });
   }
@@ -2088,6 +2219,14 @@
     syncStrikeTableAtmMarker();
     recTmSyncStrikeTablePillsFromOrderBuilder();
     restoreExpandedOrderbookAfterStrikeRender();
+    var pending = window.__HFT_PENDING_EXPAND_TICKER__;
+    if (pending && document.body && document.body.classList.contains('hf-trade-monitor-page')) {
+      var pt = String(pending).trim();
+      window.__HFT_PENDING_EXPAND_TICKER__ = '';
+      if (pt && expandedHourlyTicker !== pt && hourlyStrikeRows.some(function (r) { return r.ticker === pt; })) {
+        expandOrderbookTicker(pt);
+      }
+    }
   }
 
   function patchHourlyRowQuotesInPlace() {
@@ -2444,6 +2583,11 @@
     });
   } catch (e) {}
 
+  if (document.body && document.body.classList.contains('hf-trade-monitor-page')) {
+    refreshOrderbookPortfolio();
+    connectPortfolioDbWs();
+  }
+
   if (document.body && document.body.classList.contains('trade-monitor-new-page')) {
     const symPick = document.getElementById('ticker-picker');
     if (symPick) {
@@ -2509,5 +2653,8 @@
     renderOrderbookInto: renderOrderbookInto,
     patchOrderbookInto: patchOrderbookInto,
     normalizeOrderbookPayload: normalizeOrderbookPayload,
+    applyHftPortfolioSnapshot: applyHftPortfolioSnapshot,
+    expandOrderbookTicker: expandOrderbookTicker,
+    refreshOrderbookPortfolio: refreshOrderbookPortfolio,
   };
 })();

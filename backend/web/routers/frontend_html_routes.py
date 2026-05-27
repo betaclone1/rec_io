@@ -176,6 +176,26 @@ async def serve_js(filename: str):
     return HTMLResponse(content="JS file not found", status_code=404)
 
 
+@frontend_html_router.get("/hf_trade_monitor", response_class=HTMLResponse)
+async def serve_hf_trade_monitor(request: Request):
+    if AUTH_ENABLED:
+        if not query_token_auth_ok(request):
+            return RedirectResponse(url="/login")
+    file_path = f"{frontend_dir}/tabs/hf_trade_monitor.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            content = f.read()
+            return HTMLResponse(
+                content=content,
+                headers={
+                    "Cache-Control": "no-cache, no-store, must-revalidate",
+                    "Pragma": "no-cache",
+                    "Expires": "0",
+                },
+            )
+    return HTMLResponse(content="HF Trade Monitor not found", status_code=404)
+
+
 @frontend_html_router.get("/mobile/trade_monitor", response_class=HTMLResponse)
 async def serve_mobile_trade_monitor(request: Request):
     if AUTH_ENABLED:

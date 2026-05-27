@@ -427,6 +427,18 @@ async def get_dashboard_performance_snapshot():
         )
 
     if not raw:
+        try:
+            from backend.core.performance_rollups import publish_performance_rollups_ws_snapshot
+
+            publish_performance_rollups_ws_snapshot(slot)
+            raw = r.get(redis_key_dashboard_performance_snapshot(slot))
+        except Exception as e:
+            _log.warning(
+                "[dashboard performance-snapshot] lazy publish failed slot=%s: %s",
+                slot,
+                e,
+            )
+    if not raw:
         raise HTTPException(
             status_code=503,
             detail={"status": "error", "message": "no_snapshot"},

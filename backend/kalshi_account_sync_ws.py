@@ -1670,7 +1670,8 @@ def sync_portfolio_hot_state_baseline() -> None:
     pos_data = _fetch_portfolio_positions_rest()
     if pos_data is not None:
         upserted = lskp.replace_positions_baseline(
-            user_no, pos_data.get("market_positions", []) or []
+            user_no, pos_data.get("market_positions", []) or [],
+            subaccount=1,
         )
         logger.info(
             "Portfolio hot_state positions REST baseline: rest=%s upserted=%s",
@@ -1725,9 +1726,9 @@ def sync_positions_prune_hot_state() -> None:
         if p.get("ticker")
     ]
     user_no = _kas_process_user_no()
-    removed = lskp.prune_positions_to_rest_tickers(user_no, rest_tickers)
+    removed = lskp.prune_positions_to_rest_tickers(user_no, rest_tickers, subaccount=1)
     logger.info(
-        "Positions hot_state REST prune: rest=%s hot_removed=%s",
+        "Positions hot_state REST prune: rest=%s hot_removed=%s (subaccount=1 only)",
         len(rest_tickers),
         removed,
     )

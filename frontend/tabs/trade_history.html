@@ -3700,7 +3700,9 @@
         applyFilters({
           preserveMonitorPreview: true,
           skipInsightsRefresh: true,
-          preserveResultsScroll: r === 'tab-visible',
+          preserveResultsScroll:
+            r === 'tab-visible' ||
+            (typeof r === 'string' && r.indexOf('ws-db_change') === 0),
         });
         refreshTradeHistoryInsights();
       } catch (error) {
@@ -3968,7 +3970,7 @@
             data.data &&
             data.data.change_data &&
             data.data.change_data.op;
-          if (op === 'INSERT' || op === 'DELETE') {
+          if (op === 'INSERT' || op === 'UPDATE' || op === 'DELETE') {
             fetchAllTrades('ws-db_change-' + op);
           }
         }

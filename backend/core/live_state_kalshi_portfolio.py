@@ -253,11 +253,20 @@ def remove_position(user_no: str, ticker: str, subaccount: int = _SUBACCOUNT_DEF
         return False
 
 
-def prune_positions_to_rest_tickers(user_no: str, rest_tickers: List[str]) -> int:
+def prune_positions_to_rest_tickers(
+    user_no: str,
+    rest_tickers: List[str],
+    *,
+    subaccount: Optional[int] = None,
+) -> int:
     """Drop hot-state rows whose ticker is absent from REST GET /portfolio/positions.
 
     Hash fields are ``{ticker}:{subaccount}`` -- we extract the ticker part
     for the membership check against the REST snapshot.
+
+    If *subaccount* is given, only prune fields matching that subaccount.
+    Fields belonging to other subaccounts are left untouched (the REST
+    snapshot did not cover them, so absence is not meaningful).
     """
     if not live_state_kalshi_portfolio_enabled():
         return 0
@@ -274,7 +283,11 @@ def prune_positions_to_rest_tickers(user_no: str, rest_tickers: List[str]) -> in
     stale: List[str] = []
     for field_raw in raw_map:
         field = str(field_raw)
-        ticker = field.rsplit(":", 1)[0] if ":" in field else field
+        parts = field.rsplit(":", 1)
+        ticker = parts[0] if len(parts) == 2 else field
+        field_sa = int(parts[1]) if len(parts) == 2 else _SUBACCOUNT_DEFAULT
+        if subaccount is not None and field_sa != subaccount:
+            continue
         if ticker not in allowed:
             stale.append(field)
     if not stale:
@@ -301,8 +314,17 @@ def portfolio_hot_retention_sec() -> float:
     return _retention_sec()
 
 
-def replace_positions_baseline(user_no: str, market_positions: List[dict]) -> int:
-    """Startup/REST snapshot: set hot positions hash to match GET /portfolio/positions."""
+def replace_positions_baseline(
+    user_no: str,
+    market_positions: List[dict],
+    *,
+    subaccount: Optional[int] = None,
+) -> int:
+    """Startup/REST snapshot: set hot positions hash to match GET /portfolio/positions.
+
+    If *subaccount* is given, only prune stale fields matching that
+    subaccount.  Fields for other subaccounts are left untouched.
+    """
     if not live_state_kalshi_portfolio_enabled():
         return 0
     r = redis_client_optional()
@@ -334,7 +356,16 @@ def replace_positions_baseline(user_no: str, market_positions: List[dict]) -> in
     stale: List[str] = []
     try:
         raw_map = r.hgetall(key) or {}
-        stale = [str(f) for f in raw_map if str(f) not in allowed]
+        for f_raw in raw_map:
+            f = str(f_raw)
+            if f in allowed:
+                continue
+            if subaccount is not None:
+                parts = f.rsplit(":", 1)
+                field_sa = int(parts[1]) if len(parts) == 2 else _SUBACCOUNT_DEFAULT
+                if field_sa != subaccount:
+                    continue
+            stale.append(f)
         for f in stale:
             try:
                 r.hdel(key, f)
@@ -644,6 +675,7 @@ def order_row_for_monitor(rec: Dict[str, Any]) -> Dict[str, Any]:
         "fill_count": rec.get("fill_count_fp"),
         "remaining_count": rec.get("remaining_count_fp"),
         "yes_price_dollars": rec.get("yes_price_dollars"),
+        "last_update_time": rec.get("last_update_time"),
     }
 
 

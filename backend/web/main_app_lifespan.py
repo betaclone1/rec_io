@@ -58,6 +58,12 @@ async def main_app_lifespan(_app: FastAPI, *, main_app_port: int):
     )
     live_state_forwarder.start()
     try:
+        from backend.core.performance_rollups import warm_dashboard_performance_snapshots_async
+
+        warm_dashboard_performance_snapshots_async()
+    except Exception as e:
+        _log.warning("dashboard performance snapshot warm skipped: %s", e)
+    try:
         yield
     finally:
         consumer.cancel()

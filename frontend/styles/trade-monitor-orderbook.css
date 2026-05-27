@@ -1,0 +1,819 @@
+.trade-monitor-new {
+color: #e5e7eb;
+}
+
+.trade-monitor-new .u-hidden {
+display: none !important;
+}
+
+.trade-monitor-new .load-err {
+color: #fca5a5;
+margin: 0 0 10px 0;
+font-size: 13px;
+}
+
+.trade-monitor-new .mkt-head {
+display: flex;
+align-items: center;
+gap: 12px;
+}
+
+/* Trailing header controls: AUTO TRADE (dashboard-style) + TTC clock */
+.trade-monitor-new-page .tm-new-mkt-head-trailing {
+display: flex;
+align-items: center;
+gap: 10px;
+margin-left: auto;
+flex-shrink: 0;
+}
+
+.trade-monitor-new-page .tm-new-auto-trade-block {
+display: flex;
+align-items: center;
+gap: 6px;
+}
+
+.trade-monitor-new-page .tm-new-uat-settings-btn {
+display: inline-flex;
+align-items: center;
+justify-content: center;
+padding: 0;
+margin: 0;
+margin-right: 2px;
+border: none;
+background: transparent;
+cursor: pointer;
+line-height: 0;
+}
+
+/* ~perceived match to .auto-trade-label (#a0aec0) for a light PNG on dark chrome */
+.trade-monitor-new-page .tm-new-uat-settings-btn img {
+display: block;
+width: 16px;
+height: 16px;
+opacity: 0.68;
+transition: opacity 0.15s ease;
+}
+
+.trade-monitor-new-page .tm-new-uat-settings-btn:hover img {
+opacity: 1;
+}
+
+/* Mouse-following tooltip: same chrome as dashboard `.th-monitor-trades-box::after` win streak */
+.trade-monitor-new-page .uat-monitor-settings-tooltip {
+      position: fixed;
+z-index: 30000;
+pointer-events: none;
+background: #1a202c;
+color: #e2e8f0;
+border: 1px solid #4a5568;
+border-radius: 4px;
+padding: 5px 8px;
+font-size: 11px;
+font-weight: 500;
+white-space: nowrap;
+box-shadow: 0 4px 12px rgba(0, 0, 0, 0.35);
+      opacity: 0;
+transition: opacity 0.12s ease;
+}
+
+.trade-monitor-new-page .uat-monitor-settings-tooltip.is-visible {
+opacity: 1;
+}
+
+/* Dashboard tile parity (scoped to this tab) */
+.trade-monitor-new-page .auto-trade-label {
+font-size: 10px;
+color: #a0aec0;
+font-weight: 500;
+letter-spacing: 0.5px;
+white-space: nowrap;
+}
+
+.trade-monitor-new-page .auto-trade-toggle {
+width: 32px;
+height: 17px;
+background-color: #444;
+border-radius: 9px;
+position: relative;
+cursor: pointer;
+transition: background-color 0.2s;
+border: none;
+outline: none;
+flex-shrink: 0;
+}
+
+.trade-monitor-new-page .auto-trade-toggle.active {
+background-color: #007bff;
+}
+
+.trade-monitor-new-page .auto-trade-toggle.disabled {
+background-color: #2d3748;
+cursor: not-allowed;
+opacity: 0.5;
+}
+
+.trade-monitor-new-page .auto-trade-toggle::after {
+content: '';
+position: absolute;
+top: 2px;
+left: 2px;
+width: 13px;
+height: 13px;
+background-color: white;
+border-radius: 50%;
+transition: transform 0.2s;
+}
+
+.trade-monitor-new-page .auto-trade-toggle.active::after {
+transform: translateX(15px);
+}
+
+.trade-monitor-new .mkt-text {
+min-width: 0;
+}
+
+.trade-monitor-new .ttc-chip {
+align-self: center;
+box-sizing: border-box;
+display: inline-flex;
+align-items: center;
+justify-content: flex-end;
+/* Glyph line box is often taller than 1.15em, so min-height was invisible; pad instead. */
+padding-block: max(5px, calc(0.075 * 1em));
+font-size: 27px;
+font-weight: bold;
+text-align: right;
+line-height: 1;
+color: #f3f4f6;
+background: transparent;
+/* Border/glow when auto trade is on: set from JS (orderbook-redis-ui.updateMarketHeaderTtc). */
+border: 2px solid transparent;
+border-radius: 6px;
+padding-inline: 10px;
+font-variant-numeric: tabular-nums;
+}
+
+.trade-monitor-new .mkt-icon {
+width: 44px;
+height: 44px;
+border-radius: 10px;
+color: #fff;
+font-size: 22px;
+font-weight: 700;
+display: flex;
+align-items: center;
+justify-content: center;
+flex-shrink: 0;
+overflow: hidden;
+}
+
+.trade-monitor-new .mkt-icon-img {
+width: 100%;
+height: 100%;
+object-fit: cover;
+display: block;
+}
+
+.trade-monitor-new .mkt-icon:has(.mkt-icon-img) {
+background: transparent;
+}
+
+.trade-monitor-new .mkt-icon--btc {
+background: #f7931a;
+}
+
+.trade-monitor-new .mkt-icon--eth {
+background: #627eea;
+}
+
+.trade-monitor-new .mkt-icon--sol {
+background: linear-gradient(135deg, #9945ff 0%, #14f195 100%);
+font-size: 20px;
+font-weight: 800;
+}
+
+.trade-monitor-new .mkt-icon--xrp {
+background: #23292f;
+font-size: 20px;
+font-weight: 800;
+}
+
+.trade-monitor-new .mkt-icon--other {
+background: #4b5563;
+font-size: 18px;
+}
+
+.trade-monitor-new .mkt-title {
+margin: 0 0 4px 0;
+font-size: 18px;
+font-weight: 700;
+color: #fff;
+line-height: 1.25;
+}
+
+.trade-monitor-new .mkt-window {
+margin: 0;
+font-size: 13px;
+color: #c4c4c4;
+white-space: normal;
+line-height: 1.35;
+}
+
+.trade-monitor-new .mkt-title-monitor-number {
+font-size: 13px;
+font-weight: 400;
+color: #c4c4c4;
+}
+
+.trade-monitor-new .quote-row {
+display: flex;
+align-items: center;
+justify-content: space-between;
+gap: 12px;
+margin: 10px 0;
+padding: 6px 8px;
+border-radius: 8px;
+cursor: pointer;
+transition: background-color 120ms ease;
+}
+
+.trade-monitor-new .quote-row:hover {
+background: #3c495e;
+}
+
+.trade-monitor-new .quote-strike {
+font-size: 16.8px;
+font-weight: 700;
+color: #fff;
+}
+
+/* Strike label only; spot lives in the left ticker panel (same idea as hourly strike column). */
+.trade-monitor-new .quote-strike--stack {
+position: relative;
+display: inline-block;
+align-self: center;
+}
+
+.trade-monitor-new .quote-strike-value {
+display: block;
+line-height: 1.15;
+}
+
+.trade-monitor-new .tabs {
+display: flex;
+gap: 10px;
+margin: 0;
+justify-content: flex-end;
+}
+
+.trade-monitor-new .tab {
+cursor: pointer;
+padding: 6px 10px;
+border-radius: 8px;
+background: #41516a;
+color: #d9e1eb;
+font-size: 13px;
+font-weight: 600;
+box-sizing: border-box;
+width: 6.75rem;
+min-width: 6.75rem;
+max-width: 6.75rem;
+flex: 0 0 6.75rem;
+text-align: center;
+}
+
+.trade-monitor-new .tab.active.tab-yes {
+background: #0a7;
+color: #fff;
+}
+
+.trade-monitor-new .tab.active.tab-no {
+background: #b33;
+color: #fff;
+}
+
+/* Hourly strike table: columns match legacy strike-table (STRIKE | BUFFER | % | Prob | YES | NO). */
+.trade-monitor-new .hourly-ask-pill {
+display: inline-block;
+padding: calc(5px * 1.2 * 0.9) calc(6px * 1.2 * 0.9);
+border-radius: calc(8px * 1.2 * 0.9);
+background: rgba(16, 23, 35, 0.28);
+border: calc(1.5px * 0.9) solid rgba(116, 137, 164, 0.72);
+box-shadow: 0 0 calc(6.4px * 0.9) rgba(116, 137, 164, 0.2);
+color: #d9e1eb;
+font-size: calc(13px * 1.2 * 0.9);
+font-weight: 600;
+box-sizing: border-box;
+width: calc(3.375rem * 1.2 * 0.9);
+min-width: calc(3.375rem * 1.2 * 0.9);
+max-width: calc(3.375rem * 1.2 * 0.9);
+text-align: center;
+cursor: pointer;
+user-select: none;
+transition: background-color 120ms ease, border-color 120ms ease, opacity 120ms ease,
+  box-shadow 120ms ease;
+}
+
+.trade-monitor-new .hourly-ask-pill-yes:hover:not(.hourly-ask-pill--order-selected) {
+background: rgba(16, 185, 129, 0.4);
+border-color: rgba(16, 185, 129, 0.95);
+opacity: 1;
+box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.38);
+}
+
+.trade-monitor-new .hourly-ask-pill-no:hover:not(.hourly-ask-pill--order-selected) {
+background: rgba(255, 72, 72, 0.4);
+border-color: rgba(255, 72, 72, 0.95);
+opacity: 1;
+box-shadow: 0 0 calc(8px * 0.9) rgba(255, 72, 72, 0.38);
+}
+
+.trade-monitor-new .hourly-ask-pill--lead-yes {
+background: rgba(16, 185, 129, 0.1);
+border-color: rgba(16, 185, 129, 0.92);
+box-shadow: 0 0 calc(6.4px * 0.9) rgba(16, 185, 129, 0.42);
+color: #f3f4f6;
+}
+
+.trade-monitor-new .hourly-ask-pill--lead-no {
+background: rgba(255, 72, 72, 0.1);
+border-color: rgba(255, 72, 72, 0.92);
+box-shadow: 0 0 calc(6.4px * 0.9) rgba(255, 72, 72, 0.42);
+color: #f3f4f6;
+}
+
+.trade-monitor-new .hourly-ask-pill--dim {
+opacity: 0.72;
+}
+
+/* Order panel / strike row: selected pill uses 50% opaque fill so grid shows through slightly. */
+.trade-monitor-new .hourly-ask-pill-yes.hourly-ask-pill--order-selected {
+opacity: 1;
+background: rgba(16, 185, 129, 0.82);
+border-color: rgb(16, 185, 129);
+color: #fff;
+box-shadow: 0 0 calc(8px * 0.9) rgba(16, 185, 129, 0.62);
+}
+
+.trade-monitor-new .hourly-ask-pill-yes.hourly-ask-pill--order-selected:hover {
+border-color: rgb(5, 150, 105);
+}
+
+.trade-monitor-new .hourly-ask-pill-no.hourly-ask-pill--order-selected {
+opacity: 1;
+background: rgba(255, 72, 72, 0.82);
+border-color: rgb(255, 72, 72);
+color: #fff;
+box-shadow: 0 0 calc(8px * 0.9) rgba(255, 72, 72, 0.55);
+}
+
+.trade-monitor-new .hourly-ask-pill-no.hourly-ask-pill--order-selected:hover {
+border-color: rgb(235, 48, 48);
+}
+
+/* Hourly embedded orderbook: Yes/No book toggle in table header row. */
+.trade-monitor-new .hourly-book-mode-th {
+text-align: center;
+vertical-align: middle;
+padding: 6px 4px;
+font-weight: 600;
+}
+
+.trade-monitor-new .hourly-book-mode-toggle {
+display: inline-flex;
+gap: 6px;
+align-items: center;
+}
+
+.trade-monitor-new .hourly-book-mode-btn {
+cursor: pointer;
+padding: 4px 10px;
+border-radius: 6px;
+border: none;
+font-size: 12px;
+font-weight: 700;
+font-family: inherit;
+background: #41516a;
+color: #d9e1eb;
+}
+
+.trade-monitor-new .hourly-book-mode-btn.hourly-book-mode-yes.is-active {
+background: #0a7;
+color: #fff;
+}
+
+.trade-monitor-new .hourly-book-mode-btn.hourly-book-mode-no.is-active {
+background: #b33;
+color: #fff;
+}
+
+.trade-monitor-new .book-panel {
+background: #293345;
+border: 1px solid #3f4e63;
+border-radius: 8px;
+padding: 8px 8px 0 8px;
+}
+
+.trade-monitor-new .hourly-strike-list {
+border-top: 1px solid #3f4e63;
+overflow: hidden;
+-webkit-overflow-scrolling: touch;
+}
+
+.trade-monitor-new .hourly-strike-head {
+border-bottom: 1px solid #3f4e63;
+}
+
+.trade-monitor-new .hourly-strike-scroll {
+max-height: 500px;
+overflow-y: auto;
+overflow-x: hidden;
+}
+
+.trade-monitor-new .hourly-strike-table {
+width: 100%;
+border-collapse: collapse;
+table-layout: fixed;
+margin-bottom: 0;
+font-variant-numeric: tabular-nums;
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-strike-w {
+width: calc(92px * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-buffer-w {
+width: calc(50px * 1.2 * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-bufpct-w {
+width: calc(50px * 1.2 * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-prob-w {
+width: calc(50px * 1.2 * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-yes-w {
+width: calc(3.5rem * 1.2 * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table col.hourly-col-no-w {
+width: calc(3.5rem * 1.2 * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table th {
+font-size: 11px;
+font-weight: 700;
+text-align: center;
+background: #222c3c;
+color: #c8d0dc;
+padding: 4px 6px;
+border: 1px solid #3f4e63;
+}
+
+.trade-monitor-new .hourly-strike-table td {
+font-size: calc(13px * 0.9);
+text-align: center;
+border: 1px solid #3f4e63;
+padding: calc(6px * 0.9);
+vertical-align: middle;
+color: #e8edf4;
+}
+
+/* Fixed row height on every cell so the row size never depends on strike in-flow content. */
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td {
+padding-top: calc(6px * 1.15 * 0.9);
+padding-bottom: calc(6px * 1.15 * 0.9);
+vertical-align: middle;
+height: calc(3.375rem * 0.9);
+box-sizing: border-box;
+/* tr { cursor: pointer } does not hit cells in many UAs; set on td so the hand shows. */
+cursor: pointer;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-buffer,
+.trade-monitor-new .hourly-strike-table td.hourly-col-bufpct,
+.trade-monitor-new .hourly-strike-table td.hourly-col-prob {
+font-size: calc(13px * 1.2 * 0.9);
+}
+
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td.hourly-col-yes,
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td.hourly-col-no {
+cursor: default;
+overflow: visible;
+position: relative;
+}
+
+/* Pill alone sets wrap width; diff is out-of-flow so cell centers the pill like pre-diff layout. */
+.trade-monitor-new .hourly-strike-pill-wrap {
+display: inline-block;
+position: relative;
+vertical-align: middle;
+}
+
+.trade-monitor-new .hourly-strike-yesno-diff {
+position: absolute;
+left: 100%;
+top: 50%;
+transform: translateY(-50%);
+margin-left: 12px;
+font-size: calc(10px * 1.1);
+font-weight: 600;
+font-variant-numeric: tabular-nums;
+white-space: nowrap;
+pointer-events: none;
+}
+
+/* Match hourly ask-pill green / red accents (positive / negative diffs). */
+.trade-monitor-new .hourly-strike-yesno-diff--pos {
+color: rgb(110, 231, 183);
+}
+
+.trade-monitor-new .hourly-strike-yesno-diff--neg {
+color: rgb(252, 165, 165);
+}
+
+.trade-monitor-new .hourly-strike-yesno-diff--zero,
+.trade-monitor-new .hourly-strike-yesno-diff--na {
+color: #c4cdd8;
+}
+
+.trade-monitor-new .hourly-strike-data-row {
+cursor: pointer;
+transition: background-color 120ms ease;
+}
+
+.trade-monitor-new .hourly-strike-data-row:hover {
+background: #3c495e;
+}
+
+/* Strike: centered text with ATM marker icon for the closest strike. */
+.trade-monitor-new .hourly-strike-table tr.hourly-strike-data-row > td.hourly-col-strike {
+position: relative;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-strike .quote-strike-atm-ind {
+position: absolute;
+left: calc(10px * 0.9);
+top: 50%;
+width: 0;
+height: 0;
+border-top: calc(5.4px * 0.9) solid transparent;
+border-bottom: calc(5.4px * 0.9) solid transparent;
+border-left: calc(9px * 0.9) solid #ffffff;
+opacity: 0.7;
+transform: translateY(-50%);
+display: none;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-strike.hourly-strike-atm .quote-strike-atm-ind {
+display: block;
+}
+
+.trade-monitor-new .hourly-strike-table td.hourly-col-strike .quote-strike-value {
+font-size: calc(16.8px * 0.9);
+font-weight: 700;
+color: #fff;
+line-height: 1.15;
+}
+
+
+.trade-monitor-new .hourly-strike-book-row td {
+padding: 0 8px 8px 8px;
+border-top: none;
+background: transparent;
+/* Pre–strike-shrink body size for nested .book-table (overrides .hourly-strike-table td 0.9 scale). */
+font-size: 13px;
+}
+
+.trade-monitor-new .hourly-strike-expanded {
+padding: 0 4px 8px 4px;
+background: transparent;
+}
+
+.trade-monitor-new .book-table {
+width: 100%;
+border-collapse: collapse;
+table-layout: fixed;
+font-variant-numeric: tabular-nums;
+}
+
+.trade-monitor-new .book-table col.side {
+width: 14%;
+}
+
+.trade-monitor-new .book-table col.price {
+width: 22%;
+}
+
+.trade-monitor-new .book-table col.contracts {
+width: 32%;
+}
+
+.trade-monitor-new .book-table col.total {
+width: 32%;
+}
+
+.trade-monitor-new .panel-head {
+border-bottom: 1px solid #3f4e63;
+}
+
+.trade-monitor-new .panel-head thead th {
+font-size: calc(70% * 1.15);
+font-weight: 700;
+color: #b8c0cf;
+}
+
+.trade-monitor-new .panel-scroll {
+height: 36vh;
+overflow-y: auto;
+}
+
+.trade-monitor-new .book-table th,
+.trade-monitor-new .book-table td {
+padding: 6px 8px;
+border-bottom: 1px solid #3a475b;
+text-align: right;
+white-space: nowrap;
+}
+
+.trade-monitor-new .book-table th:first-child,
+.trade-monitor-new .book-table td:first-child {
+text-align: left;
+}
+
+/* Yes/No header is first th but should stay centered (first-child rule above wins otherwise). */
+.trade-monitor-new .book-table th.hourly-book-mode-th {
+text-align: center;
+}
+
+.trade-monitor-new .book-table td.mid-row {
+text-align: center;
+}
+
+.trade-monitor-new .side-col {
+font-weight: 700;
+}
+
+.trade-monitor-new .book-table tbody.asks tr td {
+color: #fda4af;
+}
+
+.trade-monitor-new .book-table tbody.bids tr td {
+color: #6ee7b7;
+}
+
+.trade-monitor-new .book-table td.book-price-cell--fair {
+position: relative;
+}
+
+.trade-monitor-new .book-table td.book-price-cell--fair .book-fair-price {
+position: absolute;
+left: 8px;
+top: 50%;
+transform: translateY(-50%);
+display: inline-flex;
+align-items: baseline;
+gap: 6px;
+text-align: left;
+font-weight: 600;
+font-size: calc(85% * 1.15);
+color: #e2e8f0;
+pointer-events: none;
+white-space: nowrap;
+}
+
+.trade-monitor-new .book-fair-diff {
+font-weight: 700;
+font-size: 1em;
+}
+
+.trade-monitor-new .book-fair-diff--pos {
+color: #6ee7b7;
+}
+
+.trade-monitor-new .book-fair-diff--neg {
+color: #fda4af;
+}
+
+.trade-monitor-new .book-fair-diff--zero {
+color: #94a3b8;
+}
+
+.trade-monitor-new .book-contracts-cell {
+position: relative;
+}
+
+.trade-monitor-new .book-contracts-val {
+display: inline;
+}
+
+.trade-monitor-new .ob-position-badge {
+position: absolute;
+left: 6px;
+top: 50%;
+transform: translateY(-50%);
+font-size: inherit;
+font-weight: 600;
+color: #fff;
+white-space: nowrap;
+pointer-events: none;
+}
+
+.trade-monitor-new .ob-resting-badge {
+margin-left: 6px;
+font-size: inherit;
+font-weight: 600;
+color: #facc15;
+white-space: nowrap;
+pointer-events: none;
+}
+
+.trade-monitor-new .ob-resting-clock {
+color: #fff;
+margin-right: 4px;
+}
+
+.trade-monitor-new .mid-row {
+text-align: center;
+font-weight: 400;
+padding: 10px 8px;
+border-top: 1px dashed #52627a;
+border-bottom: 1px solid #3a475b;
+background: #2e3a4d;
+}
+
+.trade-monitor-new .mid-inner {
+display: flex;
+justify-content: center;
+align-items: baseline;
+flex-wrap: nowrap;
+width: 100%;
+box-sizing: border-box;
+}
+
+.trade-monitor-new .mid-center-group {
+display: inline-flex;
+align-items: baseline;
+}
+
+.trade-monitor-new .mid-gap {
+display: inline-block;
+width: 12px;
+flex-shrink: 0;
+}
+
+.trade-monitor-new .mid-mom {
+display: inline-flex;
+align-items: baseline;
+gap: 3px;
+margin-left: 10px;
+flex-shrink: 0;
+font-size: 1em;
+font-weight: 600;
+line-height: 1;
+}
+
+.trade-monitor-new .mid-last-wrap {
+font-weight: 600;
+font-size: 1em;
+}
+
+.trade-monitor-new .mid-mom--up {
+color: #6ee7b7;
+}
+
+.trade-monitor-new .mid-mom--down {
+color: #fda4af;
+}
+
+.trade-monitor-new .mid-mom--flat {
+color: #94a3b8;
+}
+
+.trade-monitor-new .mid-mom-arrow {
+font-size: 0.85em;
+}
+
+.trade-monitor-new .mid-side {
+font-size: 1em;
+font-weight: 600;
+}
+
+.trade-monitor-new .mid-yes .mid-side {
+color: #34d399;
+}
+
+.trade-monitor-new .mid-no .mid-side {
+color: #f87171;
+}
+
+.trade-monitor-new .mid-yes .mid-last-wrap {
+color: #34d399;
+}
+
+.trade-monitor-new .mid-no .mid-last-wrap {
+color: #f87171;
+}
