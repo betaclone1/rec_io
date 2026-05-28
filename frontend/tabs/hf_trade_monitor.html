@@ -116,6 +116,22 @@ html, body {
   background: #0ff;
 }
 
+.hf-engine-toggle.active {
+  background: rgba(60, 186, 108, 0.2);
+  border-color: rgba(60, 186, 108, 0.45);
+}
+
+.hf-engine-toggle.active::after {
+  transform: translateX(22px);
+  background: #3cba6c;
+}
+
+.hf-auto-trade-toggle.pending,
+.hf-engine-toggle.pending {
+  opacity: 0.55;
+  pointer-events: none;
+}
+
 /* ---- Main grid ---- */
 .hf-main {
   display: grid;
@@ -433,6 +449,17 @@ html, body {
     <div class="hf-top-bar">
       <span class="hf-badge">HF MODE</span>
       <span class="hf-title" id="hfTitle">BTC 15m -- Market Making</span>
+      <div class="hf-auto-trade-block">
+        <span class="hf-auto-trade-label">ENGINE</span>
+        <div
+          class="hf-auto-trade-toggle hf-engine-toggle"
+          id="hfEngineToggle"
+          role="switch"
+          tabindex="0"
+          aria-checked="false"
+          aria-label="HFT engine process toggle"
+        ></div>
+      </div>
       <div class="hf-auto-trade-block">
         <span class="hf-auto-trade-label">AUTO TRADE</span>
         <div

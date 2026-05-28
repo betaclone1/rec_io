@@ -16,6 +16,9 @@
   var lastState = null;
   var logEntries = [];
   var MAX_LOG = 200;
+  /** While true, applyStatus must not overwrite toggle DOM (avoids 1s poll / WS race). */
+  var engineTogglePending = false;
+  var autoTradeTogglePending = false;
 
   // ---- DOM refs ----
   function $(id) { return document.getElementById(id); }
@@ -98,13 +101,25 @@
       .catch(function () {});
   }
 
+  function setEngineToggleRunning(running, pending) {
+    var engToggle = $('hfEngineToggle');
+    if (!engToggle) return;
+    engToggle.classList.toggle('active', !!running);
+    engToggle.classList.toggle('pending', !!pending);
+    engToggle.setAttribute('aria-checked', running ? 'true' : 'false');
+  }
+
   function applyStatus(d) {
     var ctrl = d.control || {};
     var eng = d.engine || {};
+    var proc = d.process || {};
 
-    // Toggle state
+    if (!engineTogglePending) {
+      setEngineToggleRunning(!!proc.running, false);
+    }
+
     var toggle = $('hfAutoTradeToggle');
-    if (toggle) {
+    if (toggle && !autoTradeTogglePending) {
       var on = !!ctrl.enabled;
       toggle.classList.toggle('active', on);
       toggle.setAttribute('aria-checked', on ? 'true' : 'false');
@@ -122,7 +137,7 @@
     syncOrderbookSubaccount(ctrl.subaccount != null ? ctrl.subaccount : 2);
 
     // Engine state
-    var state = eng.state || 'IDLE';
+    var state = proc.running ? (eng.state || 'IDLE') : 'OFF';
     var dot = $('hfStateDot');
     var label = $('hfStateLabel');
     if (dot) dot.setAttribute('data-state', state);
@@ -265,7 +280,7 @@
       if (empty) {
         var side = (panel.seeking_close_side || '').toUpperCase();
         var sideLabel = side ? side + ' ' : '';
-        var cooldown = panel.in_cooldown ? ' (cooldown)' : '';
+        var cooldown = panel.in_cooldown ? ' (backoff)' : '';
         empty.textContent = 'Seeking ' + sideLabel + 'close — post-only retry' + cooldown;
         empty.classList.add('hf-resting-seeking');
         empty.style.display = '';
@@ -304,7 +319,7 @@
       if (seekingClose) {
         var seekSide = (panel.seeking_close_side || '').toUpperCase();
         var seekLabel = seekSide ? seekSide + ' ' : '';
-        var seekCooldown = panel.in_cooldown ? ' (cooldown)' : '';
+        var seekCooldown = panel.in_cooldown ? ' (backoff)' : '';
         empty.textContent = 'Also seeking ' + seekLabel + 'close' + seekCooldown;
         empty.classList.add('hf-resting-seeking');
         empty.style.display = '';
@@ -315,16 +330,91 @@
     }
   }
 
+  // ---- Engine process toggle ----
+  function wireEngineToggle() {
+    var toggle = $('hfEngineToggle');
+    if (!toggle) return;
+
+    function clearEnginePending(revertTo) {
+      engineTogglePending = false;
+      setEngineToggleRunning(revertTo, false);
+    }
+
+    function doToggle() {
+      if (engineTogglePending) return;
+      var currentlyOn = toggle.classList.contains('active');
+      var next = !currentlyOn;
+      engineTogglePending = true;
+      setEngineToggleRunning(next, true);
+      addLog('Engine -> ' + (next ? 'START' : 'STOP'));
+
+      apiFetch('/api/hft/process', {
+        method: 'POST',
+        body: JSON.stringify({ running: next }),
+      })
+        .then(function (r) {
+          return r.json().then(function (d) {
+            return { httpOk: r.ok, httpStatus: r.status, data: d };
+          });
+        })
+        .then(function (res) {
+          var d = res.data || {};
+          if (!res.httpOk || d.status !== 'ok') {
+            clearEnginePending(currentlyOn);
+            var errMsg = d.message || d.reason || d.detail;
+            if (!errMsg && res.httpStatus === 404) {
+              errMsg = 'route not found — restart main_app to load /api/hft/process';
+            }
+            addLog('Engine FAILED: ' + (errMsg || 'HTTP ' + res.httpStatus));
+            return;
+          }
+          engineTogglePending = false;
+          setEngineToggleRunning(!!(d.process && d.process.running), false);
+          if (d.reason === 'already_running') {
+            addLog('Engine already running (pid ' + (d.process && d.process.pid) + ')');
+          } else if (d.reason === 'not_running') {
+            addLog('Engine was not running');
+          } else if (d.started) {
+            addLog('Engine started (pid ' + (d.process && d.process.pid) + ')');
+          } else if (d.stopped) {
+            addLog('Engine stopped');
+          }
+          pollStatus();
+        })
+        .catch(function (err) {
+          clearEnginePending(currentlyOn);
+          addLog('Engine error: ' + err.message);
+        });
+    }
+
+    toggle.addEventListener('click', doToggle);
+    toggle.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        doToggle();
+      }
+    });
+  }
+
   // ---- Toggle ----
+  function setAutoTradeToggle(on, pending) {
+    var toggle = $('hfAutoTradeToggle');
+    if (!toggle) return;
+    toggle.classList.toggle('active', !!on);
+    toggle.classList.toggle('pending', !!pending);
+    toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+
   function wireToggle() {
     var toggle = $('hfAutoTradeToggle');
     if (!toggle) return;
 
     function doToggle() {
+      if (autoTradeTogglePending) return;
       var currentlyOn = toggle.classList.contains('active');
       var next = !currentlyOn;
-      toggle.classList.toggle('active', next);
-      toggle.setAttribute('aria-checked', next ? 'true' : 'false');
+      autoTradeTogglePending = true;
+      setAutoTradeToggle(next, true);
       addLog('Toggle -> ' + (next ? 'ENABLED' : 'DISABLED'));
 
       apiFetch('/api/hft/toggle', {
@@ -333,14 +423,18 @@
       })
         .then(function (r) { return r.json(); })
         .then(function (d) {
+          autoTradeTogglePending = false;
           if (d.status !== 'ok') {
-            toggle.classList.toggle('active', currentlyOn);
-            toggle.setAttribute('aria-checked', currentlyOn ? 'true' : 'false');
+            setAutoTradeToggle(currentlyOn, false);
             addLog('Toggle FAILED: ' + (d.message || 'unknown'));
+            return;
           }
+          setAutoTradeToggle(!!d.enabled, false);
+          pollStatus();
         })
         .catch(function (err) {
-          toggle.classList.toggle('active', currentlyOn);
+          autoTradeTogglePending = false;
+          setAutoTradeToggle(currentlyOn, false);
           addLog('Toggle error: ' + err.message);
         });
     }
@@ -421,6 +515,7 @@
   // ---- Init ----
   function init() {
     addLog('HF Trade Monitor initialized');
+    wireEngineToggle();
     wireToggle();
     wireConfigSave();
     wireWebSocket();

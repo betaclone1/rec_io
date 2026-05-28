@@ -422,19 +422,33 @@
     return NaN;
   }
 
+  /**
+   * Average YES fill price for orderbook badges (always YES-book cents on YES tab).
+   * Kalshi position_cost / market_exposure for short YES (negative fp) is NO-side
+   * notional — complement to get YES fill (e.g. cost 0.87, fp -1 → 13c YES).
+   */
   function avgYesPriceFromPosition(p, fallbackYes) {
     var fp = Number(p.position_fp);
     if (!Number.isFinite(fp) || Math.abs(fp) < 1e-6) return NaN;
+
+    function yesAvgFromExposureDollars(dollars) {
+      if (!Number.isFinite(dollars) || Math.abs(dollars) <= 0) return NaN;
+      var perContract = Math.abs(dollars / fp);
+      if (perContract <= 0 || perContract >= 1) return NaN;
+      if (fp < 0) {
+        return 1 - perContract;
+      }
+      return perContract;
+    }
+
     var cost = Number(p.position_cost_dollars);
-    if (Number.isFinite(cost) && Math.abs(cost) > 0) {
-      var avg = Math.abs(cost / fp);
-      if (avg > 0 && avg < 1) return avg;
-    }
+    var avg = yesAvgFromExposureDollars(cost);
+    if (Number.isFinite(avg)) return avg;
+
     var exp = Number(p.market_exposure_dollars);
-    if (Number.isFinite(exp) && Math.abs(exp) > 0) {
-      var avgExp = Math.abs(exp / fp);
-      if (avgExp > 0 && avgExp < 1) return avgExp;
-    }
+    avg = yesAvgFromExposureDollars(exp);
+    if (Number.isFinite(avg)) return avg;
+
     var fb = Number(fallbackYes);
     if (Number.isFinite(fb) && fb > 0 && fb < 1) return fb;
     return NaN;

@@ -9,6 +9,8 @@ from typing import Any, Dict, Optional
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
+from backend.hft_process_ctl import hft_process_status, start_hft_engine, stop_hft_engine
+
 logger = logging.getLogger("hft_routes")
 
 hft_router = APIRouter(tags=["hft"])
@@ -336,10 +338,36 @@ async def hft_status():
         "status": "ok",
         "control": ctrl,
         "engine": state,
+        "process": hft_process_status(r),
         "positions": positions,
         "resting_orders": resting_orders,
         "resting_orders_panel": resting_orders_panel,
     }
+
+
+@hft_router.post("/api/hft/process")
+async def hft_process(request: dict):
+    """Start or stop the HFT engine process (singleton — at most one instance)."""
+    import os
+
+    action = str(request.get("action") or "").strip().lower()
+    if not action and "running" in request:
+        action = "start" if bool(request["running"]) else "stop"
+    if action not in ("start", "stop"):
+        return JSONResponse(
+            {"status": "error", "message": "action must be 'start' or 'stop'"},
+            status_code=400,
+        )
+
+    user_no = os.getenv("REC_USER_NO", "0001").strip()
+    if action == "start":
+        result = start_hft_engine(user_no=user_no)
+    else:
+        result = stop_hft_engine()
+
+    if result.get("status") == "error":
+        return JSONResponse(result, status_code=500)
+    return result
 
 
 @hft_router.post("/api/hft/config")

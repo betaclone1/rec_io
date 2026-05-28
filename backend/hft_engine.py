@@ -203,6 +203,10 @@ def kalshi_amend_order(
     path = f"/portfolio/events/orders/{order_id}/amend"
     url = f"{KALSHI_BASE_URL}{path}?subaccount={subaccount}"
     headers = _auth_headers("POST", path)
+    try:
+        price = f"{_clamp_kalshi_submit_price(Decimal(str(price))):.4f}"
+    except Exception:
+        return None
     body = {
         "ticker": ticker,
         "side": side,
@@ -235,6 +239,10 @@ def kalshi_place_limit_order(
     post_only: bool = False,
 ) -> Optional[Dict[str, Any]]:
     """Place a single GTC limit order via V2: POST /portfolio/events/orders."""
+    try:
+        price = f"{_clamp_kalshi_submit_price(Decimal(str(price))):.4f}"
+    except Exception:
+        return None
     path = "/portfolio/events/orders"
     url = f"{KALSHI_BASE_URL}{path}"
     headers = _auth_headers("POST", path)
@@ -283,7 +291,11 @@ def kalshi_market_order(
         "client_order_id": str(uuid.uuid4()),
         "side": side,
         "count": count,
-        "price": "0.9900" if side == "bid" else "0.0100",
+        "price": (
+            f"{MAX_SUBMIT_PRICE:.4f}"
+            if side == "bid"
+            else f"{MIN_SUBMIT_PRICE:.4f}"
+        ),
         "time_in_force": "fill_or_kill",
         "self_trade_prevention_type": "maker",
         "cancel_order_on_pause": True,
@@ -330,7 +342,10 @@ class HFTState(str, Enum):
     QUOTING = "QUOTING"
     CLOSING = "CLOSING"
 
-COOLDOWN_SEC = 2.0
+# Per-side pause after post-only cross/reject (entry/quote re-place only; CLOSING exempt).
+POST_ONLY_BACKOFF_SEC = float(os.getenv("HFT_POST_ONLY_BACKOFF_SEC", "0.15"))
+# Minimum gap between directional entry amends in QUOTING (CLOSING/stop-loss exempt).
+HFT_ENTRY_AMEND_INTERVAL_SEC = float(os.getenv("HFT_ENTRY_AMEND_INTERVAL_SEC", "0.2"))
 # buffer_pct is in percent points (strike table): 0.025 = 0.025%, 2.5 = 2.5%.
 MIN_BUFFER_PCT = float(os.getenv("HFT_MIN_BUFFER_PCT", "0.025"))
 MAX_BUFFER_PCT_FOR_ENTRY = float(os.getenv("HFT_MAX_BUFFER_PCT_FOR_ENTRY", "6.0"))
@@ -341,6 +356,19 @@ ROLLOVER_FRESH_MIN_BUFFER_PCT = float(os.getenv("HFT_ROLLOVER_FRESH_MIN_BUFFER_P
 LADDER_BUFFER_MAX_DELTA_PCT = 0.5  # ladder vs spot/floor compute (percent points)
 MIN_ENTRY_PRICE = Decimal("0.02")  # 2c — no entry below
 MAX_ENTRY_PRICE = Decimal("0.98")  # 98c — no entry above
+# Kalshi V2 resting/aggressive limits (10c–99.9c).
+MIN_SUBMIT_PRICE = Decimal("0.10")
+MAX_SUBMIT_PRICE = Decimal("0.999")
+
+
+def _clamp_kalshi_submit_price(price: Decimal) -> Decimal:
+    """Hard floor/cap for any price sent to Kalshi."""
+    p = price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if p < MIN_SUBMIT_PRICE:
+        return MIN_SUBMIT_PRICE
+    if p > MAX_SUBMIT_PRICE:
+        return MAX_SUBMIT_PRICE
+    return p
 
 
 class HFTEngine:
@@ -354,7 +382,9 @@ class HFTEngine:
         self.market = market
         self.state = HFTState.IDLE
         self.last_eval_mono: float = 0.0
-        self.last_api_time: float = 0.0
+        self.last_api_mono: float = 0.0
+        self._post_only_backoff_until: Dict[str, float] = {}
+        self._last_entry_amend_mono: float = 0.0
         self._startup_done: bool = False
 
         # Gate snapshot (updated each eval)
@@ -391,6 +421,8 @@ class HFTEngine:
         self._rollover_quiet_until_mono: float = 0.0
         self._anchor_ticker: Optional[str] = None
         self._anchor_floor_strike: Optional[float] = None
+        # Sides ("bid" / "ask") that must join the book after a post-only cross.
+        self._post_only_catch_up_sides: set[str] = set()
 
     # -- Redis control plane ------------------------------------------------
 
@@ -438,7 +470,8 @@ class HFTEngine:
             "entry_price": str(self.entry_price) if self.entry_price is not None else None,
             "entry_side": self.entry_side,
             "max_loss_cents": str(self.max_loss_cents),
-            "in_cooldown": (time.monotonic() - self.last_api_time) < COOLDOWN_SEC,
+            # Legacy UI key: short per-side backoff after post-only cross (not global API freeze).
+            "in_cooldown": self._any_post_only_backoff(),
             "awaiting_flat_after_counter": self.awaiting_flat_after_counter,
             "seeking_resting_close": seeking_close,
             "seeking_close_side": close_side,
@@ -794,11 +827,30 @@ class HFTEngine:
         except Exception:
             return None
 
-    def _in_cooldown(self) -> bool:
-        return (time.monotonic() - self.last_api_time) < COOLDOWN_SEC
-
     def _mark_api_action(self) -> None:
-        self.last_api_time = time.monotonic()
+        self.last_api_mono = time.monotonic()
+
+    def _set_post_only_backoff(self, side: str) -> None:
+        self._post_only_backoff_until[side] = (
+            time.monotonic() + POST_ONLY_BACKOFF_SEC
+        )
+
+    def _side_in_post_only_backoff(self, side: str) -> bool:
+        until = self._post_only_backoff_until.get(side, 0.0)
+        now = time.monotonic()
+        if now < until:
+            return True
+        self._post_only_backoff_until.pop(side, None)
+        return False
+
+    def _any_post_only_backoff(self) -> bool:
+        now = time.monotonic()
+        self._post_only_backoff_until = {
+            side: until
+            for side, until in self._post_only_backoff_until.items()
+            if until > now
+        }
+        return bool(self._post_only_backoff_until)
 
     # -- Gate evaluation ----------------------------------------------------
 
@@ -874,6 +926,10 @@ class HFTEngine:
             return []
         if bid_price >= ask_price:
             return []
+        bid_price = _clamp_kalshi_submit_price(bid_price)
+        ask_price = _clamp_kalshi_submit_price(ask_price)
+        if bid_price >= ask_price:
+            return []
         if not self._entry_price_allowed(bid_price) or not self._entry_price_allowed(ask_price):
             self._log_idle_skip(
                 "mm_batch_entry_band",
@@ -924,6 +980,9 @@ class HFTEngine:
         self.last_amend_price = None
         self.pending_cancel_oid = None
         self.awaiting_flat_after_counter = False
+        self._post_only_catch_up_sides.clear()
+        self._post_only_backoff_until.clear()
+        self._last_entry_amend_mono = 0.0
 
     @staticmethod
     def _max_contracts(count: str) -> float:
@@ -935,6 +994,142 @@ class HFTEngine:
     @staticmethod
     def _entry_price_allowed(price: Decimal) -> bool:
         return MIN_ENTRY_PRICE <= price <= MAX_ENTRY_PRICE
+
+    def _book_price_for_side(
+        self, side: str, best_bid: Decimal, best_ask: Decimal,
+    ) -> Optional[Decimal]:
+        raw = best_bid if side == "bid" else best_ask
+        price = raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if price <= 0 or price >= Decimal("1"):
+            return None
+        return price
+
+    def _limit_price_for_order(
+        self,
+        side: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        target_price: Decimal,
+    ) -> Optional[Decimal]:
+        if side in self._post_only_catch_up_sides:
+            return self._book_price_for_side(side, best_bid, best_ask)
+        return target_price
+
+    def _mark_post_only_cross(
+        self,
+        side: str,
+        attempted: Decimal,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        *,
+        apply_backoff: bool = True,
+    ) -> None:
+        self._post_only_catch_up_sides.add(side)
+        if apply_backoff:
+            self._set_post_only_backoff(side)
+        log.info(
+            "Post-only cross on %s @ %s -- next attempt joins book (bid=%s ask=%s)"
+            "%s",
+            side,
+            attempted,
+            best_bid,
+            best_ask,
+            f" backoff={POST_ONLY_BACKOFF_SEC:.2f}s" if apply_backoff else "",
+        )
+
+    def _effective_submit_price(
+        self,
+        target: Decimal,
+        side: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+    ) -> Optional[Decimal]:
+        """Map strategy target to a Kalshi-acceptable limit (10c–99.9c)."""
+        p = target.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if p <= 0 or p >= Decimal("1"):
+            return None
+        if p < MIN_SUBMIT_PRICE:
+            touch = self._book_price_for_side(side, best_bid, best_ask)
+            if touch is not None and MIN_SUBMIT_PRICE <= touch <= MAX_SUBMIT_PRICE:
+                log.info(
+                    "Submit price %s below floor %s — using book touch %s (%s)",
+                    p, MIN_SUBMIT_PRICE, touch, side,
+                )
+                p = touch
+            else:
+                log.info(
+                    "Submit price %s below floor %s — clamping to floor",
+                    p, MIN_SUBMIT_PRICE,
+                )
+                p = MIN_SUBMIT_PRICE
+        elif p > MAX_SUBMIT_PRICE:
+            touch = self._book_price_for_side(side, best_bid, best_ask)
+            if touch is not None and MIN_SUBMIT_PRICE <= touch <= MAX_SUBMIT_PRICE:
+                log.info(
+                    "Submit price %s above cap %s — using book touch %s (%s)",
+                    p, MAX_SUBMIT_PRICE, touch, side,
+                )
+                p = touch
+            else:
+                log.info(
+                    "Submit price %s above cap %s — clamping to cap",
+                    p, MAX_SUBMIT_PRICE,
+                )
+                p = MAX_SUBMIT_PRICE
+        return p
+
+    def _place_post_only_at_price(
+        self,
+        *,
+        ticker: str,
+        side: str,
+        price: Decimal,
+        count: str,
+        subaccount: int,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        label: str,
+        exempt_post_only_backoff: bool = False,
+    ) -> Optional[str]:
+        """Place a post-only limit; return order_id when resting."""
+        if not exempt_post_only_backoff and self._side_in_post_only_backoff(side):
+            log.info(
+                "%s side=%s skipped: post-only backoff %.2fs remaining",
+                label,
+                side,
+                max(
+                    0.0,
+                    self._post_only_backoff_until.get(side, 0.0) - time.monotonic(),
+                ),
+            )
+            return None
+        price = self._effective_submit_price(price, side, best_bid, best_ask)
+        if price is None:
+            return None
+        price_str = f"{price:.4f}"
+        catch_up = side in self._post_only_catch_up_sides
+        if catch_up:
+            log.info(
+                "%s side=%s price=%s post_only=True (book catch-up)",
+                label, side, price_str,
+            )
+        else:
+            log.info("%s side=%s price=%s post_only=True", label, side, price_str)
+        result = kalshi_place_limit_order(
+            ticker=ticker, side=side, price=price_str,
+            count=count, subaccount=subaccount, post_only=True)
+        self._mark_api_action()
+        if result and float(result.get("remaining_count", "0")) > 0:
+            self._post_only_catch_up_sides.discard(side)
+            return result.get("order_id")
+        self._mark_post_only_cross(
+            side,
+            price,
+            best_bid,
+            best_ask,
+            apply_backoff=not exempt_post_only_backoff,
+        )
+        return None
 
     def _book_allows_entry(
         self, best_bid: Decimal, best_ask: Decimal, mom_1m: Optional[float],
@@ -949,14 +1144,28 @@ class HFTEngine:
             return self._entry_price_allowed(bid)
         return self._entry_price_allowed(ask)
 
+    def _cancel_entry_orders(
+        self, subaccount: int, *, keep_oid: Optional[str] = None,
+    ) -> None:
+        """Cancel resting entry legs; keep_oid is left tracked (e.g. neutral counter)."""
+        cancelled = False
+        for oid in (self.my_bid_oid, self.my_ask_oid):
+            if not oid or oid == keep_oid:
+                continue
+            kalshi_cancel_order(oid, subaccount=subaccount)
+            cancelled = True
+        if self.my_bid_oid != keep_oid:
+            self.my_bid_oid = None
+        if self.my_ask_oid != keep_oid:
+            self.my_ask_oid = None
+        if cancelled:
+            self._mark_api_action()
+
     def _cancel_entry_and_idle(self, subaccount: int, reason: str) -> None:
         log.info("QUOTING -> IDLE: %s", reason)
-        for oid in (self.my_bid_oid, self.my_ask_oid):
-            if oid:
-                kalshi_cancel_order(oid, subaccount=subaccount)
+        self._cancel_entry_orders(subaccount)
         self._clear_all_order_state()
         self.state = HFTState.IDLE
-        self._mark_api_action()
 
     def _close_side(self) -> Optional[str]:
         """Close order side from recorded entry, not from position (avoids stale sign)."""
@@ -1057,13 +1266,18 @@ class HFTEngine:
         self._ripcord_flatten(ticker, count, subaccount, position=position)
         return True
 
+    @staticmethod
+    def _infer_entry_side_from_position(position: float) -> Optional[str]:
+        if position > 0.001:
+            return "long"
+        if position < -0.001:
+            return "short"
+        return None
+
     def _infer_entry_side(self, position: float, trade_mode: Optional[str]) -> Optional[str]:
         """Infer long/short from position; reject mismatch with directional mode."""
-        if position > 0.001:
-            side = "long"
-        elif position < -0.001:
-            side = "short"
-        else:
+        side = self._infer_entry_side_from_position(position)
+        if side is None:
             return None
         if trade_mode == "bullish" and side != "long":
             return None
@@ -1075,17 +1289,23 @@ class HFTEngine:
         self, best_bid: Decimal, best_ask: Decimal,
     ) -> Optional[Decimal]:
         """Profit-taking price for directional; join book for neutral."""
+        close_side = self._close_side()
+        if not close_side:
+            return None
+        raw: Optional[Decimal] = None
         if self.entry_side == "long" and self.entry_price is not None and self.target_spread:
-            return (self.entry_price + self.target_spread).quantize(
+            raw = (self.entry_price + self.target_spread).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if self.entry_side == "short" and self.entry_price is not None and self.target_spread:
-            return (self.entry_price - self.target_spread).quantize(
+        elif self.entry_side == "short" and self.entry_price is not None and self.target_spread:
+            raw = (self.entry_price - self.target_spread).quantize(
                 Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if self.entry_side == "long":
-            return best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if self.entry_side == "short":
-            return best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        return None
+        elif self.entry_side == "long":
+            raw = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        elif self.entry_side == "short":
+            raw = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if raw is None:
+            return None
+        return self._effective_submit_price(raw, close_side, best_bid, best_ask)
 
     def _ripcord_flatten(
         self,
@@ -1126,6 +1346,8 @@ class HFTEngine:
     #   3. Position is the single source of truth for state transitions.
     #      Order status is only used to clear OID tracking.
     #   4. Gates are re-checked every tick in QUOTING.
+    #   5. No global API cooldown. Entry re-place uses per-side post-only
+    #      backoff (HFT_POST_ONLY_BACKOFF_SEC). CLOSING/counter/ripcord exempt.
 
     def _cancel_tracked_orders(self, subaccount: int) -> None:
         for oid in (self.my_bid_oid, self.my_ask_oid, self.counter_oid):
@@ -1205,11 +1427,6 @@ class HFTEngine:
             self._finish(r)
             return
 
-        # ---- Cooldown: publish state only ----
-        if self._in_cooldown():
-            self._finish(r)
-            return
-
         # ---- Startup: detect pre-existing position ----
         if not self._startup_done:
             self._startup_done = True
@@ -1227,6 +1444,14 @@ class HFTEngine:
         # =============================================================
         if self.state == HFTState.IDLE:
             if not is_flat:
+                if self.my_bid_oid or self.my_ask_oid:
+                    log.warning(
+                        "IDLE: open position %.2f with tracked entry oids bid=%s ask=%s — canceling",
+                        position, self.my_bid_oid, self.my_ask_oid,
+                    )
+                    self._cancel_entry_orders(subaccount)
+                    self._finish(r)
+                    return
                 self.entry_side = "long" if position > 0 else "short"
                 self.entry_price = best_bid if position > 0 else best_ask
                 if self.target_spread is None:
@@ -1290,6 +1515,16 @@ class HFTEngine:
                 self._clear_all_order_state()
                 self.state = HFTState.IDLE
             else:
+                if self.my_bid_oid or self.my_ask_oid:
+                    log.warning(
+                        "CLOSING: stray entry oids bid=%s ask=%s (counter=%s) — canceling",
+                        self.my_bid_oid, self.my_ask_oid, self.counter_oid,
+                    )
+                    self._cancel_entry_orders(
+                        subaccount, keep_oid=self.counter_oid,
+                    )
+                    self._finish(r)
+                    return
                 if self.entry_side is None:
                     recovered = self._infer_entry_side(position, self.trade_mode)
                     if recovered:
@@ -1354,8 +1589,14 @@ class HFTEngine:
             ask_ok = len(resp_orders) > 1 and not resp_orders[1].get("error")
             if bid_ok:
                 self.my_bid_oid = resp_orders[0].get("order_id")
+            else:
+                self._post_only_catch_up_sides.add("bid")
+                self._set_post_only_backoff("bid")
             if ask_ok:
                 self.my_ask_oid = resp_orders[1].get("order_id")
+            else:
+                self._post_only_catch_up_sides.add("ask")
+                self._set_post_only_backoff("ask")
             self.submitted_bid_price = best_bid
             self.submitted_ask_price = best_ask
             self.trade_mode = "neutral"
@@ -1378,43 +1619,47 @@ class HFTEngine:
                     entry_price, MIN_ENTRY_PRICE, MAX_ENTRY_PRICE, mode,
                 )
                 return
-            price_str = f"{entry_price:.4f}"
+            place_price = self._limit_price_for_order(
+                entry_side, best_bid, best_ask, entry_price)
+            if place_price is None:
+                return
             log.info(
                 "ORDER_PARAMS mode=%s mom=%.1f spread=%dc entry_side=%s entry_price=%s "
                 "ticker=%s floor_strike=%s buffer_pct=%s spot=%s ttc=%s",
-                mode, self.gate_mom_1m, spread_cents, entry_side, price_str,
+                mode, self.gate_mom_1m, spread_cents, entry_side, f"{place_price:.4f}",
                 ticker, self.gate_floor_strike, self.gate_buffer_pct,
                 self.gate_spot, self.gate_ttc,
             )
-            result = kalshi_place_limit_order(
-                ticker=ticker, side=entry_side, price=price_str,
-                count=count, subaccount=subaccount, post_only=True)
-            self._mark_api_action()
-            if result and float(result.get("remaining_count", "0")) > 0:
-                oid = result.get("order_id")
+            oid = self._place_post_only_at_price(
+                ticker=ticker, side=entry_side, price=place_price,
+                count=count, subaccount=subaccount,
+                best_bid=best_bid, best_ask=best_ask, label="Placing entry",
+            )
+            if oid:
                 if entry_side == "bid":
                     self.my_bid_oid = oid
-                    self.submitted_bid_price = entry_price
+                    self.submitted_bid_price = place_price
                 else:
                     self.my_ask_oid = oid
-                    self.submitted_ask_price = entry_price
-                self.entry_order_price = entry_price
+                    self.submitted_ask_price = place_price
+                self.entry_order_price = place_price
                 self.trade_mode = mode
                 self.target_spread = spread
                 self._clear_idle_skip_log()
                 self.state = HFTState.QUOTING
                 log.info("IDLE -> QUOTING [%s] oid=%s side=%s price=%s spread=%dc",
-                         mode, oid, entry_side, price_str, spread_cents)
+                         mode, oid, entry_side, f"{place_price:.4f}", spread_cents)
             else:
-                log.info("Entry order did not rest -- will retry after cooldown")
+                log.info(
+                    "Entry order did not rest -- will retry at book after post-only backoff",
+                )
 
     # -- QUOTING: fill detected ---------------------------------------------
 
     def _quoting_fill_detected(
         self, position, best_bid, best_ask, count, subaccount,
     ):
-        """Position != 0 while in QUOTING. Record entry, transition to CLOSING.
-        No API calls -- counter-order is placed on next tick by CLOSING state."""
+        """Position != 0 while in QUOTING: cancel entry legs on exchange, -> CLOSING."""
         max_c = self._max_contracts(count)
         if abs(position) > max_c + 0.001:
             log.warning(
@@ -1422,13 +1667,23 @@ class HFTEngine:
                 position, max_c,
             )
 
+        bid_oid, ask_oid = self.my_bid_oid, self.my_ask_oid
+
         entry_side = self._infer_entry_side(position, self.trade_mode)
         if entry_side is None:
+            entry_side = self._infer_entry_side_from_position(position)
+            if entry_side is None:
+                log.warning(
+                    "QUOTING: position=%.2f but no side — cancel entries -> IDLE",
+                    position,
+                )
+                self._cancel_entry_orders(subaccount)
+                self.state = HFTState.IDLE
+                return
             log.warning(
-                "QUOTING: position=%.2f does not match trade_mode=%s -- ignoring fill",
-                position, self.trade_mode,
+                "QUOTING: position=%.2f mismatches trade_mode=%s — using %s",
+                position, self.trade_mode, entry_side,
             )
-            return
 
         self.entry_side = entry_side
         if entry_side == "long":
@@ -1436,26 +1691,22 @@ class HFTEngine:
         else:
             self.entry_price = self.submitted_ask_price or best_ask
 
-        stray_oid = None
+        counter_keep: Optional[str] = None
         if self.trade_mode == "neutral":
-            if entry_side == "long":
-                self.counter_oid = self.my_ask_oid
-                stray_oid = self.my_bid_oid
-            else:
-                self.counter_oid = self.my_bid_oid
-                stray_oid = self.my_ask_oid
-            if stray_oid and stray_oid != self.counter_oid:
-                self.pending_cancel_oid = stray_oid
+            counter_keep = ask_oid if entry_side == "long" else bid_oid
 
+        self._cancel_entry_orders(subaccount, keep_oid=counter_keep)
+        self.counter_oid = counter_keep
         self.my_bid_oid = None
         self.my_ask_oid = None
+        self.pending_cancel_oid = None
         self.awaiting_flat_after_counter = False
         self.state = HFTState.CLOSING
         log.info(
             "QUOTING -> CLOSING [%s] position=%.2f entry_side=%s entry_price=%s "
-            "counter_oid=%s pending_cancel=%s",
+            "counter_oid=%s (canceled stray entry legs)",
             self.trade_mode, position, self.entry_side, self.entry_price,
-            self.counter_oid, self.pending_cancel_oid,
+            self.counter_oid,
         )
 
     # -- QUOTING: still flat ------------------------------------------------
@@ -1495,9 +1746,11 @@ class HFTEngine:
 
         # -- Directional: manage single entry order --
         if self.trade_mode != "neutral" and self.trade_mode is not None:
+            entry_side = "bid" if self.trade_mode == "bullish" else "ask"
             entry_oid = self.my_bid_oid or self.my_ask_oid
+
             if not entry_oid:
-                log.info("QUOTING -> IDLE: entry OID gone")
+                log.info("QUOTING -> IDLE: flat, no resting entry — re-acquire via IDLE")
                 self._clear_all_order_state()
                 self.state = HFTState.IDLE
                 return
@@ -1516,15 +1769,14 @@ class HFTEngine:
 
             entry_status = self._check_order_status(r, entry_oid)
             if entry_status == "executed":
-                # Fill with lagging position: keep trade_mode/spread, close on next tick.
+                # Fill with lagging position: cancel any resting entry remainder, -> CLOSING.
                 if self.trade_mode == "bullish":
                     self.entry_side = "long"
                     self.entry_price = self.submitted_bid_price or best_bid
                 else:
                     self.entry_side = "short"
                     self.entry_price = self.submitted_ask_price or best_ask
-                self.my_bid_oid = None
-                self.my_ask_oid = None
+                self._cancel_entry_orders(subaccount)
                 self.counter_oid = None
                 self.awaiting_flat_after_counter = False
                 self.state = HFTState.CLOSING
@@ -1534,6 +1786,14 @@ class HFTEngine:
                     self.trade_mode, self.entry_side, self.entry_price,
                     self.target_spread,
                 )
+                return
+            if entry_status == "canceled":
+                log.info(
+                    "QUOTING -> IDLE: entry oid=%s canceled while flat",
+                    entry_oid,
+                )
+                self._clear_all_order_state()
+                self.state = HFTState.IDLE
                 return
             if entry_status is not None and entry_status != "resting":
                 log.info("QUOTING -> IDLE: entry oid=%s status=%s", entry_oid, entry_status)
@@ -1555,6 +1815,11 @@ class HFTEngine:
                     should_amend = True
 
             if should_amend:
+                if (
+                    time.monotonic() - self._last_entry_amend_mono
+                    < HFT_ENTRY_AMEND_INTERVAL_SEC
+                ):
+                    return
                 if not self._entry_price_allowed(current_best):
                     self._cancel_entry_and_idle(
                         subaccount,
@@ -1570,12 +1835,20 @@ class HFTEngine:
                     entry_oid, ticker=ticker, side=entry_side,
                     price=price_str, count=count, subaccount=subaccount)
                 self._mark_api_action()
-                if result is None or float(result.get("remaining_count", "1")) < 0.001:
-                    # Order gone during amend. Clear and return -- next tick decides.
-                    log.info("QUOTING -> IDLE: amend result order gone")
+                if result is None:
+                    self._set_post_only_backoff(entry_side)
+                    log.info(
+                        "QUOTING -> IDLE: entry amend rejected while flat",
+                    )
+                    self._clear_all_order_state()
+                    self.state = HFTState.IDLE
+                    return
+                if float(result.get("remaining_count", "1")) < 0.001:
+                    log.info("QUOTING -> IDLE: entry amend left no resting size")
                     self._clear_all_order_state()
                     self.state = HFTState.IDLE
                 else:
+                    self._last_entry_amend_mono = time.monotonic()
                     self.entry_order_price = current_best
                     if self.trade_mode == "bullish":
                         self.submitted_bid_price = current_best
@@ -1603,6 +1876,75 @@ class HFTEngine:
 
             bid_status = self._check_order_status(r, self.my_bid_oid) if self.my_bid_oid else None
             ask_status = self._check_order_status(r, self.my_ask_oid) if self.my_ask_oid else None
+            if self.my_bid_oid and bid_status == "executed":
+                log.info(
+                    "Neutral bid oid=%s executed (position may lag) — not re-placing bid",
+                    self.my_bid_oid,
+                )
+                self.my_bid_oid = None
+            elif self.my_bid_oid and bid_status == "canceled":
+                log.info("Neutral bid oid=%s canceled -- will re-place at book", self.my_bid_oid)
+                self._post_only_catch_up_sides.add("bid")
+                self.my_bid_oid = None
+            if self.my_ask_oid and ask_status == "executed":
+                log.info(
+                    "Neutral ask oid=%s executed (position may lag) — not re-placing ask",
+                    self.my_ask_oid,
+                )
+                self.my_ask_oid = None
+            elif self.my_ask_oid and ask_status == "canceled":
+                log.info("Neutral ask oid=%s canceled -- will re-place at book", self.my_ask_oid)
+                self._post_only_catch_up_sides.add("ask")
+                self.my_ask_oid = None
+
+            if not self.my_bid_oid:
+                target = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if not self._entry_price_allowed(target):
+                    self._cancel_entry_and_idle(
+                        subaccount,
+                        f"neutral bid re-place {target} outside entry band "
+                        f"[{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
+                    )
+                    return
+                place_price = self._limit_price_for_order(
+                    "bid", best_bid, best_ask, target)
+                if place_price is None:
+                    return
+                oid = self._place_post_only_at_price(
+                    ticker=ticker, side="bid", price=place_price,
+                    count=count, subaccount=subaccount,
+                    best_bid=best_bid, best_ask=best_ask,
+                    label="QUOTING re-place bid",
+                )
+                if oid:
+                    self.my_bid_oid = oid
+                    self.submitted_bid_price = place_price
+                return
+
+            if not self.my_ask_oid:
+                target = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+                if not self._entry_price_allowed(target):
+                    self._cancel_entry_and_idle(
+                        subaccount,
+                        f"neutral ask re-place {target} outside entry band "
+                        f"[{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
+                    )
+                    return
+                place_price = self._limit_price_for_order(
+                    "ask", best_bid, best_ask, target)
+                if place_price is None:
+                    return
+                oid = self._place_post_only_at_price(
+                    ticker=ticker, side="ask", price=place_price,
+                    count=count, subaccount=subaccount,
+                    best_bid=best_bid, best_ask=best_ask,
+                    label="QUOTING re-place ask",
+                )
+                if oid:
+                    self.my_ask_oid = oid
+                    self.submitted_ask_price = place_price
+                return
+
             bid_gone = self.my_bid_oid and bid_status not in (None, "resting")
             ask_gone = self.my_ask_oid and ask_status not in (None, "resting")
             if bid_gone and ask_gone:
@@ -1631,6 +1973,12 @@ class HFTEngine:
                 return
             if status is not None and status != "resting":
                 log.info("Counter oid=%s status=%s -- cleared", self.counter_oid, status)
+                if status == "canceled":
+                    self._post_only_catch_up_sides.add(close_side)
+                    log.info(
+                        "Counter canceled (post-only) -- will re-place %s at book",
+                        close_side,
+                    )
                 self.counter_oid = None
                 if status == "canceled":
                     self.awaiting_flat_after_counter = False
@@ -1677,18 +2025,34 @@ class HFTEngine:
             and loss >= self.max_loss_cents
             and self.counter_oid
         ):
-            target_price = best_bid if position > 0.001 else best_ask
-            if self.last_amend_price is None or target_price != self.last_amend_price:
-                price_str = f"{target_price:.4f}"
+            raw_touch = best_bid if position > 0.001 else best_ask
+            submit_px = self._effective_submit_price(
+                raw_touch, close_side, best_bid, best_ask,
+            )
+            if submit_px is None:
+                return
+            if self.last_amend_price is None or submit_px != self.last_amend_price:
+                price_str = f"{submit_px:.4f}"
                 log.info(
                     "STOP_LOSS amend: loss=%s -> %s at %s",
                     loss, close_side, price_str,
                 )
-                kalshi_amend_order(
+                result = kalshi_amend_order(
                     self.counter_oid, ticker=ticker, side=close_side,
                     price=price_str, count=count, subaccount=subaccount)
-                self.last_amend_price = target_price
                 self._mark_api_action()
+                if result is None:
+                    self._mark_post_only_cross(
+                        close_side,
+                        submit_px,
+                        best_bid,
+                        best_ask,
+                        apply_backoff=False,
+                    )
+                    self.counter_oid = None
+                    self.last_amend_price = None
+                    return
+                self.last_amend_price = submit_px
                 return
 
         # No counter-order: place one (side from position when entry label lags)
@@ -1701,20 +2065,26 @@ class HFTEngine:
                 close_side = self._effective_close_side(position)
                 if not close_side:
                     return
-            close_price = self._target_counter_price(best_bid, best_ask)
-            if close_price is None or close_price <= 0 or close_price >= Decimal("1"):
+            target_price = self._target_counter_price(best_bid, best_ask)
+            if target_price is None:
                 return
-            price_str = f"{close_price:.4f}"
-            log.info("Placing counter side=%s price=%s post_only=True", close_side, price_str)
-            result = kalshi_place_limit_order(
-                ticker=ticker, side=close_side, price=price_str,
-                count=count, subaccount=subaccount, post_only=True)
-            self._mark_api_action()
-            if result and float(result.get("remaining_count", "0")) > 0:
-                self.counter_oid = result.get("order_id")
-                log.info("Counter resting oid=%s price=%s", self.counter_oid, price_str)
+            close_price = self._limit_price_for_order(
+                close_side, best_bid, best_ask, target_price)
+            if close_price is None:
+                return
+            oid = self._place_post_only_at_price(
+                ticker=ticker, side=close_side, price=close_price,
+                count=count, subaccount=subaccount,
+                best_bid=best_bid, best_ask=best_ask, label="Placing counter",
+                exempt_post_only_backoff=True,
+            )
+            if oid:
+                self.counter_oid = oid
+                log.info("Counter resting oid=%s price=%s", oid, f"{close_price:.4f}")
             else:
-                log.info("Counter did not rest -- will retry after cooldown")
+                log.info(
+                    "Counter did not rest -- will retry at book on next tick",
+                )
 
 
 # ---------------------------------------------------------------------------
