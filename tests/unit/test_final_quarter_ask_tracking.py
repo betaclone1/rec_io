@@ -7,6 +7,7 @@ from backend.strike_table_generator import (
     final_quarter_ask_tracking_fields,
     merge_ask_extrema,
     parse_ask_dollars_float,
+    resolve_carry_forward_ttc_15m,
     should_delay_hourly_first_quarter_tracking,
     should_reset_hourly_quarter_tracking,
 )
@@ -86,6 +87,46 @@ def test_hourly_quarter_tracking_reset_on_ttc_jump():
     assert should_reset_hourly_quarter_tracking(810, 804) is False
     # New quarter boundary causes ttc_15m jump back up near 900; this must reset.
     assert should_reset_hourly_quarter_tracking(2, 899) is True
+
+
+def test_resolve_carry_forward_ttc_15m_hourly_ignores_contract_ttc():
+    """Hourly meta ``ttc`` is contract countdown; quarter reset needs ``ttc_15m`` only."""
+    assert (
+        resolve_carry_forward_ttc_15m(
+            row={},
+            meta={"ttc": 2400, "ttc_15m": None},
+            market="hourly",
+        )
+        is None
+    )
+    assert (
+        resolve_carry_forward_ttc_15m(
+            row={},
+            meta={"ttc": 2400, "ttc_15m": 812},
+            market="hourly",
+        )
+        == 812
+    )
+    assert (
+        resolve_carry_forward_ttc_15m(
+            row={"ttc_15m": 805},
+            meta={"ttc": 2400},
+            market="hourly",
+        )
+        == 805
+    )
+
+
+def test_resolve_carry_forward_ttc_15m_15m_legacy_meta_ttc():
+    """Legacy 15m ladders stored boundary seconds in meta ``ttc`` only."""
+    assert (
+        resolve_carry_forward_ttc_15m(
+            row={},
+            meta={"ttc": 600},
+            market="15m",
+        )
+        == 600
+    )
 
 
 def test_delay_hourly_first_quarter_tracking_only_first_15s_after_hour():

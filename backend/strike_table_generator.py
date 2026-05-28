@@ -255,6 +255,80 @@ def should_delay_hourly_first_quarter_tracking(now: datetime) -> bool:
     return now.minute == 0 and now.second < 15
 
 
+def resolve_carry_forward_ttc_15m(
+    *,
+    row: Optional[Dict[str, Any]],
+    meta: Optional[Dict[str, Any]],
+    market: str,
+) -> Optional[int]:
+    """Seconds to next :00/:15/:30/:45 for prev_final_ask_map (matches PG ``ttc_15m`` column).
+
+    Hourly ladder meta ``ttc`` is the contract hourly countdown — never substitute it here.
+    Legacy 15m Redis payloads may only have ``meta["ttc"]`` set to the 15m boundary clock.
+    """
+    mkt = (market or "hourly").strip().lower()
+    if row:
+        v = row.get("ttc_15m")
+        if v is not None:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                pass
+    meta = meta if isinstance(meta, dict) else {}
+    v = meta.get("ttc_15m")
+    if v is not None:
+        try:
+            return int(v)
+        except (TypeError, ValueError):
+            pass
+    if mkt == "15m":
+        v = meta.get("ttc")
+        if v is not None:
+            try:
+                return int(v)
+            except (TypeError, ValueError):
+                pass
+    return None
+
+
+def load_prev_final_ask_map_from_redis(
+    data_exchange: str,
+    symbol: str,
+    interval: str,
+) -> Dict[Tuple[str, str], Tuple[Any, ...]]:
+    """Prior ask extrema from Redis ladder — same tuple shape as PG SELECT before DELETE."""
+    from backend.core import live_state_cache
+
+    mk_prev = "15m" if interval == "15m" else "hourly"
+    sym = symbol.upper()
+    prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
+    meta: Dict[str, Any] = {}
+    env = live_state_cache.get_strike_ladder(data_exchange, mk_prev, sym)
+    if env and isinstance(env.get("data"), dict):
+        raw_meta = env["data"].get("meta") or {}
+        if isinstance(raw_meta, dict):
+            meta = raw_meta
+    ev_from_meta = meta.get("event_ticker")
+    for row in live_state_cache.get_strike_ladder_rows(data_exchange, mk_prev, sym):
+        tk = row.get("ticker")
+        if tk is None:
+            continue
+        ev = row.get("event_ticker") or ev_from_meta
+        if ev is None:
+            continue
+        row_ttc_15m = resolve_carry_forward_ttc_15m(row=row, meta=meta, market=mk_prev)
+        prev_final_ask_map[(str(ev), str(tk))] = (
+            str(ev),
+            str(tk),
+            row.get("yes_ask_min_15m"),
+            row.get("yes_ask_max_15m"),
+            row.get("no_ask_min_15m"),
+            row.get("no_ask_max_15m"),
+            row_ttc_15m,
+        )
+    return prev_final_ask_map
+
+
 class LookupProbabilityCalculator:
     """Probability calculator using the lookup table instead of live interpolation."""
     
@@ -1402,44 +1476,11 @@ class StrikeTableGenerator:
             prev_final_ask_map: Dict[Tuple[str, str], Tuple[Any, ...]] = {}
             if skip_strike_table_pg_dml:
                 try:
-                    from backend.core import live_state_cache
-
-                    mk_prev = "15m" if self.interval == "15m" else "hourly"
-                    env = live_state_cache.get_strike_ladder(
-                        self.data_exchange, mk_prev, self.symbol.upper()
+                    prev_final_ask_map = load_prev_final_ask_map_from_redis(
+                        self.data_exchange,
+                        self.symbol.upper(),
+                        self.interval,
                     )
-                    meta = {}
-                    if env and isinstance(env.get("data"), dict):
-                        meta = env["data"].get("meta") or {}
-                        if not isinstance(meta, dict):
-                            meta = {}
-                    ev_from_meta = meta.get("event_ticker")
-                    ttc_prev = meta.get("ttc_15m")
-                    if ttc_prev is None:
-                        ttc_prev = meta.get("ttc")
-                    for row in live_state_cache.get_strike_ladder_rows(
-                        self.data_exchange, mk_prev, self.symbol.upper()
-                    ):
-                        tk = row.get("ticker")
-                        if tk is None:
-                            continue
-                        ev = row.get("event_ticker") or ev_from_meta
-                        if ev is None:
-                            continue
-                        row_ttc_15m = row.get("ttc_15m")
-                        if row_ttc_15m is None:
-                            row_ttc_15m = row.get("ttc")
-                        if row_ttc_15m is None:
-                            row_ttc_15m = ttc_prev
-                        prev_final_ask_map[(str(ev), str(tk))] = (
-                            str(ev),
-                            str(tk),
-                            row.get("yes_ask_min_15m"),
-                            row.get("yes_ask_max_15m"),
-                            row.get("no_ask_min_15m"),
-                            row.get("no_ask_max_15m"),
-                            row_ttc_15m,
-                        )
                 except Exception as ex:
                     logger.warning(
                         "Could not load prior final-quarter ask columns from live_state ladder for %s/%s: %s",
@@ -1780,6 +1821,10 @@ class StrikeTableGenerator:
                                 "no_ask_max_15m": float(nmx) if nmx is not None else None,
                                 "yes_ask_range_15m": float(yrg) if yrg is not None else None,
                                 "no_ask_range_15m": float(nrg) if nrg is not None else None,
+                                "ttc_15m": int(ttc_15m_seconds)
+                                if ttc_15m_seconds is not None
+                                else None,
+                                "event_ticker": ev_tk,
                             }
                         )
                     # Unified 15m and hourly strike tables use exchange (same shape as strike_table_15m).
@@ -1913,6 +1958,9 @@ class StrikeTableGenerator:
                             "symbol": self.symbol.upper(),
                             "current_price": float(current_price),
                             "ttc": ttc_out,
+                            "ttc_15m": int(ttc_15m_seconds)
+                            if ttc_15m_seconds is not None
+                            else None,
                             "exchange": "Kalshi",
                             "event_ticker": event_ticker,
                             "market_title": market_title,
@@ -1932,6 +1980,8 @@ class StrikeTableGenerator:
                             else None,
                             "source": "live_state_cache",
                         }
+                        if self.interval == "hourly" and ttc_hourly_val is not None:
+                            ladder_json["ttc_hourly"] = int(ttc_hourly_val)
                     else:
                         ladder_json = self.get_latest_strike_table_json()
                     if ladder_json:
