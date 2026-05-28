@@ -1426,6 +1426,11 @@ class StrikeTableGenerator:
                         ev = row.get("event_ticker") or ev_from_meta
                         if ev is None:
                             continue
+                        row_ttc_15m = row.get("ttc_15m")
+                        if row_ttc_15m is None:
+                            row_ttc_15m = row.get("ttc")
+                        if row_ttc_15m is None:
+                            row_ttc_15m = ttc_prev
                         prev_final_ask_map[(str(ev), str(tk))] = (
                             str(ev),
                             str(tk),
@@ -1433,7 +1438,7 @@ class StrikeTableGenerator:
                             row.get("yes_ask_max_15m"),
                             row.get("no_ask_min_15m"),
                             row.get("no_ask_max_15m"),
-                            ttc_prev,
+                            row_ttc_15m,
                         )
                 except Exception as ex:
                     logger.warning(
@@ -1667,6 +1672,10 @@ class StrikeTableGenerator:
                     )
                     if self.interval == "hourly" and prev_track:
                         prev_ttc_15m = prev_track[6] if len(prev_track) > 6 else None
+                        if prev_ttc_15m is None:
+                            # In cache-only mode, if the prior ladder did not carry a usable ttc_15m,
+                            # fail closed by resetting extrema instead of risking cross-quarter carryover.
+                            prev_6 = None
                         if should_reset_hourly_quarter_tracking(prev_ttc_15m, ttc_15m_seconds):
                             prev_6 = None
                     if self.interval == "hourly" and should_delay_hourly_first_quarter_tracking(strike_row_ts):
