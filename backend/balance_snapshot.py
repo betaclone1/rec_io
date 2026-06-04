@@ -661,10 +661,14 @@ def apply_balance_snapshot(
     skip_bankroll_ratchet: bool = False,
     notify_frontend: bool = True,
     notify_monitors: bool = True,
+    defer_monitor_notify: bool = False,
 ) -> Tuple[bool, bool]:
     """
     One full tick: ratchet bankroll, optional INSERT, notify frontend + monitor_manager.
     Returns (inserted_new_row, bankroll_stepped_down).
+
+    ``defer_monitor_notify``: skip in-process ``notify_monitor_manager`` (live balance poll
+    commits in ``sync_balance`` first, then notifies so monitor_manager reads committed rows).
 
     ``paper_bankroll_force_match`` (paper only): set ``bankroll_current`` to MTB / portfolio for this
     tick instead of the sticky ratchet — used when the user explicitly seeds paper bankroll so a
@@ -861,7 +865,11 @@ def apply_balance_snapshot(
                 "total_portfolio": total_portfolio_value,
             },
         )
-    if notify_monitors and not (skip_bankroll_ratchet and not is_paper):
+    if (
+        notify_monitors
+        and not defer_monitor_notify
+        and not (skip_bankroll_ratchet and not is_paper)
+    ):
         from backend.kalshi_account_sync_ws import notify_monitor_manager
 
         notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
@@ -951,6 +959,7 @@ def aggregate_account_balance_from_subaccounts(
         live_mtb_balance_cents=bankroll_current,
         notify_frontend=True,
         notify_monitors=True,
+        defer_monitor_notify=True,
     )
 
 
@@ -972,13 +981,20 @@ def _subaccount_numbers_from_subaccounts_table(cursor, subaccounts_table: str) -
     return sorted(out)
 
 
+def notify_monitor_manager_after_balance_commit(*, bankroll_stepped_down: bool = False) -> None:
+    """Call after balance poll transaction commit so monitor_manager reads committed bankroll."""
+    from backend.kalshi_account_sync_ws import notify_monitor_manager
+
+    notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
+
+
 def poll_live_account_balances(
     cursor,
     user_no: str,
     *,
     throttle: bool = True,
     _after_automatic_rake: bool = False,
-) -> bool:
+) -> Tuple[bool, bool]:
     """
     Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
 
@@ -1058,9 +1074,9 @@ def poll_live_account_balances(
 
     if not polled:
         _LOG.warning("No subaccount balance polls succeeded for user %s", slot)
-        return False
+        return False, False
 
-    inserted, _ = aggregate_account_balance_from_subaccounts(
+    inserted, bankroll_stepped_down = aggregate_account_balance_from_subaccounts(
         cursor,
         user_no=slot,
         account_balance_table=ab_fqn,
@@ -1068,7 +1084,7 @@ def poll_live_account_balances(
         current_timestamp=ts,
         throttle=throttle,
     )
-    return inserted
+    return inserted, bankroll_stepped_down
 
 
 def estimate_kalshi_taker_fee_dollars(position, price: float) -> float:

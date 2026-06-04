@@ -1461,19 +1461,30 @@ def sync_balance(*, full: bool = False):
 
             if _slot is None:
                 _slot = process_tenant_context().user_no
+            bankroll_stepped_down = False
             with pg_conn.cursor() as cursor:
-                inserted = poll_live_account_balances(
+                inserted, bankroll_stepped_down = poll_live_account_balances(
                     cursor, _slot, throttle=not full
                 )
                 pg_conn.commit()
-                if full:
-                    logger.info(
-                        "Full live balance poll for user %s (hero row written=%s)",
-                        _slot,
-                        inserted,
-                    )
-                elif inserted:
-                    logger.debug("Live balance poll wrote hero account_balance for user %s", _slot)
+            try:
+                from backend.balance_snapshot import notify_monitor_manager_after_balance_commit
+
+                notify_monitor_manager_after_balance_commit(
+                    bankroll_stepped_down=bankroll_stepped_down,
+                )
+            except Exception as notify_exc:
+                logger.warning(
+                    "Monitor manager notify after balance commit failed: %s", notify_exc
+                )
+            if full:
+                logger.info(
+                    "Full live balance poll for user %s (hero row written=%s)",
+                    _slot,
+                    inserted,
+                )
+            elif inserted:
+                logger.debug("Live balance poll wrote hero account_balance for user %s", _slot)
             if new_deposit_events:
                 notify_frontend_db_change("subaccounts", {"source": "external_deposit"})
                 notify_frontend_db_change("transfers", {"source": "external_deposit"})
