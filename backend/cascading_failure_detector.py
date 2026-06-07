@@ -92,10 +92,7 @@ class CascadingFailureDetector:
             "main_app",           # Core web interface
             user_scoped_service_name("trade_manager"),       # Trade management
             user_scoped_service_name("trade_executor"),      # Trade execution
-            "symbol_price_watchdog_btc", # BTC price data
-            "symbol_price_watchdog_eth", # ETH price data
-            "symbol_price_watchdog_sol", # SOL price data
-            "symbol_price_watchdog_xrp", # XRP price data
+            "cfbenchmarks_price_watchdog",  # Crypto index prices (BTC/ETH/SOL/XRP)
             # SPX/NDX not currently traded; uncomment to re-enable later.
             # "symbol_price_watchdog_spx", # SPX price data
             "strike_table_generator_ws_hourly",  # WS hourly strikes → live_data.strike_table_hourly

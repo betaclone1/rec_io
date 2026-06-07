@@ -23,6 +23,7 @@ _CONTROL_DEFAULTS: Dict[str, Any] = {
     "subaccount": 2,
     "count": "1.00",
     "ticker_filter": "",
+    "neutral_mode": False,
 }
 
 
@@ -390,6 +391,8 @@ async def hft_config(request: dict):
             return JSONResponse({"status": "error", "message": "Invalid count"}, status_code=400)
     if "ticker_filter" in request:
         ctrl["ticker_filter"] = str(request["ticker_filter"]).strip()
+    if "neutral_mode" in request:
+        ctrl["neutral_mode"] = bool(request["neutral_mode"])
     _write_control(r, ctrl)
     logger.info("HFT config updated: %s", ctrl)
     return {"status": "ok", "control": ctrl}

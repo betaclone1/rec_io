@@ -359,6 +359,7 @@ async def prefs_ws_send_json_to_slot(message: dict, tenant_slot: str) -> None:
 
 db_change_clients: set = set()
 live_market_clients: set = set()
+cfbenchmarks_feed_clients: set = set()
 
 # Global live_data fanout (strike ladder, orderbook, spot) — not tenant-scoped.
 LIVE_MARKET_WS_TYPES = frozenset(
@@ -652,6 +653,106 @@ async def redis_db_changes_consume_loop(queue: asyncio.Queue) -> None:
             _LOG.warning("Redis db_changes consumer: %s", e)
 
 
+async def _broadcast_cfbenchmarks_feed_text(message: str) -> None:
+    if not cfbenchmarks_feed_clients:
+        return
+    to_remove = set()
+    for client in list(cfbenchmarks_feed_clients):
+        try:
+            await client.send_text(message)
+        except Exception:
+            to_remove.add(client)
+    cfbenchmarks_feed_clients.difference_update(to_remove)
+
+
+async def redis_cfbenchmarks_feed_consume_loop(queue: asyncio.Queue) -> None:
+    while True:
+        try:
+            text = await queue.get()
+            await _broadcast_cfbenchmarks_feed_text(text)
+        except asyncio.CancelledError:
+            break
+        except Exception as e:
+            _LOG.warning("Redis cfbenchmarks feed consumer: %s", e)
+
+
+def redis_cfbenchmarks_feed_subscriber_thread(
+    queue: asyncio.Queue, loop: asyncio.AbstractEventLoop
+) -> None:
+    import redis.exceptions as redis_exc
+
+    from backend.core.cfbenchmarks_feed_cache import UPDATED_CHANNEL
+
+    channel = os.getenv("CFBENCHMARKS_UPDATED_CHANNEL", UPDATED_CHANNEL)
+    get_timeout_s = float(os.getenv("REDIS_DB_FORWARDER_GET_TIMEOUT", "30"))
+    backoff = 5.0
+    while True:
+        r = None
+        pubsub = None
+        try:
+            r = _redis_client_for_db_changes_forwarder()
+            pubsub = r.pubsub()
+            pubsub.subscribe(channel)
+            _LOG.info(
+                "Main app: subscribed to Redis channel %s for /ws/cfbenchmarks_feed",
+                channel,
+            )
+            backoff = 5.0
+            while True:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True,
+                    timeout=get_timeout_s,
+                )
+                if message is None:
+                    try:
+                        r.ping()
+                    except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as ping_e:
+                        _log = _LOG.debug if is_probably_startup_connect_refused(ping_e) else _LOG.warning
+                        _log(
+                            "Redis cfbenchmarks forwarder: ping failed (%s); reconnecting",
+                            ping_e,
+                        )
+                        break
+                    continue
+                if message.get("type") != "message":
+                    continue
+                data = message.get("data")
+                if data is None:
+                    continue
+                if isinstance(data, bytes):
+                    data = data.decode("utf-8")
+                asyncio.run_coroutine_threadsafe(queue.put(data), loop)
+        except (redis_exc.ConnectionError, redis_exc.TimeoutError, OSError) as e:
+            _log = _LOG.debug if is_probably_startup_connect_refused(e) else _LOG.warning
+            _log(
+                "Redis cfbenchmarks forwarder: connection issue (%s); retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        except Exception as e:
+            _log = _LOG.debug if is_probably_startup_connect_refused(e) else _LOG.warning
+            _log(
+                "Redis cfbenchmarks forwarder: %s; retry in %ss",
+                e,
+                backoff,
+            )
+            time.sleep(backoff)
+            backoff = min(backoff * 1.5, 60.0)
+        finally:
+            try:
+                if pubsub is not None:
+                    pubsub.close()
+            except Exception:
+                pass
+            try:
+                if r is not None:
+                    r.close()
+            except Exception:
+                pass
+
+
 def redis_trading_preferences_subscriber_thread(
     queue: asyncio.Queue, loop: asyncio.AbstractEventLoop
 ) -> None:
@@ -926,6 +1027,60 @@ async def websocket_live_market(websocket: WebSocket):
         pass
     finally:
         live_market_clients.discard(websocket)
+
+
+async def _hydrate_cfbenchmarks_feed_ws(websocket: WebSocket, index_id: str) -> None:
+    import asyncio as _asyncio
+
+    from backend.core.cfbenchmarks_feed_cache import (
+        DEFAULT_INDEX_IDS_CSV,
+        get_latest,
+        get_meta,
+        get_recent,
+        parse_index_ids,
+    )
+
+    for iid in parse_index_ids(index_id or DEFAULT_INDEX_IDS_CSV):
+        try:
+            latest = await _asyncio.to_thread(get_latest, iid)
+            if latest:
+                await websocket.send_text(json.dumps(latest))
+            meta = await _asyncio.to_thread(get_meta, iid)
+            if meta:
+                await websocket.send_text(
+                    json.dumps({"type": "cfbenchmarks_meta", "index_id": iid, "meta": meta})
+                )
+            recent = await _asyncio.to_thread(get_recent, iid, 30)
+            if recent:
+                await websocket.send_text(
+                    json.dumps(
+                        {
+                            "type": "cfbenchmarks_recent",
+                            "index_id": iid,
+                            "ticks": recent,
+                        }
+                    )
+                )
+        except Exception as e:
+            _LOG.debug("cfbenchmarks WS hydrate failed %s: %s", iid, e)
+
+
+@realtime_ws_router.websocket("/ws/cfbenchmarks_feed")
+async def websocket_cfbenchmarks_feed(websocket: WebSocket):
+    """Experiment: Kalshi cfbenchmarks_value ticks from Redis (BRTI,ERTI default)."""
+    from backend.core.cfbenchmarks_feed_cache import DEFAULT_INDEX_IDS_CSV as _cfb_default_csv
+
+    index_id = _ws_query_param(websocket.scope, "index_id", _cfb_default_csv)
+    await websocket.accept()
+    cfbenchmarks_feed_clients.add(websocket)
+    await _hydrate_cfbenchmarks_feed_ws(websocket, index_id)
+    try:
+        while True:
+            await websocket.receive_text()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        cfbenchmarks_feed_clients.discard(websocket)
 
 
 @realtime_ws_router.websocket("/ws/db_changes")

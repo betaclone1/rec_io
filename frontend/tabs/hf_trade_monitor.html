@@ -126,8 +126,19 @@ html, body {
   background: #3cba6c;
 }
 
+.hf-neutral-mode-toggle.active {
+  background: rgba(107, 79, 160, 0.25);
+  border-color: rgba(107, 79, 160, 0.5);
+}
+
+.hf-neutral-mode-toggle.active::after {
+  transform: translateX(22px);
+  background: #9b7fd4;
+}
+
 .hf-auto-trade-toggle.pending,
-.hf-engine-toggle.pending {
+.hf-engine-toggle.pending,
+.hf-neutral-mode-toggle.pending {
   opacity: 0.55;
   pointer-events: none;
 }
@@ -240,7 +251,10 @@ html, body {
 }
 
 .hf-state-dot[data-state="IDLE"] { background: #555; }
+.hf-state-dot[data-state="OFF"] { background: #555; }
 .hf-state-dot[data-state="ACQUISITION"] { background: #0ff; }
+.hf-state-dot[data-state="ENTRY"] { background: #f0c040; }
+.hf-state-dot[data-state="CLOSING"] { background: #e05050; }
 .hf-state-dot[data-state="PENDING"] { background: #f0c040; }
 .hf-state-dot[data-state="LIQUIDATION"] { background: #e05050; }
 
@@ -256,6 +270,13 @@ html, body {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 8px;
+}
+
+.hf-gate-block-reason {
+  margin-top: 6px;
+  font-size: 10px;
+  color: #c97a7a;
+  line-height: 1.35;
 }
 
 .hf-gate {
@@ -471,6 +492,18 @@ html, body {
           aria-label="HFT auto trade toggle"
         ></div>
       </div>
+      <div class="hf-auto-trade-block">
+        <span class="hf-auto-trade-label">NEUTRAL MODE</span>
+        <div
+          class="hf-auto-trade-toggle hf-neutral-mode-toggle"
+          id="hfNeutralModeToggle"
+          role="switch"
+          tabindex="0"
+          aria-checked="false"
+          aria-label="HFT Neutral Mode trial toggle"
+          title="Trial: TTC/buffer gates only; touch entry; chase close on adverse book move"
+        ></div>
+      </div>
       <span class="hf-ttc-chip" id="hfTtcChip">TTC --:--</span>
     </div>
 
@@ -502,7 +535,12 @@ html, body {
               <div class="hf-gate-name">Spread</div>
               <div class="hf-gate-value" id="hfGateSpreadVal">--</div>
             </div>
+            <div class="hf-gate" id="hfGateReady">
+              <div class="hf-gate-name">Entry OK</div>
+              <div class="hf-gate-value" id="hfGateReadyVal">--</div>
+            </div>
           </div>
+          <div class="hf-gate-block-reason" id="hfGateBlockReason" style="display:none"></div>
 
           <div class="hf-ob-row">
             <div class="hf-ob-cell">

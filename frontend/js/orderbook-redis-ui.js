@@ -194,12 +194,36 @@
     el.style.display = 'inline-block';
   }
 
-  function formatTmMomPercentile(val) {
-    const num = Number(val);
+  function formatTmMomPercentile(momVal, accelVal) {
+    const num = Number(momVal);
     if (!Number.isFinite(num)) return 'Mom: —';
-    if (num === 0) return 'Mom: 0';
     const sign = num > 0 ? '+' : '';
-    return 'Mom: ' + sign + num.toFixed(1);
+    let text = 'Mom: ' + (num === 0 ? '0' : sign + num.toFixed(1));
+    const accel = Number(accelVal);
+    if (Number.isFinite(accel)) {
+      const aSign = accel > 0 ? '+' : '';
+      text += ' (' + (accel === 0 ? '0' : aSign + accel.toFixed(1)) + ')';
+    }
+    return text;
+  }
+
+  function symbolMomentumAccelFromSpotMsg(sym) {
+    const raw = (lastLiveSymbolSpotMsg && lastLiveSymbolSpotMsg.momentum_acceleration_by_symbol) || {};
+    let val = raw[sym];
+    if (val == null) {
+      Object.keys(raw).forEach(function (k) {
+        if (String(k).trim().toUpperCase() === sym && val == null) val = raw[k];
+      });
+    }
+    if (val != null && Number.isFinite(Number(val))) return Number(val);
+    const rows = (lastLiveSymbolSpotMsg && lastLiveSymbolSpotMsg.rows) || [];
+    for (let i = 0; i < rows.length; i++) {
+      const r = rows[i];
+      if (!r || String(r.symbol || '').trim().toUpperCase() !== sym) continue;
+      const rowVal = r.momentum_acceleration;
+      if (rowVal != null && Number.isFinite(Number(rowVal))) return Number(rowVal);
+    }
+    return null;
   }
 
   function symbolMomentumFromSpotMsg(sym) {
@@ -286,12 +310,14 @@
   function applyLiveSymbolSpotMessage(msg) {
     if (!msg || msg.type !== 'live_symbol_spot') return;
     lastLiveSymbolSpotMsg = msg;
+    try { window.lastLiveSymbolSpotMsg = msg; } catch (eWin) {}
     tmSpotUiThrottle.applyNow(msg);
   }
 
   function applyLiveSymbolSpotMessageNow(msg) {
     if (!msg || msg.type !== 'live_symbol_spot') return;
     lastLiveSymbolSpotMsg = msg;
+    try { window.lastLiveSymbolSpotMsg = msg; } catch (eWin2) {}
     const rawSpot = msg.spot_by_symbol || {};
     const spotNorm = {};
     Object.keys(rawSpot).forEach(function (k) {
@@ -310,6 +336,12 @@
       mom1mNorm[String(k).trim().toUpperCase()] = rawMom1m[k];
     });
     window.__liveMomentum1mAvgBySymbol = mom1mNorm;
+    const rawMomAccel = msg.momentum_acceleration_by_symbol || {};
+    const momAccelNorm = {};
+    Object.keys(rawMomAccel).forEach(function (k) {
+      momAccelNorm[String(k).trim().toUpperCase()] = rawMomAccel[k];
+    });
+    window.__liveMomentumAccelerationBySymbol = momAccelNorm;
 
     const sym = currentSymbol();
 
@@ -344,8 +376,17 @@
         });
       }
     }
+    let accelVal = rawMomAccel[sym];
+    if (accelVal == null) {
+      Object.keys(rawMomAccel).forEach(function (k) {
+        if (String(k).trim().toUpperCase() === sym && accelVal == null) accelVal = rawMomAccel[k];
+      });
+    }
+    if (accelVal == null) {
+      accelVal = symbolMomentumAccelFromSpotMsg(sym);
+    }
     const elMom = document.getElementById('symbol-momentum-value');
-    if (elMom) elMom.textContent = formatTmMomPercentile(momVal);
+    if (elMom) elMom.textContent = formatTmMomPercentile(momVal, accelVal);
 
     try {
       window.dispatchEvent(new CustomEvent('rec:live-symbol-spot', { detail: msg }));

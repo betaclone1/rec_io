@@ -160,10 +160,7 @@ DEFAULT_PORTS = {
     "redis_switchboard": 3010,
     "read_api": 3050,
 
-    "symbol_price_watchdog_btc": 8008,
-    "symbol_price_watchdog_eth": 8009,
-    "symbol_price_watchdog_sol": 8025,
-    "symbol_price_watchdog_xrp": 8026,
+    "cfbenchmarks_price_watchdog": 8008,
 
     "kalshi_account_sync": 8004,
     "market_watchdog_ws_kalshi_hourly": 8005,

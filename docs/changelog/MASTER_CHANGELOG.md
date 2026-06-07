@@ -6,6 +6,34 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-06-04 — Release v3.7.4: CFB price watchdog, live price ring, quarter-hour expiry fix, monitor health
+
+**Summary**
+- **Release: v3.7.4**
+- **CFB price watchdog:** New `cfbenchmarks_price_watchdog` publishes CFB spot to Redis `live_state`; feed-health reconnect on tick drought; optional CFB feed test UI tab. Legacy symbol price watchdogs retired from supervisor template.
+- **Live price ring (90m):** Migration **`20260603_1200_live_price_ring_90m`** adds `live_data.live_price_ring_90m_*` sidecar tables for ring hydration on watchdog restart.
+- **Trade expiration:** `trade_manager` uses CFB ring 60s avg (with `live_state` fallback) for `symbol_close`; quarter-hour sweeps process **tenant trades before simulated**, refresh wall clock for expiry filter, and run simulated settlement in a background thread so `:15/:30/:45` cron slots are not blocked.
+- **Monitor health:** `strike_pipeline_health` prefers `live_state` / ring over missing `live_price_log_1s_*`; rollback on gate errors so monitor tiles do not false-degrade.
+- **HF trade monitor / orderbook:** `hft_engine` refactor; orderbook-redis UI and HF monitor tab updates; `redis_switchboard` and realtime wiring adjustments.
+- **Database:** Migration **`20260603_1200_live_price_ring_90m`** required on prod; `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated.
+- Plans: `live-price-feed-hygiene`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260603_1200_live_price_ring_90m.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_manager_*`, `cfbenchmarks_price_watchdog`, `redis_switchboard`; confirm 15m monitor trades expire at quarter hour; monitor power lights not false-red.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.4`
+
+---
+
 ## 2026-05-27 — Release v3.7.3: Dashboard performance snapshot, trade history live marks, HF trade monitor, orderbook resting orders
 
 **Summary**

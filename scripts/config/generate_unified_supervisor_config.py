@@ -28,6 +28,26 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+
+def global_core_service_specs():
+    """
+    Global autostart supervisor programs (name + script fragment).
+    Shared with system_monitor service discovery — keep in sync with _generate_supervisor_content.
+    """
+    return [
+        {"name": "main_app", "script": "main.py"},
+        {"name": "read_api", "script": "read_api.py"},
+        {"name": "redis_switchboard", "script": "redis_switchboard.py"},
+        {"name": "cfbenchmarks_price_watchdog", "script": "cfbenchmarks_price_watchdog.py"},
+        {
+            "name": "market_watchdog_ws_kalshi",
+            "script": "market_watchdog_ws.py --exchange kalshi --market all",
+        },
+        {"name": "system_monitor", "script": "system_monitor.py"},
+        {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"},
+    ]
+
+
 class SupervisorConfigGenerator:
     """Generate supervisor config with unified configuration"""
     
@@ -261,10 +281,7 @@ class SupervisorConfigGenerator:
                 "trade_executor_0001": 8001,
                 "active_trade_supervisor": 6000,
                 "auto_entry_supervisor": 8002,
-                "symbol_price_watchdog_btc": 8008,
-                "symbol_price_watchdog_eth": 8009,
-                "symbol_price_watchdog_sol": 8025,
-                "symbol_price_watchdog_xrp": 8026,
+                "cfbenchmarks_price_watchdog": 8008,
                 "symbol_price_watchdog_spx": 8017,
                 "symbol_price_watchdog_ndx": 8019,
                 "kalshi_account_sync_0001": 8004,
@@ -419,21 +436,22 @@ class SupervisorConfigGenerator:
                 "autostart": True,
             }
         )
-        for wname, wscript, wport_key, wdefault in (
-            ("symbol_price_watchdog_btc", "symbol_price_watchdog.py BTC", "symbol_price_watchdog_btc", 8008),
-            ("symbol_price_watchdog_eth", "symbol_price_watchdog.py ETH", "symbol_price_watchdog_eth", 8009),
-            ("symbol_price_watchdog_sol", "symbol_price_watchdog.py SOL", "symbol_price_watchdog_sol", 8025),
-            ("symbol_price_watchdog_xrp", "symbol_price_watchdog.py XRP", "symbol_price_watchdog_xrp", 8026),
-        ):
-            services.append(
-                {
-                    "name": wname,
-                    "script": wscript,
-                    "port": ports.get(wport_key, wdefault),
-                    "environment": env_global,
-                    "autostart": True,
-                }
-            )
+        # Crypto spot: single Kalshi cfbenchmarks_value feed (replaces 4× Coinbase symbol_price_watchdog).
+        cfb_env = (
+            env_global
+            + ',CFBENCHMARKS_PUBLISH_MODE="live_state"'
+            + ',CFBENCHMARKS_INDEX_IDS="BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI"'
+            + ',CFBENCHMARKS_RING_PG="1"'
+        )
+        services.append(
+            {
+                "name": "cfbenchmarks_price_watchdog",
+                "script": "cfbenchmarks_price_watchdog.py",
+                "port": ports.get("cfbenchmarks_price_watchdog", 8008),
+                "environment": cfb_env,
+                "autostart": True,
+            }
+        )
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi",

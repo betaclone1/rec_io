@@ -204,19 +204,27 @@ def _momentum_by_symbol_from_rows(row_dicts: list) -> dict:
     return out
 
 
-def _momentum_1m_avg_for_symbol(sym_key: str) -> Optional[float]:
-    """1m momentum average (percentile scale); always computed fresh for WS payloads."""
+def _momentum_avg_for_symbol(sym_key: str, calc_name: str) -> Optional[float]:
+    """Rolling momentum average (percentile scale) via symbol_price_watchdog."""
     try:
-        from backend.symbol_price_watchdog import calculate_1m_momentum_average
+        from backend import symbol_price_watchdog as spw
 
-        return calculate_1m_momentum_average(sym_key)
+        calc = getattr(spw, calc_name, None)
+        if calc is None:
+            return None
+        return calc(sym_key)
     except Exception as e:
-        logger.debug("_momentum_1m_avg_for_symbol %s: %s", sym_key, e)
+        logger.debug("_momentum_avg_for_symbol %s %s: %s", sym_key, calc_name, e)
         return None
 
 
-def _momentum_1m_avg_by_symbol_from_rows(row_dicts: list) -> dict:
-    """Trade-monitor orderbook mid row: 1m smoothed momentum (percentile scale)."""
+def _momentum_avg_by_symbol_from_rows(
+    row_dicts: list,
+    *,
+    row_key: str,
+    calc_name: str,
+) -> dict:
+    """Build per-symbol map from live_state row field, falling back to fresh calc."""
     out: dict = {}
     for r in row_dicts or []:
         sym = r.get("symbol")
@@ -225,9 +233,78 @@ def _momentum_1m_avg_by_symbol_from_rows(row_dicts: list) -> dict:
         key = str(sym).strip().upper()
         if not key or key in out:
             continue
-        raw = r.get("momentum_1m_avg")
+        raw = r.get(row_key)
         if raw is None:
-            raw = _momentum_1m_avg_for_symbol(key)
+            raw = _momentum_avg_for_symbol(key, calc_name)
+        if raw is not None:
+            try:
+                out[key] = float(raw)
+            except (TypeError, ValueError):
+                continue
+    return out
+
+
+def _momentum_1m_avg_for_symbol(sym_key: str) -> Optional[float]:
+    """1m momentum average (percentile scale); always computed fresh for WS payloads."""
+    return _momentum_avg_for_symbol(sym_key, "calculate_1m_momentum_average")
+
+
+def _momentum_1m_avg_by_symbol_from_rows(row_dicts: list) -> dict:
+    """Trade-monitor orderbook mid row: 1m smoothed momentum (percentile scale)."""
+    return _momentum_avg_by_symbol_from_rows(
+        row_dicts, row_key="momentum_1m_avg", calc_name="calculate_1m_momentum_average",
+    )
+
+
+def _momentum_10s_avg_by_symbol_from_rows(row_dicts: list) -> dict:
+    return _momentum_avg_by_symbol_from_rows(
+        row_dicts, row_key="momentum_10s_avg", calc_name="calculate_10s_momentum_average",
+    )
+
+
+def _momentum_30s_avg_by_symbol_from_rows(row_dicts: list) -> dict:
+    return _momentum_avg_by_symbol_from_rows(
+        row_dicts, row_key="momentum_30s_avg", calc_name="calculate_30s_momentum_average",
+    )
+
+
+def _momentum_acceleration_for_symbol(sym_key: str) -> Optional[float]:
+    try:
+        from backend.symbol_price_watchdog import (
+            calculate_10s_momentum_average,
+            calculate_1m_momentum_average,
+            calculate_momentum_acceleration,
+        )
+
+        return calculate_momentum_acceleration(
+            calculate_10s_momentum_average(sym_key),
+            calculate_1m_momentum_average(sym_key),
+        )
+    except Exception as e:
+        logger.debug("_momentum_acceleration_for_symbol %s: %s", sym_key, e)
+        return None
+
+
+def _momentum_acceleration_by_symbol_from_rows(row_dicts: list) -> dict:
+    out: dict = {}
+    for r in row_dicts or []:
+        sym = r.get("symbol")
+        if sym is None:
+            continue
+        key = str(sym).strip().upper()
+        if not key or key in out:
+            continue
+        raw = r.get("momentum_acceleration")
+        if raw is None:
+            m10 = r.get("momentum_10s_avg")
+            m1 = r.get("momentum_1m_avg")
+            if m10 is not None and m1 is not None:
+                try:
+                    raw = round(float(m10) - float(m1), 2)
+                except (TypeError, ValueError):
+                    raw = None
+        if raw is None:
+            raw = _momentum_acceleration_for_symbol(key)
         if raw is not None:
             try:
                 out[key] = float(raw)
@@ -275,14 +352,30 @@ def build_live_symbol_spot_from_cache():
             spot_by_symbol[sym] = sp
     if not row_dicts:
         return None
+    one_minute_avg_by_symbol: dict = {}
+    for r in row_dicts:
+        sym = r.get("symbol")
+        if sym is None:
+            continue
+        key = str(sym).strip().upper()
+        o = r.get("one_minute_avg")
+        if o is not None:
+            try:
+                one_minute_avg_by_symbol[key] = float(o)
+            except (TypeError, ValueError):
+                pass
     now = datetime.now(timezone.utc).isoformat()
     return {
         "type": "live_symbol_spot",
         "timestamp": now,
         "spot_by_symbol": spot_by_symbol,
+        "one_minute_avg_by_symbol": one_minute_avg_by_symbol,
         "changes_by_symbol": _fetch_changes_by_symbol(),
         "momentum_by_symbol": _momentum_by_symbol_from_rows(row_dicts),
+        "momentum_10s_avg_by_symbol": _momentum_10s_avg_by_symbol_from_rows(row_dicts),
+        "momentum_30s_avg_by_symbol": _momentum_30s_avg_by_symbol_from_rows(row_dicts),
         "momentum_1m_avg_by_symbol": _momentum_1m_avg_by_symbol_from_rows(row_dicts),
+        "momentum_acceleration_by_symbol": _momentum_acceleration_by_symbol_from_rows(row_dicts),
         "rows": row_dicts,
     }
 
@@ -338,6 +431,7 @@ def build_live_symbol_spot_payload():
         except Exception:
             pass
         spot_by_symbol = {}
+        one_minute_avg_by_symbol: dict = {}
         for r in row_dicts:
             sym = r.get("symbol")
             if sym is None:
@@ -348,15 +442,25 @@ def build_live_symbol_spot_payload():
             sp = _live_tick_spot_from_row(r)
             if sp is not None:
                 spot_by_symbol[key] = sp
+            o = r.get("one_minute_avg")
+            if o is not None:
+                try:
+                    one_minute_avg_by_symbol[key] = float(o)
+                except (TypeError, ValueError):
+                    pass
         changes_by_symbol = _fetch_changes_by_symbol()
         now = datetime.now(timezone.utc).isoformat()
         return {
             "type": "live_symbol_spot",
             "timestamp": now,
             "spot_by_symbol": spot_by_symbol,
+            "one_minute_avg_by_symbol": one_minute_avg_by_symbol,
             "changes_by_symbol": changes_by_symbol,
             "momentum_by_symbol": _momentum_by_symbol_from_rows(row_dicts),
+            "momentum_10s_avg_by_symbol": _momentum_10s_avg_by_symbol_from_rows(row_dicts),
+            "momentum_30s_avg_by_symbol": _momentum_30s_avg_by_symbol_from_rows(row_dicts),
             "momentum_1m_avg_by_symbol": _momentum_1m_avg_by_symbol_from_rows(row_dicts),
+            "momentum_acceleration_by_symbol": _momentum_acceleration_by_symbol_from_rows(row_dicts),
             "rows": row_dicts,
         }
     except Exception as e:

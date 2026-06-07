@@ -36,7 +36,7 @@ def strike_pipeline_health_strict_mode_enabled() -> bool:
 
 
 def pipeline_spot_flatline_window_sec() -> int:
-    """Window used to detect flatlined spot stream in live_data.live_price_log_1s_<symbol>."""
+    """Freshness window for Redis live_state and PG spot fallbacks (ring / legacy 1s log)."""
     return int(os.getenv("PIPELINE_SPOT_FLATLINE_WINDOW_SEC", "120"))
 
 
@@ -45,8 +45,25 @@ def pipeline_spot_flatline_min_distinct() -> int:
     return int(os.getenv("PIPELINE_SPOT_FLATLINE_MIN_DISTINCT", "2"))
 
 
+def pipeline_spot_ring_flatline_window_sec() -> int:
+    """PG ring window for flatline checks (~1 tick/min CFB needs a longer window than 1s log)."""
+    base = max(180, int(pipeline_spot_flatline_window_sec()))
+    try:
+        return max(base, int(os.getenv("PIPELINE_SPOT_RING_FLATLINE_WINDOW_SEC", str(base))))
+    except (TypeError, ValueError):
+        return base
+
+
+def _rollback_conn(conn) -> None:
+    try:
+        if conn is not None:
+            conn.rollback()
+    except Exception:
+        pass
+
+
 def _spot_series_passes_gate_live_state(symbol: str) -> tuple[bool, str]:
-    """Hot-path spot freshness when ticks live in Redis (PG dual-write may be off)."""
+    """Hot-path spot freshness when ticks live in Redis (CFB / live_state publish mode)."""
     try:
         from backend.core import live_state_cache
         from backend.core.live_state_config import live_state_cache_enabled
@@ -69,10 +86,47 @@ def _spot_series_passes_gate_live_state(symbol: str) -> tuple[bool, str]:
         return False, f"live_state_spot_gate_failed:{e}"
 
 
-def _spot_series_passes_gate(conn, symbol: str) -> tuple[bool, str]:
+def _spot_series_passes_gate_ring(conn, symbol: str) -> tuple[bool, str]:
+    """CFB PG ring fallback when Redis live_state is stale or unavailable."""
     sym = str(symbol or "").strip().upper()
-    if not re.fullmatch(r"[A-Z]{2,10}", sym):
-        return False, "invalid_symbol_for_spot_gate"
+    table = f"live_data.live_price_ring_90m_{sym.lower()}"
+    window_sec = max(60, int(pipeline_spot_ring_flatline_window_sec()))
+    min_distinct = max(1, int(pipeline_spot_flatline_min_distinct()))
+    cutoff = (datetime.now(ZoneInfo("America/New_York")) - timedelta(seconds=window_sec)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT
+                    COUNT(*)::bigint,
+                    COUNT(DISTINCT price::text)::bigint
+                FROM {table}
+                WHERE timestamp >= %s
+                """,
+                (cutoff,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return False, "spot_ring_missing"
+        sample_count = int(row[0] or 0)
+        distinct_count = int(row[1] or 0)
+        if sample_count < 1:
+            return False, "spot_ring_samples_empty"
+        if sample_count < min_distinct:
+            return False, f"spot_ring_samples_insufficient:{sample_count}<{min_distinct}"
+        if distinct_count < min_distinct:
+            return False, f"spot_ring_flatline:{distinct_count}<{min_distinct}_in_{window_sec}s"
+        return True, "ok"
+    except Exception as e:
+        _rollback_conn(conn)
+        return False, f"spot_ring_gate_failed:{e}"
+
+
+def _spot_series_passes_gate_live_price_log(conn, symbol: str) -> tuple[bool, str]:
+    """Legacy Coinbase 1s log (optional when table still exists)."""
+    sym = str(symbol or "").strip().upper()
     table = f"live_data.live_price_log_1s_{sym.lower()}"
     window_sec = max(5, int(pipeline_spot_flatline_window_sec()))
     min_distinct = max(1, int(pipeline_spot_flatline_min_distinct()))
@@ -93,28 +147,35 @@ def _spot_series_passes_gate(conn, symbol: str) -> tuple[bool, str]:
             )
             row = cur.fetchone()
         if not row:
-            ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
-            if ls_ok:
-                return True, ls_rsn
-            return False, "spot_series_missing"
+            return False, "spot_log_missing"
         sample_count = int(row[0] or 0)
         distinct_count = int(row[1] or 0)
         if sample_count < min_distinct:
-            ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
-            if ls_ok:
-                return True, ls_rsn
             return False, f"spot_samples_insufficient:{sample_count}<{min_distinct}"
         if distinct_count < min_distinct:
-            ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
-            if ls_ok:
-                return True, ls_rsn
             return False, f"spot_flatline:{distinct_count}<{min_distinct}_in_{window_sec}s"
         return True, "ok"
     except Exception as e:
-        ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
-        if ls_ok:
-            return True, ls_rsn
-        return False, f"spot_gate_query_failed:{e}"
+        _rollback_conn(conn)
+        return False, f"spot_log_gate_failed:{e}"
+
+
+def _spot_series_passes_gate(conn, symbol: str) -> tuple[bool, str]:
+    sym = str(symbol or "").strip().upper()
+    if not re.fullmatch(r"[A-Z]{2,10}", sym):
+        return False, "invalid_symbol_for_spot_gate"
+    ls_ok, ls_rsn = _spot_series_passes_gate_live_state(sym)
+    if ls_ok:
+        return True, ls_rsn
+    if conn is not None:
+        ring_ok, ring_rsn = _spot_series_passes_gate_ring(conn, sym)
+        if ring_ok:
+            return True, ring_rsn
+        log_ok, log_rsn = _spot_series_passes_gate_live_price_log(conn, sym)
+        if log_ok:
+            return True, log_rsn
+        return False, f"{ls_rsn};{ring_rsn};{log_rsn}"
+    return False, ls_rsn
 
 
 def pipeline_health_writer_dead_sec() -> int:

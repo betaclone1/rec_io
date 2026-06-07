@@ -176,6 +176,18 @@ async def serve_js(filename: str):
     return HTMLResponse(content="JS file not found", status_code=404)
 
 
+@frontend_html_router.get("/cfbenchmarks_feed_test", response_class=HTMLResponse)
+async def serve_cfbenchmarks_feed_test(request: Request):
+    if AUTH_ENABLED:
+        if not query_token_auth_ok(request):
+            return RedirectResponse(url="/login")
+    file_path = f"{frontend_dir}/tabs/cfbenchmarks_feed_test.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            return HTMLResponse(content=f.read(), headers=_html_no_cache_headers())
+    return HTMLResponse(content="CF Benchmarks feed test page not found", status_code=404)
+
+
 @frontend_html_router.get("/hf_trade_monitor", response_class=HTMLResponse)
 async def serve_hf_trade_monitor(request: Request):
     if AUTH_ENABLED:

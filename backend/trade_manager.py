@@ -346,7 +346,7 @@ def _resolve_symbol_close_for_finalize(
     ticket_id: Optional[str] = None,
     as_of_est: Optional[datetime] = None,
 ) -> Optional[float]:
-    """Prefer symbol_close on the trade row (set at close start), else 1m avg, else live spot."""
+    """Prefer symbol_close on the trade row (set at close start), else live_state spot."""
     existing = None
     pg_conn = get_postgresql_connection()
     if pg_conn:
@@ -369,25 +369,9 @@ def _resolve_symbol_close_for_finalize(
     if existing is not None:
         return existing
 
-    when = as_of_est or datetime.now(ZoneInfo("America/New_York"))
-    symbol_close = _fetch_one_minute_avg_at_or_before(
-        symbol, when, max_gap_seconds=120,
-    )
+    symbol_close = _symbol_close_live_spot(symbol)
     if symbol_close is not None:
-        try:
-            return float(symbol_close)
-        except (TypeError, ValueError):
-            pass
-
-    try:
-        from backend.core.tradeflow_live_reads import symbol_spot_price
-
-        spot = symbol_spot_price(str(symbol or "").strip().upper())
-        if spot is not None:
-            out = normalize_trade_spot_price(symbol, spot)
-            return float(out) if out is not None else None
-    except Exception:
-        pass
+        return symbol_close
 
     if ticket_id:
         log_event(ticket_id, f"MANAGER: symbol_close unresolved for {symbol}")
@@ -1273,135 +1257,53 @@ def _filter_trades_past_contract_expiration(trades, now_est):
     return past
 
 
-def _live_price_log_timestamp_cutoff_str(expiration_est: datetime) -> str:
-    """ISO wall time string matching symbol_price_watchdog rows (America/New_York, no TZ suffix)."""
-    if expiration_est.tzinfo is None:
-        exp = expiration_est.replace(tzinfo=EST_ZONE)
-    else:
-        exp = expiration_est.astimezone(EST_ZONE)
-    return exp.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _fetch_one_minute_avg_from_live_state_near_cutoff(
-    symbol: str,
-    expiration_est: datetime,
-    *,
-    max_gap_seconds: Optional[int] = None,
-) -> Optional[float]:
-    """Fallback when PG ``live_price_log_1s_*`` is stale (crypto hot path skips per-tick inserts).
-
-    Expiry sweeps and closes run at/just after contract end; live_state spot is authoritative then.
-    """
-    if not symbol or expiration_est is None:
+def _symbol_close_live_spot(symbol: Optional[str]) -> Optional[float]:
+    """Latest CFB spot from Redis ``live_state`` (manual/auto close paths)."""
+    if not symbol:
         return None
     try:
-        from backend.core.live_state_config import live_state_cache_enabled
-        from backend.core.tradeflow_live_reads import symbol_spot_price_for_monitoring
+        from backend.core.tradeflow_live_reads import symbol_spot_price
 
-        if not live_state_cache_enabled():
-            return None
-        if expiration_est.tzinfo is None:
-            cutoff_dt = expiration_est.replace(tzinfo=EST_ZONE)
-        else:
-            cutoff_dt = expiration_est.astimezone(EST_ZONE)
-        now_est = datetime.now(EST_ZONE)
-        delta_s = (now_est - cutoff_dt).total_seconds()
-        window = float(max_gap_seconds) if max_gap_seconds is not None else 120.0
-        # Sweep runs on the boundary; allow slightly early scheduler skew.
-        if delta_s < -45.0 or delta_s > max(window, 300.0):
-            return None
-        sym_u = str(symbol).strip().upper()
-        spot = symbol_spot_price_for_monitoring(
-            sym_u,
-            prefer_max_age_sec=min(120.0, max(window, 30.0)),
-            allow_stale_max_age_sec=max(window, 180.0),
-        )
+        spot = symbol_spot_price(str(symbol).strip().upper())
         if spot is None:
             return None
         out = normalize_trade_spot_price(symbol, spot)
-        if out is not None:
-            log(
-                f"ℹ️ one_minute_avg for {sym_u} from live_state near cutoff "
-                f"(cutoff={_live_price_log_timestamp_cutoff_str(expiration_est)}, delta_s={delta_s:.1f})"
-            )
-        return out
-    except Exception as e:
-        log(f"⚠️ live_state one_minute_avg near cutoff for {symbol}: {e}")
+        return float(out) if out is not None else None
+    except Exception:
         return None
 
 
-def _fetch_one_minute_avg_at_or_before(
-    symbol,
-    expiration_est,
-    *,
-    max_gap_seconds: Optional[int] = None,
-):
-    """Read one_minute_avg from the latest row at/before expiration_est.
+def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime) -> Optional[float]:
+    """
+    Expiration settlement spot: mean of CFB ring ticks in the 60s before ``expiration_est``.
 
-    ``live_price_log_1s_*`` stores ``timestamp`` as TEXT in ``%%Y-%%m-%%dT%%H:%%M:%%S`` EST.
-    A Python datetime bound param makes PostgreSQL compare ``text <= timestamp``, which errors.
+    Falls back to live_state spot when the ring has no ticks in that window (e.g. ring PG off).
     """
     if not symbol or expiration_est is None:
         return None
-    cutoff_str = _live_price_log_timestamp_cutoff_str(expiration_est)
-    pg_conn = None
+    sym_u = str(symbol).strip().upper()
     try:
-        pg_conn = get_postgresql_connection()
-        if not pg_conn:
-            return None
-        with pg_conn.cursor() as cursor:
-            cursor.execute(
-                f"""
-                SELECT one_minute_avg, timestamp
-                FROM live_data.live_price_log_1s_{symbol.lower()}
-                WHERE one_minute_avg IS NOT NULL
-                  AND timestamp <= %s
-                ORDER BY timestamp DESC
-                LIMIT 1
-                """,
-                (cutoff_str,),
-            )
-            row = cursor.fetchone()
-        pg_conn.close()
-        if not row or row[0] is None:
-            return _fetch_one_minute_avg_from_live_state_near_cutoff(
-                symbol, expiration_est, max_gap_seconds=max_gap_seconds
-            )
-        if max_gap_seconds is not None and row[1]:
-            try:
-                row_ts = datetime.strptime(str(row[1]), "%Y-%m-%dT%H:%M:%S").replace(
-                    tzinfo=EST_ZONE
+        from backend.core.live_price_ring_90m import avg_cfb_spot_60s_before_expiration
+
+        avg_px = avg_cfb_spot_60s_before_expiration(sym_u, expiration_est)
+        if avg_px is not None:
+            out = normalize_trade_spot_price(symbol, avg_px)
+            if out is not None:
+                log(
+                    f"ℹ️ symbol_close for {sym_u} expiration: "
+                    f"cfb ring 60s avg={float(out)} (exp={expiration_est})"
                 )
-                if expiration_est.tzinfo is None:
-                    cutoff_dt = expiration_est.replace(tzinfo=EST_ZONE)
-                else:
-                    cutoff_dt = expiration_est.astimezone(EST_ZONE)
-                gap_s = (cutoff_dt - row_ts).total_seconds()
-                if gap_s < 0 or gap_s > float(max_gap_seconds):
-                    log(
-                        f"⚠️ one_minute_avg stale/misaligned for {symbol}: "
-                        f"row_ts={row[1]} cutoff={cutoff_str} gap_s={gap_s:.1f} "
-                        f"(max={max_gap_seconds})"
-                    )
-                    return _fetch_one_minute_avg_from_live_state_near_cutoff(
-                        symbol, expiration_est, max_gap_seconds=max_gap_seconds
-                    )
-            except Exception as gap_err:
-                log(f"⚠️ one_minute_avg gap check failed for {symbol}: {gap_err}")
-                return _fetch_one_minute_avg_from_live_state_near_cutoff(
-                    symbol, expiration_est, max_gap_seconds=max_gap_seconds
-                )
-        return normalize_trade_spot_price(symbol, row[0])
+                return float(out)
     except Exception as e:
-        log(f"⚠️ one_minute_avg lookup at/before {cutoff_str} for {symbol}: {e}")
-        if pg_conn:
-            try:
-                pg_conn.close()
-            except Exception:
-                pass
-        return _fetch_one_minute_avg_from_live_state_near_cutoff(
-            symbol, expiration_est, max_gap_seconds=max_gap_seconds
+        log(f"⚠️ cfb ring expiration avg for {symbol}: {e}")
+
+    spot = _symbol_close_live_spot(symbol)
+    if spot is not None:
+        log(
+            f"ℹ️ symbol_close for {sym_u} expiration: live_state fallback spot={spot} "
+            f"(no ring ticks in 60s window)"
         )
+    return spot
 
 
 def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_date, contract: str) -> int:
@@ -1415,7 +1317,7 @@ def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_dat
     exp_est = _contract_expiration_est(trade_date, contract, now_est)
     if now_est < exp_est:
         return 0
-    px = _fetch_one_minute_avg_at_or_before(symbol, exp_est, max_gap_seconds=90)
+    px = _symbol_close_for_expiration(symbol, exp_est)
     if px is None:
         return 0
     contract_key = str(contract).strip()
@@ -1576,10 +1478,10 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
 
         if symbol_close is None and contract and trade_date and symbol:
             exp_est = _contract_expiration_est(trade_date, contract, now_est)
-            symbol_close = _fetch_one_minute_avg_at_or_before(symbol, exp_est)
+            symbol_close = _symbol_close_for_expiration(symbol, exp_est)
             if symbol_close is not None:
                 log_debug(
-                    f"📝 Repaired symbol_close for expired paper {trade_id} from expiration-tick 1m avg"
+                    f"📝 Repaired symbol_close for expired paper {trade_id} from CFB ring 60s avg"
                 )
                 with pg_conn_paper.cursor() as cursor:
                     cursor.execute(
@@ -1683,9 +1585,10 @@ def _repair_missing_symbol_close_recent(now_est: datetime) -> None:
         with pg.cursor() as c:
             for trade_id, symbol, contract, trade_date, _status in rows:
                 exp_est = _contract_expiration_est(trade_date, contract, now_est)
-                px = _fetch_one_minute_avg_at_or_before(
-                    symbol, exp_est, max_gap_seconds=300
-                )
+                if str(_status or "").strip().lower() == "expired":
+                    px = _symbol_close_for_expiration(symbol, exp_est)
+                else:
+                    px = _symbol_close_live_spot(symbol)
                 if px is None:
                     px = _resolve_symbol_close_for_finalize(
                         int(trade_id), symbol, as_of_est=exp_est
@@ -5946,15 +5849,11 @@ async def add_trade(request: Request):
                     )
                     if symbol_close is None and symbol:
                         now_est_close = datetime.now(ZoneInfo("America/New_York"))
-                        symbol_close = _fetch_one_minute_avg_at_or_before(
-                            symbol,
-                            now_est_close,
-                            max_gap_seconds=120,
-                        )
+                        symbol_close = _symbol_close_live_spot(symbol)
                         if symbol_close is not None:
-                            log(f"📝 PAPER TRADE: Retrieved one_minute_avg for close: {symbol_close}")
+                            log(f"📝 PAPER TRADE: Retrieved live_state spot for close: {symbol_close}")
                         else:
-                            log(f"📝 PAPER TRADE: No fresh one_minute_avg for {symbol}; symbol_close left unset")
+                            log(f"📝 PAPER TRADE: No fresh live_state spot for {symbol}; symbol_close left unset")
                     
                     # Mark as closing first
                     try:
@@ -7255,14 +7154,13 @@ def check_expired_simulated_trades():
             monitor, trade_date, weekly_cycle, contract = row[5], row[6], row[7], row[8]
             expiration_est = _contract_expiration_est(trade_date, contract, now_est)
             # Do not settle before the contract's expiration instant (wall clock). Otherwise each
-            # 15m sweep would still pick one_minute_avg with timestamp <= expiry, which is often
-            # "latest tick so far" — e.g. closing 8:00pm hourly-sim rows at the 7:45 sweep.
+    # 15m sweep would mark trades before wall-clock expiry — e.g. closing 8:00pm hourly rows at 7:45.
             if now_est < expiration_est:
                 continue
             cache_key = (symbol, expiration_est.replace(tzinfo=None))
             if cache_key not in symbol_prices:
-                symbol_prices[cache_key] = _fetch_one_minute_avg_at_or_before(
-                    symbol, expiration_est, max_gap_seconds=90
+                symbol_prices[cache_key] = _symbol_close_for_expiration(
+                    symbol, expiration_est
                 )
             symbol_close = symbol_prices.get(cache_key)
             if symbol_close is None:
@@ -7396,31 +7294,36 @@ def check_expired_trades():
     if _trade_manager_scheduler_shutdown.is_set():
         return
     try:
-        now_est = datetime.now(ZoneInfo("America/New_York"))
-        log(f"[15-MIN CHECK] Starting expiry sweep at {now_est.strftime('%Y-%m-%d %H:%M:%S %Z')}")
+        sweep_start_est = datetime.now(ZoneInfo("America/New_York"))
+        scheduled_minute = sweep_start_est.minute
+        log(
+            f"[15-MIN CHECK] Starting expiry sweep at "
+            f"{sweep_start_est.strftime('%Y-%m-%d %H:%M:%S %Z')}"
+        )
+
+        if scheduled_minute % 15 != 0:
+            # Safety guard: scheduler should only call us at multiples of 15.
+            log(
+                f"[15-MIN CHECK] Skipping run at minute={scheduled_minute} "
+                "(not on 15-minute boundary)"
+            )
+            return
 
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
 
         # Early-closed trades: fill symbol_expiration once contract end has passed (same 1m avg @ expiration tick).
-        _backfill_symbol_expiration_past_due_closed(now_est)
+        _backfill_symbol_expiration_past_due_closed(sweep_start_est)
 
         # Paper trades can be stuck ``expired`` if symbol_close failed during sweep (e.g. text vs timestamp bug).
-        _settle_stuck_expired_paper_trades(now_est)
-        _repair_missing_symbol_close_recent(now_est)
+        _settle_stuck_expired_paper_trades(sweep_start_est)
+        _repair_missing_symbol_close_recent(sweep_start_est)
 
+        # Live/paper tenant trades run BEFORE simulated settlement. Sim can take many minutes locally;
+        # using a stale sweep-start clock for expiry filtering skipped 15m rows (prod has fewer sim rows).
+        now_est = datetime.now(ZoneInfo("America/New_York"))
         closed_at = now_est.strftime("%H:%M:%S")
-        current_minute = now_est.minute
 
-        if current_minute % 15 != 0:
-            # Safety guard: scheduler should only call us at multiples of 15.
-            log(f"[15-MIN CHECK] Skipping run at minute={current_minute} (not on 15-minute boundary)")
-            return
-
-        # Simulated trades: run every 15m regardless of live trade count; close and set W/L from symbol_close
-        check_expired_simulated_trades()
-
-        # Step 2: Check for open, partial, and closing trades (live) to mark as expired
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
@@ -7433,204 +7336,232 @@ def check_expired_trades():
         else:
             active_trades = []
 
-        if not active_trades:
-            return
-
-        # Decide which trades to process on this run.
-        # - At minute 0: process all active trades (original hourly behavior).
-        # - At minutes 15/30/45: process trades with market = 15m only.
-        if current_minute == 0:
-            trades_to_process = active_trades
-        else:
-            trades_to_process = [
-                row for row in active_trades if _trade_eligible_for_quarter_hour_expiry(row[6])
-            ]
+        trades_to_process = []
+        if active_trades:
+            # Cadence uses scheduled_minute (cron slot), not wall clock after long sim backlogs.
+            if scheduled_minute == 0:
+                trades_to_process = active_trades
+            else:
+                trades_to_process = [
+                    row
+                    for row in active_trades
+                    if _trade_eligible_for_quarter_hour_expiry(row[6])
+                ]
 
         log(
             f"[15-MIN CHECK] Active trades={len(active_trades)}, "
-            f"eligible_for_this_run={len(trades_to_process)}, minute={current_minute}"
+            f"eligible_for_this_run={len(trades_to_process)}, "
+            f"scheduled_minute={scheduled_minute}, wall_clock={now_est.strftime('%H:%M:%S')}"
         )
 
-        if not trades_to_process:
-            log("[15-MIN CHECK] No eligible trades found for expiration")
-            return
-
-        before_expiry_filter = len(trades_to_process)
-        trades_to_process = _filter_trades_past_contract_expiration(trades_to_process, now_est)
-        skipped_early = before_expiry_filter - len(trades_to_process)
-        if skipped_early:
-            log(
-                f"[15-MIN CHECK] Skipped {skipped_early} trade(s) not yet past contract expiry"
-            )
-
-        if not trades_to_process:
-            log("[15-MIN CHECK] No trades past contract expiry for this run")
-            return
-
-        # Closing prices: one_minute_avg at or before each trade's contract expiration tick.
-        expiration_price_cache = {}
-        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
-            expiration_est = _contract_expiration_est(trade_date, contract, now_est)
-            cache_key = (symbol, expiration_est.replace(tzinfo=None))
-            if cache_key not in expiration_price_cache:
-                expiration_price_cache[cache_key] = _fetch_one_minute_avg_at_or_before(
-                    symbol, expiration_est, max_gap_seconds=90
-                )
-            if expiration_price_cache.get(cache_key) is None:
-                log(
-                    f"[15-MIN CHECK] No one_minute_avg at/before expiration for {symbol} "
-                    f"(ticker={ticker}, exp={expiration_est.strftime('%Y-%m-%d %H:%M:%S %Z')})"
-                )
-        
-        # Update PostgreSQL - handle each trade individually with its symbol-specific closing price
-        try:
-            pg_conn = get_postgresql_connection()
-            if pg_conn:
-                with pg_conn.cursor() as cursor:
-                    for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
-                        expiration_est = _contract_expiration_est(trade_date, contract, now_est)
-                        if now_est < expiration_est:
-                            continue
-                        cache_key = (symbol, expiration_est.replace(tzinfo=None))
-                        symbol_close = expiration_price_cache.get(cache_key)
-                        
-                        # CRITICAL: Re-check trade status before UPDATE to prevent race condition
-                        # If trade was already closed between SELECT and UPDATE, skip it entirely
-                        cursor.execute(f"SELECT status, high_price, low_price FROM {_tm_trades_table()} WHERE id = %s", (trade_id,))
-                        status_check = cursor.fetchone()
-                        
-                        if not status_check:
-                            continue  # Trade doesn't exist, skip
-                        
-                        current_status, existing_high_price, existing_low_price = status_check
-                        
-                        # IMMUTABILITY RULE: Never touch already-closed trades
-                        if current_status == 'closed':
-                            log(f"⚠️ EXPIRATION: Skipping trade {trade_id} - already closed (immutability rule)")
-                            continue
-                        
-                        # Only process trades that are still open, partial, or closing
-                        if current_status not in ('open', 'closing', 'partial'):
-                            continue
-                        
-                        # Get high_price and low_price from active_trades before it's removed
-                        high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
-                        
-                        # PRESERVE EXISTING VALUES: If get_high_low_prices_from_active_trades() returns (None, None),
-                        # but trade already has values, preserve them instead of overwriting with NULL
-                        if high_price is None and existing_high_price is not None:
-                            high_price = existing_high_price
-                            log(f"⚠️ EXPIRATION: Preserving existing high_price={high_price} for trade {trade_id}")
-                        
-                        if low_price is None and existing_low_price is not None:
-                            low_price = existing_low_price
-                            log(f"⚠️ EXPIRATION: Preserving existing low_price={low_price} for trade {trade_id}")
-                        
-                        # Set monitor_confirmed = TRUE if high_price != low_price (meaning ATS was monitoring correctly)
-                        monitor_confirmed = False
-                        if high_price is not None and low_price is not None:
-                            if high_price != low_price:
-                                monitor_confirmed = True
-                                log(f"✅ EXPIRATION: Trade {trade_id}: monitor_confirmed = TRUE (high_price={high_price} != low_price={low_price})")
-                            else:
-                                log(f"⚠️ EXPIRATION: Trade {trade_id}: monitor_confirmed = FALSE (high_price == low_price = {high_price})")
-                        
-                        cursor.execute(f"""
-                            UPDATE {_tm_trades_table()} 
-                            SET status = 'expired', 
-                                closed_at = %s, 
-                                symbol_close = %s,
-                                close_method = 'expired',
-                                high_price = %s,
-                                low_price = %s,
-                                monitor_confirmed = %s
-                            WHERE id = %s AND status IN ('open', 'closing', 'partial')
-                        """, (closed_at, symbol_close, high_price, low_price, monitor_confirmed, trade_id))
-                    markets_applied = set()
-                    for _tid, _ticker, _symbol, _strategy, _contract, _trade_date, _m in trades_to_process:
-                        k = (str(_symbol).strip(), str(_contract).strip(), str(_trade_date))
-                        if k in markets_applied:
-                            continue
-                        markets_applied.add(k)
-                        _apply_symbol_expiration_for_contract_session(cursor, _symbol, _trade_date, _contract)
-                    pg_conn.commit()
-                    with pg_conn.cursor() as bf_cursor:
-                        _apply_win_loss_confirmed_for_trade_ids(
-                            bf_cursor, [row[0] for row in trades_to_process]
-                        )
-                    pg_conn.commit()
-                    log_debug(
-                        f"💾 Expired trades update written to PostgreSQL tenant trades for "
-                        f"{len(trades_to_process)} trades (open, partial, and closing)"
-                    )
-                pg_conn.close()
-            else:
-                log(f"⚠️ Skipping PostgreSQL expired trades update - no connection available")
-        except Exception as pg_err:
-            log(f"❌ Failed to update expired trades in PostgreSQL: {pg_err}")
-        
-        notify_frontend_trade_change()
-        
-        # Separate paper trades from live trades (only for trades we just expired)
         paper_trade_ids = []
         live_trade_tickers = []
-        
-        try:
-            pg_conn_check = get_postgresql_connection()
-            if pg_conn_check:
-                with pg_conn_check.cursor() as cursor:
+
+        if trades_to_process:
+            before_expiry_filter = len(trades_to_process)
+            trades_to_process = _filter_trades_past_contract_expiration(trades_to_process, now_est)
+            skipped_early = before_expiry_filter - len(trades_to_process)
+            if skipped_early:
+                log(
+                    f"[15-MIN CHECK] Skipped {skipped_early} trade(s) not yet past contract expiry"
+                )
+
+        if trades_to_process:
+            expiration_price_cache = {}
+            for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
+                expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+                cache_key = (symbol, expiration_est.replace(tzinfo=None))
+                if cache_key not in expiration_price_cache:
+                    expiration_price_cache[cache_key] = _symbol_close_for_expiration(
+                        symbol, expiration_est
+                    )
+                if expiration_price_cache.get(cache_key) is None:
+                    log(
+                        f"[15-MIN CHECK] No CFB ring 60s avg for expiration for {symbol} "
+                        f"(ticker={ticker}, exp={expiration_est.strftime('%Y-%m-%d %H:%M:%S %Z')})"
+                    )
+
+            try:
+                pg_conn = get_postgresql_connection()
+                if pg_conn:
+                    with pg_conn.cursor() as cursor:
+                        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
+                            expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+                            if now_est < expiration_est:
+                                continue
+                            cache_key = (symbol, expiration_est.replace(tzinfo=None))
+                            symbol_close = expiration_price_cache.get(cache_key)
+
+                            cursor.execute(
+                                f"SELECT status, high_price, low_price FROM {_tm_trades_table()} WHERE id = %s",
+                                (trade_id,),
+                            )
+                            status_check = cursor.fetchone()
+
+                            if not status_check:
+                                continue
+
+                            current_status, existing_high_price, existing_low_price = status_check
+
+                            if current_status == "closed":
+                                log(
+                                    f"⚠️ EXPIRATION: Skipping trade {trade_id} - already closed (immutability rule)"
+                                )
+                                continue
+
+                            if current_status not in ("open", "closing", "partial"):
+                                continue
+
+                            high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
+
+                            if high_price is None and existing_high_price is not None:
+                                high_price = existing_high_price
+                                log(
+                                    f"⚠️ EXPIRATION: Preserving existing high_price={high_price} for trade {trade_id}"
+                                )
+
+                            if low_price is None and existing_low_price is not None:
+                                low_price = existing_low_price
+                                log(
+                                    f"⚠️ EXPIRATION: Preserving existing low_price={low_price} for trade {trade_id}"
+                                )
+
+                            monitor_confirmed = False
+                            if high_price is not None and low_price is not None:
+                                if high_price != low_price:
+                                    monitor_confirmed = True
+                                    log(
+                                        f"✅ EXPIRATION: Trade {trade_id}: monitor_confirmed = TRUE "
+                                        f"(high_price={high_price} != low_price={low_price})"
+                                    )
+                                else:
+                                    log(
+                                        f"⚠️ EXPIRATION: Trade {trade_id}: monitor_confirmed = FALSE "
+                                        f"(high_price == low_price = {high_price})"
+                                    )
+
+                            cursor.execute(
+                                f"""
+                                UPDATE {_tm_trades_table()}
+                                SET status = 'expired',
+                                    closed_at = %s,
+                                    symbol_close = %s,
+                                    close_method = 'expired',
+                                    high_price = %s,
+                                    low_price = %s,
+                                    monitor_confirmed = %s
+                                WHERE id = %s AND status IN ('open', 'closing', 'partial')
+                                """,
+                                (
+                                    closed_at,
+                                    symbol_close,
+                                    high_price,
+                                    low_price,
+                                    monitor_confirmed,
+                                    trade_id,
+                                ),
+                            )
+                        markets_applied = set()
+                        for _tid, _ticker, _symbol, _strategy, _contract, _trade_date, _m in trades_to_process:
+                            k = (str(_symbol).strip(), str(_contract).strip(), str(_trade_date))
+                            if k in markets_applied:
+                                continue
+                            markets_applied.add(k)
+                            _apply_symbol_expiration_for_contract_session(
+                                cursor, _symbol, _trade_date, _contract
+                            )
+                        pg_conn.commit()
+                        with pg_conn.cursor() as bf_cursor:
+                            _apply_win_loss_confirmed_for_trade_ids(
+                                bf_cursor, [row[0] for row in trades_to_process]
+                            )
+                        pg_conn.commit()
+                        log_debug(
+                            f"💾 Expired trades update written to PostgreSQL tenant trades for "
+                            f"{len(trades_to_process)} trades (open, partial, and closing)"
+                        )
+                    pg_conn.close()
+                else:
+                    log("⚠️ Skipping PostgreSQL expired trades update - no connection available")
+            except Exception as pg_err:
+                log(f"❌ Failed to update expired trades in PostgreSQL: {pg_err}")
+
+            notify_frontend_trade_change()
+
+            try:
+                pg_conn_check = get_postgresql_connection()
+                if pg_conn_check:
+                    with pg_conn_check.cursor() as cursor:
+                        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
+                            cursor.execute(
+                                f"SELECT paper_trade FROM {_tm_trades_table()} WHERE id = %s",
+                                (trade_id,),
+                            )
+                            result = cursor.fetchone()
+                            if result and result[0] is True:
+                                paper_trade_ids.append((trade_id, ticker, symbol))
+                            else:
+                                live_trade_tickers.append(ticker)
+                    pg_conn_check.close()
+                else:
                     for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
-                        cursor.execute(f"SELECT paper_trade FROM {_tm_trades_table()} WHERE id = %s", (trade_id,))
-                        result = cursor.fetchone()
-                        if result and result[0] is True:
-                            paper_trade_ids.append((trade_id, ticker, symbol))
-                        else:
-                            live_trade_tickers.append(ticker)
-                pg_conn_check.close()
-            else:
-                # If we can't check, treat all as live trades
+                        live_trade_tickers.append(ticker)
+            except Exception as e:
+                log(f"⚠️ Error separating paper/live trades: {e}, treating all as live")
                 for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
                     live_trade_tickers.append(ticker)
-        except Exception as e:
-            log(f"⚠️ Error separating paper/live trades: {e}, treating all as live")
+
             for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
-                live_trade_tickers.append(ticker)
-        
-        # Notify active_trade_supervisor for all expired trades (both paper and live)
-        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
-            notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
-        
-        # Paper: repair symbol_close; finalize when ``market_result`` exists (same as live).
-        if paper_trade_ids:
-            log(f"📝 Processing {len(paper_trade_ids)} expired paper trades")
-            for trade_id, ticker, symbol in paper_trade_ids:
-                _settle_one_expired_paper_trade(now_est, trade_id, ticker, symbol)
+                notify_active_trade_supervisor_direct(trade_id, str(ticker), "expired")
 
-        paper_ids_set = {pid for pid, _, _ in paper_trade_ids}
-        attempted_ticker_backfill = set()
-        for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
-            if trade_id not in paper_ids_set:
-                finalized = finalize_expired_trade_from_market_result(trade_id)
-                if finalized:
-                    continue
-                mt = str(ticker or "").strip()
-                if not mt:
-                    continue
-                if mt not in attempted_ticker_backfill:
-                    attempted_ticker_backfill.add(mt)
-                    applied_now = _backfill_market_result_for_ticker_now(mt)
-                    if applied_now > 0:
-                        log(
-                            f"[EXPIRY] immediate market_result apply rows={applied_now} "
-                            f"ticker={mt}"
-                        )
-                finalize_expired_trade_from_market_result(trade_id)
+            if paper_trade_ids:
+                log(f"📝 Processing {len(paper_trade_ids)} expired paper trades")
+                for trade_id, ticker, symbol in paper_trade_ids:
+                    _settle_one_expired_paper_trade(now_est, trade_id, ticker, symbol)
 
-        log(
-            f"[15-MIN CHECK] Completed expiry sweep; "
-            f"processed={len(trades_to_process)}, paper={len(paper_trade_ids)}, live={len(live_trade_tickers)}"
-        )
-        
+            paper_ids_set = {pid for pid, _, _ in paper_trade_ids}
+            attempted_ticker_backfill = set()
+            for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
+                if trade_id not in paper_ids_set:
+                    finalized = finalize_expired_trade_from_market_result(trade_id)
+                    if finalized:
+                        continue
+                    mt = str(ticker or "").strip()
+                    if not mt:
+                        continue
+                    if mt not in attempted_ticker_backfill:
+                        attempted_ticker_backfill.add(mt)
+                        applied_now = _backfill_market_result_for_ticker_now(mt)
+                        if applied_now > 0:
+                            log(
+                                f"[EXPIRY] immediate market_result apply rows={applied_now} "
+                                f"ticker={mt}"
+                            )
+                    finalize_expired_trade_from_market_result(trade_id)
+
+            log(
+                f"[15-MIN CHECK] Completed tenant expiry sweep; "
+                f"processed={len(trades_to_process)}, paper={len(paper_trade_ids)}, "
+                f"live={len(live_trade_tickers)}"
+            )
+        else:
+            log("[15-MIN CHECK] No tenant trades past contract expiry for this run")
+
+        threading.Thread(
+            target=check_expired_simulated_trades,
+            name="tm-expired-sim-sweep",
+            daemon=True,
+        ).start()
+
+        sweep_elapsed_sec = (
+            datetime.now(ZoneInfo("America/New_York")) - sweep_start_est
+        ).total_seconds()
+        if sweep_elapsed_sec > 120:
+            log(
+                f"[15-MIN CHECK] Slow sweep: {sweep_elapsed_sec:.0f}s "
+                f"(scheduled_minute={scheduled_minute})"
+            )
+
     except Exception as e:
         log(f"[15-MIN CHECK] Error during expiry sweep: {e}")
 
@@ -8067,6 +7998,7 @@ async def lifespan(app: FastAPI):
     _trade_manager_scheduler_shutdown.clear()
     try:
         _scheduler.start()
+        log("trade_manager APScheduler started (expiry */15, settlements */5)")
         threading.Thread(
             target=refresh_all_monitor_cycle_performance,
             kwargs={"window_days": 84},
@@ -8076,7 +8008,7 @@ async def lifespan(app: FastAPI):
         start_trading_redis_trade_manager_consumers(_trade_manager_scheduler_shutdown)
         start_trade_manager_positions_updated_subscriber()
     except Exception as e:
-        pass
+        log(f"trade_manager lifespan startup failed: {e}")
     yield
     try:
         _trade_manager_scheduler_shutdown.set()

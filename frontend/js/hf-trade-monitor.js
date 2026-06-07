@@ -19,9 +19,48 @@
   /** While true, applyStatus must not overwrite toggle DOM (avoids 1s poll / WS race). */
   var engineTogglePending = false;
   var autoTradeTogglePending = false;
+  var neutralModeTogglePending = false;
+  /** Live 1m mom + accel from trade-monitor WS (orderbook-redis-ui). */
+  var liveMom1m = null;
+  var liveMomAccel = null;
 
   // ---- DOM refs ----
   function $(id) { return document.getElementById(id); }
+
+  function hfCurrentSymbol() {
+    return (document.body.getAttribute('data-current-symbol') || 'BTC').trim().toUpperCase();
+  }
+
+  function syncLiveMomentumFromSpotDetail(detail) {
+    if (!detail) return;
+    var sym = hfCurrentSymbol();
+    var momBag = detail.momentum_1m_avg_by_symbol || {};
+    var accelBag = detail.momentum_acceleration_by_symbol || {};
+    var mom = momBag[sym];
+    var accel = accelBag[sym];
+    if (mom == null && detail.rows) {
+      for (var i = 0; i < detail.rows.length; i++) {
+        var row = detail.rows[i];
+        if (!row || String(row.symbol || '').trim().toUpperCase() !== sym) continue;
+        if (mom == null && row.momentum_1m_avg != null) mom = row.momentum_1m_avg;
+        if (accel == null && row.momentum_acceleration != null) accel = row.momentum_acceleration;
+      }
+    }
+    if (mom != null && !isNaN(Number(mom))) liveMom1m = Number(mom);
+    if (accel != null && !isNaN(Number(accel))) liveMomAccel = Number(accel);
+  }
+
+  function formatMomGateDisplay(mom, accel) {
+    if (mom == null || isNaN(Number(mom))) return null;
+    var momNum = Number(mom);
+    var text = (momNum > 0 ? '+' : '') + momNum.toFixed(1);
+    if (accel != null && !isNaN(Number(accel))) {
+      var a = Number(accel);
+      var aSign = a > 0 ? '+' : '';
+      text += ' (' + (a === 0 ? '0' : aSign + a.toFixed(1)) + ')';
+    }
+    return text;
+  }
 
   function syncOrderbookSubaccount(subaccount) {
     var n = parseInt(subaccount, 10);
@@ -114,6 +153,8 @@
     var eng = d.engine || {};
     var proc = d.process || {};
 
+    syncLiveMomentumFromGlobals();
+
     if (!engineTogglePending) {
       setEngineToggleRunning(!!proc.running, false);
     }
@@ -123,6 +164,22 @@
       var on = !!ctrl.enabled;
       toggle.classList.toggle('active', on);
       toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+    }
+
+    var neutralToggle = $('hfNeutralModeToggle');
+    if (neutralToggle && !neutralModeTogglePending) {
+      var neutralOn = !!ctrl.neutral_mode;
+      neutralToggle.classList.toggle('active', neutralOn);
+      neutralToggle.setAttribute('aria-checked', neutralOn ? 'true' : 'false');
+    }
+
+    var titleEl = $('hfTitle');
+    if (titleEl) {
+      var sym = document.body.getAttribute('data-current-symbol') || 'BTC';
+      var mkt = document.body.getAttribute('data-current-market') || '15m';
+      titleEl.textContent = ctrl.neutral_mode
+        ? sym + ' ' + mkt + ' — Neutral Mode (trial)'
+        : sym + ' ' + mkt + ' — Market Making';
     }
 
     // Config inputs (only update if not focused)
@@ -152,25 +209,45 @@
     // Gates
     var ttc = eng.gate_ttc;
     var bufPct = eng.gate_buffer_pct;
-    var mom = eng.gate_mom_1m;
+    var mom = liveMom1m != null ? liveMom1m : eng.gate_mom_1m;
+    var momAccel = liveMomAccel;
 
     var ttcRounded = ttc != null ? Math.round(ttc) : null;
     setGate('hfGateTtc', 'hfGateTtcVal', ttcRounded, ttcRounded != null && ttcRounded > 120);
 
     var bufNum = bufPct != null ? Number(bufPct) : null;
-    var bufPasses = bufNum != null && !isNaN(bufNum) && bufNum >= BUFFER_GATE_MIN_PCT;
+    var bufPasses = bufNum != null && !isNaN(bufNum) && bufNum > BUFFER_GATE_MIN_PCT;
     setGate(
       'hfGateBuffer', 'hfGateBufferVal',
       bufNum != null && !isNaN(bufNum) ? bufNum.toFixed(2) + '%' : null,
       bufPasses
     );
 
-    var momDisplay = null;
-    if (mom != null) {
-      var momNum = Number(mom);
-      momDisplay = (momNum > 0 ? '+' : '') + momNum.toFixed(1);
+    var momDisplay = formatMomGateDisplay(mom, momAccel);
+    if (ctrl.neutral_mode) {
+      setGate('hfGateMom', 'hfGateMomVal', 'n/a', true);
+    } else {
+      setGate('hfGateMom', 'hfGateMomVal', momDisplay, mom != null && mom >= -20 && mom <= 20);
     }
-    setGate('hfGateMom', 'hfGateMomVal', momDisplay, mom != null && mom >= -20 && mom <= 20);
+
+    var gatesPass = !!eng.gates_pass;
+    var blockReason = eng.gate_block_reason || '';
+    var rolloverRem = eng.rollover_settle_remaining_sec;
+    setGate('hfGateReady', 'hfGateReadyVal', gatesPass ? 'YES' : 'NO', gatesPass);
+    var blockEl = $('hfGateBlockReason');
+    if (blockEl) {
+      if (!gatesPass && blockReason) {
+        var msg = 'Blocked: ' + blockReason.replace(/_/g, ' ');
+        if (rolloverRem > 0) {
+          msg += ' (' + rolloverRem + 's)';
+        }
+        blockEl.textContent = msg;
+        blockEl.style.display = '';
+      } else {
+        blockEl.textContent = '';
+        blockEl.style.display = 'none';
+      }
+    }
 
     // Spread
     var bid = eng.gate_best_bid;
@@ -405,6 +482,58 @@
     toggle.setAttribute('aria-checked', on ? 'true' : 'false');
   }
 
+  function setNeutralModeToggle(on, pending) {
+    var toggle = $('hfNeutralModeToggle');
+    if (!toggle) return;
+    toggle.classList.toggle('active', !!on);
+    toggle.classList.toggle('pending', !!pending);
+    toggle.setAttribute('aria-checked', on ? 'true' : 'false');
+  }
+
+  function wireNeutralModeToggle() {
+    var toggle = $('hfNeutralModeToggle');
+    if (!toggle) return;
+
+    function doToggle() {
+      if (neutralModeTogglePending) return;
+      var currentlyOn = toggle.classList.contains('active');
+      var next = !currentlyOn;
+      neutralModeTogglePending = true;
+      setNeutralModeToggle(next, true);
+      addLog('Neutral Mode -> ' + (next ? 'ON' : 'OFF'));
+
+      apiFetch('/api/hft/config', {
+        method: 'POST',
+        body: JSON.stringify({ neutral_mode: next }),
+      })
+        .then(function (r) { return r.json(); })
+        .then(function (d) {
+          neutralModeTogglePending = false;
+          if (d.status !== 'ok') {
+            setNeutralModeToggle(currentlyOn, false);
+            addLog('Neutral Mode FAILED: ' + (d.message || 'unknown'));
+            return;
+          }
+          var on = !!(d.control && d.control.neutral_mode);
+          setNeutralModeToggle(on, false);
+          pollStatus();
+        })
+        .catch(function (err) {
+          neutralModeTogglePending = false;
+          setNeutralModeToggle(currentlyOn, false);
+          addLog('Neutral Mode error: ' + err.message);
+        });
+    }
+
+    toggle.addEventListener('click', doToggle);
+    toggle.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ') {
+        e.preventDefault();
+        doToggle();
+      }
+    });
+  }
+
   function wireToggle() {
     var toggle = $('hfAutoTradeToggle');
     if (!toggle) return;
@@ -512,13 +641,45 @@
       .catch(function () {});
   }
 
+  function syncLiveMomentumFromGlobals() {
+    var sym = hfCurrentSymbol();
+    try {
+      var momBag = window.__liveMomentum1mAvgBySymbol;
+      var accelBag = window.__liveMomentumAccelerationBySymbol;
+      if (momBag && momBag[sym] != null && !isNaN(Number(momBag[sym]))) {
+        liveMom1m = Number(momBag[sym]);
+      }
+      if (accelBag && accelBag[sym] != null && !isNaN(Number(accelBag[sym]))) {
+        liveMomAccel = Number(accelBag[sym]);
+      }
+    } catch (e) {}
+  }
+
+  function wireLiveSymbolSpot() {
+    window.addEventListener('rec:live-symbol-spot', function (ev) {
+      syncLiveMomentumFromSpotDetail(ev && ev.detail);
+      var momEl = $('hfGateMomVal');
+      if (momEl && !neutralModeTogglePending) {
+        var display = formatMomGateDisplay(liveMom1m, liveMomAccel);
+        if (display != null) momEl.textContent = display;
+      }
+    });
+    if (window.lastLiveSymbolSpotMsg) {
+      syncLiveMomentumFromSpotDetail(window.lastLiveSymbolSpotMsg);
+    } else {
+      syncLiveMomentumFromGlobals();
+    }
+  }
+
   // ---- Init ----
   function init() {
     addLog('HF Trade Monitor initialized');
     wireEngineToggle();
     wireToggle();
+    wireNeutralModeToggle();
     wireConfigSave();
     wireWebSocket();
+    wireLiveSymbolSpot();
     pollStatus();
     pollTimer = setInterval(pollStatus, POLL_INTERVAL_MS);
   }

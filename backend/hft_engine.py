@@ -1,9 +1,11 @@
 """
-HFT Engine -- minimal, low-latency market-making daemon.
+HFT Engine v2 — paired post-only entry; surviving leg is the close.
 
-Standalone process that subscribes to Redis hot-state updates, evaluates
-gates, and fires batch orders directly to the Kalshi API.  No PG in the
-hot path; no trade_executor dependency.
+Flat: ACQUISITION places bid+ask at touch (ENTRY). One fill keeps the other leg
+as the resting close, pinned to best bid/ask. Exchange cancel on a leg re-joins
+that side at touch. Ripcord (>=3c loss): cancel all resting, market flatten, flat.
+
+Gates: TTC > 120s, buffer % > 0.025%. No momentum.
 
 Run:  python -m backend.hft_engine
 """
@@ -32,21 +34,13 @@ from dotenv import dotenv_values
 
 from backend.core.port_config import get_port
 from backend.core.live_state_cache import (
-    KEY_PREFIX,
     UPDATED_CHANNEL,
     get_strike_ladder,
     redis_client_optional,
 )
 from backend.core.trade_monitor_orderbook_keys import trade_monitor_orderbook_redis_key
 from backend.core.kalshi_event_market_readiness import market_row_has_usable_strike_inputs
-from backend.core.live_state_kalshi_portfolio import (
-    list_positions,
-    list_orders,
-    tenant_kalshi_positions_key,
-    tenant_kalshi_orders_key,
-)
-from backend.core.strike_pipeline_health import floor_strike_vs_spot_check
-from backend.strike_table_generator import strikes_equivalent
+from backend.core.live_state_kalshi_portfolio import tenant_kalshi_positions_key
 from backend.util.paths import get_kalshi_credentials_dir
 
 EST = ZoneInfo("America/New_York")
@@ -59,9 +53,27 @@ KALSHI_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 HFT_CONTROL_KEY = "rec_io:hft:control"
 HFT_STATE_KEY = "rec_io:hft:state"
 
+MIN_TTC_SEC = 120.0
+MIN_BUFFER_PCT = float(os.getenv("HFT_MIN_BUFFER_PCT", "0.025"))
+MAX_LOSS_CENTS = Decimal(os.getenv("HFT_MAX_LOSS_CENTS", "0.03"))
+MIN_SUBMIT_PRICE = Decimal("0.10")
+MAX_SUBMIT_PRICE = Decimal("0.999")
+AMEND_INTERVAL_SEC = float(os.getenv("HFT_ENTRY_AMEND_INTERVAL_SEC", "0.2"))
+
+
+def _clamp_kalshi_submit_price(price: Decimal) -> Decimal:
+    p = price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
+    if p < MIN_SUBMIT_PRICE:
+        return MIN_SUBMIT_PRICE
+    if p > MAX_SUBMIT_PRICE:
+        return MAX_SUBMIT_PRICE
+    return p
+
+
 # ---------------------------------------------------------------------------
 # Logging
 # ---------------------------------------------------------------------------
+
 
 def _configure_logging() -> logging.Logger:
     lgr = logging.getLogger("hft_engine")
@@ -74,7 +86,6 @@ def _configure_logging() -> logging.Logger:
             return dt.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3]
 
     fmt = _ESTFormatter(fmt="%(asctime)s %(levelname)s [hft] %(message)s")
-
     stdout_h = logging.StreamHandler(sys.stdout)
     stdout_h.setFormatter(fmt)
     lgr.addHandler(stdout_h)
@@ -82,12 +93,12 @@ def _configure_logging() -> logging.Logger:
     log_dir = Path(__file__).resolve().parent.parent / "logs"
     log_dir.mkdir(exist_ok=True)
     from logging.handlers import RotatingFileHandler
+
     file_h = RotatingFileHandler(
         log_dir / "hft_engine.log", maxBytes=10 * 1024 * 1024, backupCount=5,
     )
     file_h.setFormatter(fmt)
     lgr.addHandler(file_h)
-
     lgr.setLevel(logging.INFO)
     return lgr
 
@@ -95,10 +106,11 @@ def _configure_logging() -> logging.Logger:
 log = _configure_logging()
 
 # ---------------------------------------------------------------------------
-# Kalshi API auth (same pattern as trade_executor)
+# Kalshi API
 # ---------------------------------------------------------------------------
 
 _cached_credentials: Optional[Dict[str, Any]] = None
+_cached_private_key = None
 
 
 def _load_credentials() -> Dict[str, Any]:
@@ -114,9 +126,6 @@ def _load_credentials() -> Dict[str, Any]:
     return _cached_credentials
 
 
-_cached_private_key = None
-
-
 def _get_private_key():
     global _cached_private_key
     if _cached_private_key:
@@ -124,7 +133,7 @@ def _get_private_key():
     creds = _load_credentials()
     with open(creds["KEY_PATH"], "rb") as f:
         _cached_private_key = serialization.load_pem_private_key(
-            f.read(), password=None, backend=default_backend()
+            f.read(), password=None, backend=default_backend(),
         )
     return _cached_private_key
 
@@ -153,79 +162,23 @@ def _auth_headers(method: str, path: str) -> Dict[str, str]:
     }
 
 
-# ---------------------------------------------------------------------------
-# Kalshi API calls
-# ---------------------------------------------------------------------------
-
 def kalshi_batch_create_orders(orders: List[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
     path = "/portfolio/events/orders/batched"
     url = f"{KALSHI_BASE_URL}{path}"
     headers = _auth_headers("POST", path)
-    body = {"orders": orders}
     t0 = time.monotonic()
     try:
-        resp = requests.post(url, headers=headers, json=body, timeout=5)
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        log.info("BATCH_ORDER sent=%d status=%d elapsed=%.1fms", len(orders), resp.status_code, elapsed_ms)
-        log.info("BATCH_ORDER raw_response: %s", resp.text[:2000])
-        if resp.status_code in (200, 201):
-            data = resp.json()
-            for i, o in enumerate(data.get("orders", [])):
-                req_side = orders[i].get("side", "?") if i < len(orders) else "?"
-                req_price = orders[i].get("price", "?") if i < len(orders) else "?"
-                log.info(
-                    "BATCH_ORDER_DETAIL [%d] side=%s req_price=%s order_id=%s status=%s "
-                    "fill_count=%s remaining_count=%s error=%s",
-                    i, req_side, req_price,
-                    o.get("order_id", "NONE"),
-                    o.get("status", "NOT_IN_RESPONSE"),
-                    o.get("fill_count", "?"),
-                    o.get("remaining_count", "?"),
-                    o.get("error", "none"),
-                )
-            return data
-        return None
-    except Exception as exc:
-        log.error("BATCH_ORDER request failed: %s", exc)
-        return None
-
-
-def kalshi_amend_order(
-    order_id: str,
-    *,
-    ticker: str,
-    side: str,
-    price: str,
-    count: str,
-    subaccount: int,
-) -> Optional[Dict[str, Any]]:
-    """Amend a resting order via V2: POST /portfolio/events/orders/{order_id}/amend."""
-    path = f"/portfolio/events/orders/{order_id}/amend"
-    url = f"{KALSHI_BASE_URL}{path}?subaccount={subaccount}"
-    headers = _auth_headers("POST", path)
-    try:
-        price = f"{_clamp_kalshi_submit_price(Decimal(str(price))):.4f}"
-    except Exception:
-        return None
-    body = {
-        "ticker": ticker,
-        "side": side,
-        "price": price,
-        "count": count,
-    }
-    t0 = time.monotonic()
-    try:
-        resp = requests.post(url, headers=headers, json=body, timeout=5)
-        elapsed_ms = (time.monotonic() - t0) * 1000
+        resp = requests.post(url, headers=headers, json={"orders": orders}, timeout=5)
         log.info(
-            "AMEND order_id=%s side=%s price=%s count=%s status=%d elapsed=%.1fms body=%s",
-            order_id, side, price, count, resp.status_code, elapsed_ms, resp.text[:1500],
+            "BATCH_ORDER n=%d status=%d elapsed=%.1fms",
+            len(orders), resp.status_code, (time.monotonic() - t0) * 1000,
         )
-        if resp.status_code == 200:
+        if resp.status_code in (200, 201):
             return resp.json()
+        log.info("BATCH_ORDER body=%s", resp.text[:1500])
         return None
     except Exception as exc:
-        log.error("AMEND failed order_id=%s: %s", order_id, exc)
+        log.error("BATCH_ORDER failed: %s", exc)
         return None
 
 
@@ -236,16 +189,14 @@ def kalshi_place_limit_order(
     price: str,
     count: str,
     subaccount: int,
-    post_only: bool = False,
+    post_only: bool = True,
 ) -> Optional[Dict[str, Any]]:
-    """Place a single GTC limit order via V2: POST /portfolio/events/orders."""
     try:
         price = f"{_clamp_kalshi_submit_price(Decimal(str(price))):.4f}"
     except Exception:
         return None
     path = "/portfolio/events/orders"
     url = f"{KALSHI_BASE_URL}{path}"
-    headers = _auth_headers("POST", path)
     body: Dict[str, Any] = {
         "ticker": ticker,
         "client_order_id": str(uuid.uuid4()),
@@ -259,193 +210,157 @@ def kalshi_place_limit_order(
     }
     if post_only:
         body["post_only"] = True
-    t0 = time.monotonic()
     try:
-        resp = requests.post(url, headers=headers, json=body, timeout=5)
-        elapsed_ms = (time.monotonic() - t0) * 1000
+        resp = requests.post(url, headers=_auth_headers("POST", path), json=body, timeout=5)
         log.info(
-            "REPLACE_ORDER side=%s price=%s count=%s status=%d elapsed=%.1fms body=%s",
-            side, price, count, resp.status_code, elapsed_ms, resp.text[:1500],
+            "PLACE %s %s @ %s status=%d body=%s",
+            side, count, price, resp.status_code, resp.text[:800],
         )
         if resp.status_code in (200, 201):
             return resp.json()
         return None
     except Exception as exc:
-        log.error("REPLACE_ORDER failed: %s", exc)
+        log.error("PLACE failed: %s", exc)
+        return None
+
+
+def kalshi_amend_order(
+    order_id: str,
+    *,
+    ticker: str,
+    side: str,
+    price: str,
+    count: str,
+    subaccount: int,
+) -> Optional[Dict[str, Any]]:
+    path = f"/portfolio/events/orders/{order_id}/amend"
+    url = f"{KALSHI_BASE_URL}{path}?subaccount={subaccount}"
+    try:
+        price = f"{_clamp_kalshi_submit_price(Decimal(str(price))):.4f}"
+    except Exception:
+        return None
+    body = {"ticker": ticker, "side": side, "price": price, "count": count}
+    try:
+        resp = requests.post(
+            url, headers=_auth_headers("POST", path), json=body, timeout=5,
+        )
+        log.info("AMEND %s %s @ %s status=%d", order_id, side, price, resp.status_code)
+        if resp.status_code == 200:
+            return resp.json()
+        log.info("AMEND body=%s", resp.text[:800])
+        return None
+    except Exception as exc:
+        log.error("AMEND failed: %s", exc)
         return None
 
 
 def kalshi_market_order(
-    *,
-    ticker: str,
-    side: str,
-    count: str,
-    subaccount: int,
+    *, ticker: str, side: str, count: str, subaccount: int,
 ) -> Optional[Dict[str, Any]]:
-    """Place an aggressive FoK order via V2 to close a position immediately."""
     path = "/portfolio/events/orders"
     url = f"{KALSHI_BASE_URL}{path}"
-    headers = _auth_headers("POST", path)
     body = {
         "ticker": ticker,
         "client_order_id": str(uuid.uuid4()),
         "side": side,
         "count": count,
         "price": (
-            f"{MAX_SUBMIT_PRICE:.4f}"
-            if side == "bid"
-            else f"{MIN_SUBMIT_PRICE:.4f}"
+            f"{MAX_SUBMIT_PRICE:.4f}" if side == "bid" else f"{MIN_SUBMIT_PRICE:.4f}"
         ),
         "time_in_force": "fill_or_kill",
         "self_trade_prevention_type": "maker",
         "cancel_order_on_pause": True,
         "subaccount": subaccount,
     }
-    t0 = time.monotonic()
     try:
-        resp = requests.post(url, headers=headers, json=body, timeout=5)
-        elapsed_ms = (time.monotonic() - t0) * 1000
-        log.info(
-            "RIPCORD_MARKET side=%s count=%s status=%d elapsed=%.1fms body=%s",
-            side, count, resp.status_code, elapsed_ms, resp.text[:1500],
+        resp = requests.post(
+            url, headers=_auth_headers("POST", path), json=body, timeout=5,
         )
+        log.info("RIPCORD %s %s status=%d body=%s", side, count, resp.status_code, resp.text[:800])
         if resp.status_code in (200, 201):
             return resp.json()
         return None
     except Exception as exc:
-        log.error("RIPCORD_MARKET failed: %s", exc)
+        log.error("RIPCORD failed: %s", exc)
         return None
 
 
 def kalshi_cancel_order(order_id: str, *, subaccount: int = 2) -> bool:
     path = f"/portfolio/events/orders/{order_id}"
     url = f"{KALSHI_BASE_URL}{path}?subaccount={subaccount}"
-    headers = _auth_headers("DELETE", path)
     try:
-        resp = requests.delete(url, headers=headers, timeout=5)
-        log.info(
-            "CANCEL order_id=%s status=%d body=%s",
-            order_id, resp.status_code, resp.text[:500],
-        )
+        resp = requests.delete(url, headers=_auth_headers("DELETE", path), timeout=5)
+        log.info("CANCEL %s status=%d", order_id, resp.status_code)
         return resp.status_code in (200, 204)
     except Exception as exc:
-        log.error("CANCEL failed order_id=%s: %s", order_id, exc)
+        log.error("CANCEL %s failed: %s", order_id, exc)
         return False
 
 
 # ---------------------------------------------------------------------------
-# State machine
+# State machine (v2)
 # ---------------------------------------------------------------------------
 
+
 class HFTState(str, Enum):
-    IDLE = "IDLE"
-    QUOTING = "QUOTING"
-    CLOSING = "CLOSING"
-
-# Per-side pause after post-only cross/reject (entry/quote re-place only; CLOSING exempt).
-POST_ONLY_BACKOFF_SEC = float(os.getenv("HFT_POST_ONLY_BACKOFF_SEC", "0.15"))
-# Minimum gap between directional entry amends in QUOTING (CLOSING/stop-loss exempt).
-HFT_ENTRY_AMEND_INTERVAL_SEC = float(os.getenv("HFT_ENTRY_AMEND_INTERVAL_SEC", "0.2"))
-# buffer_pct is in percent points (strike table): 0.025 = 0.025%, 2.5 = 2.5%.
-MIN_BUFFER_PCT = float(os.getenv("HFT_MIN_BUFFER_PCT", "0.025"))
-MAX_BUFFER_PCT_FOR_ENTRY = float(os.getenv("HFT_MAX_BUFFER_PCT_FOR_ENTRY", "6.0"))
-ROLLOVER_SETTLE_SEC = float(os.getenv("HFT_ROLLOVER_SETTLE_SEC", "60"))
-# First ~3 min of a 15m window: require real buffer buildup, not stale prior-cycle floor_strike.
-ROLLOVER_FRESH_TTC_SEC = 750.0
-ROLLOVER_FRESH_MIN_BUFFER_PCT = float(os.getenv("HFT_ROLLOVER_FRESH_MIN_BUFFER_PCT", "0.025"))
-LADDER_BUFFER_MAX_DELTA_PCT = 0.5  # ladder vs spot/floor compute (percent points)
-MIN_ENTRY_PRICE = Decimal("0.02")  # 2c — no entry below
-MAX_ENTRY_PRICE = Decimal("0.98")  # 98c — no entry above
-# Kalshi V2 resting/aggressive limits (10c–99.9c).
-MIN_SUBMIT_PRICE = Decimal("0.10")
-MAX_SUBMIT_PRICE = Decimal("0.999")
-
-
-def _clamp_kalshi_submit_price(price: Decimal) -> Decimal:
-    """Hard floor/cap for any price sent to Kalshi."""
-    p = price.quantize(Decimal("0.0001"), rounding=ROUND_HALF_UP)
-    if p < MIN_SUBMIT_PRICE:
-        return MIN_SUBMIT_PRICE
-    if p > MAX_SUBMIT_PRICE:
-        return MAX_SUBMIT_PRICE
-    return p
+    ACQUISITION = "ACQUISITION"  # flat, no entry legs resting
+    ENTRY = "ENTRY"              # flat, bid+ask resting for fill
+    CLOSING = "CLOSING"          # position open
 
 
 class HFTEngine:
-    """Single-ticker HFT state machine with flight control."""
-
-    DEFAULT_MAX_LOSS_CENTS = Decimal("0.03")
+    """Minimal HFT: dual post-only entry at touch, close at touch, 3c ripcord."""
 
     def __init__(self, *, user_no: str = "0001", symbol: str = "BTC", market: str = "15m"):
         self.user_no = user_no
         self.symbol = symbol.upper()
         self.market = market
-        self.state = HFTState.IDLE
-        self.last_eval_mono: float = 0.0
-        self.last_api_mono: float = 0.0
-        self._post_only_backoff_until: Dict[str, float] = {}
-        self._last_entry_amend_mono: float = 0.0
-        self._startup_done: bool = False
+        self.state = HFTState.ACQUISITION
+        self.last_eval_mono = 0.0
+        self._last_amend_bid_mono = 0.0
+        self._last_amend_ask_mono = 0.0
 
-        # Gate snapshot (updated each eval)
+        self.active_ticker: Optional[str] = None
         self.gate_ttc: Optional[float] = None
         self.gate_buffer_pct: Optional[float] = None
-        self.gate_mom_1m: Optional[float] = None
         self.gate_best_bid: Optional[str] = None
         self.gate_best_ask: Optional[str] = None
-        self.active_ticker: Optional[str] = None
+        self.gates_pass = False
+        self.gate_block_reason: Optional[str] = None
 
-        # Own-order tracking (set from API responses, never from hot state)
         self.my_bid_oid: Optional[str] = None
         self.my_ask_oid: Optional[str] = None
         self.submitted_bid_price: Optional[Decimal] = None
         self.submitted_ask_price: Optional[Decimal] = None
-        self.counter_oid: Optional[str] = None
 
-        # Trade mode for current cycle
-        self.trade_mode: Optional[str] = None   # "neutral" | "bullish" | "bearish"
-        self.target_spread: Optional[Decimal] = None
-        self.entry_order_price: Optional[Decimal] = None  # current price on entry order
-
-        # Stop-loss tracking
         self.entry_price: Optional[Decimal] = None
-        self.entry_side: Optional[str] = None  # "long" or "short"
-        self.last_amend_price: Optional[Decimal] = None
-        self.max_loss_cents: Decimal = self.DEFAULT_MAX_LOSS_CENTS
-        self.pending_cancel_oid: Optional[str] = None
-        self.awaiting_flat_after_counter: bool = False
-        self.gate_floor_strike: Optional[float] = None
-        self.gate_spot: Optional[float] = None
-        self._last_strike_gate_reason: Optional[str] = None
-        self._last_idle_skip_reason: Optional[str] = None
-        self._rollover_quiet_until_mono: float = 0.0
-        self._anchor_ticker: Optional[str] = None
-        self._anchor_floor_strike: Optional[float] = None
-        # Sides ("bid" / "ask") that must join the book after a post-only cross.
-        self._post_only_catch_up_sides: set[str] = set()
+        self.entry_side: Optional[str] = None  # "long" | "short"
 
-    # -- Redis control plane ------------------------------------------------
+        self.control_neutral_mode = False
+
+    # -- Control / state ----------------------------------------------------
 
     def _read_control(self, r) -> Dict[str, Any]:
+        defaults = {
+            "enabled": False,
+            "subaccount": 2,
+            "count": "1.00",
+            "neutral_mode": False,
+        }
         raw = r.get(HFT_CONTROL_KEY)
         if not raw:
-            return {"enabled": False, "subaccount": 2, "count": "1.00", "ticker_filter": ""}
+            return dict(defaults)
         try:
-            return json.loads(raw)
+            return {**defaults, **json.loads(raw)}
         except (json.JSONDecodeError, TypeError):
-            return {"enabled": False, "subaccount": 2, "count": "1.00", "ticker_filter": ""}
-
-    def _seeking_resting_close(self) -> bool:
-        """CLOSING with no resting counter (post-only cross / cancel / awaiting-flat lag)."""
-        return (
-            self.state == HFTState.CLOSING
-            and not self.counter_oid
-            and self.entry_side is not None
-        )
+            return dict(defaults)
 
     def _write_state(self, r) -> None:
-        seeking_close = self._seeking_resting_close()
-        close_side = self._close_side() if seeking_close else None
+        close_side = None
+        if self.entry_side == "long":
+            close_side = "ask"
+        elif self.entry_side == "short":
+            close_side = "bid"
         payload = {
             "state": self.state.value,
             "symbol": self.symbol,
@@ -458,22 +373,22 @@ class HFTEngine:
                 self.gate_buffer_pct is not None
                 and float(self.gate_buffer_pct) > MIN_BUFFER_PCT
             ),
-            "gate_mom_1m": self.gate_mom_1m,
+            "gate_mom_1m": None,
             "gate_best_bid": self.gate_best_bid,
             "gate_best_ask": self.gate_best_ask,
-            "gate_floor_strike": self.gate_floor_strike,
             "my_bid_oid": self.my_bid_oid,
             "my_ask_oid": self.my_ask_oid,
-            "counter_oid": self.counter_oid,
-            "trade_mode": self.trade_mode,
-            "target_spread": str(self.target_spread) if self.target_spread is not None else None,
-            "entry_price": str(self.entry_price) if self.entry_price is not None else None,
+            "counter_oid": self._close_oid(),
+            "trade_mode": "v2_simple",
+            "entry_price": str(self.entry_price) if self.entry_price else None,
             "entry_side": self.entry_side,
-            "max_loss_cents": str(self.max_loss_cents),
-            # Legacy UI key: short per-side backoff after post-only cross (not global API freeze).
-            "in_cooldown": self._any_post_only_backoff(),
-            "awaiting_flat_after_counter": self.awaiting_flat_after_counter,
-            "seeking_resting_close": seeking_close,
+            "gates_pass": self.gates_pass,
+            "gate_block_reason": self.gate_block_reason,
+            "neutral_mode": self.control_neutral_mode,
+            "in_cooldown": False,
+            "seeking_resting_close": (
+                self.state == HFTState.CLOSING and not self._close_oid()
+            ),
             "seeking_close_side": close_side,
             "updated_at": datetime.now(EST).isoformat(),
         }
@@ -482,16 +397,84 @@ class HFTEngine:
         except Exception:
             pass
 
-    # -- Data readers (Redis only) ------------------------------------------
+    def _clear_orders(self) -> None:
+        self.my_bid_oid = None
+        self.my_ask_oid = None
+        self.submitted_bid_price = None
+        self.submitted_ask_price = None
 
-    def _resolve_active_contract_from_market_cache(
+    def _close_oid(self) -> Optional[str]:
+        if self.entry_side == "long":
+            return self.my_ask_oid
+        if self.entry_side == "short":
+            return self.my_bid_oid
+        return None
+
+    def _close_side(self) -> Optional[str]:
+        if self.entry_side == "long":
+            return "ask"
+        if self.entry_side == "short":
+            return "bid"
+        return None
+
+    def _cancel_all_resting(self, subaccount: int) -> None:
+        seen: set[str] = set()
+        for oid in (self.my_bid_oid, self.my_ask_oid):
+            if oid and oid not in seen:
+                kalshi_cancel_order(oid, subaccount=subaccount)
+                seen.add(oid)
+        self._clear_orders()
+
+    def _cancel_oid_if_resting(
+        self, r, oid: Optional[str], subaccount: int,
+    ) -> None:
+        if not oid:
+            return
+        st = self._order_status(r, oid)
+        if st in (None, "resting"):
+            kalshi_cancel_order(oid, subaccount=subaccount)
+
+    @staticmethod
+    def _contract_limit(count: str) -> float:
+        try:
+            return max(0.0, float(count))
+        except (TypeError, ValueError):
+            return 1.0
+
+    def _position_over_limit(self, position: float, count: str) -> bool:
+        limit = self._contract_limit(count)
+        return abs(position) > limit + 0.001
+
+    def _force_cancel_oid(self, oid: Optional[str], subaccount: int) -> None:
+        if oid:
+            kalshi_cancel_order(oid, subaccount=subaccount)
+
+    def _enforce_no_entry_legs_when_positioned(
         self,
-    ) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
-        """Live Kalshi market row for the clock-current contract (floor_strike at rollover)."""
+        position: float,
+        subaccount: int,
+    ) -> None:
+        """Never leave entry-side resting orders open while positioned."""
+        if position > 0 and self.my_bid_oid:
+            log.warning(
+                "INVARIANT cancel entry bid (long pos) oid=%s", self.my_bid_oid,
+            )
+            self._force_cancel_oid(self.my_bid_oid, subaccount)
+            self.my_bid_oid = None
+            self.submitted_bid_price = None
+        elif position < 0 and self.my_ask_oid:
+            log.warning(
+                "INVARIANT cancel entry ask (short pos) oid=%s", self.my_ask_oid,
+            )
+            self._force_cancel_oid(self.my_ask_oid, subaccount)
+            self.my_ask_oid = None
+            self.submitted_ask_price = None
+
+    # -- Market data --------------------------------------------------------
+
+    def _resolve_active_contract(self) -> tuple[Optional[str], Optional[Dict[str, Any]]]:
         from backend.core import live_state_cache
-        from backend.core.market_watchdog.venues.kalshi.schedule import (
-            clock_current_15m_ticker,
-        )
+        from backend.core.market_watchdog.venues.kalshi.schedule import clock_current_15m_ticker
 
         mkt = live_state_cache.get_market_data("kalshi", self.market, self.symbol)
         if not mkt:
@@ -506,238 +489,61 @@ class HFTEngine:
                 if t == want and market_row_has_usable_strike_inputs(m):
                     return want, m
             return want, None
-
-        ready: list[tuple[str, Dict[str, Any]]] = []
         for m in markets:
             if not isinstance(m, dict):
                 continue
             t = str(m.get("ticker") or "").strip()
             if t and market_row_has_usable_strike_inputs(m):
-                ready.append((t, m))
-        if ready:
-            return ready[0]
+                return t, m
         return None, None
 
     @staticmethod
-    def _buffer_pct_from_floor_strike(
-        floor_strike: float, spot: Optional[float],
-    ) -> Optional[float]:
-        """Buffer % from Kalshi floor_strike vs live symbol spot (same formula as strike table)."""
+    def _buffer_pct(floor_strike: float, spot: Optional[float]) -> Optional[float]:
         if spot is None or float(spot) <= 0:
             return None
-        try:
-            fs = float(floor_strike)
-        except (TypeError, ValueError):
-            return None
-        return abs(fs - float(spot)) / float(spot) * 100.0
-
-    def _ladder_row_for_ticker(
-        self, rows: List[Dict[str, Any]], ticker: str,
-    ) -> Optional[Dict[str, Any]]:
-        t = str(ticker or "").strip()
-        if not t:
-            return None
-        for row in rows:
-            if str(row.get("ticker") or "").strip() == t:
-                return row
-        return None
+        return abs(float(floor_strike) - float(spot)) / float(spot) * 100.0
 
     def _read_strike_data(self) -> Optional[Dict[str, Any]]:
         env = get_strike_ladder("kalshi", self.market, self.symbol)
         if not env:
             return None
         data = env.get("data") if isinstance(env, dict) else None
-        if not data or not isinstance(data, dict):
+        if not data:
             return None
         meta = data.get("meta") or {}
-        rows = data.get("rows") or []
-        if not rows and isinstance(meta.get("strikes"), list):
-            rows = [r for r in meta["strikes"] if isinstance(r, dict)]
-
         ttc = meta.get("ttc") or meta.get("ttc_seconds")
         if ttc is None:
             return None
-
-        contract_ticker, market_row = self._resolve_active_contract_from_market_cache()
-        if not contract_ticker or not isinstance(market_row, dict):
+        ticker, market_row = self._resolve_active_contract()
+        if not ticker or not isinstance(market_row, dict):
             return None
-        if not market_row_has_usable_strike_inputs(market_row):
-            return None
-        if str(market_row.get("ticker") or "").strip() != contract_ticker:
-            return None
-
         try:
-            fs_f = float(market_row["floor_strike"])
+            fs = float(market_row["floor_strike"])
         except (TypeError, ValueError):
             return None
-
-        current_price = meta.get("current_price")
         try:
-            cp_f = float(current_price) if current_price is not None else None
+            spot = float(meta.get("current_price")) if meta.get("current_price") else None
         except (TypeError, ValueError):
-            cp_f = None
+            spot = None
+        buf = self._buffer_pct(fs, spot)
+        return {"ttc": float(ttc), "buffer_pct": buf, "ticker": ticker}
 
-        buf_f = self._buffer_pct_from_floor_strike(fs_f, cp_f)
-        ladder_row = self._ladder_row_for_ticker(rows, contract_ticker)
-        ladder_buffer_pct = None
-        if isinstance(ladder_row, dict) and ladder_row.get("buffer_pct") is not None:
-            try:
-                ladder_buffer_pct = float(ladder_row["buffer_pct"])
-            except (TypeError, ValueError):
-                ladder_buffer_pct = None
-
-        return {
-            "ttc": float(ttc),
-            "buffer_pct": buf_f,
-            "ladder_buffer_pct": ladder_buffer_pct,
-            "ticker": contract_ticker,
-            "floor_strike": fs_f,
-            "current_price": cp_f,
-            "market_row": market_row,
-            "ladder_row": ladder_row,
-        }
-
-    def _strike_anchor_ready(self, strike_data: Dict[str, Any]) -> tuple[bool, str]:
-        """
-        Block trading until the active contract has Kalshi floor_strike + quotes and a
-        buffer % computed from that floor_strike vs live spot (not stale ladder fields).
-        """
-        if time.monotonic() < self._rollover_quiet_until_mono:
-            return False, "rollover_settle"
-
-        ticker = str(strike_data.get("ticker") or "").strip()
-        market_row = strike_data.get("market_row")
-        if not ticker:
-            return False, "no_active_ticker"
-        if not isinstance(market_row, dict):
-            return False, "market_cache_pending"
-        if str(market_row.get("ticker") or "").strip() != ticker:
-            return False, "market_ticker_mismatch"
-        if not market_row_has_usable_strike_inputs(market_row):
-            return False, "floor_strike_or_quotes_pending"
-
-        floor_strike = strike_data.get("floor_strike")
-        if floor_strike is None:
-            return False, "no_floor_strike"
-        try:
-            fs = float(floor_strike)
-        except (TypeError, ValueError):
-            return False, "no_floor_strike"
-        if fs <= 0:
-            return False, "invalid_floor_strike"
-
-        spot = strike_data.get("current_price")
-        spot_f = None
-        if spot is not None:
-            try:
-                spot_f = float(spot)
-            except (TypeError, ValueError):
-                spot_f = None
-        if spot_f is None or spot_f <= 0:
-            return False, "no_spot_for_buffer"
-
-        buf_f = self._buffer_pct_from_floor_strike(fs, spot_f)
-        if buf_f is None or buf_f <= MIN_BUFFER_PCT:
-            return False, f"buffer_pct_not_ready_{buf_f or 0:.3f}_lt_{MIN_BUFFER_PCT}"
-        if buf_f > MAX_BUFFER_PCT_FOR_ENTRY:
-            return False, (
-                f"buffer_pct_stale_anchor_{buf_f:.3f}_gt_{MAX_BUFFER_PCT_FOR_ENTRY}"
-            )
-
-        ttc = strike_data.get("ttc")
-        try:
-            ttc_f = float(ttc) if ttc is not None else None
-        except (TypeError, ValueError):
-            ttc_f = None
-        if (
-            self.market == "15m"
-            and ttc_f is not None
-            and ttc_f > ROLLOVER_FRESH_TTC_SEC
-            and buf_f < ROLLOVER_FRESH_MIN_BUFFER_PCT
-        ):
-            return False, "rollover_fresh_contract_low_buffer"
-
-        ok, reason, _drift = floor_strike_vs_spot_check(fs, spot_f)
-        if not ok:
-            return False, reason
-
-        ladder_row = strike_data.get("ladder_row")
-        if not isinstance(ladder_row, dict):
-            return False, "ladder_row_pending_for_ticker"
-        ladder_strike = ladder_row.get("strike")
-        try:
-            ls = float(ladder_strike) if ladder_strike is not None else None
-        except (TypeError, ValueError):
-            ls = None
-        if ls is None or not strikes_equivalent(self.symbol, ls, fs):
-            return False, "ladder_strike_not_aligned_with_floor"
-
-        if self._anchor_ticker != ticker:
-            self._anchor_ticker = ticker
-            self._anchor_floor_strike = fs
-        elif self._anchor_floor_strike is not None and abs(fs - self._anchor_floor_strike) > 0.01:
-            self._anchor_floor_strike = fs
-
-        ladder_buf = strike_data.get("ladder_buffer_pct")
-        try:
-            lb = float(ladder_buf) if ladder_buf is not None else None
-        except (TypeError, ValueError):
-            lb = None
-        if lb is None or lb <= MIN_BUFFER_PCT:
-            return False, "ladder_buffer_pct_not_ready"
-        if abs(lb - buf_f) > LADDER_BUFFER_MAX_DELTA_PCT:
-            return False, "ladder_buffer_mismatch"
-
-        return True, "ok"
-
-    def _log_strike_gate_block(self, reason: str, strike_data: Optional[Dict[str, Any]] = None) -> None:
-        if reason != self._last_strike_gate_reason:
-            self._last_strike_gate_reason = reason
-            if strike_data:
-                log.info(
-                    "HFT gates blocked: %s (ticker=%s floor=%s spot=%s buf=%.3f%% ttc=%s)",
-                    reason,
-                    strike_data.get("ticker"),
-                    strike_data.get("floor_strike"),
-                    strike_data.get("current_price"),
-                    float(strike_data.get("buffer_pct") or 0),
-                    strike_data.get("ttc"),
-                )
-            else:
-                log.info("HFT gates blocked: %s", reason)
-
-    def _log_idle_skip(self, reason_key: str, msg: str, *args) -> None:
-        """Log an IDLE entry skip once per stable reason_key (not per bid/ask tick)."""
-        if reason_key == self._last_idle_skip_reason:
-            return
-        self._last_idle_skip_reason = reason_key
-        log.info(msg, *args)
-
-    def _clear_idle_skip_log(self) -> None:
-        self._last_idle_skip_reason = None
-
-    def _read_orderbook(self, market_ticker: str) -> Optional[Dict[str, Any]]:
+    def _read_orderbook(self, ticker: str) -> Optional[Dict[str, Any]]:
         r = redis_client_optional()
         if not r:
             return None
-        raw = r.get(trade_monitor_orderbook_redis_key(market_ticker))
+        raw = r.get(trade_monitor_orderbook_redis_key(ticker))
         if not raw:
             return None
         try:
-            data = json.loads(raw)
+            return json.loads(raw)
         except (json.JSONDecodeError, TypeError):
             return None
-        if not isinstance(data, dict) or data.get("valid") is False:
-            return None
-        return data
 
-    def _best_bid_ask(self, ob: Dict[str, Any]) -> tuple[Optional[Decimal], Optional[Decimal]]:
-        """Extract best YES bid and best YES ask from the orderbook snapshot."""
-        yes_levels = ob.get("yes", {})
-        no_levels = ob.get("no", {})
-        if not yes_levels and not no_levels:
-            return None, None
-
+    @staticmethod
+    def _best_bid_ask(ob: Dict[str, Any]) -> tuple[Optional[Decimal], Optional[Decimal]]:
+        yes_levels = ob.get("yes") or {}
+        no_levels = ob.get("no") or {}
         best_bid = None
         for p_str in yes_levels:
             try:
@@ -746,37 +552,15 @@ class HFTEngine:
                     best_bid = p
             except Exception:
                 continue
-
         best_ask = None
         for p_str in no_levels:
             try:
-                complement = Decimal("1") - Decimal(p_str)
-                if complement > 0 and (best_ask is None or complement < best_ask):
-                    best_ask = complement
+                c = Decimal("1") - Decimal(p_str)
+                if c > 0 and (best_ask is None or c < best_ask):
+                    best_ask = c
             except Exception:
                 continue
-
         return best_bid, best_ask
-
-    def _read_momentum_1m(self) -> Optional[float]:
-        r = redis_client_optional()
-        if not r:
-            return None
-        sym_key = f"{KEY_PREFIX}:symbol:{self.symbol}"
-        raw = r.get(sym_key)
-        if not raw:
-            return None
-        try:
-            env = json.loads(raw)
-            data = env.get("data") if isinstance(env, dict) else None
-            if not data:
-                return None
-            val = data.get("momentum_1m_avg")
-            if val is None:
-                val = data.get("momentum_percentile")
-            return float(val) if val is not None else None
-        except Exception:
-            return None
 
     def _read_position(self, r, ticker: str, subaccount: int) -> float:
         key = tenant_kalshi_positions_key(self.user_no)
@@ -785,92 +569,37 @@ class HFTEngine:
             raw = r.hget(key, field)
             if not raw:
                 return 0.0
-            rec = json.loads(raw)
-            fp = rec.get("position_fp")
-            if fp is None:
-                return 0.0
-            return float(fp)
+            return float(json.loads(raw).get("position_fp") or 0)
         except Exception:
             return 0.0
 
-    def _read_resting_orders_for_ticker(self, r, ticker: str, subaccount: int) -> List[Dict[str, Any]]:
-        key = tenant_kalshi_orders_key(self.user_no)
-        try:
-            all_raw = r.hgetall(key) or {}
-        except Exception:
-            return []
-        resting = []
-        for _oid, blob in all_raw.items():
-            try:
-                rec = json.loads(blob)
-                if (
-                    rec.get("ticker") == ticker
-                    and rec.get("subaccount") == subaccount
-                    and rec.get("status") == "resting"
-                ):
-                    resting.append(rec)
-            except Exception:
-                continue
-        return resting
-
-    def _check_order_status(self, r, oid: str) -> Optional[str]:
-        """Single O(1) lookup: returns the order status string or None."""
-        if not oid:
+    def _order_status(self, r, oid: Optional[str]) -> Optional[str]:
+        if not oid or not r:
             return None
-        key = tenant_kalshi_orders_key(self.user_no)
+        from backend.core.live_state_kalshi_portfolio import tenant_kalshi_orders_key
         try:
-            blob = r.hget(key, oid)
-            if not blob:
+            raw = r.hget(tenant_kalshi_orders_key(self.user_no), oid)
+            if not raw:
                 return None
-            rec = json.loads(blob)
-            return rec.get("status")
+            return str(json.loads(raw).get("status") or "").lower() or None
         except Exception:
             return None
 
-    def _mark_api_action(self) -> None:
-        self.last_api_mono = time.monotonic()
+    @staticmethod
+    def _touch(side: str, best_bid: Decimal, best_ask: Decimal) -> Decimal:
+        raw = best_bid if side == "bid" else best_ask
+        return raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
 
-    def _set_post_only_backoff(self, side: str) -> None:
-        self._post_only_backoff_until[side] = (
-            time.monotonic() + POST_ONLY_BACKOFF_SEC
-        )
+    # -- Gates ----------------------------------------------------------------
 
-    def _side_in_post_only_backoff(self, side: str) -> bool:
-        until = self._post_only_backoff_until.get(side, 0.0)
-        now = time.monotonic()
-        if now < until:
-            return True
-        self._post_only_backoff_until.pop(side, None)
-        return False
-
-    def _any_post_only_backoff(self) -> bool:
-        now = time.monotonic()
-        self._post_only_backoff_until = {
-            side: until
-            for side, until in self._post_only_backoff_until.items()
-            if until > now
-        }
-        return bool(self._post_only_backoff_until)
-
-    # -- Gate evaluation ----------------------------------------------------
-
-    def _gates_pass(
-        self,
-        ttc: float,
-        buffer_pct: float,
-        mom_1m: Optional[float],
-        strike_data: Optional[Dict[str, Any]],
-    ) -> bool:
-        if ttc <= 120:
-            return False
-        if mom_1m is None:
-            return False
+    def _check_gates(self, strike_data: Optional[Dict[str, Any]]) -> bool:
+        self.gate_block_reason = None
         if not strike_data:
-            self._log_strike_gate_block("strike_ladder_pending")
+            self.gate_block_reason = "strike_pending"
             return False
-        anchor_ok, reason = self._strike_anchor_ready(strike_data)
-        if not anchor_ok:
-            self._log_strike_gate_block(reason, strike_data)
+        ttc = strike_data.get("ttc")
+        if ttc is None or float(ttc) <= MIN_TTC_SEC:
+            self.gate_block_reason = "ttc_below_120s"
             return False
         buf = strike_data.get("buffer_pct")
         try:
@@ -878,71 +607,97 @@ class HFTEngine:
         except (TypeError, ValueError):
             buf_f = None
         if buf_f is None or buf_f <= MIN_BUFFER_PCT:
+            self.gate_block_reason = "buffer_below_min"
             return False
         return True
 
-    # -- Order building -----------------------------------------------------
+    # -- Actions ------------------------------------------------------------
 
-    @staticmethod
-    def _momentum_spread(mom_1m: float) -> tuple[int, str]:
-        """Return (spread_cents, mode) based on 1m momentum band.
-
-        Modes:
-          "neutral"  -- symmetric bid/ask around best bid/ask (spread 1c)
-          "bullish"  -- anchor bid at best_bid, ask = bid + spread
-          "bearish"  -- anchor ask at best_ask, bid = ask - spread
-        """
-        abs_mom = abs(mom_1m)
-        if abs_mom <= 20:
-            return 1, "neutral"
-        if abs_mom <= 50:
-            spread = 2
-        elif abs_mom <= 90:
-            spread = 3
-        else:
-            spread = 4
-        return spread, ("bullish" if mom_1m > 0 else "bearish")
-
-    def _build_mm_batch(
-        self, ticker: str, best_bid: Decimal, best_ask: Decimal,
-        count: str, subaccount: int, mom_1m: float,
-    ) -> List[Dict[str, Any]]:
-        spread_cents, mode = self._momentum_spread(mom_1m)
-        spread = Decimal(spread_cents) / Decimal(100)
-
-        if mode == "neutral":
-            bid_price = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            ask_price = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        elif mode == "bullish":
-            bid_price = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            ask_price = (bid_price + spread).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        else:
-            ask_price = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            bid_price = (ask_price - spread).quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-        if bid_price <= 0 or bid_price >= Decimal("1"):
-            return []
-        if ask_price <= 0 or ask_price >= Decimal("1"):
-            return []
-        if bid_price >= ask_price:
-            return []
-        bid_price = _clamp_kalshi_submit_price(bid_price)
-        ask_price = _clamp_kalshi_submit_price(ask_price)
-        if bid_price >= ask_price:
-            return []
-        if not self._entry_price_allowed(bid_price) or not self._entry_price_allowed(ask_price):
-            self._log_idle_skip(
-                "mm_batch_entry_band",
-                "IDLE: skip mm batch, bid=%s ask=%s outside entry band [%.2f, %.2f]",
-                bid_price, ask_price, MIN_ENTRY_PRICE, MAX_ENTRY_PRICE,
-            )
-            return []
-
-        log.info(
-            "ORDER_PARAMS mode=%s mom=%.1f spread=%dc bid=%s ask=%s ticker=%s",
-            mode, mom_1m, spread_cents, bid_price, ask_price, ticker,
+    def _amend_if_misaligned(
+        self,
+        ticker: str,
+        *,
+        oid: str,
+        side: str,
+        tracked: Optional[Decimal],
+        best_bid: Decimal,
+        best_ask: Decimal,
+        count: str,
+        subaccount: int,
+        label: str,
+    ) -> bool:
+        """True if this tick performed an amend."""
+        touch = self._touch(side, best_bid, best_ask)
+        touch = _clamp_kalshi_submit_price(touch)
+        if tracked is not None:
+            if touch == tracked.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP):
+                return False
+        last_mono = (
+            self._last_amend_bid_mono if side == "bid" else self._last_amend_ask_mono
         )
+        if time.monotonic() - last_mono < AMEND_INTERVAL_SEC:
+            return False
+        result = kalshi_amend_order(
+            oid, ticker=ticker, side=side, price=f"{touch:.4f}",
+            count=count, subaccount=subaccount,
+        )
+        if result is None:
+            return False
+        now = time.monotonic()
+        if side == "bid":
+            self._last_amend_bid_mono = now
+        else:
+            self._last_amend_ask_mono = now
+        log.info("%s amend %s -> %s", label, tracked, touch)
+        if side == "bid":
+            self.submitted_bid_price = touch
+        else:
+            self.submitted_ask_price = touch
+        return True
 
+    def _rejoin_leg(
+        self,
+        ticker: str,
+        side: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        count: str,
+        subaccount: int,
+    ) -> bool:
+        """Place post-only at touch after exchange canceled this leg."""
+        touch = _clamp_kalshi_submit_price(self._touch(side, best_bid, best_ask))
+        result = kalshi_place_limit_order(
+            ticker=ticker, side=side, price=f"{touch:.4f}",
+            count=count, subaccount=subaccount, post_only=True,
+        )
+        if not result or float(result.get("remaining_count", "0")) < 0.001:
+            log.info("REJOIN %s did not rest @ %s", side, touch)
+            return False
+        oid = result.get("order_id")
+        if side == "bid":
+            self.my_bid_oid = oid
+            self.submitted_bid_price = touch
+        else:
+            self.my_ask_oid = oid
+            self.submitted_ask_price = touch
+        log.info("REJOIN %s oid=%s @ %s", side, oid, touch)
+        return True
+
+    def _place_entry_pair(
+        self,
+        ticker: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        count: str,
+        subaccount: int,
+    ) -> bool:
+        bid_p = _clamp_kalshi_submit_price(
+            best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        ask_p = _clamp_kalshi_submit_price(
+            best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP))
+        if bid_p >= ask_p:
+            log.info("ENTRY skip: bid %s >= ask %s", bid_p, ask_p)
+            return False
         base = {
             "ticker": ticker,
             "count": count,
@@ -952,431 +707,259 @@ class HFTEngine:
             "cancel_order_on_pause": True,
             "subaccount": subaccount,
         }
-        bid_leg = {
-            **base,
-            "client_order_id": str(uuid.uuid4()),
-            "side": "bid",
-            "price": f"{bid_price:.4f}",
-        }
-        ask_leg = {
-            **base,
-            "client_order_id": str(uuid.uuid4()),
-            "side": "ask",
-            "price": f"{ask_price:.4f}",
-        }
-        return [bid_leg, ask_leg]
-
-    def _clear_all_order_state(self) -> None:
-        self.my_bid_oid = None
-        self.my_ask_oid = None
-        self.submitted_bid_price = None
-        self.submitted_ask_price = None
-        self.counter_oid = None
-        self.trade_mode = None
-        self.target_spread = None
-        self.entry_order_price = None
-        self.entry_price = None
-        self.entry_side = None
-        self.last_amend_price = None
-        self.pending_cancel_oid = None
-        self.awaiting_flat_after_counter = False
-        self._post_only_catch_up_sides.clear()
-        self._post_only_backoff_until.clear()
-        self._last_entry_amend_mono = 0.0
-
-    @staticmethod
-    def _max_contracts(count: str) -> float:
-        try:
-            return float(count)
-        except (TypeError, ValueError):
-            return 1.0
-
-    @staticmethod
-    def _entry_price_allowed(price: Decimal) -> bool:
-        return MIN_ENTRY_PRICE <= price <= MAX_ENTRY_PRICE
-
-    def _book_price_for_side(
-        self, side: str, best_bid: Decimal, best_ask: Decimal,
-    ) -> Optional[Decimal]:
-        raw = best_bid if side == "bid" else best_ask
-        price = raw.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if price <= 0 or price >= Decimal("1"):
-            return None
-        return price
-
-    def _limit_price_for_order(
-        self,
-        side: str,
-        best_bid: Decimal,
-        best_ask: Decimal,
-        target_price: Decimal,
-    ) -> Optional[Decimal]:
-        if side in self._post_only_catch_up_sides:
-            return self._book_price_for_side(side, best_bid, best_ask)
-        return target_price
-
-    def _mark_post_only_cross(
-        self,
-        side: str,
-        attempted: Decimal,
-        best_bid: Decimal,
-        best_ask: Decimal,
-        *,
-        apply_backoff: bool = True,
-    ) -> None:
-        self._post_only_catch_up_sides.add(side)
-        if apply_backoff:
-            self._set_post_only_backoff(side)
+        orders = [
+            {**base, "client_order_id": str(uuid.uuid4()), "side": "bid", "price": f"{bid_p:.4f}"},
+            {**base, "client_order_id": str(uuid.uuid4()), "side": "ask", "price": f"{ask_p:.4f}"},
+        ]
+        result = kalshi_batch_create_orders(orders)
+        if not result or not isinstance(result.get("orders"), list):
+            return False
+        resp = result["orders"]
+        bid_ok = len(resp) > 0 and not resp[0].get("error")
+        ask_ok = len(resp) > 1 and not resp[1].get("error")
+        if bid_ok:
+            self.my_bid_oid = resp[0].get("order_id")
+            self.submitted_bid_price = bid_p
+        if ask_ok:
+            self.my_ask_oid = resp[1].get("order_id")
+            self.submitted_ask_price = ask_p
+        if not self.my_bid_oid and not self.my_ask_oid:
+            return False
+        self.state = HFTState.ENTRY
         log.info(
-            "Post-only cross on %s @ %s -- next attempt joins book (bid=%s ask=%s)"
-            "%s",
-            side,
-            attempted,
-            best_bid,
-            best_ask,
-            f" backoff={POST_ONLY_BACKOFF_SEC:.2f}s" if apply_backoff else "",
+            "ACQUISITION -> ENTRY bid_oid=%s ask_oid=%s bid=%s ask=%s",
+            self.my_bid_oid, self.my_ask_oid, bid_p, ask_p,
         )
-
-    def _effective_submit_price(
-        self,
-        target: Decimal,
-        side: str,
-        best_bid: Decimal,
-        best_ask: Decimal,
-    ) -> Optional[Decimal]:
-        """Map strategy target to a Kalshi-acceptable limit (10c–99.9c)."""
-        p = target.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if p <= 0 or p >= Decimal("1"):
-            return None
-        if p < MIN_SUBMIT_PRICE:
-            touch = self._book_price_for_side(side, best_bid, best_ask)
-            if touch is not None and MIN_SUBMIT_PRICE <= touch <= MAX_SUBMIT_PRICE:
-                log.info(
-                    "Submit price %s below floor %s — using book touch %s (%s)",
-                    p, MIN_SUBMIT_PRICE, touch, side,
-                )
-                p = touch
-            else:
-                log.info(
-                    "Submit price %s below floor %s — clamping to floor",
-                    p, MIN_SUBMIT_PRICE,
-                )
-                p = MIN_SUBMIT_PRICE
-        elif p > MAX_SUBMIT_PRICE:
-            touch = self._book_price_for_side(side, best_bid, best_ask)
-            if touch is not None and MIN_SUBMIT_PRICE <= touch <= MAX_SUBMIT_PRICE:
-                log.info(
-                    "Submit price %s above cap %s — using book touch %s (%s)",
-                    p, MAX_SUBMIT_PRICE, touch, side,
-                )
-                p = touch
-            else:
-                log.info(
-                    "Submit price %s above cap %s — clamping to cap",
-                    p, MAX_SUBMIT_PRICE,
-                )
-                p = MAX_SUBMIT_PRICE
-        return p
-
-    def _place_post_only_at_price(
-        self,
-        *,
-        ticker: str,
-        side: str,
-        price: Decimal,
-        count: str,
-        subaccount: int,
-        best_bid: Decimal,
-        best_ask: Decimal,
-        label: str,
-        exempt_post_only_backoff: bool = False,
-    ) -> Optional[str]:
-        """Place a post-only limit; return order_id when resting."""
-        if not exempt_post_only_backoff and self._side_in_post_only_backoff(side):
-            log.info(
-                "%s side=%s skipped: post-only backoff %.2fs remaining",
-                label,
-                side,
-                max(
-                    0.0,
-                    self._post_only_backoff_until.get(side, 0.0) - time.monotonic(),
-                ),
-            )
-            return None
-        price = self._effective_submit_price(price, side, best_bid, best_ask)
-        if price is None:
-            return None
-        price_str = f"{price:.4f}"
-        catch_up = side in self._post_only_catch_up_sides
-        if catch_up:
-            log.info(
-                "%s side=%s price=%s post_only=True (book catch-up)",
-                label, side, price_str,
-            )
-        else:
-            log.info("%s side=%s price=%s post_only=True", label, side, price_str)
-        result = kalshi_place_limit_order(
-            ticker=ticker, side=side, price=price_str,
-            count=count, subaccount=subaccount, post_only=True)
-        self._mark_api_action()
-        if result and float(result.get("remaining_count", "0")) > 0:
-            self._post_only_catch_up_sides.discard(side)
-            return result.get("order_id")
-        self._mark_post_only_cross(
-            side,
-            price,
-            best_bid,
-            best_ask,
-            apply_backoff=not exempt_post_only_backoff,
-        )
-        return None
-
-    def _book_allows_entry(
-        self, best_bid: Decimal, best_ask: Decimal, mom_1m: Optional[float],
-    ) -> bool:
-        """True if the side(s) we would quote for entry are inside [2c, 98c]."""
-        _, mode = self._momentum_spread(mom_1m or 0)
-        bid = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        ask = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if mode == "neutral":
-            return self._entry_price_allowed(bid) and self._entry_price_allowed(ask)
-        if mode == "bullish":
-            return self._entry_price_allowed(bid)
-        return self._entry_price_allowed(ask)
-
-    def _cancel_entry_orders(
-        self, subaccount: int, *, keep_oid: Optional[str] = None,
-    ) -> None:
-        """Cancel resting entry legs; keep_oid is left tracked (e.g. neutral counter)."""
-        cancelled = False
-        for oid in (self.my_bid_oid, self.my_ask_oid):
-            if not oid or oid == keep_oid:
-                continue
-            kalshi_cancel_order(oid, subaccount=subaccount)
-            cancelled = True
-        if self.my_bid_oid != keep_oid:
-            self.my_bid_oid = None
-        if self.my_ask_oid != keep_oid:
-            self.my_ask_oid = None
-        if cancelled:
-            self._mark_api_action()
-
-    def _cancel_entry_and_idle(self, subaccount: int, reason: str) -> None:
-        log.info("QUOTING -> IDLE: %s", reason)
-        self._cancel_entry_orders(subaccount)
-        self._clear_all_order_state()
-        self.state = HFTState.IDLE
-
-    def _close_side(self) -> Optional[str]:
-        """Close order side from recorded entry, not from position (avoids stale sign)."""
-        if self.entry_side == "long":
-            return "ask"
-        if self.entry_side == "short":
-            return "bid"
-        return None
-
-    def _position_matches_entry(self, position: float) -> bool:
-        if self.entry_side == "long":
-            return position > 0.001
-        if self.entry_side == "short":
-            return position < -0.001
-        return False
-
-    @staticmethod
-    def _close_side_for_position(position: float) -> Optional[str]:
-        if position > 0.001:
-            return "ask"
-        if position < -0.001:
-            return "bid"
-        return None
-
-    def _unrealized_loss_cents(
-        self,
-        position: float,
-        best_bid: Decimal,
-        best_ask: Decimal,
-    ) -> Optional[Decimal]:
-        """Mark-to-market loss from position sign (long marks bid, short marks ask)."""
-        if self.entry_price is None or abs(position) < 0.001:
-            return None
-        if position > 0.001:
-            return self.entry_price - best_bid
-        if position < -0.001:
-            return best_ask - self.entry_price
-        return None
-
-    def _sync_entry_with_position(
-        self,
-        position: float,
-        best_bid: Decimal,
-        best_ask: Decimal,
-    ) -> None:
-        if self._position_matches_entry(position):
-            return
-        recovered = self._infer_entry_side(position, self.trade_mode)
-        if not recovered:
-            return
-        log.warning(
-            "Reconcile entry_side %s -> %s for position=%.2f",
-            self.entry_side, recovered, position,
-        )
-        self.entry_side = recovered
-        if recovered == "long":
-            self.entry_price = self.submitted_bid_price or best_bid
-        else:
-            self.entry_price = self.submitted_ask_price or best_ask
-
-    def _effective_close_side(self, position: float) -> Optional[str]:
-        if self._position_matches_entry(position):
-            return self._close_side()
-        return self._close_side_for_position(position)
-
-    def _maybe_ripcord_on_loss(
-        self,
-        ticker: str,
-        position: float,
-        best_bid: Decimal,
-        best_ask: Decimal,
-        count: str,
-        subaccount: int,
-        *,
-        r=None,
-    ) -> bool:
-        """Cancel resting counter and market-flatten if loss exceeds max. Returns True if fired."""
-        loss = self._unrealized_loss_cents(position, best_bid, best_ask)
-        catastrophic = False
-        if self.entry_price is not None:
-            ep = self.entry_price
-            if position > 0.001 and ep >= Decimal("0.50") and best_bid <= Decimal("0.20"):
-                catastrophic = True
-            elif position < -0.001 and ep <= Decimal("0.50") and best_ask >= Decimal("0.80"):
-                catastrophic = True
-        if loss is None and not catastrophic:
-            return False
-        if not catastrophic and loss is not None and loss <= self.max_loss_cents:
-            return False
-        log.warning(
-            "RIPCORD: entry=%s position=%.2f loss=%s max=%s catastrophic=%s bid=%s ask=%s",
-            self.entry_price, position, loss, self.max_loss_cents, catastrophic,
-            best_bid, best_ask,
-        )
-        if self.counter_oid and r is not None:
-            kalshi_cancel_order(self.counter_oid, subaccount=subaccount)
-            self.counter_oid = None
-        self._ripcord_flatten(ticker, count, subaccount, position=position)
         return True
 
-    @staticmethod
-    def _infer_entry_side_from_position(position: float) -> Optional[str]:
-        if position > 0.001:
-            return "long"
-        if position < -0.001:
-            return "short"
-        return None
+    def _loss_cents(self, position: float, best_bid: Decimal, best_ask: Decimal) -> Optional[Decimal]:
+        if self.entry_price is None or abs(position) < 0.001:
+            return None
+        if position > 0:
+            return self.entry_price - best_bid
+        return best_ask - self.entry_price
 
-    def _infer_entry_side(self, position: float, trade_mode: Optional[str]) -> Optional[str]:
-        """Infer long/short from position; reject mismatch with directional mode."""
-        side = self._infer_entry_side_from_position(position)
-        if side is None:
-            return None
-        if trade_mode == "bullish" and side != "long":
-            return None
-        if trade_mode == "bearish" and side != "short":
-            return None
-        return side
-
-    def _target_counter_price(
-        self, best_bid: Decimal, best_ask: Decimal,
-    ) -> Optional[Decimal]:
-        """Profit-taking price for directional; join book for neutral."""
-        close_side = self._close_side()
-        if not close_side:
-            return None
-        raw: Optional[Decimal] = None
-        if self.entry_side == "long" and self.entry_price is not None and self.target_spread:
-            raw = (self.entry_price + self.target_spread).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP)
-        elif self.entry_side == "short" and self.entry_price is not None and self.target_spread:
-            raw = (self.entry_price - self.target_spread).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP)
-        elif self.entry_side == "long":
-            raw = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        elif self.entry_side == "short":
-            raw = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-        if raw is None:
-            return None
-        return self._effective_submit_price(raw, close_side, best_bid, best_ask)
-
-    def _ripcord_flatten(
+    def _ripcord(
         self,
         ticker: str,
+        position: float,
+        count: str,
+        subaccount: int,
+        *,
+        reason: str = "loss",
+    ) -> None:
+        log.warning(
+            "RIPCORD (%s) position=%.2f limit=%s entry=%s",
+            reason, position, count, self.entry_price,
+        )
+        self._cancel_all_resting(subaccount)
+        side = "ask" if position > 0 else "bid"
+        abs_pos = abs(position)
+        exit_count = count if abs_pos <= float(count) + 0.001 else f"{abs_pos:.2f}"
+        kalshi_market_order(
+            ticker=ticker, side=side, count=exit_count, subaccount=subaccount,
+        )
+        self._clear_orders()
+        self.entry_price = None
+        self.entry_side = None
+        self.state = HFTState.ACQUISITION
+
+    def _transition_to_closing(
+        self,
+        position: float,
+        r,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        subaccount: int,
+    ) -> None:
+        """One entry leg filled: keep the other leg as the close; drop entry leg."""
+        if position > 0:
+            self.entry_side = "long"
+            self.entry_price = self.submitted_bid_price or best_bid
+            self._force_cancel_oid(self.my_bid_oid, subaccount)
+            self.my_bid_oid = None
+            self.submitted_bid_price = None
+        else:
+            self.entry_side = "short"
+            self.entry_price = self.submitted_ask_price or best_ask
+            self._force_cancel_oid(self.my_ask_oid, subaccount)
+            self.my_ask_oid = None
+            self.submitted_ask_price = None
+        self.state = HFTState.CLOSING
+        log.info(
+            "-> CLOSING position=%.2f side=%s entry=%s close_oid=%s",
+            position, self.entry_side, self.entry_price, self._close_oid(),
+        )
+
+    # -- Phases ---------------------------------------------------------------
+
+    def _run_acquisition(
+        self,
+        ticker: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
         count: str,
         subaccount: int,
         *,
         position: float = 0.0,
     ) -> None:
-        close_side = self._effective_close_side(position)
-        if not close_side:
-            log.warning("RIPCORD skipped: flat and no entry_side")
-            self._clear_all_order_state()
-            self.state = HFTState.IDLE
+        if abs(position) >= 0.001:
             return
-        abs_pos = abs(position)
-        max_c = self._max_contracts(count)
-        exit_count = count
-        if abs_pos > max_c + 0.001:
-            exit_count = f"{abs_pos:.2f}"
-            log.warning(
-                "RIPCORD size %.2f contracts (config count=%s)",
-                abs_pos, count,
+        if self.my_bid_oid or self.my_ask_oid:
+            return
+        self._place_entry_pair(ticker, best_bid, best_ask, count, subaccount)
+
+    def _run_entry(
+        self,
+        r,
+        ticker: str,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        count: str,
+        subaccount: int,
+        *,
+        position: float = 0.0,
+    ) -> None:
+        if abs(position) >= 0.001:
+            log.warning("ENTRY skipped — position=%.2f", position)
+            return
+
+        bid_st = self._order_status(r, self.my_bid_oid) if self.my_bid_oid else None
+        ask_st = self._order_status(r, self.my_ask_oid) if self.my_ask_oid else None
+
+        if self.my_bid_oid and bid_st == "executed":
+            log.info("ENTRY bid filled — ask leg is close")
+            self._transition_to_closing(1.0, r, best_bid, best_ask, subaccount)
+            return
+        if self.my_ask_oid and ask_st == "executed":
+            log.info("ENTRY ask filled — bid leg is close")
+            self._transition_to_closing(-1.0, r, best_bid, best_ask, subaccount)
+            return
+
+        if self.my_bid_oid and bid_st == "canceled":
+            log.info("ENTRY bid canceled — rejoin at touch")
+            self.my_bid_oid = None
+            self.submitted_bid_price = None
+            self._rejoin_leg(ticker, "bid", best_bid, best_ask, count, subaccount)
+            return
+        if self.my_ask_oid and ask_st == "canceled":
+            log.info("ENTRY ask canceled — rejoin at touch")
+            self.my_ask_oid = None
+            self.submitted_ask_price = None
+            self._rejoin_leg(ticker, "ask", best_bid, best_ask, count, subaccount)
+            return
+
+        if self.my_bid_oid and bid_st in (None, "resting"):
+            self._amend_if_misaligned(
+                ticker, oid=self.my_bid_oid, side="bid",
+                tracked=self.submitted_bid_price,
+                best_bid=best_bid, best_ask=best_ask,
+                count=count, subaccount=subaccount, label="entry bid",
             )
-        log.warning("RIPCORD flatten side=%s position=%.2f", close_side, position)
-        kalshi_market_order(
-            ticker=ticker, side=close_side, count=exit_count, subaccount=subaccount)
-        self._clear_all_order_state()
-        self.state = HFTState.IDLE
-        self._mark_api_action()
 
-    # -- Core eval loop -----------------------------------------------------
-    #
-    # Architecture rules (non-negotiable):
-    #   1. ONE API action per tick, then return.
-    #   2. Never place a replacement order in the same tick that detected
-    #      the original was gone. Clear the OID and return; next tick decides.
-    #   3. Position is the single source of truth for state transitions.
-    #      Order status is only used to clear OID tracking.
-    #   4. Gates are re-checked every tick in QUOTING.
-    #   5. No global API cooldown. Entry re-place uses per-side post-only
-    #      backoff (HFT_POST_ONLY_BACKOFF_SEC). CLOSING/counter/ripcord exempt.
+        if self.my_ask_oid and ask_st in (None, "resting"):
+            self._amend_if_misaligned(
+                ticker, oid=self.my_ask_oid, side="ask",
+                tracked=self.submitted_ask_price,
+                best_bid=best_bid, best_ask=best_ask,
+                count=count, subaccount=subaccount, label="entry ask",
+            )
 
-    def _cancel_tracked_orders(self, subaccount: int) -> None:
-        for oid in (self.my_bid_oid, self.my_ask_oid, self.counter_oid):
-            if oid:
-                kalshi_cancel_order(oid, subaccount=subaccount)
+        if not self.my_bid_oid and not self.my_ask_oid:
+            log.info("ENTRY legs gone — ACQUISITION")
+            self.state = HFTState.ACQUISITION
+
+    def _run_closing(
+        self,
+        r,
+        ticker: str,
+        position: float,
+        best_bid: Decimal,
+        best_ask: Decimal,
+        count: str,
+        subaccount: int,
+    ) -> None:
+        if not self.entry_side:
+            self._transition_to_closing(position, r, best_bid, best_ask, subaccount)
+
+        self._enforce_no_entry_legs_when_positioned(position, subaccount)
+
+        loss = self._loss_cents(position, best_bid, best_ask)
+        if loss is not None and loss >= MAX_LOSS_CENTS:
+            self._ripcord(ticker, position, count, subaccount, reason="loss")
+            return
+
+        close_side = self._close_side()
+        close_oid = self._close_oid()
+        if not close_side:
+            return
+
+        tracked = (
+            self.submitted_ask_price if close_side == "ask" else self.submitted_bid_price
+        )
+
+        if close_oid:
+            st = self._order_status(r, close_oid)
+            if st == "executed":
+                log.info("CLOSE filled oid=%s", close_oid)
+                if close_side == "ask":
+                    self.my_ask_oid = None
+                    self.submitted_ask_price = None
+                else:
+                    self.my_bid_oid = None
+                    self.submitted_bid_price = None
+                return
+            if st == "canceled":
+                log.info("CLOSE %s canceled — rejoin at touch", close_side)
+                if close_side == "ask":
+                    self.my_ask_oid = None
+                    self.submitted_ask_price = None
+                else:
+                    self.my_bid_oid = None
+                    self.submitted_bid_price = None
+                close_oid = None
+            elif st not in (None, "resting"):
+                if close_side == "ask":
+                    self.my_ask_oid = None
+                    self.submitted_ask_price = None
+                else:
+                    self.my_bid_oid = None
+                    self.submitted_bid_price = None
+                close_oid = None
+
+        close_oid = self._close_oid()
+        if close_oid:
+            self._amend_if_misaligned(
+                ticker, oid=close_oid, side=close_side,
+                tracked=tracked,
+                best_bid=best_bid, best_ask=best_ask,
+                count=count, subaccount=subaccount, label="close",
+            )
+            return
+
+        log.info("CLOSE missing — rejoin %s at touch", close_side)
+        self._rejoin_leg(ticker, close_side, best_bid, best_ask, count, subaccount)
+
+    # -- Main eval ------------------------------------------------------------
 
     def evaluate(self, r) -> None:
         ctrl = self._read_control(r)
-        enabled = ctrl.get("enabled", False)
+        enabled = bool(ctrl.get("enabled", False))
         subaccount = int(ctrl.get("subaccount", 2))
         count = str(ctrl.get("count", "1.00"))
+        self.control_neutral_mode = bool(ctrl.get("neutral_mode", False))
 
-        # ---- Always read market data for UI ----
         strike_data = self._read_strike_data()
         prev_ticker = self.active_ticker
         if strike_data:
             self.gate_ttc = strike_data["ttc"]
             self.gate_buffer_pct = strike_data.get("buffer_pct")
-            self.gate_floor_strike = strike_data.get("floor_strike")
-            self.gate_spot = strike_data.get("current_price")
             self.active_ticker = strike_data["ticker"]
         else:
+            self.gate_ttc = None
             self.gate_buffer_pct = None
-            self.gate_floor_strike = None
-            self.gate_spot = None
-        self.gate_mom_1m = self._read_momentum_1m()
 
         ticker = self.active_ticker
-
         best_bid, best_ask = None, None
         if ticker:
             ob = self._read_orderbook(ticker)
@@ -1384,184 +967,96 @@ class HFTEngine:
                 best_bid, best_ask = self._best_bid_ask(ob)
                 self.gate_best_bid = f"{best_bid:.4f}" if best_bid else None
                 self.gate_best_ask = f"{best_ask:.4f}" if best_ask else None
-            else:
-                self.gate_best_bid = None
-                self.gate_best_ask = None
 
         position = self._read_position(r, ticker, subaccount) if ticker else 0.0
         is_flat = abs(position) < 0.001
 
-        # ---- Ticker changed: mandatory settle before any new entry ----
         if prev_ticker and ticker and ticker != prev_ticker:
-            self._last_strike_gate_reason = None
-            self._clear_idle_skip_log()
-            self._anchor_ticker = None
-            self._anchor_floor_strike = None
-            self._rollover_quiet_until_mono = (
-                time.monotonic() + ROLLOVER_SETTLE_SEC
-            )
-            log.info(
-                "Ticker changed %s -> %s: rollover settle %.0fs (no entry until then)",
-                prev_ticker, ticker, ROLLOVER_SETTLE_SEC,
-            )
-            if self.state != HFTState.IDLE:
-                self._cancel_tracked_orders(subaccount)
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
-                self._mark_api_action()
-            self._finish(r)
-            return
+            log.info("Ticker roll %s -> %s: cancel all", prev_ticker, ticker)
+            self._cancel_all_resting(subaccount)
+            self.entry_price = None
+            self.entry_side = None
+            self.state = HFTState.ACQUISITION
 
-        # ---- DISABLED: cancel own tracked orders, go IDLE ----
+        if strike_data and best_bid is not None and best_ask is not None:
+            self.gates_pass = self._check_gates(strike_data)
+        else:
+            self.gates_pass = False
+            self.gate_block_reason = "orderbook_pending"
+
         if not enabled:
-            if self.state != HFTState.IDLE:
-                log.info("HFT disabled -> IDLE")
-                self._cancel_tracked_orders(subaccount)
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
+            if self.state != HFTState.ACQUISITION or self.my_bid_oid or self.my_ask_oid:
+                log.info("AUTO TRADE off — cancel all")
+                self._cancel_all_resting(subaccount)
+                self.entry_price = None
+                self.entry_side = None
+                self.state = HFTState.ACQUISITION
+            self.gates_pass = False
+            self.gate_block_reason = "auto_trade_off"
             self._finish(r)
             return
 
-        # ---- No market data yet ----
         if not strike_data or best_bid is None or best_ask is None:
             self._finish(r)
             return
 
-        # ---- Startup: detect pre-existing position ----
-        if not self._startup_done:
-            self._startup_done = True
-            if not is_flat and self.state == HFTState.IDLE:
-                self.entry_side = "long" if position > 0 else "short"
-                self.entry_price = best_bid if position > 0 else best_ask
-                self.state = HFTState.CLOSING
-                log.info("Startup: position=%.2f -> CLOSING entry=%s side=%s",
-                         position, self.entry_price, self.entry_side)
+        if (
+            not is_flat
+            and ticker
+            and self._position_over_limit(position, count)
+        ):
+            self._ripcord(ticker, position, count, subaccount, reason="over_limit")
+            self._finish(r)
+            return
+
+        if not is_flat:
+            self._enforce_no_entry_legs_when_positioned(position, subaccount)
+            if self.state in (HFTState.ACQUISITION, HFTState.ENTRY):
+                self._transition_to_closing(
+                    position, r, best_bid, best_ask, subaccount,
+                )
+            self._run_closing(r, ticker, position, best_bid, best_ask, count, subaccount)
+            position = self._read_position(r, ticker, subaccount)
+            if abs(position) < 0.001:
+                log.info("CLOSING -> flat — ACQUISITION")
+                self._clear_orders()
+                self.entry_price = None
+                self.entry_side = None
+                self.state = HFTState.ACQUISITION
+            self._finish(r)
+            return
+
+        if not self.gates_pass:
+            if self.state == HFTState.ENTRY:
+                log.info("Gates failed (%s) — cancel entry", self.gate_block_reason)
+                self._cancel_all_resting(subaccount)
+                self.state = HFTState.ACQUISITION
+            self._finish(r)
+            return
+
+        if self.state == HFTState.CLOSING:
+            if self._close_oid() or self.my_bid_oid or self.my_ask_oid:
+                pos_use = position
+                if is_flat and self.entry_side:
+                    pos_use = 1.0 if self.entry_side == "long" else -1.0
+                if self.entry_side:
+                    self._run_closing(
+                        r, ticker, pos_use, best_bid, best_ask, count, subaccount,
+                    )
                 self._finish(r)
                 return
+            self.entry_price = None
+            self.entry_side = None
+            self.state = HFTState.ACQUISITION
 
-        # =============================================================
-        # STATE: IDLE
-        # =============================================================
-        if self.state == HFTState.IDLE:
-            if not is_flat:
-                if self.my_bid_oid or self.my_ask_oid:
-                    log.warning(
-                        "IDLE: open position %.2f with tracked entry oids bid=%s ask=%s — canceling",
-                        position, self.my_bid_oid, self.my_ask_oid,
-                    )
-                    self._cancel_entry_orders(subaccount)
-                    self._finish(r)
-                    return
-                self.entry_side = "long" if position > 0 else "short"
-                self.entry_price = best_bid if position > 0 else best_ask
-                if self.target_spread is None:
-                    spread_cents, mode = self._momentum_spread(self.gate_mom_1m or 0)
-                    self.target_spread = Decimal(spread_cents) / Decimal(100)
-                    if self.trade_mode is None:
-                        self.trade_mode = mode
-                self.state = HFTState.CLOSING
-                log.info(
-                    "IDLE -> CLOSING: position=%.2f entry=%s side=%s mode=%s spread=%s",
-                    position, self.entry_price, self.entry_side,
-                    self.trade_mode, self.target_spread,
-                )
-            else:
-                gates_ok = self._gates_pass(
-                    self.gate_ttc or 0,
-                    self.gate_buffer_pct or 0,
-                    self.gate_mom_1m,
-                    strike_data,
-                )
-                max_c = self._max_contracts(count)
-                if abs(position) >= max_c - 0.001:
-                    self._log_idle_skip(
-                        "position_at_max",
-                        "IDLE: skip entry, |position|=%.2f at max %.2f",
-                        position, max_c,
-                    )
-                elif gates_ok:
-                    if self._book_allows_entry(
-                        best_bid, best_ask, self.gate_mom_1m,
-                    ):
-                        self._clear_idle_skip_log()
-                        self._idle_place_entry(
-                            ticker, best_bid, best_ask, count, subaccount)
-                    else:
-                        _, entry_mode = self._momentum_spread(self.gate_mom_1m or 0)
-                        self._log_idle_skip(
-                            f"book_entry_band:{entry_mode}",
-                            "IDLE: skip entry, book outside entry band [%.2f, %.2f] "
-                            "(mode=%s bid=%s ask=%s mom=%.1f)",
-                            MIN_ENTRY_PRICE, MAX_ENTRY_PRICE,
-                            entry_mode, best_bid, best_ask, self.gate_mom_1m or 0,
-                        )
-
-        # =============================================================
-        # STATE: QUOTING
-        # =============================================================
-        elif self.state == HFTState.QUOTING:
-            if not is_flat:
-                self._quoting_fill_detected(
-                    position, best_bid, best_ask, count, subaccount)
-            else:
-                self._quoting_still_flat(r, ticker, best_bid, best_ask, count, subaccount)
-
-        # =============================================================
-        # STATE: CLOSING
-        # =============================================================
-        elif self.state == HFTState.CLOSING:
-            if is_flat:
-                log.info("CLOSING -> IDLE: position closed")
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
-            else:
-                if self.my_bid_oid or self.my_ask_oid:
-                    log.warning(
-                        "CLOSING: stray entry oids bid=%s ask=%s (counter=%s) — canceling",
-                        self.my_bid_oid, self.my_ask_oid, self.counter_oid,
-                    )
-                    self._cancel_entry_orders(
-                        subaccount, keep_oid=self.counter_oid,
-                    )
-                    self._finish(r)
-                    return
-                if self.entry_side is None:
-                    recovered = self._infer_entry_side(position, self.trade_mode)
-                    if recovered:
-                        self.entry_side = recovered
-                        self.entry_price = (
-                            best_bid if recovered == "long" else best_ask
-                        )
-                        log.info(
-                            "CLOSING: recovered entry_side=%s from position=%.2f",
-                            recovered, position,
-                        )
-                    else:
-                        log.warning(
-                            "CLOSING: no entry_side, position=%.2f -> IDLE",
-                            position,
-                        )
-                        self._clear_all_order_state()
-                        self.state = HFTState.IDLE
-                        self._finish(r)
-                        return
-                max_c = self._max_contracts(count)
-                if abs(position) > max_c + 0.001:
-                    log.warning(
-                        "Position %.2f exceeds max %.2f -> ripcord",
-                        position, max_c,
-                    )
-                    self._ripcord_flatten(
-                        ticker, count, subaccount, position=position)
-                elif self.pending_cancel_oid:
-                    oid = self.pending_cancel_oid
-                    self.pending_cancel_oid = None
-                    log.info("Canceling stray entry oid=%s", oid)
-                    kalshi_cancel_order(oid, subaccount=subaccount)
-                    self._mark_api_action()
-                else:
-                    self._closing_manage(
-                        r, ticker, position, best_bid, best_ask, count, subaccount)
+        if self.state == HFTState.ACQUISITION:
+            self._run_acquisition(
+                ticker, best_bid, best_ask, count, subaccount, position=position,
+            )
+        elif self.state == HFTState.ENTRY:
+            self._run_entry(
+                r, ticker, best_bid, best_ask, count, subaccount, position=position,
+            )
 
         self._finish(r)
 
@@ -1569,526 +1064,9 @@ class HFTEngine:
         self.last_eval_mono = time.monotonic()
         self._write_state(r)
 
-    # -- IDLE: place entry orders -------------------------------------------
-
-    def _idle_place_entry(self, ticker, best_bid, best_ask, count, subaccount):
-        spread_cents, mode = self._momentum_spread(self.gate_mom_1m)
-        spread = Decimal(spread_cents) / Decimal(100)
-
-        if mode == "neutral":
-            orders = self._build_mm_batch(
-                ticker, best_bid, best_ask, count, subaccount, self.gate_mom_1m)
-            if not orders:
-                return
-            result = kalshi_batch_create_orders(orders)
-            self._mark_api_action()
-            if not result or not isinstance(result.get("orders"), list):
-                return
-            resp_orders = result["orders"]
-            bid_ok = len(resp_orders) > 0 and not resp_orders[0].get("error")
-            ask_ok = len(resp_orders) > 1 and not resp_orders[1].get("error")
-            if bid_ok:
-                self.my_bid_oid = resp_orders[0].get("order_id")
-            else:
-                self._post_only_catch_up_sides.add("bid")
-                self._set_post_only_backoff("bid")
-            if ask_ok:
-                self.my_ask_oid = resp_orders[1].get("order_id")
-            else:
-                self._post_only_catch_up_sides.add("ask")
-                self._set_post_only_backoff("ask")
-            self.submitted_bid_price = best_bid
-            self.submitted_ask_price = best_ask
-            self.trade_mode = "neutral"
-            if self.my_bid_oid or self.my_ask_oid:
-                self._clear_idle_skip_log()
-                self.state = HFTState.QUOTING
-                log.info("IDLE -> QUOTING [neutral] bid_oid=%s ask_oid=%s bid=%s ask=%s",
-                         self.my_bid_oid, self.my_ask_oid,
-                         self.gate_best_bid, self.gate_best_ask)
-        else:
-            entry_side = "bid" if mode == "bullish" else "ask"
-            entry_price = (best_bid if mode == "bullish" else best_ask).quantize(
-                Decimal("0.01"), rounding=ROUND_HALF_UP)
-            if entry_price <= 0 or entry_price >= Decimal("1"):
-                return
-            if not self._entry_price_allowed(entry_price):
-                self._log_idle_skip(
-                    f"entry_price_band:{mode}",
-                    "IDLE: skip entry, price %s outside band [%.2f, %.2f] (mode=%s)",
-                    entry_price, MIN_ENTRY_PRICE, MAX_ENTRY_PRICE, mode,
-                )
-                return
-            place_price = self._limit_price_for_order(
-                entry_side, best_bid, best_ask, entry_price)
-            if place_price is None:
-                return
-            log.info(
-                "ORDER_PARAMS mode=%s mom=%.1f spread=%dc entry_side=%s entry_price=%s "
-                "ticker=%s floor_strike=%s buffer_pct=%s spot=%s ttc=%s",
-                mode, self.gate_mom_1m, spread_cents, entry_side, f"{place_price:.4f}",
-                ticker, self.gate_floor_strike, self.gate_buffer_pct,
-                self.gate_spot, self.gate_ttc,
-            )
-            oid = self._place_post_only_at_price(
-                ticker=ticker, side=entry_side, price=place_price,
-                count=count, subaccount=subaccount,
-                best_bid=best_bid, best_ask=best_ask, label="Placing entry",
-            )
-            if oid:
-                if entry_side == "bid":
-                    self.my_bid_oid = oid
-                    self.submitted_bid_price = place_price
-                else:
-                    self.my_ask_oid = oid
-                    self.submitted_ask_price = place_price
-                self.entry_order_price = place_price
-                self.trade_mode = mode
-                self.target_spread = spread
-                self._clear_idle_skip_log()
-                self.state = HFTState.QUOTING
-                log.info("IDLE -> QUOTING [%s] oid=%s side=%s price=%s spread=%dc",
-                         mode, oid, entry_side, f"{place_price:.4f}", spread_cents)
-            else:
-                log.info(
-                    "Entry order did not rest -- will retry at book after post-only backoff",
-                )
-
-    # -- QUOTING: fill detected ---------------------------------------------
-
-    def _quoting_fill_detected(
-        self, position, best_bid, best_ask, count, subaccount,
-    ):
-        """Position != 0 while in QUOTING: cancel entry legs on exchange, -> CLOSING."""
-        max_c = self._max_contracts(count)
-        if abs(position) > max_c + 0.001:
-            log.warning(
-                "QUOTING: |position|=%.2f > max %.2f -- will ripcord in CLOSING",
-                position, max_c,
-            )
-
-        bid_oid, ask_oid = self.my_bid_oid, self.my_ask_oid
-
-        entry_side = self._infer_entry_side(position, self.trade_mode)
-        if entry_side is None:
-            entry_side = self._infer_entry_side_from_position(position)
-            if entry_side is None:
-                log.warning(
-                    "QUOTING: position=%.2f but no side — cancel entries -> IDLE",
-                    position,
-                )
-                self._cancel_entry_orders(subaccount)
-                self.state = HFTState.IDLE
-                return
-            log.warning(
-                "QUOTING: position=%.2f mismatches trade_mode=%s — using %s",
-                position, self.trade_mode, entry_side,
-            )
-
-        self.entry_side = entry_side
-        if entry_side == "long":
-            self.entry_price = self.submitted_bid_price or best_bid
-        else:
-            self.entry_price = self.submitted_ask_price or best_ask
-
-        counter_keep: Optional[str] = None
-        if self.trade_mode == "neutral":
-            counter_keep = ask_oid if entry_side == "long" else bid_oid
-
-        self._cancel_entry_orders(subaccount, keep_oid=counter_keep)
-        self.counter_oid = counter_keep
-        self.my_bid_oid = None
-        self.my_ask_oid = None
-        self.pending_cancel_oid = None
-        self.awaiting_flat_after_counter = False
-        self.state = HFTState.CLOSING
-        log.info(
-            "QUOTING -> CLOSING [%s] position=%.2f entry_side=%s entry_price=%s "
-            "counter_oid=%s (canceled stray entry legs)",
-            self.trade_mode, position, self.entry_side, self.entry_price,
-            self.counter_oid,
-        )
-
-    # -- QUOTING: still flat ------------------------------------------------
-
-    def _quoting_still_flat(self, r, ticker, best_bid, best_ask, count, subaccount):
-        """Position == 0 while in QUOTING. Re-check gates, manage entry orders."""
-
-        # Gate re-check: cancel entry orders if conditions changed
-        strike_data = self._read_strike_data()
-        gates_ok = self._gates_pass(
-            self.gate_ttc or 0,
-            self.gate_buffer_pct or 0,
-            self.gate_mom_1m,
-            strike_data,
-        )
-        if not gates_ok:
-            log.info("QUOTING -> IDLE: gates no longer pass")
-            for oid in (self.my_bid_oid, self.my_ask_oid):
-                if oid:
-                    kalshi_cancel_order(oid, subaccount=subaccount)
-            self._clear_all_order_state()
-            self.state = HFTState.IDLE
-            self._mark_api_action()
-            return
-
-        # Momentum band changed
-        _, new_mode = self._momentum_spread(self.gate_mom_1m)
-        if new_mode != self.trade_mode:
-            log.info("QUOTING -> IDLE: momentum band %s -> %s", self.trade_mode, new_mode)
-            for oid in (self.my_bid_oid, self.my_ask_oid):
-                if oid:
-                    kalshi_cancel_order(oid, subaccount=subaccount)
-            self._clear_all_order_state()
-            self.state = HFTState.IDLE
-            self._mark_api_action()
-            return
-
-        # -- Directional: manage single entry order --
-        if self.trade_mode != "neutral" and self.trade_mode is not None:
-            entry_side = "bid" if self.trade_mode == "bullish" else "ask"
-            entry_oid = self.my_bid_oid or self.my_ask_oid
-
-            if not entry_oid:
-                log.info("QUOTING -> IDLE: flat, no resting entry — re-acquire via IDLE")
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
-                return
-
-            tracked = (
-                self.entry_order_price
-                or self.submitted_bid_price
-                or self.submitted_ask_price
-            )
-            if tracked is not None and not self._entry_price_allowed(tracked):
-                self._cancel_entry_and_idle(
-                    subaccount,
-                    f"entry price {tracked} outside band [{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
-                )
-                return
-
-            entry_status = self._check_order_status(r, entry_oid)
-            if entry_status == "executed":
-                # Fill with lagging position: cancel any resting entry remainder, -> CLOSING.
-                if self.trade_mode == "bullish":
-                    self.entry_side = "long"
-                    self.entry_price = self.submitted_bid_price or best_bid
-                else:
-                    self.entry_side = "short"
-                    self.entry_price = self.submitted_ask_price or best_ask
-                self._cancel_entry_orders(subaccount)
-                self.counter_oid = None
-                self.awaiting_flat_after_counter = False
-                self.state = HFTState.CLOSING
-                log.info(
-                    "QUOTING -> CLOSING [%s, fill lag] entry_side=%s entry_price=%s "
-                    "spread=%s",
-                    self.trade_mode, self.entry_side, self.entry_price,
-                    self.target_spread,
-                )
-                return
-            if entry_status == "canceled":
-                log.info(
-                    "QUOTING -> IDLE: entry oid=%s canceled while flat",
-                    entry_oid,
-                )
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
-                return
-            if entry_status is not None and entry_status != "resting":
-                log.info("QUOTING -> IDLE: entry oid=%s status=%s", entry_oid, entry_status)
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
-                return
-
-            # Amend to follow book only when it moves AWAY from fill
-            if self.trade_mode == "bullish":
-                current_best = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-            else:
-                current_best = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-
-            should_amend = False
-            if self.entry_order_price is not None and current_best != self.entry_order_price:
-                if self.trade_mode == "bullish" and current_best > self.entry_order_price:
-                    should_amend = True
-                elif self.trade_mode == "bearish" and current_best < self.entry_order_price:
-                    should_amend = True
-
-            if should_amend:
-                if (
-                    time.monotonic() - self._last_entry_amend_mono
-                    < HFT_ENTRY_AMEND_INTERVAL_SEC
-                ):
-                    return
-                if not self._entry_price_allowed(current_best):
-                    self._cancel_entry_and_idle(
-                        subaccount,
-                        f"amend target {current_best} outside entry band "
-                        f"[{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
-                    )
-                    return
-                entry_side = "bid" if self.trade_mode == "bullish" else "ask"
-                price_str = f"{current_best:.4f}"
-                log.info("QUOTING amend: %s moved away %s -> %s",
-                         entry_side, self.entry_order_price, price_str)
-                result = kalshi_amend_order(
-                    entry_oid, ticker=ticker, side=entry_side,
-                    price=price_str, count=count, subaccount=subaccount)
-                self._mark_api_action()
-                if result is None:
-                    self._set_post_only_backoff(entry_side)
-                    log.info(
-                        "QUOTING -> IDLE: entry amend rejected while flat",
-                    )
-                    self._clear_all_order_state()
-                    self.state = HFTState.IDLE
-                    return
-                if float(result.get("remaining_count", "1")) < 0.001:
-                    log.info("QUOTING -> IDLE: entry amend left no resting size")
-                    self._clear_all_order_state()
-                    self.state = HFTState.IDLE
-                else:
-                    self._last_entry_amend_mono = time.monotonic()
-                    self.entry_order_price = current_best
-                    if self.trade_mode == "bullish":
-                        self.submitted_bid_price = current_best
-                    else:
-                        self.submitted_ask_price = current_best
-
-        # -- Neutral: check if both orders are gone --
-        elif self.trade_mode == "neutral":
-            bid_bad = (
-                self.submitted_bid_price is not None
-                and not self._entry_price_allowed(self.submitted_bid_price)
-            )
-            ask_bad = (
-                self.submitted_ask_price is not None
-                and not self._entry_price_allowed(self.submitted_ask_price)
-            )
-            if bid_bad or ask_bad:
-                self._cancel_entry_and_idle(
-                    subaccount,
-                    f"neutral entry bid={self.submitted_bid_price} ask="
-                    f"{self.submitted_ask_price} outside entry band "
-                    f"[{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
-                )
-                return
-
-            bid_status = self._check_order_status(r, self.my_bid_oid) if self.my_bid_oid else None
-            ask_status = self._check_order_status(r, self.my_ask_oid) if self.my_ask_oid else None
-            if self.my_bid_oid and bid_status == "executed":
-                log.info(
-                    "Neutral bid oid=%s executed (position may lag) — not re-placing bid",
-                    self.my_bid_oid,
-                )
-                self.my_bid_oid = None
-            elif self.my_bid_oid and bid_status == "canceled":
-                log.info("Neutral bid oid=%s canceled -- will re-place at book", self.my_bid_oid)
-                self._post_only_catch_up_sides.add("bid")
-                self.my_bid_oid = None
-            if self.my_ask_oid and ask_status == "executed":
-                log.info(
-                    "Neutral ask oid=%s executed (position may lag) — not re-placing ask",
-                    self.my_ask_oid,
-                )
-                self.my_ask_oid = None
-            elif self.my_ask_oid and ask_status == "canceled":
-                log.info("Neutral ask oid=%s canceled -- will re-place at book", self.my_ask_oid)
-                self._post_only_catch_up_sides.add("ask")
-                self.my_ask_oid = None
-
-            if not self.my_bid_oid:
-                target = best_bid.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                if not self._entry_price_allowed(target):
-                    self._cancel_entry_and_idle(
-                        subaccount,
-                        f"neutral bid re-place {target} outside entry band "
-                        f"[{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
-                    )
-                    return
-                place_price = self._limit_price_for_order(
-                    "bid", best_bid, best_ask, target)
-                if place_price is None:
-                    return
-                oid = self._place_post_only_at_price(
-                    ticker=ticker, side="bid", price=place_price,
-                    count=count, subaccount=subaccount,
-                    best_bid=best_bid, best_ask=best_ask,
-                    label="QUOTING re-place bid",
-                )
-                if oid:
-                    self.my_bid_oid = oid
-                    self.submitted_bid_price = place_price
-                return
-
-            if not self.my_ask_oid:
-                target = best_ask.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
-                if not self._entry_price_allowed(target):
-                    self._cancel_entry_and_idle(
-                        subaccount,
-                        f"neutral ask re-place {target} outside entry band "
-                        f"[{MIN_ENTRY_PRICE}, {MAX_ENTRY_PRICE}]",
-                    )
-                    return
-                place_price = self._limit_price_for_order(
-                    "ask", best_bid, best_ask, target)
-                if place_price is None:
-                    return
-                oid = self._place_post_only_at_price(
-                    ticker=ticker, side="ask", price=place_price,
-                    count=count, subaccount=subaccount,
-                    best_bid=best_bid, best_ask=best_ask,
-                    label="QUOTING re-place ask",
-                )
-                if oid:
-                    self.my_ask_oid = oid
-                    self.submitted_ask_price = place_price
-                return
-
-            bid_gone = self.my_bid_oid and bid_status not in (None, "resting")
-            ask_gone = self.my_ask_oid and ask_status not in (None, "resting")
-            if bid_gone and ask_gone:
-                log.info("QUOTING -> IDLE: both orders gone (bid=%s ask=%s)", bid_status, ask_status)
-                self._clear_all_order_state()
-                self.state = HFTState.IDLE
-
-    # -- CLOSING: manage counter-order and stop-loss ------------------------
-
-    def _closing_manage(self, r, ticker, position, best_bid, best_ask, count, subaccount):
-        self._sync_entry_with_position(position, best_bid, best_ask)
-        close_side = self._effective_close_side(position)
-        if not close_side:
-            return
-
-        # Check counter-order status
-        if self.counter_oid:
-            status = self._check_order_status(r, self.counter_oid)
-            if status == "executed":
-                log.info(
-                    "Counter oid=%s executed -- awaiting flat (no replacement limit)",
-                    self.counter_oid,
-                )
-                self.counter_oid = None
-                self.awaiting_flat_after_counter = True
-                return
-            if status is not None and status != "resting":
-                log.info("Counter oid=%s status=%s -- cleared", self.counter_oid, status)
-                if status == "canceled":
-                    self._post_only_catch_up_sides.add(close_side)
-                    log.info(
-                        "Counter canceled (post-only) -- will re-place %s at book",
-                        close_side,
-                    )
-                self.counter_oid = None
-                if status == "canceled":
-                    self.awaiting_flat_after_counter = False
-
-        # Counter filled: wait for flat unless loss or position mismatch requires action.
-        if self.awaiting_flat_after_counter:
-            if abs(position) < 0.001:
-                log.info("CLOSING: flat after counter — done awaiting")
-                self.awaiting_flat_after_counter = False
-                return
-            max_c = self._max_contracts(count)
-            if abs(position) > max_c + 0.001:
-                log.warning(
-                    "Still |position|=%.2f > max %.2f after counter fill -> ripcord",
-                    position, max_c,
-                )
-                self._ripcord_flatten(
-                    ticker, count, subaccount, position=position)
-                return
-            if self._maybe_ripcord_on_loss(
-                ticker, position, best_bid, best_ask, count, subaccount, r=r,
-            ):
-                self.awaiting_flat_after_counter = False
-                return
-            if not self._position_matches_entry(position):
-                log.warning(
-                    "Awaiting flat but position=%.2f vs entry_side=%s — resume close",
-                    position, self.entry_side,
-                )
-                self.awaiting_flat_after_counter = False
-                self._sync_entry_with_position(position, best_bid, best_ask)
-                close_side = self._effective_close_side(position)
-            else:
-                return
-
-        if self._maybe_ripcord_on_loss(
-            ticker, position, best_bid, best_ask, count, subaccount, r=r,
-        ):
-            return
-
-        loss = self._unrealized_loss_cents(position, best_bid, best_ask)
-        if (
-            loss is not None
-            and loss >= self.max_loss_cents
-            and self.counter_oid
-        ):
-            raw_touch = best_bid if position > 0.001 else best_ask
-            submit_px = self._effective_submit_price(
-                raw_touch, close_side, best_bid, best_ask,
-            )
-            if submit_px is None:
-                return
-            if self.last_amend_price is None or submit_px != self.last_amend_price:
-                price_str = f"{submit_px:.4f}"
-                log.info(
-                    "STOP_LOSS amend: loss=%s -> %s at %s",
-                    loss, close_side, price_str,
-                )
-                result = kalshi_amend_order(
-                    self.counter_oid, ticker=ticker, side=close_side,
-                    price=price_str, count=count, subaccount=subaccount)
-                self._mark_api_action()
-                if result is None:
-                    self._mark_post_only_cross(
-                        close_side,
-                        submit_px,
-                        best_bid,
-                        best_ask,
-                        apply_backoff=False,
-                    )
-                    self.counter_oid = None
-                    self.last_amend_price = None
-                    return
-                self.last_amend_price = submit_px
-                return
-
-        # No counter-order: place one (side from position when entry label lags)
-        if not self.counter_oid:
-            if not self._position_matches_entry(position):
-                log.warning(
-                    "CLOSING: position=%.2f vs entry_side=%s — placing close from position",
-                    position, self.entry_side,
-                )
-                close_side = self._effective_close_side(position)
-                if not close_side:
-                    return
-            target_price = self._target_counter_price(best_bid, best_ask)
-            if target_price is None:
-                return
-            close_price = self._limit_price_for_order(
-                close_side, best_bid, best_ask, target_price)
-            if close_price is None:
-                return
-            oid = self._place_post_only_at_price(
-                ticker=ticker, side=close_side, price=close_price,
-                count=count, subaccount=subaccount,
-                best_bid=best_bid, best_ask=best_ask, label="Placing counter",
-                exempt_post_only_backoff=True,
-            )
-            if oid:
-                self.counter_oid = oid
-                log.info("Counter resting oid=%s price=%s", oid, f"{close_price:.4f}")
-            else:
-                log.info(
-                    "Counter did not rest -- will retry at book on next tick",
-                )
-
 
 # ---------------------------------------------------------------------------
-# Main event loop
+# Main loop
 # ---------------------------------------------------------------------------
 
 HFT_LOCK_KEY = "rec_io:hft:engine_lock"
@@ -2096,7 +1074,6 @@ HFT_LOCK_TTL = 10
 
 
 def _acquire_singleton_lock(r_cmd) -> bool:
-    """Acquire a Redis-based singleton lock. Returns True if this is the only instance."""
     my_pid = str(os.getpid())
     acquired = r_cmd.set(HFT_LOCK_KEY, my_pid, nx=True, ex=HFT_LOCK_TTL)
     if acquired:
@@ -2113,18 +1090,15 @@ def _acquire_singleton_lock(r_cmd) -> bool:
 
 
 def _refresh_lock(r_cmd) -> bool:
-    """Refresh the lock TTL. Returns False if we lost the lock."""
     my_pid = str(os.getpid())
-    holder = r_cmd.get(HFT_LOCK_KEY)
-    if holder == my_pid:
+    if r_cmd.get(HFT_LOCK_KEY) == my_pid:
         r_cmd.expire(HFT_LOCK_KEY, HFT_LOCK_TTL)
         return True
     return False
 
 
 def run_hft_engine():
-    log.info("HFT Engine starting (port=%d)", HFT_PORT)
-
+    log.info("HFT Engine v2 starting (port=%d)", HFT_PORT)
     user_no = os.getenv("REC_USER_NO", "0001").strip()
     symbol = os.getenv("HFT_SYMBOL", "BTC").strip().upper()
     market = os.getenv("HFT_MARKET", "15m").strip().lower()
@@ -2149,16 +1123,13 @@ def run_hft_engine():
         r_cmd = redis_lib.Redis(**conn_kw)
 
     if not _acquire_singleton_lock(r_cmd):
-        log.error("Another HFT engine is already running (lock held by PID %s). Exiting.",
-                  r_cmd.get(HFT_LOCK_KEY))
+        log.error("Another HFT engine holds the lock. Exiting.")
         sys.exit(1)
     log.info("Singleton lock acquired (PID %d)", os.getpid())
 
     engine._write_state(r_cmd)
-
     pubsub = r_sub.pubsub()
     pubsub.subscribe(UPDATED_CHANNEL)
-    log.info("Subscribed to %s", UPDATED_CHANNEL)
 
     relevant_kinds = {
         "orderbook", "strike_ladder", "market", "symbol",
@@ -2171,7 +1142,7 @@ def run_hft_engine():
             now = time.monotonic()
             if now - last_lock_refresh > (HFT_LOCK_TTL / 2):
                 if not _refresh_lock(r_cmd):
-                    log.error("Lost singleton lock -- another instance took over. Exiting.")
+                    log.error("Lost singleton lock — exiting.")
                     break
                 last_lock_refresh = now
 
@@ -2179,14 +1150,17 @@ def run_hft_engine():
             if msg and msg.get("type") == "message":
                 try:
                     payload = json.loads(msg["data"])
-                    kind = payload.get("kind", "")
-                    if kind in relevant_kinds:
+                    if payload.get("kind", "") in relevant_kinds:
                         engine.evaluate(r_cmd)
                 except (json.JSONDecodeError, TypeError):
                     pass
-            elif msg is None:
-                if now - engine.last_eval_mono > 2.0:
+                except Exception:
+                    log.exception("evaluate failed (pubsub)")
+            elif msg is None and now - engine.last_eval_mono > 2.0:
+                try:
                     engine.evaluate(r_cmd)
+                except Exception:
+                    log.exception("evaluate failed (heartbeat)")
     except KeyboardInterrupt:
         log.info("Shutting down")
     finally:

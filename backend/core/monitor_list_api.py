@@ -207,6 +207,10 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 except Exception as exc:
                     # Never fail GET /api/monitors because pipeline-health or spot-gate SQL errored
                     # (tenant search_path, missing table/column, permissions, etc.).
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
                     _log.exception(
                         "monitor_list pipeline_gate_conn failed sym=%s mkt=%s: %s",
                         sym,

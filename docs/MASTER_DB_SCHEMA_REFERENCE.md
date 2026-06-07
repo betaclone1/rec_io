@@ -8637,6 +8637,27 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ---
 
+### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`)
+
+**Population:** `backend/core/live_price_ring_90m.py` async writes from `cfbenchmarks_price_watchdog` (~1 tick/min). Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only. Migration `20260603_1200_live_price_ring_90m`. BTC/ETH: `numeric(10,2)`; SOL/XRP: `numeric(10,6)`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `timestamp` | `text` | NO | - | EST wall time (hot-path format) |
+| `price` | `numeric` | NO | - | Index print price |
+
+#### Constraints
+
+- **Primary Key:** on `timestamp`
+
+#### Indexes
+
+- `idx_live_price_ring_90m_{symbol}_timestamp` on `timestamp` (btree)
+
+---
+
 ### Table: `live_data.live_symbol_status`
 
 **Population:** Symbol-wide loss prevention fields are synced from configured user `0001` hero monitors whose `name` matches `monitor_follow`. `prev_day_avg_*` / `daily_update` may be updated by `symbol_price_watchdog` daily rollup. Legacy tick columns (`price`, `momentum`, deltas, etc.) are **not** mirrored in real time (migration `20260517_1500_live_symbol_status_lp_only_drop_price_sync`); operational ticks live in Redis `live_state` and `live_price_log_1s_*`.

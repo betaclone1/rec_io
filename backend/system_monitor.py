@@ -100,10 +100,7 @@ class SystemMonitor:
             "main_app": get_port("main_app"),
             user_scoped_service_name("trade_manager"): get_port("trade_manager"),
             user_scoped_service_name("trade_executor"): get_port("trade_executor"),
-            "symbol_price_watchdog_btc": get_port("symbol_price_watchdog_btc"),
-            "symbol_price_watchdog_eth": get_port("symbol_price_watchdog_eth"),
-            "symbol_price_watchdog_sol": get_port("symbol_price_watchdog_sol"),
-            "symbol_price_watchdog_xrp": get_port("symbol_price_watchdog_xrp"),
+            "cfbenchmarks_price_watchdog": get_port("cfbenchmarks_price_watchdog"),
             "strike_table_generator_ws_hourly": get_port("strike_table_generator_ws_hourly"),
             "strike_table_generator_ws_15m": get_port("strike_table_generator_ws_15m"),
             user_scoped_service_name("kalshi_account_sync"): get_port("kalshi_account_sync"),
@@ -128,7 +125,10 @@ class SystemMonitor:
         """Discover all services from the universal configuration system."""
         try:
             # Import the supervisor config generator (scripts dir is on sys.path)
-            from config.generate_unified_supervisor_config import SupervisorConfigGenerator
+            from config.generate_unified_supervisor_config import (
+                SupervisorConfigGenerator,
+                global_core_service_specs,
+            )
             
             # Create a temporary generator to get the service list
             generator = SupervisorConfigGenerator()
@@ -152,21 +152,7 @@ class SystemMonitor:
             
             discovered_services: Dict[str, int] = {}
             
-            global_core = [
-                {"name": "main_app", "script": "main.py"},
-                {"name": "read_api", "script": "read_api.py"},
-                {"name": "redis_switchboard", "script": "redis_switchboard.py"},
-                {"name": "symbol_price_watchdog_btc", "script": "symbol_price_watchdog.py BTC"},
-                {"name": "symbol_price_watchdog_eth", "script": "symbol_price_watchdog.py ETH"},
-                {"name": "symbol_price_watchdog_sol", "script": "symbol_price_watchdog.py SOL"},
-                {"name": "symbol_price_watchdog_xrp", "script": "symbol_price_watchdog.py XRP"},
-                {
-                    "name": "market_watchdog_ws_kalshi",
-                    "script": "market_watchdog_ws.py --exchange kalshi --market all",
-                },
-                {"name": "system_monitor", "script": "system_monitor.py"},
-                {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"},
-            ]
+            global_core = global_core_service_specs()
             for svc in global_core:
                 n = svc["name"]
                 discovered_services[n] = ports.get(n, 8000)
@@ -413,23 +399,32 @@ class SystemMonitor:
                 "qualified_table": f"{trades_schema}.{trades_table}",
             }
 
-        # Price log (global live_data)
+        # CFB ring buffer (replaces legacy live_price_log_1s_* for hot-path health)
         try:
             conn = psycopg2.connect(**cfg)
             cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM live_data.live_price_log_1s_btc")
-            price_count = cursor.fetchone()[0]
+            ring_total = 0
+            for sym in ("btc", "eth", "sol", "xrp"):
+                cursor.execute(
+                    psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
+                        psql.Identifier("live_data"),
+                        psql.Identifier(f"live_price_ring_90m_{sym}"),
+                    )
+                )
+                ring_total += int(cursor.fetchone()[0] or 0)
             conn.close()
             db_health["price_db"] = {
                 "status": "healthy",
-                "price_count": price_count,
+                "ring_tick_count": ring_total,
                 "database_type": "postgresql",
+                "source": "live_data.live_price_ring_90m_*",
             }
         except Exception as e:
             db_health["price_db"] = {
                 "status": "unhealthy",
                 "error": str(e),
                 "database_type": "postgresql",
+                "source": "live_data.live_price_ring_90m_*",
             }
 
         return db_health
