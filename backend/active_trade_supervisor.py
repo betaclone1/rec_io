@@ -7090,9 +7090,17 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
     elif strategy == "Reverse HTC":
         # Reverse HTC uses the same auto-stop logic as Hourly HTC
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+    elif strategy == "Expiration Scalp":
+        check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     else:
         # Default to Hourly HTC (fallback for any other strategy or missing strategy)
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+
+
+def check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades):
+    """Expiration Scalp holds to settlement — no auto-stop."""
+    return
+
 
 def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades):
     """

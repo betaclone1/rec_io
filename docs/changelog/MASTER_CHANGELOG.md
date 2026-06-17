@@ -6,6 +6,31 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-06-17 — Release v3.7.5: Expiration Scalp strategy, monitor_manager pool fixes, local restart hardening
+
+**Summary**
+- **Release: v3.7.5**
+- **Expiration Scalp:** New strategy seeded via migration **`20260612_1200_expiration_scalp_strategy`** (TTC 0–60s, prob 90–100%, ask $0.90–$0.99). AES entry scans YES/NO independently with side-aware probability and active-side ask window (not HTC `active_side` path). ATS no-op auto-stop. Desktop + mobile UAT settings.
+- **monitor_manager:** Fix Postgres connection pool leaks (cleanup, status watcher, regime reconcile); release DB connection before post-save regime reconcile; default pool max 8. Monitor settings saves no longer exhaust the pool.
+- **Local ops:** `MASTER_RESTART.sh` / supervisord macOS daemon mode, venv binary paths, skip redundant Step 6 on fresh start; `load_unified_config.sh` / `paths.py` venv resolution.
+- **Database:** Migration **`20260612_1200_expiration_scalp_strategy`** required on prod; `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260612_1200_expiration_scalp_strategy.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_executor_*`, `monitor_manager_*`, `auto_entry_supervisor_*`; confirm monitor settings save works (no pool exhausted error).
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.7.5`
+
+---
+
 ## 2026-06-04 — Release v3.7.4: CFB price watchdog, live price ring, quarter-hour expiry fix, monitor health
 
 **Summary**

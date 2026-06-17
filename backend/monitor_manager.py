@@ -27,6 +27,7 @@ import re
 from datetime import datetime, time as dt_time, timedelta, timezone
 from zoneinfo import ZoneInfo
 from typing import Dict, Any, Optional, List
+from contextlib import contextmanager
 from flask import Flask, request, jsonify
 from backend.core.unified_config import UnifiedConfigManager
 from backend.core.time_eastern import (
@@ -215,7 +216,7 @@ class MonitorManager:
             if _mm_pg_pool is None:
                 max_conn = max(
                     1,
-                    int(os.environ.get("REC_MONITOR_MANAGER_PG_POOL_MAX", "4")),
+                    int(os.environ.get("REC_MONITOR_MANAGER_PG_POOL_MAX", "8")),
                 )
                 try:
                     _mm_pg_pool = psycopg2.pool.ThreadedConnectionPool(
@@ -236,6 +237,18 @@ class MonitorManager:
                         f"(max={getattr(_mm_pg_pool, 'maxconn', 'unknown')})"
                     )
                 time.sleep(0.05)
+
+    @contextmanager
+    def pooled_database_connection(self):
+        """Return a pooled tenant connection; always closes (returns to pool) on exit."""
+        conn = self.get_database_connection()
+        try:
+            yield conn
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
     
     def log_event(self, event_type: str, message: str, data: Optional[Dict] = None):
         """Centralized logging for monitor manager events. Uses standard logger (EST, flush)."""
@@ -255,44 +268,43 @@ class MonitorManager:
         Uses only status: 'active' = scripts run, 'inactive' = they do not.
         auto_trade / auto_trade_status are for auto-trading behavior only, not script lifecycle."""
         try:
-            conn = self.get_database_connection()
-            with conn.cursor() as cursor:
-                ml = _mm_monitor_list_qualified()
-                cursor.execute(
-                    sql.SQL(
-                        "SELECT id, name, status FROM {} WHERE status = 'active' ORDER BY id"
-                    ).format(ml)
-                )
-                
-                monitors = []
-                for row in cursor.fetchall():
-                    monitor_id = row[0]
-                    name = row[1]
-                    status = row[2]
-                    
-                    # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
-                    if name.startswith("mon_"):
-                        parts = name.split("_")
-                        if len(parts) >= 3:
-                            user_number = parts[1]  # 0001
-                            monitor_id = parts[2]   # 10001
+            with self.pooled_database_connection() as conn:
+                with conn.cursor() as cursor:
+                    ml = _mm_monitor_list_qualified()
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT id, name, status FROM {} WHERE status = 'active' ORDER BY id"
+                        ).format(ml)
+                    )
+
+                    monitors = []
+                    for row in cursor.fetchall():
+                        monitor_id = row[0]
+                        name = row[1]
+                        status = row[2]
+
+                        # Extract user_number and monitor_id from name (e.g., "mon_0001_10001")
+                        if name.startswith("mon_"):
+                            parts = name.split("_")
+                            if len(parts) >= 3:
+                                user_number = parts[1]  # 0001
+                                monitor_id = parts[2]   # 10001
+                            else:
+                                user_number = _mm_worker_slot()
+                                monitor_id = str(monitor_id)
                         else:
                             user_number = _mm_worker_slot()
                             monitor_id = str(monitor_id)
-                    else:
-                        user_number = _mm_worker_slot()
-                        monitor_id = str(monitor_id)
-                    
-                    monitors.append({
-                        'id': monitor_id,
-                        'name': name,
-                        'status': status,
-                        'user_number': user_number,
-                        'monitor_id': monitor_id
-                    })
-                
-                conn.close()
-                return monitors
+
+                        monitors.append({
+                            'id': monitor_id,
+                            'name': name,
+                            'status': status,
+                            'user_number': user_number,
+                            'monitor_id': monitor_id
+                        })
+
+                    return monitors
                 
         except Exception as e:
             self.log_event("ERROR", f"Error getting active monitors from database: {e}")
@@ -1724,20 +1736,22 @@ environment={env_vars}
 
     def reconcile_regime_for_monitor(self, monitor_id: int, user_number: str = "0001", force_immediate: bool = False) -> Dict[str, Any]:
         """Immediately run regime evaluation for a single monitor."""
-        conn = None
         try:
             slot = _norm_slot(user_number)
             ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
-            conn = self.get_database_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    sql.SQL("SELECT name FROM {} WHERE id = %s").format(ml_ident),
-                    (monitor_id,),
-                )
-                row = cursor.fetchone()
-                if not row or not row[0]:
-                    return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
-                monitor_name = row[0]
+            monitor_name = None
+            with self.pooled_database_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        sql.SQL("SELECT name FROM {} WHERE id = %s").format(ml_ident),
+                        (monitor_id,),
+                    )
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        monitor_name = row[0]
+
+            if not monitor_name:
+                return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
 
             self._evaluate_and_switch_regime(monitor_name, force_immediate=force_immediate)
             return {
@@ -1748,30 +1762,26 @@ environment={env_vars}
         except Exception as e:
             self.log_event("ERROR", f"Error reconciling regime for monitor {monitor_id}: {e}")
             return {"status": "error", "message": str(e)}
-        finally:
-            if conn:
-                conn.close()
 
     def reconcile_regime_full_sweep(self, user_number: str = "0001", force_immediate: bool = False) -> Dict[str, Any]:
         """Run regime evaluation across the monitor list immediately."""
-        conn = None
         try:
             slot = _norm_slot(user_number)
             ml_ident = sql_ident_qualified_table(monitor_list_fqn(slot))
-            conn = self.get_database_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(
-                    sql.SQL(
-                        """
+            with self.pooled_database_connection() as conn:
+                with conn.cursor() as cursor:
+                    cursor.execute(
+                        sql.SQL(
+                            """
                     SELECT name
                     FROM {}
                     WHERE name IS NOT NULL
                       AND status != 'ARCHIVED'
                     ORDER BY id
                     """
-                    ).format(ml_ident)
-                )
-                monitor_names = [row[0] for row in cursor.fetchall() if row and row[0]]
+                        ).format(ml_ident)
+                    )
+                    monitor_names = [row[0] for row in cursor.fetchall() if row and row[0]]
 
             reconciled = 0
             for monitor_name in monitor_names:
@@ -1786,9 +1796,6 @@ environment={env_vars}
         except Exception as e:
             self.log_event("ERROR", f"Error running regime full sweep: {e}")
             return {"status": "error", "message": str(e)}
-        finally:
-            if conn:
-                conn.close()
 
     def periodic_monitor_statistics_update(self) -> Dict[str, Any]:
         """
@@ -1960,15 +1967,15 @@ environment={env_vars}
     def _get_inactive_monitor_ids(self) -> List[str]:
         """Get list of monitor IDs that are inactive or archived"""
         try:
-            conn = self.get_database_connection()
-            with conn.cursor() as cursor:
-                ml = _mm_monitor_list_qualified()
-                cursor.execute(
-                    sql.SQL(
-                        "SELECT id FROM {} WHERE status IN ('inactive', 'ARCHIVED') ORDER BY id"
-                    ).format(ml)
-                )
-                return [str(row[0]) for row in cursor.fetchall()]
+            with self.pooled_database_connection() as conn:
+                with conn.cursor() as cursor:
+                    ml = _mm_monitor_list_qualified()
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT id FROM {} WHERE status IN ('inactive', 'ARCHIVED') ORDER BY id"
+                        ).format(ml)
+                    )
+                    return [str(row[0]) for row in cursor.fetchall()]
         except Exception as e:
             _logger.error("Error getting inactive monitor IDs: %s", e)
             return []
@@ -2010,13 +2017,13 @@ environment={env_vars}
         """Clean up log files for monitors that don't exist in the database"""
         try:
             _logger.debug("Starting cleanup of orphaned monitor logs")
-            
+
             # Get all monitor IDs from database
-            conn = self.get_database_connection()
-            with conn.cursor() as cursor:
-                ml = _mm_monitor_list_qualified()
-                cursor.execute(sql.SQL("SELECT id FROM {} ORDER BY id").format(ml))
-                valid_monitor_ids = {str(row[0]) for row in cursor.fetchall()}
+            with self.pooled_database_connection() as conn:
+                with conn.cursor() as cursor:
+                    ml = _mm_monitor_list_qualified()
+                    cursor.execute(sql.SQL("SELECT id FROM {} ORDER BY id").format(ml))
+                    valid_monitor_ids = {str(row[0]) for row in cursor.fetchall()}
             
             # Create monitor_log_archive directory if it doesn't exist
             archive_dir = os.path.join(self.project_root, "logs", "log_archive", "monitor_log_archive")
@@ -3037,25 +3044,27 @@ def toggle_auto_trade():
             return jsonify({"status": "error", "message": "Invalid monitor ID format"})
         
         conn = monitor_manager.get_database_connection()
-        ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
-        with conn.cursor() as cursor:
-            # Update ONLY auto_trade boolean - do NOT change auto_trade_status
-            cursor.execute(
-                sql.SQL(
-                    """
+        try:
+            ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
+            with conn.cursor() as cursor:
+                # Update ONLY auto_trade boolean - do NOT change auto_trade_status
+                cursor.execute(
+                    sql.SQL(
+                        """
                 UPDATE {}
                 SET auto_trade = %s
                 WHERE id = %s
             """
-                ).format(ml_ident),
-                (auto_trade, db_monitor_id),
-            )
-            
-            if cursor.rowcount == 0:
-                return jsonify({"status": "error", "message": "Monitor not found"})
-            
-        conn.commit()
-        conn.close()
+                    ).format(ml_ident),
+                    (auto_trade, db_monitor_id),
+                )
+
+                if cursor.rowcount == 0:
+                    return jsonify({"status": "error", "message": "Monitor not found"})
+
+            conn.commit()
+        finally:
+            conn.close()
 
         try:
             from backend.core.tradeflow_monitor_settings_cache import (
@@ -3181,33 +3190,31 @@ class MonitorStatusWatcher:
     def _check_for_status_changes(self):
         """Check for monitor status changes in the database"""
         try:
-            conn = self.monitor_manager.get_database_connection()
-            with conn.cursor() as cursor:
-                ml = _mm_monitor_list_qualified()
-                cursor.execute(
-                    sql.SQL("SELECT id, status FROM {} ORDER BY id").format(ml)
-                )
-                
-                current_status = {}
-                for row in cursor.fetchall():
-                    monitor_id = row[0]
-                    status = row[1]
-                    current_status[monitor_id] = status
-                
-                conn.close()
-                
-                # Check for changes
-                for monitor_id, status in current_status.items():
-                    if monitor_id not in self.last_status or self.last_status[monitor_id] != status:
-                        _logger.debug("Status change detected: Monitor %s changed from %s to %s", monitor_id, self.last_status.get(monitor_id, 'unknown'), status)
-                        self._handle_status_change(monitor_id, status)
-                        self.last_status[monitor_id] = status
-                
-                # Check for removed monitors
-                for monitor_id in list(self.last_status.keys()):
-                    if monitor_id not in current_status:
-                        _logger.info("Monitor removed from database monitor_id=%s", monitor_id)
-                        del self.last_status[monitor_id]
+            with self.monitor_manager.pooled_database_connection() as conn:
+                with conn.cursor() as cursor:
+                    ml = _mm_monitor_list_qualified()
+                    cursor.execute(
+                        sql.SQL("SELECT id, status FROM {} ORDER BY id").format(ml)
+                    )
+
+                    current_status = {}
+                    for row in cursor.fetchall():
+                        monitor_id = row[0]
+                        status = row[1]
+                        current_status[monitor_id] = status
+
+            # Check for changes
+            for monitor_id, status in current_status.items():
+                if monitor_id not in self.last_status or self.last_status[monitor_id] != status:
+                    _logger.debug("Status change detected: Monitor %s changed from %s to %s", monitor_id, self.last_status.get(monitor_id, 'unknown'), status)
+                    self._handle_status_change(monitor_id, status)
+                    self.last_status[monitor_id] = status
+
+            # Check for removed monitors
+            for monitor_id in list(self.last_status.keys()):
+                if monitor_id not in current_status:
+                    _logger.info("Monitor removed from database monitor_id=%s", monitor_id)
+                    del self.last_status[monitor_id]
                         
         except Exception as e:
             _logger.error("Error checking status changes: %s", e)
@@ -3335,24 +3342,24 @@ def _handle_auto_entry_settings_stream(decoded: Dict[str, Any], msg_id: str, raw
             tenant_user_no = worker_tenant_context_cached().user_no
         tenant_ctx = get_api_tenant_context(tenant_user_no)
 
-        conn = monitor_manager.get_database_connection()
-        try:
+        result: Dict[str, Any] = {"status": "error", "message": "not applied"}
+        with monitor_manager.pooled_database_connection() as conn:
             with conn.cursor() as cursor:
                 result = apply_auto_entry_settings(cursor, mid, body, tenant_context=tenant_ctx)
             if result.get("status") == "ok":
                 conn.commit()
-                trigger_regime_reconcile_after_auto_entry_save(
-                    mid,
-                    user_number=tenant_user_no,
-                    source="set_auto_entry_settings_redis",
-                )
-                monitor_manager._notify_frontend_monitor_list_updated(
-                    "Auto trade settings updated (Redis)"
-                )
             else:
                 conn.rollback()
-        finally:
-            conn.close()
+
+        if result.get("status") == "ok":
+            trigger_regime_reconcile_after_auto_entry_save(
+                mid,
+                user_number=tenant_user_no,
+                source="set_auto_entry_settings_redis",
+            )
+            monitor_manager._notify_frontend_monitor_list_updated(
+                "Auto trade settings updated (Redis)"
+            )
 
         r = redis_client_optional()
         if r and cid:

@@ -14,4 +14,4 @@ echo "[supervisord_with_config_regen] Writing ${SUPERVISOR_CONFIG} from DB..."
 
 rm -rf "${REC_PROJECT_ROOT}/backend/__pycache__" 2>/dev/null || true
 
-exec supervisord -c "$SUPERVISOR_CONFIG" "$@"
+exec "${REC_SUPERVISORD:-supervisord}" -c "$SUPERVISOR_CONFIG" "$@"

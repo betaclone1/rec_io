@@ -1565,6 +1565,8 @@ def determine_auto_entry_status():
             return determine_auto_entry_status_momentum_breakout()
         elif strategy == "Momentum Contain":
             return determine_auto_entry_status_momentum_contain()
+        elif strategy == "Expiration Scalp":
+            return determine_auto_entry_status_expiration_scalp()
         else:
             # Default to Hourly HTC (including fallback)
             return determine_auto_entry_status_hourly_htc()
@@ -1572,8 +1574,9 @@ def determine_auto_entry_status():
         log(f"[AUTO ENTRY] ❌ Error determining status: {e}")
         return "DISABLED"
 
-def determine_auto_entry_status_hourly_htc():
-    """Determine the current auto entry status for Hourly HTC strategy"""
+def determine_auto_entry_status_hourly_htc(*, expiration_scalp: bool = False):
+    """Determine the current auto entry status for Hourly HTC (or Expiration Scalp when flagged)."""
+    log_tag = "[AUTO ENTRY EXPIRATION SCALP]" if expiration_scalp else "[AUTO ENTRY HTC]"
     try:
         # Check if auto trade is enabled for this monitor
         auto_trade_enabled = is_auto_trade_enabled()
@@ -1594,7 +1597,9 @@ def determine_auto_entry_status_hourly_htc():
         
         # Get auto entry settings
         settings = get_auto_entry_settings()
-        required_settings = ["min_time", "max_time", "min_probability", "min_differential"]
+        required_settings = ["min_time", "max_time", "min_probability", "max_probability"]
+        if not expiration_scalp:
+            required_settings.append("min_differential")
         missing_settings = [setting for setting in required_settings if setting not in settings]
         
         if missing_settings:
@@ -1612,8 +1617,13 @@ def determine_auto_entry_status_hourly_htc():
             return "INACTIVE"
             
     except Exception as e:
-        log(f"[AUTO ENTRY HTC] ❌ Error determining status: {e}")
+        log(f"{log_tag} ❌ Error determining status: {e}")
         return "DISABLED"
+
+
+def determine_auto_entry_status_expiration_scalp():
+    """Expiration Scalp: same ACTIVE/INACTIVE rules as Hourly HTC (TTC window only)."""
+    return determine_auto_entry_status_hourly_htc(expiration_scalp=True)
 
 def determine_auto_entry_status_momentum_scalp():
     """Determine the current auto entry status for Momentum Scalp strategy"""
@@ -2150,6 +2160,21 @@ def get_auto_entry_settings():
         log(f"[AUTO ENTRY] Error reading settings from strategy: {e}")
         return {}
 
+def _ttc_fallback_seconds(market: str) -> int:
+    """Wall-clock seconds to next contract boundary when ladder TTC is unavailable."""
+    now = est_now()
+    mkt = (market or "hourly").strip().lower()
+    if mkt == "15m":
+        minute = now.minute
+        next_15 = (minute // 15 + 1) * 15
+        if next_15 >= 60:
+            next_boundary = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        else:
+            next_boundary = now.replace(minute=next_15, second=0, microsecond=0)
+        return max(1, int((next_boundary - now).total_seconds()))
+    next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+    return max(1, int((next_hour - now).total_seconds()))
+
 def get_current_ttc():
     """Get current TTC from live_state strike ladder (no PostgreSQL on hot path)."""
     try:
@@ -2174,14 +2199,10 @@ def get_current_ttc():
         ttc_val = ttc_seconds_from_ladder(ladder, current_market)
         if ttc_val is not None:
             return int(ttc_val)
-        now = est_now()
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        return max(1, int((next_hour - now).total_seconds()))
+        return _ttc_fallback_seconds(current_market)
     except Exception as e:
         log(f"[AUTO ENTRY] get_current_ttc fallback after error: {e}")
-        now = est_now()
-        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
-        return max(1, int((next_hour - now).total_seconds()))
+        return _ttc_fallback_seconds(current_market if "current_market" in locals() else "hourly")
 
 def get_strike_table_path():
     """Get the path to the master strike table JSON file"""
@@ -3242,7 +3263,7 @@ def _check_auto_entry_conditions_impl():
             is_15m = mkt_l == "15m"
             auto_on = is_auto_trade_enabled()
             # Simulated 15m: exclude Momentum Breakout/Contain for testing; may re-include later
-            skip_sim = strategy in ("Momentum Breakout", "Momentum Contain")
+            skip_sim = strategy in ("Momentum Breakout", "Momentum Contain", "Expiration Scalp")
             if (is_hourly or is_15m) and auto_on and not skip_sim:
                 if not hasattr(check_auto_entry_conditions, "_sim_log_ts"):
                     check_auto_entry_conditions._sim_log_ts = 0
@@ -3283,6 +3304,8 @@ def _check_auto_entry_conditions_impl():
             check_auto_entry_conditions_momentum_contain()
         elif strategy == "Rising Devil":
             check_auto_entry_conditions_rising_devil()
+        elif strategy == "Expiration Scalp":
+            check_auto_entry_conditions_expiration_scalp()
         else:
             # Default to Hourly HTC (including fallback)
             check_auto_entry_conditions_hourly_htc()
@@ -3293,6 +3316,7 @@ def _check_auto_entry_conditions_impl():
 
 def check_auto_entry_conditions_hourly_htc():
     """Check if auto entry conditions are met and trigger trades for Hourly HTC strategy"""
+    log_tag = "[AUTO ENTRY]"
     try:
         # Get strike table data directly
         
@@ -3333,8 +3357,8 @@ def check_auto_entry_conditions_hourly_htc():
         required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_differential"]
         missing_settings = [setting for setting in required_settings if setting not in settings]
         if missing_settings:
-            log(f"[AUTO ENTRY] ❌ Missing required settings: {missing_settings}")
-            log(f"[AUTO ENTRY] Cannot proceed without complete settings configuration")
+            log(f"{log_tag} ❌ Missing required settings: {missing_settings}")
+            log(f"{log_tag} Cannot proceed without complete settings configuration")
             return
         
         min_time = settings["min_time"]
@@ -3347,7 +3371,7 @@ def check_auto_entry_conditions_hourly_htc():
         prob_adj = settings.get("prob_adj", 5.00)  # Default to 5.00 if not set
         if spike_alert_active:
             min_probability = base_min_probability + prob_adj
-            log_debug(f"[AUTO ENTRY] 📊 Using adjusted probability: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}% (spike cooldown active)")
+            log_debug(f"{log_tag} 📊 Using adjusted probability: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}% (spike cooldown active)")
         else:
             min_probability = base_min_probability
         
@@ -3387,8 +3411,9 @@ def check_auto_entry_conditions_hourly_htc():
             if not hasattr(check_auto_entry_conditions_hourly_htc, 'last_ttc_log'):
                 check_auto_entry_conditions_hourly_htc.last_ttc_log = 0
             if current_time - check_auto_entry_conditions_hourly_htc.last_ttc_log >= 300:  # Log every 5 minutes
+                label = "Hourly HTC"
                 log(
-                    f"[AUTO ENTRY] ⏸️ Hourly HTC: TTC outside window | ttc={current_ttc}s "
+                    f"{log_tag} ⏸️ {label}: TTC outside window | ttc={current_ttc}s "
                     f"allowed={min_time}-{max_time}s (no scans until TTC is in range)"
                 )
                 check_auto_entry_conditions_hourly_htc.last_ttc_log = current_time
@@ -3441,7 +3466,7 @@ def check_auto_entry_conditions_hourly_htc():
             prob_display = f"{min_probability:.2f}-{max_probability}%"
             if spike_alert_active:
                 prob_display += f" (adjusted: {base_min_probability:.2f}+{prob_adj:.2f})"
-            log_debug(f"[AUTO ENTRY] 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {prob_display}")
+            log_debug(f"{log_tag} 🔍 Scanning {strike_count} strikes | TTC: {current_ttc}s | Window: {min_time}-{max_time}s | Prob: {prob_display}")
             check_auto_entry_conditions_hourly_htc.last_scan_log = current_time
         
         # Process each strike ONCE
@@ -3550,20 +3575,156 @@ def check_auto_entry_conditions_hourly_htc():
                     continue
                 
                 # STEP 9: Trigger the trade
-                log(f"[AUTO ENTRY] 🚀 TRIGGERING TRADE | {strike_key} | Prob: {prob}% | Buy Price: ${buy_price:.2f} | Ticker: {strike.get('ticker')}")
+                log(f"{log_tag} 🚀 TRIGGERING TRADE | {strike_key} | Prob: {prob}% | Buy Price: ${buy_price:.2f} | Ticker: {strike.get('ticker')}")
                 if trigger_auto_entry_trade(strike_data):
-                    log(f"[AUTO ENTRY] ✅ TRADE SUCCESSFUL | {strike_key} | Trade triggered and sent to trade_manager")
+                    log(f"{log_tag} ✅ TRADE SUCCESSFUL | {strike_key} | Trade triggered and sent to trade_manager")
                 else:
-                    log(f"[AUTO ENTRY] ❌ TRADE FAILED | {strike_key} | Failed to trigger trade")
+                    log(f"{log_tag} ❌ TRADE FAILED | {strike_key} | Failed to trigger trade")
                     # Remove from cooldown if trade failed
                     if strike_key in last_trade_times:
                         del last_trade_times[strike_key]
                 
             except Exception as e:
-                log(f"[AUTO ENTRY HTC] Error processing strike {strike.get('strike')}: {e}")
+                log(f"{log_tag} Error processing strike {strike.get('strike')}: {e}")
                 
     except Exception as e:
-        log(f"[AUTO ENTRY HTC] Error checking auto entry conditions: {e}")
+        log(f"{log_tag} Error checking auto entry conditions: {e}")
+
+
+def check_auto_entry_conditions_expiration_scalp():
+    """Near-expiration: buy the side whose ask and side-aware probability both pass (not active_side/HTC)."""
+    log_tag = "[AUTO ENTRY EXPIRATION SCALP]"
+    try:
+        check_spike_alert_conditions()
+
+        strike_table_data = get_master_strike_table_data()
+        if strike_table_data:
+            update_monitor_current_state(strike_table_data)
+
+        auto_trade_enabled = is_auto_trade_enabled()
+        service_healthy = monitoring_thread is not None and monitoring_thread.is_alive()
+        spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
+
+        if not auto_trade_enabled:
+            _aes_indicator_bucket().update({
+                "enabled": False,
+                "ttc_within_window": False,
+                "scanning_active": False,
+                "service_healthy": service_healthy,
+                "spike_alert_active": spike_alert_active,
+                "current_ttc": 0,
+                "last_updated": est_now().isoformat(),
+            })
+            broadcast_auto_entry_indicator_change()
+            return
+
+        settings = get_auto_entry_settings()
+        required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_ask", "max_ask"]
+        missing_settings = [s for s in required_settings if s not in settings]
+        if missing_settings:
+            log(f"{log_tag} ❌ Missing required settings: {missing_settings}")
+            return
+
+        min_time = settings["min_time"]
+        max_time = settings["max_time"]
+        min_probability = float(settings["min_probability"])
+        max_probability = float(settings.get("max_probability", 100))
+        min_ask = float(settings.get("min_ask", 0.90))
+        max_ask = float(settings.get("max_ask", 0.99))
+
+        current_ttc = get_current_ttc()
+        ttc_within_window = min_time <= current_ttc <= max_time
+        scanning_active = auto_trade_enabled and service_healthy and ttc_within_window
+
+        _aes_indicator_bucket().update({
+            "enabled": True,
+            "ttc_within_window": ttc_within_window,
+            "scanning_active": scanning_active,
+            "service_healthy": service_healthy,
+            "spike_alert_active": spike_alert_active,
+            "current_ttc": current_ttc,
+            "min_time": min_time,
+            "max_time": max_time,
+            "last_updated": est_now().isoformat(),
+        })
+        broadcast_auto_entry_indicator_change()
+
+        if not ttc_within_window:
+            return
+
+        if not strike_table_data or "strikes" not in strike_table_data:
+            return
+
+        from backend.core.strike_ladder_fetch import probability_from_strike_row_side_aware
+
+        sym = get_current_monitor_symbol()
+        mkt = get_current_monitor_symbol_and_market()[1]
+        processed_strikes = set()
+
+        for strike in strike_table_data["strikes"]:
+            for side_key in ("yes", "no"):
+                try:
+                    strike_key = _strike_cooldown_key(strike.get("strike"), side_key)
+                    dedupe_key = (strike_key, side_key)
+                    if dedupe_key in processed_strikes:
+                        continue
+                    processed_strikes.add(dedupe_key)
+
+                    if not can_trade_strike(strike_key):
+                        continue
+
+                    strike_data_for_check = {
+                        "strike": strike.get("strike"),
+                        "side": side_key,
+                        "ticker": strike.get("ticker"),
+                    }
+                    if is_strike_already_traded(strike_data_for_check):
+                        continue
+
+                    ask_dollars = strike.get("yes_ask_dollars") if side_key == "yes" else strike.get("no_ask_dollars")
+                    if ask_dollars is None:
+                        continue
+                    ask_price = float(ask_dollars)
+                    if ask_price < min_ask or ask_price > max_ask:
+                        continue
+
+                    prob = probability_from_strike_row_side_aware(strike, mkt, side_key)
+                    if prob is None:
+                        prob = strike.get("probability")
+                    if prob is None or float(prob) < min_probability or float(prob) > max_probability:
+                        continue
+
+                    diff = strike.get("yes_diff") if side_key == "yes" else strike.get("no_diff")
+                    strike_data = {
+                        "strike": format_trade_strike_label(
+                            strike.get("strike"),
+                            symbol=sym,
+                            ticker=strike.get("ticker"),
+                        ),
+                        "side": side_key,
+                        "ticker": strike.get("ticker"),
+                        "buy_price": ask_price,
+                        "probability": prob,
+                        "diff": diff,
+                    }
+
+                    if is_strike_already_traded(strike_data):
+                        continue
+
+                    log(
+                        f"{log_tag} 🚀 TRIGGERING TRADE | {strike_key} {side_key.upper()} | "
+                        f"Prob: {prob}% | Ask: ${ask_price:.4f} | TTC: {current_ttc}s"
+                    )
+                    if trigger_auto_entry_trade(strike_data):
+                        log(f"{log_tag} ✅ TRADE SUCCESSFUL | {strike_key} {side_key.upper()}")
+                    else:
+                        log(f"{log_tag} ❌ TRADE FAILED | {strike_key} {side_key.upper()}")
+                        if strike_key in last_trade_times:
+                            del last_trade_times[strike_key]
+                except Exception as strike_err:
+                    log(f"{log_tag} Error processing strike {strike.get('strike')} {side_key}: {strike_err}")
+    except Exception as e:
+        log(f"{log_tag} Error checking auto entry conditions: {e}")
 
 
 def check_auto_entry_conditions_rising_devil():

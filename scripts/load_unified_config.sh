@@ -169,6 +169,29 @@ validate_directories() {
     fi
 }
 
+# Prefer venv supervisor binaries. On macOS, PATH supervisord is often Homebrew supervisor
+# 4.3.0 on Cellar Python 3.14; kqueue teardown during MASTER_RESTART can kill it and orphan children.
+resolve_supervisor_binaries() {
+    local venv_sup="${REC_VENV_PATH}/bin/supervisord"
+    local venv_ctl="${REC_VENV_PATH}/bin/supervisorctl"
+
+    if [ -x "$venv_sup" ] && [ -x "$venv_ctl" ]; then
+        REC_SUPERVISORD="$venv_sup"
+        REC_SUPERVISORCTL="$venv_ctl"
+    elif command -v supervisord &> /dev/null && command -v supervisorctl &> /dev/null; then
+        REC_SUPERVISORD="$(command -v supervisord)"
+        REC_SUPERVISORCTL="$(command -v supervisorctl)"
+        print_warning "Using PATH supervisord (venv binaries not found); prefer venv on macOS"
+    else
+        print_error "supervisord/supervisorctl not found"
+        return 1
+    fi
+
+    export REC_SUPERVISORD REC_SUPERVISORCTL
+    print_status "Supervisor binaries: $REC_SUPERVISORD"
+    return 0
+}
+
 # Function to validate Python environment
 validate_python_environment() {
     print_status "Validating Python environment..."
@@ -211,6 +234,11 @@ main() {
     # Validate Python environment
     if ! validate_python_environment; then
         print_error "Python environment validation failed"
+        exit 1
+    fi
+
+    if ! resolve_supervisor_binaries; then
+        print_error "Supervisor binary resolution failed"
         exit 1
     fi
     

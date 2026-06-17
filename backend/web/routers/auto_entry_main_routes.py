@@ -240,26 +240,29 @@ async def set_auto_entry_settings(request: Request):
             )
 
         conn = get_postgresql_connection()
+        result: Dict[str, Any] = {"status": "error", "message": "not applied"}
         try:
             with conn.cursor() as cursor:
                 result = apply_auto_entry_settings(cursor, str(monitor_id), data)
             if result.get("status") == "ok":
                 conn.commit()
-                trigger_regime_reconcile_after_auto_entry_save(
-                    str(monitor_id),
-                    user_number=resolved_tenant_user_no_for_app(),
-                    source="set_auto_entry_settings",
-                )
-                _log.debug(
-                    "[Auto Entry & Auto Stop Settings] Updated monitor %s: %s",
-                    monitor_id,
-                    list(data.keys()),
-                )
             else:
                 conn.rollback()
-            return result
         finally:
             conn.close()
+
+        if result.get("status") == "ok":
+            trigger_regime_reconcile_after_auto_entry_save(
+                str(monitor_id),
+                user_number=resolved_tenant_user_no_for_app(),
+                source="set_auto_entry_settings",
+            )
+            _log.debug(
+                "[Auto Entry & Auto Stop Settings] Updated monitor %s: %s",
+                monitor_id,
+                list(data.keys()),
+            )
+        return result
 
     except Exception as e:
         _log.debug("[Auto Entry Settings] Error updating strategy: %s", e)

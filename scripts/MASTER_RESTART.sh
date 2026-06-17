@@ -217,7 +217,7 @@ stop_supervisor() {
     print_status "Stopping supervisor..."
     
     if [ -S "$SUPERVISOR_SOCKET" ]; then
-        supervisorctl -c "$SUPERVISOR_CONFIG" shutdown 2>/dev/null || true
+        "$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" shutdown 2>/dev/null || true
         /bin/sleep 2
     fi
     
@@ -265,10 +265,22 @@ start_supervisor() {
 
     regenerate_supervisor_config || return 1
 
-    # Start supervisor in background
-    supervisord -c "$SUPERVISOR_CONFIG" &
-    local supervisor_pid=$!
-    
+    local config_to_use="$SUPERVISOR_CONFIG"
+    print_status "Using supervisord: $REC_SUPERVISORD"
+
+    if [ "$(uname -s)" = "Darwin" ]; then
+        # nodaemon=true in repo config ties supervisord to the shell; daemonize on macOS.
+        config_to_use="${REC_PROJECT_ROOT}/backend/.supervisord.daemon.conf"
+        sed 's/^nodaemon=true$/nodaemon=false/' "$SUPERVISOR_CONFIG" > "$config_to_use"
+        print_status "macOS: starting supervisord as daemon (nodaemon=false)"
+        "$REC_SUPERVISORD" -c "$config_to_use"
+    else
+        nohup "$REC_SUPERVISORD" -c "$SUPERVISOR_CONFIG" </dev/null >>"${REC_PROJECT_ROOT}/logs/supervisord_nohup.log" 2>&1 &
+        local supervisor_pid=$!
+        disown "$supervisor_pid" 2>/dev/null || true
+        print_status "Supervisor background PID: $supervisor_pid"
+    fi
+
     # Wait for supervisor to start
     local attempts=0
     while [ $attempts -lt 30 ]; do
@@ -278,9 +290,13 @@ start_supervisor() {
         /bin/sleep 1
         attempts=$((attempts + 1))
     done
-    
+
     if [ -S "$SUPERVISOR_SOCKET" ]; then
-        print_success "Supervisor started (PID: $supervisor_pid)"
+        local running_pid=""
+        if [ -f "$SUPERVISOR_PID" ]; then
+            running_pid=$(cat "$SUPERVISOR_PID" 2>/dev/null || true)
+        fi
+        print_success "Supervisor started${running_pid:+ (PID: $running_pid)}"
     else
         print_error "Failed to start supervisor"
         return 1
@@ -301,18 +317,18 @@ restart_all_services() {
     /bin/sleep 2
     
     local programs
-    programs=$(supervisorctl -c "$SUPERVISOR_CONFIG" status | awk '{print $1}' | grep -v "supervisorctl")
+    programs=$("$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" status | awk '{print $1}' | grep -v "supervisorctl")
     
     for program in $programs; do
         print_status "Restarting $program..."
-        if supervisorctl -c "$SUPERVISOR_CONFIG" restart "$program"; then
+        if "$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" restart "$program"; then
             :
         else
             local rc=$?
             print_warning "supervisorctl restart $program exited with code $rc (often transient); rechecking status..."
             /bin/sleep 2
             local state
-            state=$(supervisorctl -c "$SUPERVISOR_CONFIG" status "$program" 2>/dev/null | awk '{print $2}')
+            state=$("$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" status "$program" 2>/dev/null | awk '{print $2}')
             if [ "$state" = "RUNNING" ] || [ "$state" = "STARTING" ]; then
                 print_warning "$program is $state after non-zero restart exit; continuing"
             else
@@ -345,6 +361,17 @@ EOF
     _MASTER_RESTART_MAINT_ACTIVE=0
 }
 
+# Confirm supervisord survived script exit (macOS orphan issue when socket dies).
+verify_supervisord_alive() {
+    /bin/sleep 3
+    if [ -S "$SUPERVISOR_SOCKET" ] && "$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" status >/dev/null 2>&1; then
+        print_success "Supervisord responding on $SUPERVISOR_SOCKET"
+        return 0
+    fi
+    print_error "Supervisord is not responding (socket dead). Check logs/supervisord.log and logs/supervisord_nohup.log"
+    return 1
+}
+
 # Function to verify all services are running
 verify_services() {
     print_status "Verifying all services are running..."
@@ -352,7 +379,7 @@ verify_services() {
     local all_running=true
     
     # Check supervisor status
-    local status_output=$(supervisorctl -c "$SUPERVISOR_CONFIG" status)
+    local status_output=$("$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" status)
     echo "$status_output" | while IFS= read -r line; do
         if [[ $line =~ ^[a-zA-Z_]+[[:space:]]+(RUNNING|STARTING) ]]; then
             local service=$(echo "$line" | awk '{print $1}')
@@ -394,7 +421,7 @@ show_status() {
     echo ""
     
     # Show supervisor status
-    supervisorctl -c "$SUPERVISOR_CONFIG" status
+    "$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" status
     
     echo ""
     print_status "Port usage:"
@@ -646,9 +673,9 @@ EOF
     fi
     echo ""
     
-    # Step 6: Restart all programs (picks up any new [program:...] sections from regenerated config)
-    print_status "Step 6: Restarting all services..."
-    restart_all_services
+    # Step 6: Fresh supervisord already spawned all programs from regenerated config.
+    # Re-restarting every program here is redundant and on macOS can crash supervisord (kqueue).
+    print_status "Step 6: Skipping per-program restart (fresh supervisord start already spawned all programs)"
     echo ""
     
     # Step 7: Verify everything is running
@@ -670,6 +697,8 @@ EOF
     trap - EXIT
     echo ""
 
+    verify_supervisord_alive || true
+
     print_success "MASTER RESTART completed successfully!"
     echo ""
     print_status "System is now ready for trading operations."
@@ -689,6 +718,7 @@ quick_restart() {
     start_supervisor
     restart_all_services
     verify_services
+    verify_supervisord_alive || true
     
     print_success "QUICK RESTART completed!"
 }
@@ -702,7 +732,7 @@ emergency_restart() {
     # Stop supervisor first to prevent auto-restart
     print_warning "Stopping supervisor..."
     if [ -S "$SUPERVISOR_SOCKET" ]; then
-        supervisorctl -c "$SUPERVISOR_CONFIG" shutdown 2>/dev/null || true
+        "$REC_SUPERVISORCTL" -c "$SUPERVISOR_CONFIG" shutdown 2>/dev/null || true
         /bin/sleep 3
     fi
     
@@ -760,10 +790,10 @@ emergency_restart() {
     ensure_redis_available
     echo ""
     
-    # Start fresh
+    # Start fresh (programs spawned on start; skip per-program restart storm)
     start_supervisor
-    restart_all_services
     verify_services
+    verify_supervisord_alive || true
     
     print_success "EMERGENCY RESTART completed!"
 }

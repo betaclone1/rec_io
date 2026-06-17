@@ -511,6 +511,13 @@
     // Momentum Breakout/Contain Ask Window Variables (reuse probability slider)
     let dashboardContainMinAsk = 0.0000;
     let dashboardContainMaxAsk = 0.9800;
+
+    // Expiration Scalp Ask Window Slider Variables
+    let dashboardExpirationScalpAskSliderWidth = 0;
+    let dashboardExpirationScalpMinAsk = 0.9000;
+    let dashboardExpirationScalpMaxAsk = 0.9900;
+    let dashboardExpirationScalpAskIsDragging = false;
+    let dashboardExpirationScalpAskCurrentHandle = null;
     
     // Cooldown Window Slider Variables (Momentum Contain)
     let dashboardCooldownWindowSliderWidth = 0;
@@ -948,6 +955,134 @@
       document.removeEventListener('mouseup', handleDashboardMSAskMouseUp);
       document.removeEventListener('touchmove', handleDashboardMSAskMouseMove);
       document.removeEventListener('touchend', handleDashboardMSAskMouseUp);
+    }
+
+    function initDashboardExpirationScalpAskWindowSlider() {
+      const container = document.getElementById('expirationScalpAskWindowSliderContainer');
+      if (!container) return;
+      dashboardExpirationScalpAskSliderWidth = container.offsetWidth;
+      updateDashboardExpirationScalpAskWindowSlider();
+
+      const esMinAskHandle = document.getElementById('esMinAskHandle');
+      const esMaxAskHandle = document.getElementById('esMaxAskHandle');
+      if (esMinAskHandle && !esMinAskHandle._wired) {
+        esMinAskHandle._wired = true;
+        esMinAskHandle.addEventListener('mousedown', handleDashboardExpirationScalpAskMouseDown);
+        esMinAskHandle.addEventListener('touchstart', handleDashboardExpirationScalpAskMouseDown);
+      }
+      if (esMaxAskHandle && !esMaxAskHandle._wired) {
+        esMaxAskHandle._wired = true;
+        esMaxAskHandle.addEventListener('mousedown', handleDashboardExpirationScalpAskMouseDown);
+        esMaxAskHandle.addEventListener('touchstart', handleDashboardExpirationScalpAskMouseDown);
+      }
+    }
+
+    function updateDashboardExpirationScalpAskWindowSlider() {
+      if (!dashboardExpirationScalpAskSliderWidth) return;
+      const MIN_SEPARATION = 0.01;
+      if (dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_SEPARATION) {
+        if (dashboardExpirationScalpMaxAsk < 1.0) {
+          dashboardExpirationScalpMaxAsk = parseFloat((dashboardExpirationScalpMinAsk + MIN_SEPARATION).toFixed(4));
+        } else {
+          dashboardExpirationScalpMinAsk = parseFloat((dashboardExpirationScalpMaxAsk - MIN_SEPARATION).toFixed(4));
+        }
+      }
+
+      const esMinAskHandle = document.getElementById('esMinAskHandle');
+      const esMaxAskHandle = document.getElementById('esMaxAskHandle');
+      const esRange = document.getElementById('expirationScalpAskWindowRange');
+      const esMinDisplay = document.getElementById('expirationScalpAskWindowMinDisplay');
+      const esMaxDisplay = document.getElementById('expirationScalpAskWindowMaxDisplay');
+      if (!esMinAskHandle || !esMaxAskHandle || !esRange || !esMinDisplay || !esMaxDisplay) return;
+
+      const minPercent = (dashboardExpirationScalpMinAsk / 1.0) * 100;
+      const maxPercent = (dashboardExpirationScalpMaxAsk / 1.0) * 100;
+      esMinAskHandle.style.left = `${minPercent}%`;
+      esMaxAskHandle.style.left = `${maxPercent}%`;
+      esRange.style.left = `${minPercent}%`;
+      esRange.style.width = `${maxPercent - minPercent}%`;
+      esMinDisplay.textContent = dashboardExpirationScalpMinAsk.toFixed(4);
+      esMaxDisplay.textContent = dashboardExpirationScalpMaxAsk.toFixed(4);
+      esMinDisplay.style.left = `${minPercent}%`;
+      esMaxDisplay.style.left = `${maxPercent}%`;
+    }
+
+    function handleDashboardExpirationScalpAskMouseDown(e) {
+      dashboardExpirationScalpAskIsDragging = true;
+      dashboardExpirationScalpAskCurrentHandle = e.target;
+      document.addEventListener('mousemove', handleDashboardExpirationScalpAskMouseMove);
+      document.addEventListener('mouseup', handleDashboardExpirationScalpAskMouseUp);
+      document.addEventListener('touchmove', handleDashboardExpirationScalpAskMouseMove);
+      document.addEventListener('touchend', handleDashboardExpirationScalpAskMouseUp);
+      e.preventDefault();
+    }
+
+    function handleDashboardExpirationScalpAskMouseMove(e) {
+      if (!dashboardExpirationScalpAskIsDragging || !dashboardExpirationScalpAskCurrentHandle) return;
+      const container = document.getElementById('expirationScalpAskWindowSliderContainer');
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const clientX = e.touches ? e.touches[0].clientX : e.clientX;
+      const x = clientX - rect.left;
+      const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+      const askPrice = parseFloat((percent / 100).toFixed(4));
+      const MIN_SEPARATION = 0.01;
+      const esMinAskHandle = document.getElementById('esMinAskHandle');
+      const esMaxAskHandle = document.getElementById('esMaxAskHandle');
+      if (dashboardExpirationScalpAskCurrentHandle === esMinAskHandle) {
+        if (askPrice >= dashboardExpirationScalpMaxAsk - MIN_SEPARATION) {
+          dashboardExpirationScalpMinAsk = parseFloat((dashboardExpirationScalpMaxAsk - MIN_SEPARATION).toFixed(4));
+        } else {
+          dashboardExpirationScalpMinAsk = askPrice;
+        }
+      } else if (dashboardExpirationScalpAskCurrentHandle === esMaxAskHandle) {
+        if (askPrice <= dashboardExpirationScalpMinAsk + MIN_SEPARATION) {
+          dashboardExpirationScalpMaxAsk = parseFloat((dashboardExpirationScalpMinAsk + MIN_SEPARATION).toFixed(4));
+        } else {
+          dashboardExpirationScalpMaxAsk = askPrice;
+        }
+      }
+      updateDashboardExpirationScalpAskWindowSlider();
+    }
+
+    function handleDashboardExpirationScalpAskMouseUp() {
+      dashboardExpirationScalpAskIsDragging = false;
+      dashboardExpirationScalpAskCurrentHandle = null;
+      document.removeEventListener('mousemove', handleDashboardExpirationScalpAskMouseMove);
+      document.removeEventListener('mouseup', handleDashboardExpirationScalpAskMouseUp);
+      document.removeEventListener('touchmove', handleDashboardExpirationScalpAskMouseMove);
+      document.removeEventListener('touchend', handleDashboardExpirationScalpAskMouseUp);
+    }
+
+    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp) {
+      const disp = (on) => (on ? '' : 'none');
+      const setForId = (id, visible) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = disp(visible);
+        const label = document.querySelector('label[for="' + id + '"]');
+        if (label) label.style.display = disp(visible);
+        const container = el && el.closest('.value-bubble-container');
+        if (container) container.style.display = disp(visible);
+      };
+      ['autoEntryMinVolumeSlider', 'autoEntryDifferentialSlider', 'autoEntryMaxDifferentialSlider'].forEach((id) => {
+        setForId(id, !isExpirationScalp);
+      });
+      document.querySelectorAll('.uat-loss-prevention-block').forEach((el) => {
+        el.style.display = disp(!isExpirationScalp);
+      });
+      const spikeRow = document.getElementById('spikeAlertEnabled');
+      if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = disp(!isExpirationScalp);
+      const spikeGroup = document.getElementById('spikeAlertSliderGroup');
+      if (spikeGroup) spikeGroup.style.display = disp(!isExpirationScalp);
+      setForId('cooldownWindowSlider', !isExpirationScalp);
+      const probAdjGroup = document.getElementById('probAdjSpikeGroup');
+      if (probAdjGroup) probAdjGroup.style.display = disp(!isExpirationScalp);
+      const perfRow = document.getElementById('performanceBasedAllocation');
+      if (perfRow && perfRow.parentElement) perfRow.parentElement.style.display = disp(!isExpirationScalp);
+      const autoStopSection = document.getElementById('htcAutoStopSection');
+      if (autoStopSection) autoStopSection.style.display = disp(!isExpirationScalp);
+      const esAsk = document.getElementById('expirationScalpAskWindowSection');
+      if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
     }
 
     // Minimum Time to Close Controls
@@ -1397,7 +1532,8 @@
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
       const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
       const isRisingDevil = currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL');
-      window.dashboardTimeWindowMaxSeconds = is15mHTC ? 900 : 3600;
+      const isExpirationScalp = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
+      window.dashboardTimeWindowMaxSeconds = isExpirationScalp ? 300 : (is15mHTC ? 900 : 3600);
 
       // Update modal title with strategy name and show/hide strategy sections
       const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
@@ -1483,6 +1619,7 @@
 
       const rdRising = document.getElementById('risingDevilMinAskRangeSection');
       if (rdRising) rdRising.style.display = isRisingDevil ? 'block' : 'none';
+      dashboardUatApplyExpirationScalpLayout(isExpirationScalp);
 
       const populate = (data) => {
         const setVal = (id,v) => { 
@@ -1527,7 +1664,8 @@
       const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
         
         // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
-        const timeMax = (currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600;
+        const isExpirationScalpPopulate = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
+        const timeMax = isExpirationScalpPopulate ? 300 : ((currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600);
         dashboardMinTimeSeconds = data.min_time !== undefined ? Math.max(0, Math.min(timeMax, data.min_time)) : 0;
         dashboardMaxTimeSeconds = data.max_time !== undefined ? Math.max(0, Math.min(timeMax, data.max_time)) : timeMax;
         
@@ -1559,6 +1697,32 @@
               }
             }, 100);
           }
+        } else if (isExpirationScalpPopulate) {
+          dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 90.00;
+          dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          const MIN_SEPARATION = 0.5;
+          if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+            if (dashboardMaxProbability < 100) {
+              dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
+            } else {
+              dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
+            }
+          }
+          dashboardExpirationScalpMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.9000;
+          dashboardExpirationScalpMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9900;
+          const MIN_ASK_SEPARATION = 0.01;
+          if (dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
+            if (dashboardExpirationScalpMaxAsk < 1.0) {
+              dashboardExpirationScalpMaxAsk = parseFloat((dashboardExpirationScalpMinAsk + MIN_ASK_SEPARATION).toFixed(4));
+            } else {
+              dashboardExpirationScalpMinAsk = parseFloat((dashboardExpirationScalpMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
+            }
+          }
+          setTimeout(() => {
+            if (typeof initDashboardExpirationScalpAskWindowSlider === 'function') {
+              initDashboardExpirationScalpAskWindowSlider();
+            }
+          }, 100);
         } else {
           // Probability window (for Hourly HTC)
           dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
@@ -1658,6 +1822,8 @@
           const profitTarget = data.momentum_scalp_profit_target ?? 0.10;
           const profitTargetSliderValue = Math.round(profitTarget * 100);
           setVal('msMomentumScalpProfitTargetSlider', profitTargetSliderValue);
+        } else if (isExpirationScalpPopulate) {
+          // Expiration Scalp: time, probability, and ask window only (loaded above)
         } else {
           // HOURLY HTC settings
         setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
@@ -1786,6 +1952,10 @@
             
             // Setup MS Min TTC controls
             setupDashboardMSMinTTCControls();
+          } else if (isExpirationScalp) {
+            if (typeof initDashboardExpirationScalpAskWindowSlider === 'function') {
+              initDashboardExpirationScalpAskWindowSlider();
+            }
           } else {
             // HOURLY HTC value bubbles
         updateAutoEntryMinVolumeDisplay(document.getElementById('autoEntryMinVolumeSlider').value);
@@ -1916,6 +2086,7 @@
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
       const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
       const isRisingDevil = currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL');
+      const isExpirationScalp = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
         
         const payload = {
           monitor_id: apiId,
@@ -2036,6 +2207,11 @@
           payload.spike_alert_cooldown_minutes = parseInt(document.getElementById('spikeAlertTimeSlider').value,10);
           payload.prob_adj = parseFloat(document.getElementById('probAdjSlider').value);
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
+        } else if (isExpirationScalp) {
+          payload.min_probability = parseFloat(parseFloat(dashboardMinProbability).toFixed(1));
+          payload.max_probability = parseFloat(parseFloat(dashboardMaxProbability).toFixed(1));
+          payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk).toFixed(4));
+          payload.max_ask = parseFloat(parseFloat(dashboardExpirationScalpMaxAsk).toFixed(4));
         } else {
           // HOURLY HTC specific fields
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);

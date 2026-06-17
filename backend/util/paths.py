@@ -169,22 +169,46 @@ def ensure_data_dirs():
 def get_supervisorctl_path():
     """
     Get supervisorctl path for current system.
-    Works on both macOS (Homebrew) and Ubuntu.
+    Prefer project venv (matches requirements.txt supervisor pin); then OS packages.
     """
-    # Check common locations
+    for venv_name in ("venv", ".venv"):
+        venv_ctl = os.path.join(get_project_root(), venv_name, "bin", "supervisorctl")
+        if os.path.isfile(venv_ctl) and os.access(venv_ctl, os.X_OK):
+            return venv_ctl
+
     possible_paths = [
+        "/usr/bin/supervisorctl",           # Ubuntu/Debian (prod)
         "/opt/homebrew/bin/supervisorctl",  # macOS Homebrew
-        "/usr/bin/supervisorctl",           # Ubuntu/Debian
-        "/usr/local/bin/supervisorctl",     # macOS/Ubuntu alternative
-        "supervisorctl"                     # Fallback to PATH
+        "/usr/local/bin/supervisorctl",
+        "supervisorctl",
     ]
-    
+
     for path in possible_paths:
-        if os.path.exists(path):
+        if path == "supervisorctl" or os.path.isfile(path):
             return path
-    
-    # If not found, return the command name and let the shell find it
+
     return "supervisorctl"
+
+
+def get_supervisord_path():
+    """Same resolution order as get_supervisorctl_path()."""
+    for venv_name in ("venv", ".venv"):
+        venv_sup = os.path.join(get_project_root(), venv_name, "bin", "supervisord")
+        if os.path.isfile(venv_sup) and os.access(venv_sup, os.X_OK):
+            return venv_sup
+
+    possible_paths = [
+        "/usr/bin/supervisord",
+        "/opt/homebrew/bin/supervisord",
+        "/usr/local/bin/supervisord",
+        "supervisord",
+    ]
+
+    for path in possible_paths:
+        if path == "supervisord" or os.path.isfile(path):
+            return path
+
+    return "supervisord"
 
 
 def get_system_type():
