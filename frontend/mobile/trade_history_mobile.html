@@ -1043,6 +1043,9 @@
         let currentSort = { key: 'id', asc: false };
         let trades = [];
         let filteredTrades = [];
+        /** GET /trades applies trade-history filters in PostgreSQL (same as desktop). */
+        const _thmUseServerListFilters = true;
+        let _thmFilterRefetchTimer = null;
         let _thmRenderToken = 0;
         const _THM_RENDER_CHUNK_SIZE = 120;
 
@@ -1320,12 +1323,49 @@
             return { min_date: startDate, max_date: endDate };
         }
 
+        function appendThmTradeHistoryFilterQueryParams(url) {
+            const body = thmCollectInsightsBody();
+            if (body.min_date) url.searchParams.set('min_date', body.min_date);
+            if (body.max_date) url.searchParams.set('max_date', body.max_date);
+            url.searchParams.set('include_test_trades', body.include_test_trades ? 'true' : 'false');
+            url.searchParams.set('show_win', body.show_win !== false ? 'true' : 'false');
+            url.searchParams.set('show_loss', body.show_loss !== false ? 'true' : 'false');
+            url.searchParams.set('show_live', body.show_live !== false ? 'true' : 'false');
+            url.searchParams.set('show_paper', body.show_paper ? 'true' : 'false');
+            if (body.symbols && body.symbols.length) {
+                body.symbols.forEach(function (sym) {
+                    url.searchParams.append('symbols', sym);
+                });
+            }
+            if (body.strategies && body.strategies.length) {
+                body.strategies.forEach(function (st) {
+                    url.searchParams.append('strategies', st);
+                });
+            }
+            if (body.monitors && body.monitors.length) {
+                body.monitors.forEach(function (mon) {
+                    url.searchParams.append('monitors', mon);
+                });
+            }
+            if (body.days_of_week !== undefined && body.days_of_week !== null) {
+                if (body.days_of_week.length === 0) {
+                    url.searchParams.set('days_of_week', '');
+                } else if (body.days_of_week.length < 7) {
+                    url.searchParams.set('days_of_week', body.days_of_week.join(','));
+                }
+            }
+        }
+
         function buildThmTradesFetchUrl() {
             const url = new URL(getMainAppUrl() + '/trades');
-            const b = computeTradesFetchDateBounds();
-            if (b) {
-                url.searchParams.set('min_date', b.min_date);
-                url.searchParams.set('max_date', b.max_date);
+            if (_thmUseServerListFilters) {
+                appendThmTradeHistoryFilterQueryParams(url);
+            } else {
+                const b = computeTradesFetchDateBounds();
+                if (b) {
+                    url.searchParams.set('min_date', b.min_date);
+                    url.searchParams.set('max_date', b.max_date);
+                }
             }
             return url.toString();
         }
@@ -2573,7 +2613,7 @@
                 cb.checked = cb.getAttribute('data-monitor-id') === monitorId;
             });
             thmSyncAllMonitorTiles();
-            applyFilters();
+            thmOnTradeHistoryFilterChange();
             savePaperTradePreferences();
             if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
         }
@@ -2992,26 +3032,43 @@
             return false;
         }
 
+        function thmOnTradeHistoryFilterChange() {
+            if (_thmUseServerListFilters) {
+                if (_thmFilterRefetchTimer) clearTimeout(_thmFilterRefetchTimer);
+                _thmFilterRefetchTimer = setTimeout(function () {
+                    _thmFilterRefetchTimer = null;
+                    fetchAllTrades('filter-change');
+                }, 400);
+                return;
+            }
+            applyFilters();
+        }
+
         function applyFilters(options = {}) {
             const dateFilterPicker = document.getElementById('date-filter-picker');
-            
-            const includeTestEl = document.getElementById('include-test-trades');
-            const includeTestTrades = includeTestEl && includeTestEl.checked;
-            let filtered = trades;
-            if (!includeTestTrades) {
-                filtered = filtered.filter(trade => !trade.test_filter);
+
+            let filtered;
+            if (_thmUseServerListFilters) {
+                filtered = Array.isArray(trades) ? trades.slice() : [];
+            } else {
+                const includeTestEl = document.getElementById('include-test-trades');
+                const includeTestTrades = includeTestEl && includeTestEl.checked;
+                filtered = trades;
+                if (!includeTestTrades) {
+                    filtered = filtered.filter(trade => !trade.test_filter);
+                }
+
+                filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
+                filtered = filterTradesByWinLoss(filtered);
+                // Contract filtering disabled – show all contracts (match desktop trade_history behavior so mobile shows same set as desktop)
+                // filtered = filterTradesByContract(filtered);
+                filtered = filterTradesByStrategy(filtered);
+                filtered = filterTradesBySymbol(filtered);
+                filtered = filterTradesByMonitor(filtered);
+                filtered = filterTradesByDay(filtered);
+                filtered = filterTradesByPaperTrade(filtered);
             }
-            
-            filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
-            filtered = filterTradesByWinLoss(filtered);
-            // Contract filtering disabled – show all contracts (match desktop trade_history behavior so mobile shows same set as desktop)
-            // filtered = filterTradesByContract(filtered);
-            filtered = filterTradesByStrategy(filtered);
-            filtered = filterTradesBySymbol(filtered);
-            filtered = filterTradesByMonitor(filtered);
-            filtered = filterTradesByDay(filtered);
-            filtered = filterTradesByPaperTrade(filtered);
-            
+
             filteredTrades = [...filtered];
             applyCurrentSort();
             updateSummary(filteredTrades);
@@ -3069,7 +3126,6 @@
                 includeTestReset.checked = false;
             }
 
-            applyFilters(); // Re-apply filters after reset
             savePaperTradePreferences();
             tradeHistoryDateRangeSyncFromInputs();
             fetchAllTrades('reset-filters');
@@ -3296,7 +3352,7 @@
             });
             thmSyncAllMonitorTiles();
             if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-            applyFilters();
+            thmOnTradeHistoryFilterChange();
             savePaperTradePreferences();
         }
 
@@ -3318,19 +3374,19 @@
             document.getElementById('contract-select-all')?.addEventListener('click', () => {
                 contractContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
                 if (typeof updateContractButtonText === 'function') updateContractButtonText();
-                applyFilters();
+                thmOnTradeHistoryFilterChange();
                 savePaperTradePreferences();
             });
             document.getElementById('contract-select-none')?.addEventListener('click', () => {
                 contractContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
                 if (typeof updateContractButtonText === 'function') updateContractButtonText();
-                applyFilters();
+                thmOnTradeHistoryFilterChange();
                 savePaperTradePreferences();
             });
             contractContent.addEventListener('change', (e) => {
                 if (e.target.matches('input[type="checkbox"]')) {
                     if (typeof updateContractButtonText === 'function') updateContractButtonText();
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 }
             });
@@ -3346,19 +3402,19 @@
                 document.getElementById('strategy-select-all')?.addEventListener('click', () => {
                     document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => { cb.checked = true; });
                     if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
                 document.getElementById('strategy-select-none')?.addEventListener('click', () => {
                     document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]').forEach(cb => { cb.checked = false; });
                     if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
                 strategyContent.addEventListener('change', (e) => {
                     if (e.target.matches('#strategy-checkboxes-container input[type="checkbox"]')) {
                         if (typeof updateStrategyButtonText === 'function') updateStrategyButtonText();
-                        applyFilters();
+                        thmOnTradeHistoryFilterChange();
                         savePaperTradePreferences();
                     }
                 });
@@ -3375,20 +3431,20 @@
             document.getElementById('symbol-select-all')?.addEventListener('click', () => {
                 document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => { cb.checked = true; });
                 if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
-                applyFilters();
+                thmOnTradeHistoryFilterChange();
                 savePaperTradePreferences();
             });
             document.getElementById('symbol-select-none')?.addEventListener('click', () => {
                 document.querySelectorAll('#symbol-checkboxes-container input[type="checkbox"][data-symbol]').forEach(cb => { cb.checked = false; });
                 if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
-                applyFilters();
+                thmOnTradeHistoryFilterChange();
                 savePaperTradePreferences();
             });
             if (symbolContent) {
                 symbolContent.addEventListener('change', (e) => {
                     if (e.target.matches('#symbol-checkboxes-container input[type="checkbox"]')) {
                         if (typeof updateSymbolButtonText === 'function') updateSymbolButtonText();
-                        applyFilters();
+                        thmOnTradeHistoryFilterChange();
                         savePaperTradePreferences();
                     }
                 });
@@ -3405,19 +3461,19 @@
             document.getElementById('day-select-all')?.addEventListener('click', () => {
                 dayContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
                 if (typeof updateDayButtonText === 'function') updateDayButtonText();
-                applyFilters();
+                thmOnTradeHistoryFilterChange();
                 savePaperTradePreferences();
             });
             document.getElementById('day-select-none')?.addEventListener('click', () => {
                 dayContent.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
                 if (typeof updateDayButtonText === 'function') updateDayButtonText();
-                applyFilters();
+                thmOnTradeHistoryFilterChange();
                 savePaperTradePreferences();
             });
             dayContent.addEventListener('change', (e) => {
                 if (e.target.matches('input[type="checkbox"]')) {
                     if (typeof updateDayButtonText === 'function') updateDayButtonText();
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 }
             });
@@ -3444,7 +3500,7 @@
                 if (e.target.matches('input[type="checkbox"]')) {
                     thmSyncMonitorTileForCheckbox(e.target);
                     if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 }
             });
@@ -3588,7 +3644,7 @@
                         tile.addEventListener('click', () => {
                             checkbox.checked = !checkbox.checked;
                             thmSyncMonitorTileForCheckbox(checkbox);
-                            applyFilters();
+                            thmOnTradeHistoryFilterChange();
                             savePaperTradePreferences();
                             if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
                         });
@@ -3983,13 +4039,13 @@
             const filterLoss = document.getElementById('filter-loss');
             if (filterWin) {
                 filterWin.addEventListener('change', () => {
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
             }
             if (filterLoss) {
                 filterLoss.addEventListener('change', () => {
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
             }
@@ -3999,13 +4055,13 @@
             const filterPaper = document.getElementById('filter-paper');
             if (filterLive) {
                 filterLive.addEventListener('change', () => {
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
             }
             if (filterPaper) {
                 filterPaper.addEventListener('change', () => {
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
             }
@@ -4013,7 +4069,7 @@
             const includeTestTradesCb = document.getElementById('include-test-trades');
             if (includeTestTradesCb) {
                 includeTestTradesCb.addEventListener('change', () => {
-                    applyFilters();
+                    thmOnTradeHistoryFilterChange();
                     savePaperTradePreferences();
                 });
             }
