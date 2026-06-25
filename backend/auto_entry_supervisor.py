@@ -2971,6 +2971,97 @@ def _momentum_contain_legs_in_db(strike_above_data, strike_below_data) -> Tuple[
     return no_e, yes_e
 
 
+# Momentum Contain only: hourly contract aliases (e.g. BTC 11:00am vs BTC 11am) must not
+# reset cycle state or miss in-flight bracket checks on unified AES.
+_MC_HOURLY_CONTRACT_COLON_ZERO = re.compile(
+    r"^(\S+)\s+(\d{1,2}):00\s*(am|pm)$", re.IGNORECASE
+)
+
+
+def _mc_normalize_hourly_contract(contract: Optional[str]) -> Optional[str]:
+    """Collapse erroneous 15m-style :00 labels to hourly form for MC cycle keys."""
+    if not contract:
+        return contract
+    text = contract.strip()
+    m = _MC_HOURLY_CONTRACT_COLON_ZERO.match(text)
+    if m:
+        return f"{m.group(1).upper()} {m.group(2)}{m.group(3).lower()}"
+    return text
+
+
+def _mc_strike_row_for_ticker(strikes: List[Dict[str, Any]], ticker: Optional[str]) -> Optional[Dict[str, Any]]:
+    if not ticker:
+        return None
+    want = str(ticker).strip()
+    for row in strikes:
+        if str(row.get("ticker") or "").strip() == want:
+            return row
+    return None
+
+
+def _momentum_contain_open_auto_entry_legs(
+    contract: Optional[str],
+) -> Tuple[int, int, int]:
+    """In-flight auto_entry legs for this monitor on the normalized hourly contract.
+
+    Returns (total, yes_count, no_count).
+    """
+    norm = _mc_normalize_hourly_contract(contract)
+    if not norm:
+        return 0, 0, 0
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return 0, 0, 0
+        current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT side
+                FROM {_aes_trades_table()}
+                WHERE status IN ('open', 'pending', 'closing')
+                  AND monitor = %s
+                  AND contract = %s
+                  AND entry_method = 'auto_entry'
+                """,
+                (current_monitor, norm),
+            )
+            rows = cursor.fetchall()
+        conn.close()
+        yes_c = 0
+        no_c = 0
+        for (side_val,) in rows:
+            bucket = _aes_side_bucket_for_dedupe(side_val)
+            if bucket == "yes":
+                yes_c += 1
+            elif bucket == "no":
+                no_c += 1
+        return len(rows), yes_c, no_c
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Error counting open auto_entry legs: {e}")
+        return 0, 0, 0
+
+
+def _momentum_contain_cycle_bracket_satisfied(
+    contract: Optional[str], strike_tier: Optional[int] = None
+) -> bool:
+    """MC-only: bracket complete if two in-flight legs exist or legacy bracket distance matches."""
+    total, yes_c, no_c = _momentum_contain_open_auto_entry_legs(contract)
+    if total >= 2 and yes_c >= 1 and no_c >= 1:
+        return True
+    norm = _mc_normalize_hourly_contract(contract)
+    if norm and strike_tier:
+        return has_bracket_for_cycle(contract=norm, strike_tier=strike_tier)
+    return False
+
+
+def _momentum_contain_reset_cycle_state(state: Dict[str, Any], norm_contract: Optional[str]) -> None:
+    state["entered"] = False
+    state["contract"] = norm_contract
+    state["locked_above_ticker"] = None
+    state["locked_below_ticker"] = None
+
+
 def is_strike_already_simulated_traded(strike_data):
     """True if we already have any simulated trade (open, pending, or closed) for this monitor+date+contract+strike+side.
     Prevents re-insert after the 15m expiration job closes a trade. Uses same DB as trade_manager (DB_* / REC_DB_*)."""
@@ -4591,7 +4682,13 @@ def check_auto_entry_conditions_momentum_contain():
     try:
         monitor_key = ctx_ident()
         state = _momentum_contain_cycle_state_by_monitor.setdefault(
-            monitor_key, {"entered": False, "contract": None}
+            monitor_key,
+            {
+                "entered": False,
+                "contract": None,
+                "locked_above_ticker": None,
+                "locked_below_ticker": None,
+            },
         )
         # Get strike table data
         check_spike_alert_conditions()
@@ -4622,17 +4719,19 @@ def check_auto_entry_conditions_momentum_contain():
         
         # Get current contract from monitor state (after update)
         current_contract = _LAST_MONITOR_STATE.get("contract")
-        
-        # Reset trades_entered flag when a new cycle starts (contract changes)
-        if current_contract and current_contract != state.get("contract"):
-            prev_contract = state.get("contract")
-            state["entered"] = False
-            if prev_contract:
+        norm_contract = _mc_normalize_hourly_contract(current_contract)
+
+        # Reset entry state only on a true hourly cycle change (ignore 11am vs 11:00am aliases).
+        prev_norm = _mc_normalize_hourly_contract(state.get("contract"))
+        if norm_contract and prev_norm != norm_contract:
+            if prev_norm:
                 log(
                     f"[AUTO ENTRY MOMENTUM CONTAIN] 🔄 New cycle detected: "
-                    f"{prev_contract} → {current_contract} - resetting entry flag"
+                    f"{prev_norm} → {norm_contract} - resetting entry flag"
                 )
-            state["contract"] = current_contract
+            _momentum_contain_reset_cycle_state(state, norm_contract)
+        elif norm_contract:
+            state["contract"] = norm_contract
         
         # Check if AUTO TRADE is enabled for this monitor
         auto_trade_enabled = is_auto_trade_enabled()
@@ -4765,79 +4864,104 @@ def check_auto_entry_conditions_momentum_contain():
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Invalid strike_tier (<=0): {strike_tier}")
             return
 
-        if has_bracket_for_cycle(contract=current_contract, strike_tier=strike_tier):
+        open_total, _, _ = _momentum_contain_open_auto_entry_legs(norm_contract)
+        if open_total >= 2:
+            state["entered"] = True
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Cycle {norm_contract} already has "
+                f"{open_total} in-flight auto_entry legs — holding until expiration"
+            )
+            return
+
+        if _momentum_contain_cycle_bracket_satisfied(norm_contract, strike_tier):
             state["entered"] = True
             return
         
-        # Select strikes using the unified minimum-width + centering methodology:
-        # 1) Compute minimum bracket width from 0.35% of current price.
-        # 2) Find the valid YES/NO pair (YES < price < NO) whose bracket width is
-        #    closest to that minimum without going below it.
-        # 3) For ties on width excess, keep price as centered as possible.
+        # Select strikes using the unified minimum-width + centering methodology,
+        # or reuse the locked bracket for this cycle (partial-fill retries).
         strikes = strike_table_data.get("strikes", [])
         strike_above_data = None  # NO leg (must be > current_price)
         strike_below_data = None  # YES leg (must be < current_price)
 
-        # NOTE: hardcoded for now; we may later make this configurable per user/symbol.
-        min_bracket_width_pct = 0.0035  # 0.35% total bracket width
-        current_price_f = float(current_price)
-        min_bracket_width = current_price_f * min_bracket_width_pct
+        locked_above = state.get("locked_above_ticker")
+        locked_below = state.get("locked_below_ticker")
+        if locked_above or locked_below:
+            strike_above_data = _mc_strike_row_for_ticker(strikes, locked_above)
+            strike_below_data = _mc_strike_row_for_ticker(strikes, locked_below)
+            if not strike_above_data or not strike_below_data:
+                log(
+                    f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ Locked bracket tickers not on ladder "
+                    f"(above={locked_above} below={locked_below}) — waiting"
+                )
+                return
+        else:
+            # NOTE: hardcoded for now; we may later make this configurable per user/symbol.
+            min_bracket_width_pct = 0.0035  # 0.35% total bracket width
+            current_price_f = float(current_price)
+            min_bracket_width = current_price_f * min_bracket_width_pct
 
-        # Parse and partition available strikes once.
-        below_candidates = []  # [(strike_value, strike_data)]
-        above_candidates = []  # [(strike_value, strike_data)]
-        for strike in strikes:
-            strike_value_raw = strike.get("strike")
-            if strike_value_raw is None:
-                continue
-            try:
-                strike_value = float(strike_value_raw)
-            except (ValueError, TypeError):
-                continue
-
-            if strike_value < current_price_f:
-                below_candidates.append((strike_value, strike))
-            elif strike_value > current_price_f:
-                above_candidates.append((strike_value, strike))
-
-        # Search for best valid pair:
-        # priority 1: smallest non-negative width excess
-        # priority 2: smallest midpoint distance from current price
-        # priority 3: deterministic tie-break on lower strike (smaller first)
-        best_pair = None
-        best_pair_key = None
-        for below_strike_val, below_strike_data in below_candidates:
-            for above_strike_val, above_strike_data in above_candidates:
-                bracket_width = above_strike_val - below_strike_val
-                if bracket_width < min_bracket_width:
+            # Parse and partition available strikes once.
+            below_candidates = []  # [(strike_value, strike_data)]
+            above_candidates = []  # [(strike_value, strike_data)]
+            for strike in strikes:
+                strike_value_raw = strike.get("strike")
+                if strike_value_raw is None:
+                    continue
+                try:
+                    strike_value = float(strike_value_raw)
+                except (ValueError, TypeError):
                     continue
 
-                width_excess = bracket_width - min_bracket_width
-                midpoint = (below_strike_val + above_strike_val) / 2.0
-                center_offset = abs(current_price_f - midpoint)
-                pair_key = (
-                    round(width_excess, 12),
-                    round(center_offset, 12),
-                    below_strike_val
-                )
-                if best_pair_key is None or pair_key < best_pair_key:
-                    best_pair_key = pair_key
-                    best_pair = (
-                        below_strike_data,
-                        above_strike_data,
-                        below_strike_val,
-                        above_strike_val,
-                        bracket_width,
-                        midpoint,
-                        center_offset,
-                        width_excess
-                    )
+                if strike_value < current_price_f:
+                    below_candidates.append((strike_value, strike))
+                elif strike_value > current_price_f:
+                    above_candidates.append((strike_value, strike))
 
-        if best_pair:
-            strike_below_data = best_pair[0]
-            strike_above_data = best_pair[1]
+            # Search for best valid pair:
+            # priority 1: smallest non-negative width excess
+            # priority 2: smallest midpoint distance from current price
+            # priority 3: deterministic tie-break on lower strike (smaller first)
+            best_pair = None
+            best_pair_key = None
+            for below_strike_val, below_strike_data in below_candidates:
+                for above_strike_val, above_strike_data in above_candidates:
+                    bracket_width = above_strike_val - below_strike_val
+                    if bracket_width < min_bracket_width:
+                        continue
+
+                    width_excess = bracket_width - min_bracket_width
+                    midpoint = (below_strike_val + above_strike_val) / 2.0
+                    center_offset = abs(current_price_f - midpoint)
+                    pair_key = (
+                        round(width_excess, 12),
+                        round(center_offset, 12),
+                        below_strike_val
+                    )
+                    if best_pair_key is None or pair_key < best_pair_key:
+                        best_pair_key = pair_key
+                        best_pair = (
+                            below_strike_data,
+                            above_strike_data,
+                            below_strike_val,
+                            above_strike_val,
+                            bracket_width,
+                            midpoint,
+                            center_offset,
+                            width_excess
+                        )
+
+            if best_pair:
+                strike_below_data = best_pair[0]
+                strike_above_data = best_pair[1]
+
+        if strike_above_data and strike_below_data:
+            if not state.get("locked_above_ticker"):
+                state["locked_above_ticker"] = strike_above_data.get("ticker")
+                state["locked_below_ticker"] = strike_below_data.get("ticker")
 
         # Log selection details for debugging
+        current_price_f = float(current_price)
+        min_bracket_width = current_price_f * 0.0035
         below_strike_val = float(strike_below_data.get("strike")) if strike_below_data and strike_below_data.get("strike") is not None else None
         above_strike_val = float(strike_above_data.get("strike")) if strike_above_data and strike_above_data.get("strike") is not None else None
 
@@ -4953,6 +5077,8 @@ def check_auto_entry_conditions_momentum_contain():
         
         # Enter the two trades (FLIPPED SIDES from Momentum Breakout)
         trades_entered = 0
+        no_triggered_ok = False
+        yes_triggered_ok = False
         
         # Enter NO trade at strike above (FLIPPED: Breakout enters YES here).
         # No differential gate for Momentum Contain (strategy is two fixed legs; differential is for Hourly HTC-style filters).
@@ -4971,6 +5097,7 @@ def check_auto_entry_conditions_momentum_contain():
                 if trigger_auto_entry_trade(strike_data):
                     log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ NO TRADE SUCCESSFUL | Strike: ${strike_above_data.get('strike'):,.0f}")
                     trades_entered += 1
+                    no_triggered_ok = True
                 else:
                     log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ NO TRADE FAILED | Strike: ${strike_above_data.get('strike'):,.0f}")
             else:
@@ -4998,6 +5125,7 @@ def check_auto_entry_conditions_momentum_contain():
                 if trigger_auto_entry_trade(strike_data):
                     log(f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ YES TRADE SUCCESSFUL | Strike: ${strike_below_data.get('strike'):,.0f}")
                     trades_entered += 1
+                    yes_triggered_ok = True
                 else:
                     log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ YES TRADE FAILED | Strike: ${strike_below_data.get('strike'):,.0f}")
             else:
@@ -5010,18 +5138,20 @@ def check_auto_entry_conditions_momentum_contain():
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
         
         no_done, yes_done = _momentum_contain_legs_in_db(strike_above_data, strike_below_data)
-        if no_done and yes_done:
+        no_satisfied = no_done or no_triggered_ok or no_exists
+        yes_satisfied = yes_done or yes_triggered_ok or yes_exists
+        if no_satisfied and yes_satisfied:
             state["entered"] = True
-            if current_contract:
-                state["contract"] = current_contract
+            if norm_contract:
+                state["contract"] = norm_contract
             log(
-                f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Two-leg bracket complete for cycle {current_contract} "
-                f"(this_tick_new={trades_entered}) — will hold until expiration"
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Two-leg bracket complete for cycle {norm_contract} "
+                f"(this_tick_new={trades_entered}, no_db={no_done}, yes_db={yes_done}) — will hold until expiration"
             )
         elif trades_entered > 0 or no_done or yes_done:
             log(
                 f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Partial bracket (no_in_db={no_done} yes_in_db={yes_done} "
-                f"new_this_tick={trades_entered}) cycle {current_contract} — will retry missing leg on next scan"
+                f"new_this_tick={trades_entered}) cycle {norm_contract} — will retry missing leg on next scan"
             )
         
     except Exception as e:
