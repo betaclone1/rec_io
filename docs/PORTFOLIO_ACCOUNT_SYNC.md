@@ -64,6 +64,14 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 **Automatic MTB rake (live):** When MTB `realized_pnl_pct` ≥ `target_pnl__pct` and `automatic_transfers` is on, `poll_live_account_balances` calls `POST /portfolio/subaccounts/transfer` **#1 → #0** for `transfer_amt × base_value` cents, updates MTB `base_value` in DB, then **repolls all subaccounts** (no throttle). Paper mode simulates the same destination (**CASH**) in `subaccounts_update` without Kalshi.
 
+**Settlement balance glitch guard (live):** Kalshi `GET /portfolio/balance?subaccount=1` can briefly return settlement cash in `balance` while `portfolio_value` still includes the settled position (~2–10s). [`poll_live_account_balances`](../backend/balance_snapshot.py) detects this pattern on **MTB (subaccount 1)** only; on match it **skips the DB write**, logs `balance_settlement_glitch_skipped` (WARNING), sleeps per `REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC` (default `2,3,5`), and repolls until clean (`balance_settlement_glitch_cleared` INFO) or retries exhaust (ERROR, last good row kept). Disabled when `REC_BALANCE_GLITCH_GUARD=0`, on automatic MTB rake repoll, or when `sync_balance` saw new external deposit events that cycle (`deposit_cycle`).
+
+| Env | Default | Purpose |
+|-----|---------|---------|
+| `REC_BALANCE_GLITCH_GUARD` | `1` | `0` / `false` disables settlement glitch skip+repoll |
+| `REC_BALANCE_GLITCH_MIN_CASH_DELTA_CENTS` | `1000` | Minimum cash increase ($10) before glitch heuristic runs |
+| `REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC` | `2,3,5` | Comma-separated sleeps between repoll attempts after a skipped write |
+
 **Note:** `limit=50` on fills/orders/settlements means long-tail completeness depends on **full reconciliation** (`ACCOUNT_SYNC_FULL_RECONCILE_SEC`, default 900s) and periodic quick syncs.
 
 ## WebSocket

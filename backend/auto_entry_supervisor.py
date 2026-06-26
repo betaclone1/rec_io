@@ -5138,15 +5138,23 @@ def check_auto_entry_conditions_momentum_contain():
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⚠️ Could not find strike below money line (current price: ${current_price:,.2f})")
         
         no_done, yes_done = _momentum_contain_legs_in_db(strike_above_data, strike_below_data)
-        no_satisfied = no_done or no_triggered_ok or no_exists
-        yes_satisfied = yes_done or yes_triggered_ok or yes_exists
-        if no_satisfied and yes_satisfied:
+        open_total, yes_open, no_open = _momentum_contain_open_auto_entry_legs(norm_contract)
+        bracket_confirmed = (no_done and yes_done) or (
+            open_total >= 2 and yes_open >= 1 and no_open >= 1
+        )
+        if bracket_confirmed:
             state["entered"] = True
             if norm_contract:
                 state["contract"] = norm_contract
             log(
                 f"[AUTO ENTRY MOMENTUM CONTAIN] ✅ Two-leg bracket complete for cycle {norm_contract} "
-                f"(this_tick_new={trades_entered}, no_db={no_done}, yes_db={yes_done}) — will hold until expiration"
+                f"(this_tick_new={trades_entered}, no_db={no_done}, yes_db={yes_done}, "
+                f"open_legs={open_total}) — will hold until expiration"
+            )
+        elif no_triggered_ok and yes_triggered_ok:
+            log(
+                f"[AUTO ENTRY MOMENTUM CONTAIN] ⏳ Both legs enqueued for cycle {norm_contract} "
+                f"(no_db={no_done}, yes_db={yes_done}) — awaiting trade_manager before locking cycle"
             )
         elif trades_entered > 0 or no_done or yes_done:
             log(

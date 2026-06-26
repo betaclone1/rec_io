@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 import math
+import os
 import re
 import time
-from typing import Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from psycopg2 import sql
 
@@ -988,64 +989,82 @@ def notify_monitor_manager_after_balance_commit(*, bankroll_stepped_down: bool =
     notify_monitor_manager(bankroll_stepped_down=bankroll_stepped_down)
 
 
-def poll_live_account_balances(
+def _balance_glitch_guard_enabled() -> bool:
+    v = os.environ.get("REC_BALANCE_GLITCH_GUARD", "1").strip().lower()
+    return v not in ("0", "false", "no", "off")
+
+
+def _balance_glitch_min_cash_delta_cents() -> int:
+    try:
+        return max(0, int(os.environ.get("REC_BALANCE_GLITCH_MIN_CASH_DELTA_CENTS", "1000")))
+    except (TypeError, ValueError):
+        return 1000
+
+
+def _balance_glitch_repoll_delays_sec() -> List[float]:
+    raw = os.environ.get("REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC", "2,3,5")
+    out: List[float] = []
+    for part in raw.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            out.append(max(0.0, float(part)))
+        except (TypeError, ValueError):
+            continue
+    return out if out else [2.0, 3.0, 5.0]
+
+
+def detect_settlement_balance_glitch(
+    prev_row: dict,
+    cash_cents: int,
+    pv_cents: int,
+) -> Tuple[bool, str]:
+    """
+  Return (is_glitch, reason) when Kalshi balance likely double-counts settlement cash
+  with stale open-position marks (balance up, portfolio_value not down, total up ~cash).
+    """
+    if not prev_row:
+        return False, ""
+
+    prev_cash = int(prev_row.get("balance") or 0)
+    prev_pv = int(prev_row.get("portfolio_value") or 0)
+    prev_portfolio = int(prev_row.get("portfolio") or (prev_cash + prev_pv))
+
+    cash_delta = int(cash_cents) - prev_cash
+    if cash_delta < _balance_glitch_min_cash_delta_cents():
+        return False, ""
+
+    pv_delta = int(pv_cents) - prev_pv
+    if pv_delta <= -cash_delta * 0.25:
+        return False, ""
+
+    new_portfolio = int(cash_cents) + int(pv_cents)
+    portfolio_delta = new_portfolio - prev_portfolio
+    if portfolio_delta < cash_delta * 0.85:
+        return False, ""
+
+    return True, "pv_stale_with_cash_jump"
+
+
+def _write_polled_subaccount_balances(
     cursor,
-    user_no: str,
     *,
-    throttle: bool = True,
-    _after_automatic_rake: bool = False,
+    slot: str,
+    sa_fqn: str,
+    ab_fqn: str,
+    active_numbers: List[int],
+    details_by_number: Dict[int, dict],
+    current_timestamp: str,
+    throttle: bool,
 ) -> Tuple[bool, bool]:
-    """
-    Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
-
-    When automatic MTB rake fires, posts Kalshi transfer #1→#0 and repolls once (full refresh).
-    """
-    from backend.bookkeeper.kalshi_portfolio_balance import (
-        fetch_portfolio_balance_detail,
-        fetch_subaccount_balances_cents_map,
-    )
-    from backend.core.time_eastern import now_est
-    from backend.kalshi_account_sync_ws import _sync_subaccounts_from_kalshi_poll
-    from backend.trading_mode import (
-        account_balance_table_for_user,
-        subaccount_balance_table_fqn,
-        subaccounts_table_for_user,
-    )
-
-    slot = str(user_no).zfill(4)[-4:]
-    sa_fqn = subaccounts_table_for_user(slot, force_live=True)
-    ab_fqn = account_balance_table_for_user(slot, force_live=True)
-    ts = now_est().isoformat()
-
-    balances_by_number = fetch_subaccount_balances_cents_map(slot)
-    if balances_by_number is None:
-        _LOG.warning("Kalshi subaccount balances unavailable for user %s", slot)
-        balances_by_number = {}
-
-    _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_by_number)
-    refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
-    if not _after_automatic_rake and maybe_execute_live_automatic_mtb_rake(
-        cursor, slot, subaccounts_table=sa_fqn
-    ):
-        return poll_live_account_balances(
-            cursor,
-            user_no,
-            throttle=False,
-            _after_automatic_rake=True,
-        )
-
-    active_numbers = sorted(
-        set(int(n) for n in balances_by_number.keys())
-        | set(_subaccount_numbers_from_subaccounts_table(cursor, sa_fqn))
-    )
-    if not active_numbers:
-        active_numbers = [0, 1]
+    """Persist per-subaccount rows and hero aggregate from pre-fetched Kalshi balance details."""
+    from backend.trading_mode import subaccount_balance_table_fqn
 
     polled: list[int] = []
     for n in active_numbers:
-        detail = fetch_portfolio_balance_detail(slot, subaccount=n)
+        detail = details_by_number.get(n)
         if detail is None:
-            _LOG.warning("Kalshi balance poll failed for user %s subaccount %s", slot, n)
             continue
         sab_fqn = subaccount_balance_table_fqn(slot, n)
         ensure_subaccount_balance_table(cursor, sab_fqn)
@@ -1062,7 +1081,7 @@ def poll_live_account_balances(
             portfolio_value=total,
             account_balance_table=sab_fqn,
             subaccounts_table=sa_fqn,
-            current_timestamp=ts,
+            current_timestamp=current_timestamp,
             throttle=False,
             notify_db_name="account_balance",
             record_internal_transfers=False,
@@ -1076,15 +1095,164 @@ def poll_live_account_balances(
         _LOG.warning("No subaccount balance polls succeeded for user %s", slot)
         return False, False
 
-    inserted, bankroll_stepped_down = aggregate_account_balance_from_subaccounts(
+    return aggregate_account_balance_from_subaccounts(
         cursor,
         user_no=slot,
         account_balance_table=ab_fqn,
         subaccount_numbers=polled,
-        current_timestamp=ts,
+        current_timestamp=current_timestamp,
         throttle=throttle,
     )
-    return inserted, bankroll_stepped_down
+
+
+def poll_live_account_balances(
+    cursor,
+    user_no: str,
+    *,
+    throttle: bool = True,
+    _after_automatic_rake: bool = False,
+    deposit_cycle: bool = False,
+) -> Tuple[bool, bool]:
+    """
+    Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
+
+    When automatic MTB rake fires, posts Kalshi transfer #1→#0 and repolls once (full refresh).
+
+    On suspected settlement double-count (cash up, stale portfolio_value), skips the DB write,
+    logs WARNING, and repolls with REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff.
+    """
+    from backend.bookkeeper.kalshi_portfolio_balance import (
+        fetch_portfolio_balance_detail,
+        fetch_subaccount_balances_cents_map,
+    )
+    from backend.core.time_eastern import now_est
+    from backend.kalshi_account_sync_ws import _sync_subaccounts_from_kalshi_poll
+    from backend.trading_mode import (
+        account_balance_table_for_user,
+        subaccount_balance_table_fqn,
+        subaccounts_table_for_user,
+    )
+
+    slot = str(user_no).zfill(4)[-4:]
+    sa_fqn = subaccounts_table_for_user(slot, force_live=True)
+    ab_fqn = account_balance_table_for_user(slot, force_live=True)
+
+    balances_by_number = fetch_subaccount_balances_cents_map(slot)
+    if balances_by_number is None:
+        _LOG.warning("Kalshi subaccount balances unavailable for user %s", slot)
+        balances_by_number = {}
+
+    _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_by_number)
+    refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
+    if not _after_automatic_rake and maybe_execute_live_automatic_mtb_rake(
+        cursor, slot, subaccounts_table=sa_fqn
+    ):
+        return poll_live_account_balances(
+            cursor,
+            user_no,
+            throttle=False,
+            _after_automatic_rake=True,
+            deposit_cycle=deposit_cycle,
+        )
+
+    active_numbers = sorted(
+        set(int(n) for n in balances_by_number.keys())
+        | set(_subaccount_numbers_from_subaccounts_table(cursor, sa_fqn))
+    )
+    if not active_numbers:
+        active_numbers = [0, 1]
+
+    repoll_delays = _balance_glitch_repoll_delays_sec()
+    max_attempts = 1 + len(repoll_delays)
+    attempt = 0
+
+    while True:
+        attempt += 1
+        ts = now_est().isoformat()
+        details_by_number: Dict[int, dict] = {}
+        for n in active_numbers:
+            detail = fetch_portfolio_balance_detail(slot, subaccount=n)
+            if detail is None:
+                _LOG.warning("Kalshi balance poll failed for user %s subaccount %s", slot, n)
+                continue
+            details_by_number[n] = detail
+
+        if not details_by_number:
+            return False, False
+
+        glitch_detected = False
+        glitch_reason = ""
+        if (
+            _balance_glitch_guard_enabled()
+            and not _after_automatic_rake
+            and not deposit_cycle
+            and 1 in details_by_number
+        ):
+            mtb_fqn = subaccount_balance_table_fqn(slot, 1)
+            prev_mtb = _latest_subaccount_balance_row(cursor, mtb_fqn)
+            if prev_mtb:
+                d1 = details_by_number[1]
+                glitch_detected, glitch_reason = detect_settlement_balance_glitch(
+                    prev_mtb,
+                    int(d1["balance_cents"]),
+                    int(d1["portfolio_value_cents"]),
+                )
+
+        if glitch_detected:
+            prev_mtb = _latest_subaccount_balance_row(
+                cursor, subaccount_balance_table_fqn(slot, 1)
+            ) or {}
+            d1 = details_by_number[1]
+            prev_cash = int(prev_mtb.get("balance") or 0)
+            prev_pv = int(prev_mtb.get("portfolio_value") or 0)
+            prev_portfolio = int(prev_mtb.get("portfolio") or (prev_cash + prev_pv))
+            api_cash = int(d1["balance_cents"])
+            api_pv = int(d1["portfolio_value_cents"])
+            cash_delta = api_cash - prev_cash
+            _LOG.warning(
+                "balance_settlement_glitch_skipped user=%s subaccount=1 attempt=%s/%s "
+                "prev_cash=%s prev_pv=%s prev_portfolio=%s "
+                "api_cash=%s api_pv=%s api_portfolio=%s cash_delta=%s reason=%s",
+                slot,
+                attempt,
+                max_attempts,
+                prev_cash,
+                prev_pv,
+                prev_portfolio,
+                api_cash,
+                api_pv,
+                api_cash + api_pv,
+                cash_delta,
+                glitch_reason,
+            )
+            if attempt > len(repoll_delays):
+                _LOG.error(
+                    "balance glitch persists after %s repolls; keeping last good DB row (user=%s)",
+                    len(repoll_delays),
+                    slot,
+                )
+                return False, False
+            time.sleep(repoll_delays[attempt - 1])
+            continue
+
+        if attempt > 1:
+            _LOG.info(
+                "balance_settlement_glitch_cleared user=%s attempt=%s delay_sec=%s",
+                slot,
+                attempt,
+                repoll_delays[attempt - 2],
+            )
+
+        return _write_polled_subaccount_balances(
+            cursor,
+            slot=slot,
+            sa_fqn=sa_fqn,
+            ab_fqn=ab_fqn,
+            active_numbers=active_numbers,
+            details_by_number=details_by_number,
+            current_timestamp=ts,
+            throttle=throttle,
+        )
 
 
 def estimate_kalshi_taker_fee_dollars(position, price: float) -> float:

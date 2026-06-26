@@ -1464,7 +1464,10 @@ def sync_balance(*, full: bool = False):
             bankroll_stepped_down = False
             with pg_conn.cursor() as cursor:
                 inserted, bankroll_stepped_down = poll_live_account_balances(
-                    cursor, _slot, throttle=not full
+                    cursor,
+                    _slot,
+                    throttle=not full,
+                    deposit_cycle=bool(new_deposit_events),
                 )
                 pg_conn.commit()
             try:
