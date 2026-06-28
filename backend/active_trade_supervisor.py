@@ -2862,7 +2862,7 @@ def get_kalshi_market_snapshot(
     *,
     max_age_sec: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
-    """Kalshi market snapshot from live_state when enabled; else PostgreSQL."""
+    """Per-contract asks from OB-priced strike ladder (live_state) or PostgreSQL fallback."""
     try:
         if symbol is None or market is None:
             sym, mkt = get_current_monitor_symbol_and_market()
@@ -2884,7 +2884,7 @@ def get_kalshi_market_snapshot(
             age_limit = max_age_sec if max_age_sec is not None else _ats_tradeflow_max_age_sec()
             snap = _cache_kalshi_snapshot(sym_u, market, max_age_sec=age_limit)
             if not snap or not snap.get("markets"):
-                log_debug(f"No Kalshi market snapshot in live_state for {sym_u}/{market}")
+                log_debug(f"No strike ladder quotes in live_state for {sym_u}/{market}")
             return snap
 
         conn = get_postgresql_connection()
@@ -3183,7 +3183,7 @@ def _kalshi_snapshot_stale_max_sec() -> float:
 def get_kalshi_market_snapshot_cached(
     symbol: str = None, market: str = None,
 ) -> Optional[Dict[str, Any]]:
-    """Reuse last good live_state snapshot briefly when a tick misses."""
+    """Strike-ladder quote snapshot with brief reuse when a tick misses."""
     global _kalshi_snapshot_cache
     if symbol is None or market is None:
         sym, mkt = get_current_monitor_symbol_and_market()
@@ -3235,12 +3235,15 @@ def get_current_closing_price_for_trade(
     market: Optional[str] = None,
 ) -> Optional[float]:
     """
-    Get the current closing price for a specific trade from Kalshi market snapshot.
-    
+    Get the current closing price for a specific trade from the strike ladder snapshot.
+
+    On the live_state hot path, ``snapshot_data`` / the default fetch are OB-priced
+    strike-table rows (same source as AES entry), not ticker WS quotes.
+
     Args:
         trade_ticker: The ticker of the trade (e.g., "KXBTCD-25JUL1617-T119499.99" or "KXETHD-25JUL1617-T119499.99")
         trade_side: The side of the trade ("Y" for YES, "N" for NO)
-        snapshot_data: Optional pre-fetched snapshot (e.g. cached); default uses get_kalshi_market_snapshot_cached.
+        snapshot_data: Optional pre-fetched strike-ladder snapshot; default uses get_kalshi_market_snapshot_cached.
         symbol: Trade symbol for DB point-lookup when the snapshot omits the ticker.
         market: Monitor market ('hourly' or '15m') for DB fallback.
 
@@ -3880,7 +3883,7 @@ def update_active_trade_monitoring_data():
             return out
 
         if not _snapshot_for_trade_symbol(sym, mkt).get("markets"):
-            log_debug("⚠️ Kalshi snapshot empty; using per-trade DB fallbacks where possible")
+            log_debug("⚠️ Strike ladder snapshot empty; using per-trade DB fallbacks where possible")
 
         if _redis_active_trades_on():
             _update_monitoring_marks_redis(snap_cache, sym, mkt)
@@ -4487,13 +4490,17 @@ def start_monitoring_loop():
                 
                         # === AUTO STOP LOGIC ===
                         auto_stop_enabled = is_auto_stop_enabled()
-                        if auto_stop_enabled:
+                        if auto_stop_enabled and not is_reverse_monitor():
                             check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades)
                 
                         # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
                         # Skip momentum spike logic for Momentum Scalp and Momentum Reversal monitors
                         strategy = get_trade_strategy()
-                        if strategy != "Momentum Scalp" and strategy != "Momentum Reversal":
+                        if (
+                            not is_reverse_monitor()
+                            and strategy != "Momentum Scalp"
+                            and strategy != "Momentum Reversal"
+                        ):
                             # Get momentum spike settings from monitor's assigned strategy
                             try:
                                 import psycopg2
@@ -5577,6 +5584,34 @@ def is_auto_stop_enabled():
     except Exception as e:
         log(f"[AUTO STOP] Error reading auto_trade from monitor_list: {e}")
         return False
+
+
+def is_reverse_monitor():
+    """True when monitor_list.reverse is enabled (auto-stop disabled)."""
+    try:
+        from backend.core.tradeflow_monitor_settings_cache import get_cached_monitor_bool
+
+        def _load():
+            conn = get_postgresql_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT reverse FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                    (ctx_mid(),),
+                )
+                result = cursor.fetchone()
+            conn.close()
+            return bool(result[0]) if result and result[0] is not None else False
+
+        return bool(get_cached_monitor_bool(ctx_user(), ctx_mid(), "reverse", _load))
+    except Exception as e:
+        log(f"[AUTO STOP] Error reading reverse from monitor_list: {e}")
+        return False
+
+
+def get_effective_trade_strategy():
+    from backend.core.monitor_reverse_mode import effective_trade_strategy
+
+    return effective_trade_strategy(get_trade_strategy(), is_reverse_monitor())
 
 
 def _close_method_for_auto_trigger(trigger_reason: str) -> str:
@@ -7081,6 +7116,10 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
     Router function to check auto-stop conditions based on monitor's strategy.
     Routes to strategy-specific auto-stop logic.
     """
+    if is_reverse_monitor():
+        log_debug("[AUTO STOP] skipped — reverse monitor")
+        return
+
     strategy = get_trade_strategy()
     
     if strategy == "Momentum Scalp":

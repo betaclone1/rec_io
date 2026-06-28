@@ -93,6 +93,7 @@ def _monitor_list_select_sql(user_number: str) -> str:
                     ml.performance_based_allocation,
                     ml.paper_trade,
                     ml.test_filter,
+                    ml.reverse,
                     ml.regime_monitor_enabled,
                     ml.regime_window,
                     ml.market,
@@ -257,6 +258,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             performance_based_allocation,
             paper_trade,
             test_filter,
+            reverse,
             regime_monitor_enabled,
             regime_window,
             market,
@@ -475,6 +477,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                 else bool((paper_trade or False) or (test_filter or False))
             ),
             "test_filter": bool(test_filter) if test_filter is not None else False,
+            "reverse": bool(reverse) if reverse is not None else False,
             "regime_monitor_enabled": regime_monitor_enabled or False,
             "regime_window": regime_window or "30d",
             "market": (market or "").strip().lower() if market else None,

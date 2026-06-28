@@ -68,6 +68,53 @@ def test_strike_ladder_cache_only_no_pg_fallback():
     assert out["strikes"][0]["ticker"] == "T1"
 
 
-def test_ttc_from_ladder():
-    assert ttc_seconds_from_ladder({"ttc_seconds": 90}, "15m") == 90
-    assert ttc_seconds_from_ladder({"ttc": 60}, "hourly") == 60
+def test_kalshi_market_snapshot_from_strike_ladder():
+    ladder = {
+        "event_ticker": "KXBTCD-26JUN12",
+        "strikes": [
+            {
+                "ticker": "KXBTCD-26JUN12-T60000",
+                "yes_ask_dollars": "0.45",
+                "no_ask_dollars": "0.56",
+                "volume_fp": "1200",
+                "strike": 60000.0,
+            }
+        ],
+    }
+    with patch("backend.core.tradeflow_live_reads.live_state_cache_enabled", return_value=True):
+        with patch(
+            "backend.core.tradeflow_live_reads.strike_ladder",
+            return_value=ladder,
+        ):
+            snap = kalshi_market_snapshot("BTC", "hourly")
+    assert snap is not None
+    assert snap.get("source") == "strike_ladder"
+    assert snap["markets"][0]["yes_ask_dollars"] == "0.45"
+    assert snap["markets"][0]["no_ask_dollars"] == "0.56"
+
+
+def test_kalshi_closing_price_from_strike_ladder_snapshot():
+    ladder = {
+        "strikes": [
+            {
+                "ticker": "KXBTCD-26JUN12-T60000",
+                "yes_ask_dollars": "0.45",
+                "no_ask_dollars": "0.56",
+            }
+        ],
+    }
+    with patch("backend.core.tradeflow_live_reads.live_state_cache_enabled", return_value=True):
+        with patch(
+            "backend.core.tradeflow_live_reads.kalshi_market_snapshot_for_monitoring",
+            return_value={
+                "source": "strike_ladder",
+                "markets": ladder["strikes"],
+            },
+        ):
+            px = kalshi_closing_price_for_ticker_monitoring(
+                "BTC",
+                "hourly",
+                "KXBTCD-26JUN12-T60000",
+                "Y",
+            )
+    assert px == 0.56

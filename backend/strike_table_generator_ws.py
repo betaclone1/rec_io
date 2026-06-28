@@ -424,7 +424,18 @@ def _symbols_from_pubsub_message(
         return set()
     if payload.get("type") == "live_state_updated":
         if payload.get("kind") == "orderbook":
-            return set()
+            mt = str(payload.get("market_ticker") or "").strip()
+            if not mt:
+                return set()
+            from backend.core.orderbook_hot_publish_registry import symbol_market_from_orderbook_ticker
+
+            sym, mkt = symbol_market_from_orderbook_ticker(mt)
+            if not sym or not mkt:
+                return set()
+            if str(mkt).strip().lower() != str(market_kind or "").strip().lower():
+                return set()
+            sym_u = sym.strip().upper()
+            return {sym_u} if sym_u in subscribed_symbols else set()
         return _symbols_from_live_state_event(
             payload, data_exchange=data_exchange, market_kind=market_kind
         ) & subscribed_symbols

@@ -1725,6 +1725,7 @@
 
         const _thmHotPathMarks = new Map();
         let _thmHotPathWsUnsub = null;
+        const tradeHistoryMonitorIdToFilterMeta = {};
 
         function thmRetPctFromPnlAndBankroll(pnlVal, bankroll) {
             const pnl = Number(pnlVal);
@@ -2053,7 +2054,7 @@
                         <td>${trade.date !== null ? trade.date : ''}</td>
                         <td>${trade.time !== null ? trade.time : ''}</td>
                         <td>${trade.symbol !== null ? trade.symbol : ''}</td>
-                        <td>${trade.trade_strategy !== null ? trade.trade_strategy : ''}</td>
+                        <td>${tradeHistoryDisplayStrategy(trade)}</td>
                         <td>${trade.contract !== null ? trade.contract : ''}</td>
                         <td>${trade.strike !== null ? trade.strike : ''}</td>
                         <td>${trade.side === 'Yes' || trade.side === 'Y' ? 'Y' : trade.side === 'No' || trade.side === 'N' ? 'N' : ''}</td>
@@ -2305,11 +2306,12 @@
 
         // === STRATEGY FILTER LOGIC ===
         function filterTradesByStrategy(trades) {
-            const strategyCheckboxes = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
-            const selectedNames = Array.from(strategyCheckboxes).filter(cb => cb.checked).map(cb => cb.getAttribute('data-strategy-name'));
+            if (tradeHistoryAllStrategiesSelected()) return trades;
+            let selectedNames = tradeHistoryGetSelectedStrategyNames();
             if (selectedNames.length === 0) return trades;
+            selectedNames = tradeHistoryExpandStrategyFilterNames(selectedNames);
             return trades.filter(trade => {
-                const strategy = trade.trade_strategy;
+                const strategy = tradeHistoryDisplayStrategy(trade);
                 if (!strategy) return true;
                 return selectedNames.includes(strategy);
             });
@@ -2416,6 +2418,132 @@
         }
 
         /** Same monitor list + ordering as desktop trade history: GET /api/monitors, non-archived, dashboard_order. */
+        function formatEffectiveMonitorStrategy(monitor) {
+            if (!monitor || !monitor.strategy) return '';
+            const strat = String(monitor.strategy).trim();
+            const rev =
+                monitor.reverse === true ||
+                monitor.reverse === 'true' ||
+                monitor.reverse === 1 ||
+                monitor.reverse === '1';
+            return rev && strat ? ('Reverse ' + strat) : strat;
+        }
+
+        function tradeHistoryReverseStrategyName(baseStrategy) {
+            const base = String(baseStrategy || '').trim();
+            if (!base) return '';
+            return base.startsWith('Reverse ') ? base : ('Reverse ' + base);
+        }
+
+        function tradeHistoryBaseStrategyName(strategyName) {
+            const s = String(strategyName || '').trim();
+            return s.startsWith('Reverse ') ? s.slice(8).trim() : s;
+        }
+
+        function tradeHistoryGetSelectedStrategyNames() {
+            const strategyCheckboxes = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+            return Array.from(strategyCheckboxes)
+                .filter((cb) => cb.checked)
+                .map((cb) => cb.getAttribute('data-strategy-name'))
+                .filter(Boolean);
+        }
+
+        function tradeHistoryAllStrategiesSelected() {
+            const stratCbs = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
+            const all = Array.from(stratCbs);
+            if (all.length === 0) return true;
+            return all.every((cb) => cb.checked);
+        }
+
+        function tradeHistoryExpandStrategyFilterNames(names) {
+            if (!names || names.length === 0) return names;
+            const expanded = new Set(names);
+            for (let i = 0; i < names.length; i++) {
+                const name = String(names[i] || '').trim();
+                if (!name) continue;
+                if (name.startsWith('Reverse ')) {
+                    const base = tradeHistoryBaseStrategyName(name);
+                    if (base) expanded.add(base);
+                } else {
+                    expanded.add(tradeHistoryReverseStrategyName(name));
+                }
+            }
+            return Array.from(expanded);
+        }
+
+        function tradeHistoryTradePassesStrategyFilter(trade, displayStrat) {
+            if (tradeHistoryAllStrategiesSelected()) return true;
+            let selectedNames = tradeHistoryGetSelectedStrategyNames();
+            if (selectedNames.length === 0) return true;
+            selectedNames = tradeHistoryExpandStrategyFilterNames(selectedNames);
+            if (!displayStrat) return true;
+            return selectedNames.includes(displayStrat);
+        }
+
+        function tradeHistoryMonitorMetaMatchesTrade(meta, trade, displayStrat) {
+            if (!meta) return false;
+            const tradeSym = trade && trade.symbol ? String(trade.symbol).trim().toUpperCase() : '';
+            const metaSym = meta.symbol ? String(meta.symbol).trim().toUpperCase() : '';
+            if (metaSym && tradeSym && metaSym !== tradeSym) return false;
+            const tradeMkt = trade && trade.market != null ? String(trade.market).trim().toLowerCase() : '';
+            const metaMkt = meta.market != null ? String(meta.market).trim().toLowerCase() : '';
+            if (metaMkt && tradeMkt && metaMkt !== tradeMkt) return false;
+            const rev = tradeHistoryReverseStrategyName(meta.strategy);
+            if (meta.reverse) return displayStrat === rev;
+            const base = String(meta.strategy || '').trim();
+            return displayStrat === base && !displayStrat.startsWith('Reverse ');
+        }
+
+        function tradeHistoryReverseTradeMisroutedToStandardMonitor(trade, displayStrat) {
+            if (!displayStrat || !displayStrat.startsWith('Reverse ')) return false;
+            const raw = trade && trade.monitor;
+            if (raw == null || raw === '') return false;
+            const ownerMeta = tradeHistoryMonitorIdToFilterMeta[String(raw)];
+            if (!ownerMeta || ownerMeta.reverse) return false;
+            return tradeHistoryMonitorMetaMatchesTrade(
+                { symbol: ownerMeta.symbol, market: ownerMeta.market, strategy: ownerMeta.strategy, reverse: true },
+                trade,
+                displayStrat
+            );
+        }
+
+        function tradeHistoryTradeBelongsToMonitorSummaryRow(mid, trade) {
+            const meta = tradeHistoryMonitorIdToFilterMeta[mid];
+            const displayStrat = tradeHistoryDisplayStrategy(trade);
+            if (!tradeHistoryTradePassesStrategyFilter(trade, displayStrat)) return false;
+
+            const raw = trade && trade.monitor;
+            const monMatch = raw != null && raw !== '' && String(raw).toLowerCase() === String(mid).toLowerCase();
+
+            if (meta && meta.reverse) {
+                const rev = tradeHistoryReverseStrategyName(meta.strategy);
+                if (displayStrat !== rev) return false;
+                if (monMatch) return true;
+                return (
+                    tradeHistoryReverseTradeMisroutedToStandardMonitor(trade, displayStrat) &&
+                    tradeHistoryMonitorMetaMatchesTrade(meta, trade, displayStrat)
+                );
+            }
+
+            if (!monMatch) return false;
+            if (displayStrat.startsWith('Reverse ')) return false;
+            return true;
+        }
+
+        function tradeHistoryDisplayStrategy(trade) {
+            const raw = trade && trade.trade_strategy != null ? String(trade.trade_strategy).trim() : '';
+            if (raw.startsWith('Reverse ')) return raw;
+            const mid = trade && trade.monitor;
+            if (mid) {
+                const meta = tradeHistoryMonitorIdToFilterMeta[mid];
+                if (meta && meta.reverse) {
+                    const base = raw || (meta.strategy || '').trim();
+                    if (base && !base.startsWith('Reverse ')) return 'Reverse ' + base;
+                }
+            }
+            return raw;
+        }
+
         function normalizeActiveMonitorsForTradeHistory(data) {
             if (!data || data.status !== 'ok' || !Array.isArray(data.monitors)) return [];
             return data.monitors
@@ -2439,6 +2567,7 @@
                         symbol: m.symbol,
                         strategy: m.strategy,
                         market: m.market,
+                        reverse: m.reverse,
                         paper_trade: m.paper_trade,
                         test_filter: m.test_filter,
                     };
@@ -2473,7 +2602,7 @@
             const mkt = mktRaw === '15m' ? '15m' : (mktRaw === 'hourly' ? 'Hourly' : (monitor.market || '').toString().trim());
             return {
                 sym: (monitor.symbol || '').trim() || '—',
-                strat: (monitor.strategy || '').trim() || '—',
+                strat: formatEffectiveMonitorStrategy(monitor) || (monitor.strategy || '').trim() || '—',
                 mkt: mkt || '—',
                 num: idPart || '?',
             };
@@ -2719,6 +2848,14 @@
         }
 
         function thmAggForMonitorSummaryRow(mid, baseTrades) {
+            const clientAgg = thmAggregateTradesForSummaryRow(
+                (Array.isArray(baseTrades) ? baseTrades : []).filter((t) =>
+                    tradeHistoryTradeBelongsToMonitorSummaryRow(mid, t)
+                )
+            );
+            if (clientAgg.n > 0) {
+                return clientAgg;
+            }
             const map = thmInsightsByMonitorMap();
             if (map) {
                 const r = map.get(String(mid || '').toLowerCase());
@@ -2734,13 +2871,7 @@
                     };
                 }
             }
-            return thmAggregateTradesForSummaryRow(
-                (Array.isArray(baseTrades) ? baseTrades : []).filter((t) => {
-                    const raw = t.monitor;
-                    if (raw == null || raw === '') return false;
-                    return String(raw).toLowerCase() === String(mid).toLowerCase();
-                })
-            );
+            return clientAgg;
         }
 
         /** Short monitor label for summary table (tile text or id). */
@@ -2847,7 +2978,7 @@
             const stratCbs = document.querySelectorAll('#strategy-checkboxes-container input[type="checkbox"][data-strategy-name]');
             const stratChecked = Array.from(stratCbs).filter((cb) => cb.checked).map((cb) => cb.getAttribute('data-strategy-name'));
             if (stratCbs.length > 0 && stratChecked.length > 0 && stratChecked.length < stratCbs.length) {
-                body.strategies = stratChecked;
+                body.strategies = tradeHistoryExpandStrategyFilterNames(stratChecked);
             }
             const monCbs = Array.from(document.querySelectorAll('#monitor-dropdown-content input[type="checkbox"][data-monitor-id]'));
             const stripSelected = thmSelectedMonitorIdsFromStrip();
@@ -3544,7 +3675,7 @@
             }
             if (!idPart) idPart = key || '?';
             const sym = (monitor.symbol || '').trim();
-            const strat = (monitor.strategy || '').trim();
+            const strat = formatEffectiveMonitorStrategy(monitor) || (monitor.strategy || '').trim();
             const mktRaw = (monitor.market || '').toString().trim().toLowerCase();
             const mkt = mktRaw === '15m' ? '15m' : (mktRaw === 'hourly' ? 'Hourly' : (monitor.market || '').toString().trim());
             if (sym && strat) {
@@ -3578,6 +3709,27 @@
                     return;
                 }
                 const monitors = normalizeActiveMonitorsForTradeHistory(data);
+
+                Object.keys(tradeHistoryMonitorIdToFilterMeta).forEach((k) => delete tradeHistoryMonitorIdToFilterMeta[k]);
+                monitors.forEach((monitor) => {
+                    const mktRaw = (monitor.market || '').toString().trim().toLowerCase();
+                    const mktDisp =
+                        mktRaw === '15m'
+                            ? '15m'
+                            : mktRaw === 'hourly'
+                              ? 'Hourly'
+                              : (monitor.market || '').toString().trim();
+                    tradeHistoryMonitorIdToFilterMeta[monitor.name] = {
+                        symbol: (monitor.symbol || '').trim(),
+                        strategy: (monitor.strategy || '').trim(),
+                        reverse:
+                            monitor.reverse === true ||
+                            monitor.reverse === 'true' ||
+                            monitor.reverse === 1 ||
+                            monitor.reverse === '1',
+                        market: mktDisp,
+                    };
+                });
 
                 const monitorDropdownContent = document.getElementById('monitor-dropdown-content');
                 const tilesHost = document.getElementById('thm-monitor-tiles');

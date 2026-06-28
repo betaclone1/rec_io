@@ -1250,6 +1250,7 @@ def init_database():
                 max_price_spread NUMERIC(6,4) DEFAULT 0.0300,
                 paper_trade BOOLEAN DEFAULT FALSE,
                 test_filter BOOLEAN DEFAULT FALSE,
+                reverse BOOLEAN NOT NULL DEFAULT FALSE,
                 prob_adj NUMERIC(5,2) DEFAULT 5.00,
                 simulated_trade_loss_prevention BOOLEAN DEFAULT FALSE,
                 symbol_wide_loss_prevention BOOLEAN DEFAULT FALSE,
@@ -2753,6 +2754,16 @@ def init_database():
                     ) THEN
                         EXECUTE format('ALTER TABLE %I.%I ADD COLUMN test_filter BOOLEAN DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
                         EXECUTE format('UPDATE %I.%I SET test_filter = FALSE WHERE test_filter IS NULL', '{_ml_schema}', '{_ml_table}');
+                    END IF;
+
+                    IF NOT EXISTS (
+                        SELECT 1 FROM information_schema.columns
+                        WHERE table_schema = '{_ml_schema}'
+                          AND table_name = '{_ml_table}'
+                          AND column_name = 'reverse'
+                    ) THEN
+                        EXECUTE format('ALTER TABLE %I.%I ADD COLUMN reverse BOOLEAN NOT NULL DEFAULT FALSE', '{_ml_schema}', '{_ml_table}');
+                        EXECUTE format('UPDATE %I.%I SET reverse = FALSE WHERE reverse IS NULL', '{_ml_schema}', '{_ml_table}');
                     END IF;
 
                     IF NOT EXISTS (

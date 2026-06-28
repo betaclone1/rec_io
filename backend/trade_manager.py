@@ -464,7 +464,7 @@ def _fetch_monitor_state(cursor, monitor_key):
         cursor.execute(
             f"""
             SELECT loss_prevention_state, multiplier, test_filter, loss_prevention_toggle,
-                   time_in_force, order_type
+                   time_in_force, order_type, strategy, reverse
             FROM {_tm_monitor_list_table()}
             WHERE id = %s
             """,
@@ -485,6 +485,8 @@ def _fetch_monitor_state(cursor, monitor_key):
                 "loss_prevention_toggle": row[3],
                 "time_in_force": row[4] if len(row) > 4 else None,
                 "order_type": row[5] if len(row) > 5 else None,
+                "strategy": row[6] if len(row) > 6 else None,
+                "reverse": bool(row[7]) if len(row) > 7 and row[7] is not None else False,
             }
         return None
     except Exception as e:
@@ -518,7 +520,7 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
         with pg.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT time_in_force, order_type
+                SELECT time_in_force, order_type, min_fill_price
                 FROM {_tm_monitor_list_table()}
                 WHERE id = %s
                 """,
@@ -530,12 +532,19 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="monitor_not_found_for_execution_fields",
             )
-        tif, ot = row[0], row[1]
+        tif, ot, min_fill_price = row[0], row[1], row[2]
         ok, err = validate_execution_fields(str(tif), str(ot))
         if not ok:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err or "invalid_execution_fields")
         data["time_in_force"] = str(tif).strip().lower()
         data["order_type"] = str(ot).strip().lower()
+        if min_fill_price is not None:
+            try:
+                mfp = float(min_fill_price)
+                if mfp > 0:
+                    data["min_fill_price"] = round(mfp, 4)
+            except (TypeError, ValueError):
+                pass
     finally:
         try:
             pg.close()
@@ -2922,6 +2931,12 @@ def insert_trade(trade):
                         pg_conn.close()
                         return dup_id, False
 
+                from backend.core.monitor_reverse_mode import resolve_trade_strategy_for_insert
+
+                trade_strategy_for_db = resolve_trade_strategy_for_insert(
+                    trade.get("trade_strategy"), monitor_state
+                )
+
                 cursor.execute(
                     "INSERT INTO "
                     + _trades_tbl
@@ -2945,7 +2960,7 @@ def insert_trade(trade):
                     """,
                     (
                     trade.get('status', 'pending'), trade['date'], trade['time'],
-                    symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
+                    symbol, venue_exchange, trade_strategy_for_db, trade_market_for_db,
                     contract_name, strike_for_db, trade['side'], trade.get('prob'),
                     diff_formatted, trade['buy_price'], _trade_position_for_db(trade.get('position')), initial_price_for_db, initial_count_for_db, slippage_for_db,
                     trade.get('initial_proj_price'), trade.get('initial_proj_fees'),
@@ -3103,7 +3118,9 @@ def insert_simulated_trade(trade):
             _sim_trades_tbl = _tm_trades_simulated_table()
             monitor_key = trade.get('monitor')
             cooldown_timer = None
+            monitor_state = None
             if monitor_key:
+                monitor_state = _fetch_monitor_state(cursor, monitor_key)
                 try:
                     if _monitor_key_matches_worker(monitor_key):
                         _, mid_cd = _monitor_slot_and_id(monitor_key)
@@ -3164,6 +3181,12 @@ def insert_simulated_trade(trade):
                     pg_conn.close()
                     return existing[0]
 
+            from backend.core.monitor_reverse_mode import resolve_trade_strategy_for_insert
+
+            trade_strategy_for_db = resolve_trade_strategy_for_insert(
+                trade.get("trade_strategy"), monitor_state
+            )
+
             cursor.execute(
                 "INSERT INTO "
                 + _sim_trades_tbl
@@ -3184,7 +3207,7 @@ def insert_simulated_trade(trade):
                 """,
                 (
                 trade.get('status', 'pending'), trade['date'], trade['time'],
-                symbol, venue_exchange, trade.get('trade_strategy', 'Hourly HTC'), trade_market_for_db,
+                symbol, venue_exchange, trade_strategy_for_db, trade_market_for_db,
                 contract_name, strike_for_db, trade['side'], trade.get('prob'),
                 diff_formatted, buy_price_for_db, position_for_db, None, None,
                 fees_for_db, None, symbol_open, None, momentum_for_db,
@@ -6821,6 +6844,13 @@ def apply_update_trade_status_payload(data: dict):
         elif "insufficient_resting_volume" in error_message.lower() or "insufficient balance" in error_message.lower():
             error_type = "INSUFFICIENT VOLUME" if "insufficient_resting_volume" in error_message.lower() else "INSUFFICIENT BALANCE"
             return (_delete_pending_trade_for_rejection(id, ticket_id, error_type), None)
+        elif (
+            "min_fill_price_rejected" in error_message.lower()
+            or "min_fill_price_no_orderbook" in error_message.lower()
+        ):
+            if ticket_id:
+                log_event(ticket_id, f"MANAGER: SLIPPAGE FAILURE — {error_message}")
+            return (_delete_pending_trade_for_rejection(id, ticket_id, "SLIPPAGE FAILURE"), None)
         else:
             # Handle other errors normally
             update_trade_status(id, "error")

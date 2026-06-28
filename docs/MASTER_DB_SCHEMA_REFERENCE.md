@@ -10322,6 +10322,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_scalp_profit_target` | `numeric(5,2)` | YES | 0.99 | |
 | `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
+| `min_fill_price` | `numeric(6,4)` | YES | - | Minimum estimated taker fill (dollars) before executor sends open order; NULL or 0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
 | `loss_prevention_toggle` | `boolean` | YES | true | Master enable for any monitor loss-prevention method. |
 | `loss_prevention_method` | `text` | YES | win_streak | Loss-prevention algorithm: `win_streak` or `time`. |
@@ -10334,6 +10335,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
 | `paper_trade` | `boolean` | YES | false | |
 | `test_filter` | `boolean` | YES | false | When true, monitor is **paper-only** (`paper_trade` forced true in API/UI), opens use the paper path in `trade_manager`, and fills do not update the paper account balance feed. Migration `20260412_1000_monitor_test_filter_trade_history_include_test`. |
+| `reverse` | `boolean` | NO | false | When true, auto-entry dispatches the opposite side of the detected signal; auto-stop disabled; strategy displays/logs as `Reverse {strategy}`. Migration `20260627_1200_monitor_reverse`. |
 | `regime_monitor_enabled` | `boolean` | YES | false | Enable regime monitor auto-switch between LIVE/PAPER for this monitor. |
 | `regime_window` | `text` | YES | 30d | Rolling lookback window for regime evaluation (allowed: 30d, 7d, 1d, 12h). |
 | `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
@@ -10553,6 +10555,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
 | `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
+| `min_fill_price` | `numeric(6,4)` | YES | - | Monitor-only: minimum estimated taker fill before executor sends open order; NULL/0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
 | `position_size` | `integer(32)` | YES | 1 | |
 | `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
 | `multiplier` | `numeric(3,2)` | YES | 1.00 | |

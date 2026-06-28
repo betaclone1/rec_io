@@ -221,6 +221,24 @@ def apply_auto_entry_settings(
     if "max_ask" in data:
         update_fields.append("max_ask = %s")
         update_values.append(float(data["max_ask"]))
+    if "min_fill_price" in data:
+        mfp_raw = data["min_fill_price"]
+        if mfp_raw is None or mfp_raw == "":
+            update_fields.append("min_fill_price = %s")
+            update_values.append(None)
+        else:
+            mfp = float(mfp_raw)
+            if mfp < 0 or round(mfp, 4) > 0.99:
+                return {
+                    "status": "error",
+                    "message": "min_fill_price must be between 0.0000 and 0.9900 (0 or null disables)",
+                }
+            if mfp <= 0:
+                update_fields.append("min_fill_price = %s")
+                update_values.append(None)
+            else:
+                update_fields.append("min_fill_price = %s")
+                update_values.append(round(mfp, 4))
     def _boolish(v):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
@@ -330,6 +348,13 @@ def apply_auto_entry_settings(
         if tf:
             update_fields.append("paper_trade = %s")
             update_values.append(True)
+
+    if "reverse" in data:
+        rev = data["reverse"]
+        if isinstance(rev, str):
+            rev = rev.lower() in ("true", "1", "yes")
+        update_fields.append("reverse = %s")
+        update_values.append(bool(rev))
 
     if "time_in_force" in data:
         tif = normalize_kalshi_time_in_force(data["time_in_force"])

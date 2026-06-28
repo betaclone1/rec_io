@@ -331,6 +331,13 @@
         .catch(function () {});
     }
 
+    function formatEffectiveMonitorStrategy(monitor) {
+      if (!monitor || !monitor.strategy) return '';
+      const strat = String(monitor.strategy).trim();
+      const rev = monitor.reverse === true || monitor.reverse === 'true' || monitor.reverse === 1 || monitor.reverse === '1';
+      return rev && strat ? ('Reverse ' + strat) : strat;
+    }
+
     function formatDashboardUnifiedAutoTradeModalTitle(tileId, monitor) {
       const raw = normalizeMonitorIdForApi(tileId);
       let num = raw != null && String(raw).trim() !== '' ? String(raw).trim() : '';
@@ -340,7 +347,7 @@
         num = m ? m[1] : s;
       }
       if (!num) num = '?';
-      const strat = monitor && monitor.strategy ? String(monitor.strategy).trim() : '';
+      const strat = formatEffectiveMonitorStrategy(monitor);
       const mkt = monitor ? formatMonitorMarketLabel(monitor.market) : '';
       const tail = [strat, mkt].filter(Boolean).join(', ');
       return tail ? ('Monitor ' + num + ' - ' + tail) : ('Monitor ' + num);
@@ -1083,6 +1090,8 @@
       if (autoStopSection) autoStopSection.style.display = disp(!isExpirationScalp);
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
       if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
+      const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');
+      if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
     }
 
     // Minimum Time to Close Controls
@@ -1313,6 +1322,17 @@
       const other = document.getElementById(otherId);
       if (other && other.value !== v) other.value = v;
       updateDashboardStopLossBubblesFromInt(v);
+    }
+
+    function updateExpirationScalpMinFillPriceBubble(rawValue) {
+      const slider = document.getElementById('expirationScalpMinFillPriceSlider');
+      const display = document.getElementById('expirationScalpMinFillPriceValueDisplay');
+      if (!slider || !display) return;
+      const n = Math.min(99, Math.max(0, parseInt(rawValue, 10) || 0));
+      display.textContent = (n / 100).toFixed(4);
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (n - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
     }
     
     // MOMENTUM SCALP value bubble update functions
@@ -1639,6 +1659,10 @@
             setChk('uatMonitorTestFilter', v !== undefined && v !== null ? !!v : !!(monitor && (monitor.test_filter === true || monitor.test_filter === 'true' || monitor.test_filter === 1)));
           }
           {
+            const rv = data.reverse;
+            setChk('uatMonitorReverse', rv !== undefined && rv !== null ? !!rv : !!(monitor && (monitor.reverse === true || monitor.reverse === 'true' || monitor.reverse === 1)));
+          }
+          {
             const ot = data.order_type;
             const tif = data.time_in_force;
             const otEl = document.getElementById('uatKalshiOrderType');
@@ -1710,6 +1734,14 @@
           }
           dashboardExpirationScalpMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.9000;
           dashboardExpirationScalpMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9900;
+          const mfpRaw = data.min_fill_price !== undefined && data.min_fill_price !== null
+            ? parseFloat(data.min_fill_price) : 0;
+          const mfpSlider = Math.min(99, Math.max(0, Math.round((Number.isFinite(mfpRaw) ? mfpRaw : 0) * 100)));
+          const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');
+          if (mfpEl) mfpEl.value = mfpSlider;
+          if (typeof updateExpirationScalpMinFillPriceBubble === 'function') {
+            updateExpirationScalpMinFillPriceBubble(mfpSlider);
+          }
           const MIN_ASK_SEPARATION = 0.01;
           if (dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
             if (dashboardExpirationScalpMaxAsk < 1.0) {
@@ -2060,6 +2092,14 @@
               }
             }
           });
+          const esMfp = document.getElementById('expirationScalpMinFillPriceSlider');
+          if (esMfp) {
+            updateExpirationScalpMinFillPriceBubble(esMfp.value);
+            if (!esMfp._dashUnifiedWired) {
+              esMfp._dashUnifiedWired = true;
+              esMfp.addEventListener('input', function(){ updateExpirationScalpMinFillPriceBubble(this.value); });
+            }
+          }
         }, 150);
       };
 
@@ -2100,6 +2140,8 @@
         payload.regime_window = regimeWindowEl ? regimeWindowEl.value : '30d';
         const uatMonitorTestFilterEl = document.getElementById('uatMonitorTestFilter');
         payload.test_filter = uatMonitorTestFilterEl ? uatMonitorTestFilterEl.checked : false;
+        const uatMonitorReverseEl = document.getElementById('uatMonitorReverse');
+        payload.reverse = uatMonitorReverseEl ? uatMonitorReverseEl.checked : false;
         {
           const otEl = document.getElementById('uatKalshiOrderType');
           const tifEl = document.getElementById('uatKalshiTimeInForce');
@@ -2212,6 +2254,11 @@
           payload.max_probability = parseFloat(parseFloat(dashboardMaxProbability).toFixed(1));
           payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk).toFixed(4));
           payload.max_ask = parseFloat(parseFloat(dashboardExpirationScalpMaxAsk).toFixed(4));
+          const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');
+          if (mfpEl) {
+            const mfpVal = parseInt(mfpEl.value, 10) / 100;
+            payload.min_fill_price = mfpVal > 0 ? parseFloat(mfpVal.toFixed(4)) : 0;
+          }
         } else {
           // HOURLY HTC specific fields
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
@@ -2294,8 +2341,13 @@
               monitorObj.regime_monitor_enabled = payload.regime_monitor_enabled;
               monitorObj.regime_window = payload.regime_window;
               monitorObj.test_filter = !!payload.test_filter;
+              monitorObj.reverse = !!payload.reverse;
               if (payload.test_filter) {
                 monitorObj.paper_trade = true;
+              }
+              const stratEl = document.querySelector(`[data-monitor-id="${tileId}"] .monitor-strategy`);
+              if (stratEl && monitorObj.strategy) {
+                stratEl.textContent = formatEffectiveMonitorStrategy(monitorObj) || monitorObj.strategy;
               }
               if (typeof updatePaperTradingUI === 'function') {
                 updatePaperTradingUI(tileId, monitorObj.paper_trade || false);

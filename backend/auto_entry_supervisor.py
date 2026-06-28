@@ -292,7 +292,7 @@ def _auto_entry_differential_allowed(settings: dict, traded_side: str, strike: d
 def _log_aes_trigger_feed_snapshot(strike_data: dict, strike_table_data: Optional[dict]) -> None:
     """Structured INFO at auto-trigger: ladder snapshot + live_state symbol metrics."""
     try:
-        strategy = get_trade_strategy()
+        strategy = get_effective_trade_strategy()
     except Exception:
         strategy = None
     try:
@@ -2062,6 +2062,37 @@ def is_auto_trade_enabled():
         log(f"[AUTO ENTRY] ❌ Error reading auto_trade from monitor_list for monitor {ctx_mid()}: {e}")
         os._exit(0)
 
+def is_reverse_monitor():
+    """True when monitor_list.reverse is enabled for this monitor."""
+    if AES_UNIFIED_POOL and _aes_bind_m.get() is None:
+        return False
+    try:
+        from backend.core.tradeflow_monitor_settings_cache import get_cached_monitor_bool
+
+        def _load():
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT reverse FROM {_aes_monitor_list_table()} WHERE id = %s",
+                    (ctx_mid(),),
+                )
+                result = cursor.fetchone()
+            conn.close()
+            return bool(result[0]) if result and result[0] is not None else False
+
+        return bool(get_cached_monitor_bool(ctx_user(), ctx_mid(), "reverse", _load))
+    except Exception as e:
+        log(f"[AUTO ENTRY] Error reading reverse from monitor_list for monitor {ctx_mid()}: {e}")
+        return False
+
+
+def get_effective_trade_strategy():
+    """Strategy name for logs/trades; prefixes Reverse when monitor reverse mode is on."""
+    from backend.core.monitor_reverse_mode import effective_trade_strategy
+
+    return effective_trade_strategy(get_trade_strategy(), is_reverse_monitor())
+
+
 def get_auto_entry_settings():
     """Get auto entry settings from monitor's assigned strategy"""
     global previous_settings
@@ -2594,7 +2625,20 @@ def trigger_auto_entry_trade(strike_data):
         if bankroll_allotment is None:
             log(f"[AUTO ENTRY] ❌ Cannot trigger trade - no valid bankroll allotment found")
             return False
-        
+
+        from backend.core.monitor_reverse_mode import apply_reverse_to_strike_data
+
+        reverse = is_reverse_monitor()
+        if reverse:
+            orig_side = strike_data.get("side")
+            strike_data = apply_reverse_to_strike_data(
+                strike_data, strike_table_data, reverse=True
+            )
+            log(
+                f"[AUTO ENTRY] REVERSE mode — dispatch opposite side "
+                f"{orig_side} → {strike_data.get('side')} @ {strike_data.get('buy_price')}"
+            )
+
         _log_aes_trigger_feed_snapshot(strike_data, strike_table_data)
         
         # Create the exact same payload that trade_initiator would create
@@ -2631,7 +2675,7 @@ def trigger_auto_entry_trade(strike_data):
                 log(f"[AUTO ENTRY] ⚠️ Could not get {current_symbol} price: {e}")
         
         # Get trade strategy from PostgreSQL
-        trade_strategy = get_trade_strategy()
+        trade_strategy = get_effective_trade_strategy()
         
         # Get paper_trade setting from monitor config
         paper_trade = False
@@ -2893,7 +2937,12 @@ def is_strike_already_traded(strike_data):
 
         current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
         ticker = strike_data.get("ticker")
-        want_side = _aes_side_bucket_for_dedupe(strike_data.get("side"))
+        reverse = is_reverse_monitor()
+        from backend.core.monitor_reverse_mode import executed_side_for_dedupe
+
+        want_side = _aes_side_bucket_for_dedupe(
+            executed_side_for_dedupe(strike_data.get("side"), reverse=reverse)
+        )
         if not ticker or not want_side:
             return False
 
@@ -3122,7 +3171,7 @@ def trigger_simulated_trade(strike_data):
             "ticket_id": f"SIM-{uuid.uuid4().hex[:8]}-{int(est_now().timestamp() * 1000)}",
             "status": "pending", "date": today_est().strftime('%Y-%m-%d'),
             "time": est_now().strftime('%H:%M:%S'),
-            "symbol": current_symbol, "exchange": "kalshi", "trade_strategy": get_trade_strategy(),
+            "symbol": current_symbol, "exchange": "kalshi", "trade_strategy": get_effective_trade_strategy(),
             "contract": contract_name, "strike": strike_data.get("strike"), "side": conv_side,
             "ticker": strike_data.get("ticker"), "prob": strike_data.get("probability"),
             "position": 1,

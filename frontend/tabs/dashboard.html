@@ -2873,7 +2873,7 @@
           const stratRow = tile.querySelector('.monitor-strategy-row');
           if (stratRow) {
             const nameEl = stratRow.querySelector('.monitor-strategy');
-            if (nameEl) nameEl.textContent = newMonitor.strategy;
+            if (nameEl) nameEl.textContent = formatEffectiveMonitorStrategy(newMonitor) || newMonitor.strategy;
             const mktEl = stratRow.querySelector('.monitor-market');
             const mktLabel = formatMonitorMarketLabel(newMonitor.market);
             const suffix = stratRow.querySelector('.monitor-strategy-suffix');
@@ -3445,20 +3445,28 @@
       return raw.charAt(0).toUpperCase() + raw.slice(1).toLowerCase();
     }
 
+    function formatEffectiveMonitorStrategy(monitor) {
+      if (!monitor || !monitor.strategy) return '';
+      const strat = String(monitor.strategy).trim();
+      const rev = monitor.reverse === true || monitor.reverse === 'true' || monitor.reverse === 1 || monitor.reverse === '1';
+      return rev && strat ? ('Reverse ' + strat) : strat;
+    }
+
     function htmlMonitorStrategyMarketRow(monitor, opts) {
       opts = opts || {};
       const stacked = opts.stacked === true;
       const label = formatMonitorMarketLabel(monitor.market);
+      const strategyLabel = formatEffectiveMonitorStrategy(monitor) || monitor.strategy;
       if (stacked) {
         const marketLine = label
           ? `<span class="monitor-market-line"><span class="monitor-market">${label}</span></span>`
           : `<span class="monitor-market-line" style="display:none"><span class="monitor-market"></span></span>`;
-        return `<div class="monitor-strategy-row monitor-strategy-row--stacked"><span class="monitor-strategy">${monitor.strategy}</span>${marketLine}</div>`;
+        return `<div class="monitor-strategy-row monitor-strategy-row--stacked"><span class="monitor-strategy">${strategyLabel}</span>${marketLine}</div>`;
       }
       const suffix = label
         ? `<span class="monitor-strategy-suffix"><span class="monitor-strategy-sep"> - </span><span class="monitor-market">${label}</span></span>`
         : `<span class="monitor-strategy-suffix" style="display:none"><span class="monitor-strategy-sep"> - </span><span class="monitor-market"></span></span>`;
-      return `<div class="monitor-strategy-row"><span class="monitor-strategy">${monitor.strategy}</span>${suffix}</div>`;
+      return `<div class="monitor-strategy-row"><span class="monitor-strategy">${strategyLabel}</span>${suffix}</div>`;
     }
 
     // Create monitor tile HTML

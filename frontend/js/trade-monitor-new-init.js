@@ -2580,7 +2580,14 @@
       monitor.strategy != null && String(monitor.strategy).trim() !== ''
         ? String(monitor.strategy).trim()
         : (meta && meta.strategy) || '';
-    document.body.dataset.currentMonitorStrategy = stratRaw || '—';
+    const revOn =
+      monitor.reverse === true ||
+      monitor.reverse === 'true' ||
+      monitor.reverse === 1 ||
+      monitor.reverse === '1';
+    const stratDisplay =
+      revOn && stratRaw ? 'Reverse ' + stratRaw : stratRaw;
+    document.body.dataset.currentMonitorStrategy = stratDisplay || '—';
     const monitorNumber = monitor.id != null ? String(monitor.id).trim() : '';
     document.body.dataset.currentMonitorNumber = monitorNumber || '—';
     const tTitle = document.getElementById('mktTitle');

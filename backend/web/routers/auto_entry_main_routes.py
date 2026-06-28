@@ -53,7 +53,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                        min_ask, max_ask, loss_prevention_toggle, max_price_spread, prob_adj,
                        min_cooldown_timer, max_cooldown_timer,
                        regime_monitor_enabled, regime_window, stop_loss_price, min_ask_range,
-                       test_filter, time_in_force, order_type,
+                       test_filter, reverse, time_in_force, order_type, min_fill_price,
                        name, symbol
             """
                 + (sel_flip if has_flip else "")
@@ -70,8 +70,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
             result = cursor.fetchone()
 
             if result:
-                monitor_name = str(result[37] or "").strip()
-                monitor_symbol = str(result[38] or "").strip().upper()
+                monitor_name = str(result[39] or "").strip()
+                monitor_symbol = str(result[40] or "").strip().upper()
                 symbol_wide_hero = False
                 symbol_wide_monitor_follow = None
                 symbol_wide_monitor_follow_id = None
@@ -129,23 +129,25 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "stop_loss_price": float(result[32]) if result[32] is not None else 0.0,
                     "min_ask_range": float(result[33]) if result[33] is not None else None,
                     "test_filter": bool(result[34]) if result[34] is not None else False,
-                    "time_in_force": str(result[35]) if result[35] is not None else "fill_or_kill",
-                    "order_type": str(result[36]) if result[36] is not None else "market",
+                    "reverse": bool(result[35]) if result[35] is not None else False,
+                    "time_in_force": str(result[36]) if result[36] is not None else "fill_or_kill",
+                    "order_type": str(result[37]) if result[37] is not None else "market",
+                    "min_fill_price": float(result[38]) if result[38] is not None else None,
                     "name": monitor_name,
                     "symbol": monitor_symbol,
                 }
                 if has_flip:
-                    row["flip_sell_prob"] = bool(result[39]) if result[39] is not None else False
-                    row["flip_sell_prob_mult"] = str(result[40]) if result[40] is not None else None
-                    row["flip_sell_floor"] = bool(result[41]) if result[41] is not None else False
-                    row["flip_sell_floor_mult"] = str(result[42]) if result[42] is not None else None
-                    _sw_i = 43
+                    row["flip_sell_prob"] = bool(result[41]) if result[41] is not None else False
+                    row["flip_sell_prob_mult"] = str(result[42]) if result[42] is not None else None
+                    row["flip_sell_floor"] = bool(result[43]) if result[43] is not None else False
+                    row["flip_sell_floor_mult"] = str(result[44]) if result[44] is not None else None
+                    _sw_i = 45
                 else:
                     row["flip_sell_prob"] = False
                     row["flip_sell_prob_mult"] = None
                     row["flip_sell_floor"] = False
                     row["flip_sell_floor_mult"] = None
-                    _sw_i = 39
+                    _sw_i = 41
                 st_on = bool(result[_sw_i]) if result[_sw_i] is not None else False
                 st_dur = int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else 4
                 st_start = result[_sw_i + 2]

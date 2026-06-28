@@ -1355,6 +1355,126 @@ class StrikeTableGenerator:
         except Exception as e:
             logger.warning("Error calculating 15m TTC, using default: %s", e)
             return 300
+
+    def _market_metadata_for_strike(
+        self,
+        strike: float,
+        markets: list[dict[str, Any]],
+    ) -> tuple[Optional[str], Any, Any]:
+        """Ticker and volume metadata from market cache (never bid/ask prices)."""
+        ticker = None
+        volume_fp = None
+        open_interest_fp = None
+
+        if self.interval == "15m":
+            for market in markets:
+                tk = market.get("ticker")
+                if tk:
+                    ticker = tk
+                    volume_fp = market.get("volume_fp")
+                    open_interest_fp = market.get("open_interest_fp")
+                    break
+            return ticker, volume_fp, open_interest_fp
+
+        for market in markets:
+            floor_strike = market.get("floor_strike")
+            if floor_strike is None and market.get("strike") is not None:
+                try:
+                    floor_strike = float(
+                        str(market.get("strike"))
+                        .replace("$", "")
+                        .replace(",", "")
+                        .strip()
+                    )
+                except (TypeError, ValueError):
+                    floor_strike = None
+            if floor_strike is not None and strikes_equivalent(
+                self.symbol, float(floor_strike), float(strike)
+            ):
+                ticker = market.get("ticker")
+                volume_fp = market.get("volume_fp")
+                open_interest_fp = market.get("open_interest_fp")
+                break
+        return ticker, volume_fp, open_interest_fp
+
+    def _resolve_orderbook_touches_for_strikes(
+        self,
+        strikes: list[float],
+        markets: list[dict[str, Any]],
+        *,
+        event_ticker: Optional[str],
+        current_price: float,
+    ) -> tuple[Optional[dict[float, dict[str, Any]]], Optional[str]]:
+        """
+        Require valid Redis OB touch for each strike we write.
+
+        Anchor (nearest spot) must pass or the whole refresh fails. Far strikes with
+        incomplete OB are skipped instead of blocking ATM rows.
+        """
+        from backend.core.orderbook_strike_prices import resolve_orderbook_touch_dollars
+
+        max_age = getattr(self, "pipeline_max_age_sec", None)
+        if max_age is None:
+            max_age = getattr(self, "orderbook_max_age_sec", None)
+        anchor_strike = min(strikes, key=lambda s: abs(float(s) - float(current_price)))
+        out: dict[float, dict[str, Any]] = {}
+        for strike in strikes:
+            ticker, volume_fp, open_interest_fp = self._market_metadata_for_strike(
+                strike, markets
+            )
+            if not ticker:
+                reason = f"orderbook_degraded:missing_ticker:strike={strike}"
+                if float(strike) == float(anchor_strike):
+                    logger.error(
+                        "[%s] %s event=%s",
+                        self.symbol.upper(),
+                        reason,
+                        event_ticker,
+                    )
+                    return None, reason
+                logger.warning(
+                    "[%s] skip strike %s (no ticker) event=%s",
+                    self.symbol.upper(),
+                    strike,
+                    event_ticker,
+                )
+                continue
+            touch, ob_reason = resolve_orderbook_touch_dollars(
+                ticker, max_age_sec=max_age
+            )
+            if not touch:
+                reason = f"orderbook_degraded:{ob_reason}:strike={strike}:ticker={ticker}"
+                if float(strike) == float(anchor_strike):
+                    logger.error(
+                        "[%s] %s event=%s",
+                        self.symbol.upper(),
+                        reason,
+                        event_ticker,
+                    )
+                    return None, reason
+                logger.warning(
+                    "[%s] skip strike %s OB unavailable (%s) event=%s",
+                    self.symbol.upper(),
+                    strike,
+                    ob_reason,
+                    event_ticker,
+                )
+                continue
+            out[float(strike)] = {
+                "ticker": ticker,
+                "volume_fp": volume_fp,
+                "open_interest_fp": open_interest_fp,
+                "touch": touch,
+            }
+        if not out:
+            reason = "orderbook_degraded:no_valid_strikes"
+            logger.error("[%s] %s event=%s", self.symbol.upper(), reason, event_ticker)
+            return None, reason
+        if float(anchor_strike) not in out:
+            reason = f"orderbook_degraded:anchor_strike_missing:strike={anchor_strike}"
+            logger.error("[%s] %s event=%s", self.symbol.upper(), reason, event_ticker)
+            return None, reason
+        return out, None
     
     def generate_strike_table(self) -> Tuple[bool, Optional[str], int]:
         """
@@ -1447,6 +1567,15 @@ class StrikeTableGenerator:
                     )
                     return (False, None, 0)
 
+            ob_by_strike, ob_fail_reason = self._resolve_orderbook_touches_for_strikes(
+                strikes,
+                markets,
+                event_ticker=market_data.get("event_ticker"),
+                current_price=float(current_price),
+            )
+            if ob_by_strike is None:
+                return (False, market_data.get("event_ticker"), 0)
+
             # Use momentum percentile directly as bucket
             # momentum_percentile is already in percentile format like -47.0, -51.0, etc.
             momentum_bucket = round(momentum_percentile)
@@ -1537,6 +1666,9 @@ class StrikeTableGenerator:
             ladder_strikes_out: List[Dict[str, Any]] = []
             for strike in strikes:
                 try:
+                    ob_row = ob_by_strike.get(float(strike))
+                    if not ob_row:
+                        continue
                     # Calculate buffer and probability
                     raw_buf = abs(float(current_price) - float(strike))
                     buffer = (
@@ -1592,72 +1724,15 @@ class StrikeTableGenerator:
                         current_price=current_price,
                     )
 
-                    # Get market data for this strike (Kalshi _dollars + fp-derived depth only)
-                    yes_ask_dollars = None
-                    no_ask_dollars = None
-                    yes_bid_dollars = None
-                    no_bid_dollars = None
-                    volume_fp = None
-                    open_interest_fp = None
-                    ticker = None
-                    
-                    # 15m Kalshi events are one contract per symbol (no strike ladder in cache).
-                    if self.interval == "15m":
-                        from backend.core.kalshi_market_normalize import (
-                            derive_no_side_dollars_from_yes,
-                        )
-
-                        for market in markets:
-                            yes_ask_dollars = market.get("yes_ask_dollars")
-                            no_ask_dollars = market.get("no_ask_dollars")
-                            yes_bid_dollars = market.get("yes_bid_dollars")
-                            no_bid_dollars = market.get("no_bid_dollars")
-                            if yes_ask_dollars and not no_ask_dollars and yes_bid_dollars:
-                                nb_d, na_d = derive_no_side_dollars_from_yes(
-                                    yes_bid_dollars, yes_ask_dollars
-                                )
-                                if na_d:
-                                    no_ask_dollars = na_d
-                                if nb_d and not no_bid_dollars:
-                                    no_bid_dollars = nb_d
-                            if yes_ask_dollars and no_ask_dollars:
-                                volume_fp = market.get("volume_fp")
-                                open_interest_fp = market.get("open_interest_fp")
-                                ticker = market.get("ticker")
-                                break
-
-                    # Hourly (and 15m fallback): match ladder row by floor_strike.
-                    if not yes_ask_dollars or not no_ask_dollars:
-                        for market in markets:
-                            floor_strike = market.get("floor_strike")
-                            if floor_strike is None and market.get("strike") is not None:
-                                try:
-                                    floor_strike = float(
-                                        str(market.get("strike"))
-                                        .replace("$", "")
-                                        .replace(",", "")
-                                        .strip()
-                                    )
-                                except (TypeError, ValueError):
-                                    floor_strike = None
-                            if floor_strike is not None:
-                                if strikes_equivalent(self.symbol, float(floor_strike), float(strike)):
-                                    yes_ask_dollars = market.get("yes_ask_dollars")
-                                    no_ask_dollars = market.get("no_ask_dollars")
-                                    yes_bid_dollars = market.get("yes_bid_dollars")
-                                    no_bid_dollars = market.get("no_bid_dollars")
-                                    volume_fp = market.get("volume_fp")
-                                    open_interest_fp = market.get("open_interest_fp")
-                                    ticker = market.get("ticker")
-                                    break
-                    
-                    # Calculate yes_diff and no_diff based on money line position using subpenny precision
-                    # Convert _dollars values to cents for calculation (multiply by 100)
-                    # Require _dollars values - no fallback to legacy cents
-                    if not yes_ask_dollars or not no_ask_dollars:
-                        logger.warning("Missing _dollars values for strike %s, skipping", strike)
-                        continue
-                    
+                    # Prices: Redis orderbook touch only (pre-validated per strike).
+                    ticker = ob_row["ticker"]
+                    volume_fp = ob_row["volume_fp"]
+                    open_interest_fp = ob_row["open_interest_fp"]
+                    touch = ob_row["touch"]
+                    yes_ask_dollars = touch["yes_ask_dollars"]
+                    no_ask_dollars = touch["no_ask_dollars"]
+                    yes_bid_dollars = touch.get("yes_bid_dollars")
+                    no_bid_dollars = touch.get("no_bid_dollars")
                     # Calculate price spreads (ask_dollars - bid_dollars, always positive)
                     yes_price_spread = None
                     no_price_spread = None

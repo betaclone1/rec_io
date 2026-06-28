@@ -6,6 +6,34 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-06-28 — Release v3.8.0: Monitor reverse mode, min fill price gate, strike orderbook projection
+
+**Summary**
+- **Release: v3.8.0**
+- **Monitor reverse mode:** Per-monitor `reverse` flag (migration **`20260627_1200_monitor_reverse`**). AES flips executed side at dispatch; dedup uses executed side; ATS skips auto-stop; UI shows `Reverse {strategy}`; trade history rolls reverse trades into reverse monitor performance rows.
+- **Min fill price / slippage gate:** Migration **`20260613_1200_orderbook_strike_min_fill_price`** adds `monitor_list_*.min_fill_price`. Expiration Scalp settings UI; `trade_manager` forwards threshold to executor; `trade_executor` rejects opens when projected taker VWAP is below threshold (disabled when NULL/0).
+- **Orderbook strike prices:** `orderbook_strike_prices` module projects taker fill from sidecar orderbook; strike table generator uses orderbook-backed active-side ask where applicable.
+- **Monitor settings cache:** Separate Redis keys per bool field (`auto_trade`, `reverse`) to prevent reverse flag cross-contamination.
+- **Trade history UI:** Desktop results table fills dark inset edge-to-edge; reverse strategy filter/attribution fixes (desktop + mobile).
+- **Database:** Migrations **`20260613_1200_orderbook_strike_min_fill_price`**, **`20260627_1200_monitor_reverse`**; `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260613_1200_orderbook_strike_min_fill_price.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260627_1200_monitor_reverse.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_executor_*`, `auto_entry_supervisor_*`, `active_trade_supervisor_*`, `monitor_manager_*`; spot-check reverse monitor tile label and Expiration Scalp min fill price setting save.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.0`
+
+---
+
 ## 2026-06-17 — Release v3.7.5: Expiration Scalp strategy, monitor_manager pool fixes, local restart hardening
 
 **Summary**

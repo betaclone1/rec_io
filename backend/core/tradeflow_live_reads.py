@@ -220,25 +220,28 @@ def ttc_seconds_from_ladder(
         return None
 
 
-def _market_snapshot_from_cache_payload(mkt_data: Dict[str, Any]) -> Dict[str, Any]:
+def _market_snapshot_from_strike_ladder(ladder: Dict[str, Any]) -> Dict[str, Any]:
+    """Tradeflow quote snapshot from OB-priced strike ladder rows (AES/ATS/UI contract)."""
     markets: List[Dict[str, Any]] = []
-    for m in mkt_data.get("markets") or []:
-        if not isinstance(m, dict):
+    event_ticker = ladder.get("event_ticker")
+    for row in ladder.get("strikes") or []:
+        if not isinstance(row, dict):
             continue
         markets.append(
             {
-                "ticker": m.get("ticker"),
-                "yes_ask_dollars": m.get("yes_ask_dollars"),
-                "no_ask_dollars": m.get("no_ask_dollars"),
-                "volume": m.get("volume_fp"),
-                "event_ticker": m.get("event_ticker"),
-                "strike": m.get("strike"),
+                "ticker": row.get("ticker"),
+                "yes_ask_dollars": row.get("yes_ask_dollars"),
+                "no_ask_dollars": row.get("no_ask_dollars"),
+                "volume": row.get("volume_fp"),
+                "event_ticker": row.get("event_ticker") or event_ticker,
+                "strike": row.get("strike"),
             }
         )
     return {
         "markets": markets,
         "timestamp": datetime.now(EST).isoformat(),
-        "event_ticker": mkt_data.get("event_ticker"),
+        "event_ticker": event_ticker,
+        "source": "strike_ladder",
     }
 
 
@@ -249,6 +252,12 @@ def kalshi_market_snapshot(
     *,
     max_age_sec: Optional[float] = None,
 ) -> Optional[Dict[str, Any]]:
+    """
+    Per-contract yes/no asks for tradeflow (ATS marks, closing price).
+
+    When ``live_state`` is enabled, quotes come from the OB-priced strike ladder
+    (same rows as AES entry and trade monitor), not the legacy ticker WS market cache.
+    """
     ex = normalize_exchange(exchange or DEFAULT_EXCHANGE)
     sym = str(symbol or "").strip().upper()
     mkt = (market or "hourly").strip().lower()
@@ -256,19 +265,10 @@ def kalshi_market_snapshot(
         mkt = "hourly"
     if not sym or not live_state_cache_enabled():
         return None
-    env = live_state_cache.get_market(ex, mkt, sym)
-    ok, _reason, _age = _check_fresh(
-        "market",
-        f"{ex}:{mkt}:{sym}",
-        env,
-        max_age_sec=max_age_sec,
-    )
-    if not ok:
+    ladder = strike_ladder(sym, mkt, ex, max_age_sec=max_age_sec)
+    if not ladder or not ladder.get("strikes"):
         return None
-    mkt_data = live_state_cache.get_market_data(ex, mkt, sym)
-    if not mkt_data or not mkt_data.get("markets"):
-        return None
-    snap = _market_snapshot_from_cache_payload(mkt_data)
+    snap = _market_snapshot_from_strike_ladder(ladder)
     if not snap.get("markets"):
         return None
     return snap
@@ -299,20 +299,20 @@ def kalshi_market_snapshot_for_monitoring(
         mkt = "hourly"
     if not sym:
         return None
-    env = live_state_cache.get_market(ex, mkt, sym)
+    env = live_state_cache.get_strike_ladder(ex, mkt, sym)
     if not env:
         return None
     age = _envelope_age_sec(env)
     if age > allow_stale_max_age_sec:
         return None
-    mkt_data = live_state_cache.get_market_data(ex, mkt, sym)
-    if not mkt_data or not mkt_data.get("markets"):
+    ladder = strike_ladder_from_cache(ex, mkt, sym)
+    if not ladder or not ladder.get("strikes"):
         return None
-    relaxed = _market_snapshot_from_cache_payload(mkt_data)
+    relaxed = _market_snapshot_from_strike_ladder(ladder)
     if relaxed.get("markets"):
         _log_throttled(
-            f"market_relaxed:{ex}:{mkt}:{sym}",
-            "ats_monitoring using relaxed stale market %s:%s:%s age=%.1fs max=%.1fs",
+            f"strike_ladder_relaxed:{ex}:{mkt}:{sym}",
+            "ats_monitoring using relaxed stale strike_ladder %s:%s:%s age=%.1fs max=%.1fs",
             ex,
             mkt,
             sym,

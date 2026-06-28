@@ -2393,6 +2393,7 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "flip_sell_floor": bool(result[48]) if result[48] is not None else False,
         "flip_sell_prob_mult": result[49],
         "flip_sell_floor_mult": result[50],
+        "min_fill_price": None,
     }
 
 
@@ -2451,6 +2452,7 @@ def _code_fallback_strategy_defaults() -> Dict[str, Any]:
         "flip_sell_floor": False,
         "flip_sell_prob_mult": None,
         "flip_sell_floor_mult": None,
+        "min_fill_price": None,
     }
 
 
@@ -2803,12 +2805,12 @@ def create_monitor():
                  simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
                  original_loss_prevention_cooldown_start_time, loss_prevention_cooldown_loss_count,
                  live_loss_prevention_cooldown_start_time,
-                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult)
+                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -2892,6 +2894,7 @@ def create_monitor():
                 strategy_defaults.get('flip_sell_floor', False),
                 strategy_defaults.get('flip_sell_prob_mult'),
                 strategy_defaults.get('flip_sell_floor_mult'),
+                strategy_defaults.get('min_fill_price'),
                 ),
             )
 

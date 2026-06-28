@@ -321,6 +321,55 @@ def _v2_buy_leg_from_legacy_intent_side(intent: str, legacy_side: str) -> str:
     return s
 
 
+def _min_fill_price_gate_message(data: dict) -> Optional[str]:
+    """
+    Return rejection message when estimated taker fill is below monitor min_fill_price.
+    None = proceed with order.
+    """
+    raw_min = data.get("min_fill_price")
+    if raw_min is None:
+        return None
+    try:
+        min_fill = float(raw_min)
+    except (TypeError, ValueError):
+        return None
+    if min_fill <= 0:
+        return None
+
+    ticker = str(data.get("ticker") or "").strip()
+    raw_side = data.get("side", "yes")
+    side = "yes" if raw_side in ("Y", "yes", "y") else "no"
+    try:
+        count_val = float(data.get("count_fp") or data.get("count") or data.get("position") or 0)
+    except (TypeError, ValueError):
+        count_val = 0
+    position = int(count_val)
+    if not ticker or position <= 0:
+        return "min_fill_price_no_orderbook:missing_ticker_or_position"
+
+    from backend.core.orderbook_strike_prices import project_taker_fill_price
+
+    proj = project_taker_fill_price(ticker, side, position)
+    est = proj.get("initial_proj_price")
+    if est is None:
+        return (
+            f"min_fill_price_no_orderbook:{proj.get('reason') or 'projection_failed'} "
+            f"min_fill_price={min_fill:.4f}"
+        )
+    try:
+        est_f = float(est)
+    except (TypeError, ValueError):
+        return f"min_fill_price_no_orderbook:invalid_projection min_fill_price={min_fill:.4f}"
+
+    if est_f + 1e-9 < min_fill:
+        trigger_px = data.get("buy_price")
+        return (
+            f"min_fill_price_rejected: estimated_fill={est_f:.4f} min_fill_price={min_fill:.4f} "
+            f"trigger_buy_price={trigger_px} available_contracts={proj.get('available_contracts')}"
+        )
+    return None
+
+
 def process_trigger_trade_request(data: dict):
     """
     Run Kalshi order path (same as /trigger_trade). Returns (response_dict, http_code).
@@ -368,6 +417,16 @@ def process_trigger_trade_request(data: dict):
         tif = normalize_time_in_force_loose(data.get("time_in_force"))
         if not tif:
             msg = "missing_or_invalid_time_in_force"
+            log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
+            if trade_id:
+                status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
+            else:
+                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+            _notify_trade_manager_executor_status(status_payload)
+            return {"status": "rejected", "error": msg}, 400
+        min_fill_reject = _min_fill_price_gate_message(data)
+        if min_fill_reject:
+            msg = min_fill_reject
             log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
             if trade_id:
                 status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
