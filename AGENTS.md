@@ -73,3 +73,30 @@ When touching redis_switchboard, stream_registry, or adding real-time streams/co
   - When in doubt, favor keeping **core flows and key views** (e.g. dashboards, account history, trade details) reasonably in sync between desktop and mobile.
 
 **Commands (see .cursor/commands/ and .cursor/):** /verify-local, /verify-production, /system-restart-local, /system-restart-production, /prepare-update, /push-commits-and-update-production, /apply-update, /apply-update-from-local, /simple-pull, /confirm-update, /daily-briefing. Workflow: /start-task, /inspect-surface, /implement-plan, /review-change, /promote-knowledge.
+
+---
+
+## Cursor Cloud specific instructions
+
+Environment is Ubuntu 24.04, Python 3.12, with a project venv at `/workspace/venv` (auto-detected by `unified_config`/`MASTER_RESTART`/supervisor). The update script keeps `venv` deps in sync; everything below is what the update script does **not** do.
+
+**Services are not auto-started (no systemd in the VM).** PostgreSQL 16 and Redis 7 are installed (apt) and their data persists in the snapshot, but you must start them each session before running anything DB/Redis-backed:
+- `sudo pg_ctlcluster 16 main start`
+- `sudo redis-server /etc/redis/redis.conf --daemonize yes`
+
+**Database:** `rec_io_db` / `rec_io_user` / `rec_io_password` on `localhost:5432` is already initialized (shared schemas + tenant schema `users_0001`). `.env` (gitignored) holds DB/Redis/tenant defaults including `REC_SINGLE_USER_MODE=1`, `REC_DEFAULT_USER_SCHEMA=users_0001`, `REC_USER_NO=0001`. Source it before manual python/scripts: `set -a; . ./.env; set +a`.
+
+**Run the app:** `set -a; . ./.env; set +a; ./scripts/MASTER_RESTART.sh` starts the supervisor stack (`main_app` :3000, `read_api` :3050, `redis_switchboard`, per-user `trade_manager`/`trade_executor`, watchdogs). Status: `./venv/bin/supervisorctl -c backend/supervisord.conf status`. UI at http://localhost:3000.
+
+**Local login:** user_id `localdev` / password `LocalDev1!` (active `system.master_users` row, slot 0001). If missing on a fresh DB, recreate with a bcrypt hash from `backend.web.auth_passwords.hash_password_bcrypt` inserted into `system.master_users` (user_no `0001`, status `active`).
+
+**Lint/test/build** (standard commands live in `.github/workflows/tests.yml`, `pytest.ini`, `ruff.toml`):
+- Drift check (no DB): `PYTHONPATH=$(pwd) ./venv/bin/python scripts/db/check_db_schema_drift.py`
+- Unit tests: `PYTHONPATH=$(pwd) REC_USER_NO=0001 ./venv/bin/python -m pytest tests/unit`
+- Ruff: `./venv/bin/ruff check .` (repo predates strict ruff; pre-existing findings exist and ruff is not a CI gate).
+
+**Non-obvious gotchas (discovered during setup):**
+- **Full unit suite aborts with a live local DB.** `tests/unit/test_momentum_contain_contract.py` imports `backend.auto_entry_supervisor`, whose module-level `get_monitor_symbol()` calls `os._exit(0)` when its monitor row is absent, silently killing the pytest process mid-collection. CI passes only because CI has no DB (the connect error is caught). To run the full suite locally, add `--ignore=tests/unit/test_momentum_contain_contract.py` (or seed monitor `10023` in `users_0001.monitor_list_0001`).
+- **Greenfield DB lacks prod-cloned objects.** A fresh local DB (`init_database()` + the `system.master_users.user_no` migration) does not contain objects that only ever exist via `install.sh`'s master-DB clone, e.g. `live_data.symbols_list`, `users_0001.monitor_list_0001.updated_at` / `.bankroll_allotment_pct`. So trading-data dashboard paths (allocation, monitors list, trading-mode write, create-monitor) error locally; login, account/profile, change-password, strategies, and balances work. These are data-clone gaps, **not** code bugs — do not "fix" them with app-layer hardening.
+- **Schema contract bootstrap.** `backend/core/db_schema_contract.py` blocks all connections until `system.master_users.user_no` exists. When applying that one migration on a fresh DB, run the migration runner with `REC_SKIP_DB_SCHEMA_CONTRACT=1` (override only for that bootstrap step).
+- `strike_table_generator_ws_*` services sit in BACKOFF locally ("No lookup tables found for symbol BTC") and the market/crypto watchdogs need external feeds — expected without prod data/network.
