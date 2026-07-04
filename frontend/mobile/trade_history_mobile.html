@@ -1746,9 +1746,21 @@
             return map;
         }
 
-        function thmIsOpenTrade(trade) {
+        function thmTradeHasPersistedMarks(trade) {
             const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
-            return st === 'open' || st === 'partial';
+            if (st !== 'closed') return false;
+            return (
+                trade.sell_price != null ||
+                (trade.pnl != null && trade.pnl !== undefined && trade.pnl !== '')
+            );
+        }
+
+        /** Keep last live sell/pnl through expiration until trade_manager writes final closed values. */
+        function thmShouldRetainHotMarks(trade) {
+            const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
+            if (st === 'open' || st === 'partial' || st === 'expired' || st === 'closing') return true;
+            if (st === 'closed' && !thmTradeHasPersistedMarks(trade)) return true;
+            return false;
         }
 
         function thmApplyMarkToTradeObject(t, m) {
@@ -1778,7 +1790,11 @@
         function thmMergeHotMarkIntoTrade(trade) {
             if (!trade || trade.id == null) return;
             const tid = Number(trade.id);
-            if (!thmIsOpenTrade(trade)) {
+            if (thmTradeHasPersistedMarks(trade)) {
+                _thmHotPathMarks.delete(tid);
+                return;
+            }
+            if (!thmShouldRetainHotMarks(trade)) {
                 _thmHotPathMarks.delete(tid);
                 return;
             }
@@ -2033,6 +2049,7 @@
             function appendRowsToFragment(frag, endIdx) {
                 for (; cursor < endIdx; cursor++) {
                     const trade = tradesToRender[cursor];
+                    thmMergeHotMarkIntoTrade(trade);
                     const isNewGroup = trade.contract !== lastContract;
                     if (isNewGroup) groupIndex++;
                     lastContract = trade.contract;

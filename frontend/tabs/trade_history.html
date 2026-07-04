@@ -3571,15 +3571,31 @@
       return out;
     }
 
-    function tradeHistoryIsOpenTrade(trade) {
+    function tradeHistoryTradeHasPersistedMarks(trade) {
       const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
-      return st === 'open' || st === 'partial';
+      if (st !== 'closed') return false;
+      return (
+        trade.sell_price != null ||
+        (trade.pnl != null && trade.pnl !== undefined && trade.pnl !== '')
+      );
+    }
+
+    /** Keep last live sell/pnl through expiration until trade_manager writes final closed values. */
+    function tradeHistoryShouldRetainHotMarks(trade) {
+      const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
+      if (st === 'open' || st === 'partial' || st === 'expired' || st === 'closing') return true;
+      if (st === 'closed' && !tradeHistoryTradeHasPersistedMarks(trade)) return true;
+      return false;
     }
 
     function tradeHistoryMergeHotMarkIntoTrade(trade) {
       if (!trade || trade.id == null) return;
       const tid = Number(trade.id);
-      if (!tradeHistoryIsOpenTrade(trade)) {
+      if (tradeHistoryTradeHasPersistedMarks(trade)) {
+        _thHotPathMarks.delete(tid);
+        return;
+      }
+      if (!tradeHistoryShouldRetainHotMarks(trade)) {
         _thHotPathMarks.delete(tid);
         return;
       }
