@@ -26,6 +26,41 @@ from backend.core.tenant_context import (
 
 _LOG = logging.getLogger("balance_snapshot")
 
+
+def drawdown_halt_applies_to_balance_table(account_balance_table: str) -> bool:
+    """
+    Emergency drawdown halts use balances that match global trading mode only.
+
+    Global LIVE → live ``account_balance_*`` / subaccount rows only.
+    Global PAPER → paper ``account_balance_paper_*`` rows only.
+    """
+    from backend.trading_mode import get_trading_mode
+
+    is_paper_table = "_paper_" in str(account_balance_table)
+    mode = get_trading_mode()
+    if mode == "paper":
+        return is_paper_table
+    return not is_paper_table
+
+
+def _drawdown_stepped_down_for_halt(
+    account_balance_table: str,
+    bankroll_stepped_down: bool,
+) -> bool:
+    if not bankroll_stepped_down:
+        return False
+    if drawdown_halt_applies_to_balance_table(account_balance_table):
+        return True
+    from backend.trading_mode import get_trading_mode
+
+    _LOG.debug(
+        "Ignoring drawdown step-down for halt (table=%s global_mode=%s)",
+        account_balance_table,
+        get_trading_mode(),
+    )
+    return False
+
+
 _SUBACC_FQN_RE = re.compile(
     r"^users\.subaccounts(?:_paper)?_\d{4}$"
     r"|^users_(?P<s>\d{4})\.subaccounts(?:_paper)?_(?P=s)$"
@@ -677,6 +712,9 @@ def apply_balance_snapshot(
 
     ``skip_bankroll_ratchet`` (live only): keep ``bankroll_current`` sticky while updating cash /
     portfolio / MTB columns — used on deposit/withdrawal routing ticks (0↔2 Kalshi transfers).
+
+    Drawdown emergency halts (``bankroll_stepped_down`` → monitor_manager) run only when the
+    snapshot table matches global trading mode (live tables in LIVE mode, paper in PAPER mode).
     """
     if not _allowed_account_balance_fqn(account_balance_table):
         raise ValueError(f"Invalid account_balance table: {account_balance_table}")
@@ -794,6 +832,11 @@ def apply_balance_snapshot(
                 bankroll_current = prev_bankroll
     else:
         bankroll_current = prev_bankroll if prev_bankroll is not None else portfolio_value
+
+    bankroll_stepped_down = _drawdown_stepped_down_for_halt(
+        account_balance_table,
+        bankroll_stepped_down,
+    )
 
     if is_subaccount_balance and subaccount_number != 1:
         mtb_balance, mtb_base = None, None

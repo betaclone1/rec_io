@@ -146,81 +146,22 @@ class ProbabilityLookupGenerator:
             f"(expected analytics.{self.symbol}_price_profile or dated suffix table)"
         )
 
-    def _get_recent_market_buffer_width(self, cursor, current_price: float) -> Optional[float]:
-        """
-        Estimate required buffer coverage from recent 15m Kalshi strikes.
-        Returns max absolute distance from recent strikes to current price.
-        """
-        table_name = f"market_kalshi_15m_{self.symbol}"
-        cursor.execute(
-            """
-                SELECT 1
-                FROM information_schema.tables
-                WHERE table_schema = 'live_data'
-                  AND table_name = %s
-                LIMIT 1
-            """,
-            (table_name,),
-        )
-        if not cursor.fetchone():
-            return None
-
-        cursor.execute(
-            f"""
-                SELECT strike
-                FROM live_data.{table_name}
-                WHERE strike IS NOT NULL
-                ORDER BY updated_at DESC
-                LIMIT 200
-            """
-        )
-        rows = cursor.fetchall()
-        if not rows:
-            return None
-
-        distances = []
-        for (strike_raw,) in rows:
-            try:
-                clean = str(strike_raw).replace("$", "").replace(",", "").strip()
-                if not clean:
-                    continue
-                strike = float(clean)
-                distances.append(abs(strike - current_price))
-            except Exception:
-                continue
-        if not distances:
-            return None
-        return max(distances)
-    
     def get_latest_symbol_price(self) -> float:
-        """Get the latest price for the symbol (prefer live_data, fallback historical)."""
+        """Latest close from historical_data master price history (Coinbase analytics pipeline)."""
         try:
             conn = _analytics_pg_connection()
             cursor = conn.cursor()
 
-            # Prefer the current live price so buffer sizing reflects recent regime.
-            cursor.execute(
-                f"""
-                    SELECT price
-                    FROM live_data.live_price_log_1s_{self.symbol}
-                    ORDER BY timestamp DESC
-                    LIMIT 1
-                """
-            )
+            cursor.execute(f"""
+                SELECT close
+                FROM historical_data.{self.symbol}_price_history
+                ORDER BY timestamp DESC
+                LIMIT 1
+            """)
             result = cursor.fetchone()
-            if result and result[0] is not None:
-                latest_price = float(result[0])
-            else:
-                cursor.execute(f"""
-                    SELECT close 
-                    FROM historical_data.{self.symbol}_price_history 
-                    ORDER BY timestamp DESC 
-                    LIMIT 1
-                """)
-                result = cursor.fetchone()
-                if not result:
-                    raise Exception(f"No price data found for {self.symbol}")
-                latest_price = float(result[0])
+            if not result or result[0] is None:
+                raise Exception(f"No price data found in historical_data.{self.symbol}_price_history")
+            latest_price = float(result[0])
 
             if self._is_low_price_symbol():
                 logger.info(f"📊 Latest {self.symbol.upper()} price: ${latest_price:,.5f}")
@@ -259,26 +200,17 @@ class ProbabilityLookupGenerator:
             # Get current price
             current_price = self.get_latest_symbol_price()
 
-            # Default behavior (BTC/ETH legacy path) remains unchanged.
             buffer_width_pct = extreme_movement_pct
             buffer_width_usd = current_price * (buffer_width_pct / 100.0)
             target_steps = 200
             step_size_usd = buffer_width_usd / target_steps if buffer_width_usd > 0 else 0.0
 
-            # SOL/XRP-only adaptive guard rails.
+            # SOL/XRP: finer step sizing from price profile (historical analytics only).
             if self._is_low_price_symbol():
-                recent_market_width = self._get_recent_market_buffer_width(cursor, current_price)
                 min_floor_usd = 0.05 if self.symbol == "xrp" else 0.25
-                if recent_market_width is not None:
-                    # Ensure lookup coverage reaches real listed strike distances with a small safety factor.
-                    buffer_width_usd = max(buffer_width_usd, recent_market_width * 1.2, min_floor_usd)
-                else:
-                    buffer_width_usd = max(buffer_width_usd, min_floor_usd)
-
-                # For low-priced assets, keep finer steps.
+                buffer_width_usd = max(buffer_width_usd, min_floor_usd)
                 step_floor = 0.0001
                 step_size_usd = max(step_floor, buffer_width_usd / target_steps)
-                # Keep table density bounded.
                 est_steps = int(round(buffer_width_usd / step_size_usd)) if step_size_usd > 0 else 0
                 if est_steps > 500:
                     step_size_usd = max(step_floor, buffer_width_usd / 500.0)

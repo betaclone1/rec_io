@@ -18,18 +18,18 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Database:** Migrations **`20260613_1200_orderbook_strike_min_fill_price`**, **`20260627_1200_monitor_reverse`**; `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260613_1200_orderbook_strike_min_fill_price.up.sql`, `.down.sql`,  
   `scripts/migrations/20260627_1200_monitor_reverse.up.sql`, `.down.sql`
-- [ ] Apply pending migrations from repo root before restart:  
+- [x] Apply pending migrations from repo root before restart:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health/logs for `main_app`, `trade_executor_*`, `auto_entry_supervisor_*`, `active_trade_supervisor_*`, `monitor_manager_*`; spot-check reverse monitor tile label and Expiration Scalp min fill price setting save.
-- [ ] Record release in DB:  
+- [x] Restart services: `./scripts/MASTER_RESTART.sh`
+- [x] Verify health/logs for `main_app`, `trade_executor_*`, `auto_entry_supervisor_*`, `active_trade_supervisor_*`, `monitor_manager_*`; spot-check reverse monitor tile label and Expiration Scalp min fill price setting save.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.0`
 
 ---
