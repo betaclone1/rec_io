@@ -16,7 +16,7 @@ Monitor auto-trade settings modals (`#unifiedAutoTradeModal`, `#mobileUnifiedAut
    - Label gap: `34px` (`--uat-slider-label-gap`)
    - Block gap: `24px` (`--uat-slider-block-gap`)
    - Bubble lift: `32px` (`--uat-slider-bubble-lift`)
-4. Dual-handle range sliders: add class `uat-dual-range` on the container (not inline padding).
+4. Dual-handle range sliders: add class `uat-dual-range` on the container. **Min bubble below track (`top: 16px`), max bubble above (`top: -28px`)** — do not put both above.
 5. Label + hint text (e.g. Minimum Fill Price): label gets `uat-slider-label--compact`; hint uses `.uat-expiration-scalp-min-fill-hint`.
 
 ## When adding a new slider

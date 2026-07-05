@@ -41,14 +41,21 @@
 }
 
 #unifiedAutoTradeModal .value-bubble-container [id$="ValueDisplay"],
-#unifiedAutoTradeModal .value-bubble-container [id$="MinDisplay"],
-#unifiedAutoTradeModal .value-bubble-container [id$="MaxDisplay"],
 #unifiedAutoTradeModal .value-bubble-container #sliderValueDisplay,
 #mobileUnifiedAutoTradeModal .value-bubble-container [id$="ValueDisplay"],
-#mobileUnifiedAutoTradeModal .value-bubble-container [id$="MinDisplay"],
-#mobileUnifiedAutoTradeModal .value-bubble-container [id$="MaxDisplay"],
 #mobileUnifiedAutoTradeModal .value-bubble-container #m_sliderValueDisplay {
   top: calc(-1 * var(--uat-slider-bubble-lift)) !important;
+}
+
+/* Dual-handle range: min bubble below track, max bubble above (avoids overlap at same end). */
+#unifiedAutoTradeModal .value-bubble-container.uat-dual-range [id$="MinDisplay"],
+#mobileUnifiedAutoTradeModal .value-bubble-container.uat-dual-range [id$="MinDisplay"] {
+  top: 16px !important;
+}
+
+#unifiedAutoTradeModal .value-bubble-container.uat-dual-range [id$="MaxDisplay"],
+#mobileUnifiedAutoTradeModal .value-bubble-container.uat-dual-range [id$="MaxDisplay"] {
+  top: -28px !important;
 }
 
 #unifiedAutoTradeModal .uat-test-filter-label,
