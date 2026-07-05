@@ -1,0 +1,67 @@
+/**
+ * Monitor auto-trade modal slider spacing (desktop + mobile).
+ * Design constant: label → bubble clearance → track → next control.
+ * Do not use inline margin-bottom:8px on .value-bubble-container — it breaks bubble/label overlap.
+ */
+
+:root {
+  --uat-slider-label-gap: 34px;
+  --uat-slider-block-gap: 24px;
+  --uat-slider-bubble-lift: 32px;
+  --uat-slider-dual-pad-top: 4px;
+  --uat-slider-dual-pad-bottom: 28px;
+}
+
+#unifiedAutoTradeModal .uat-modal-body label[for],
+#mobileUnifiedAutoTradeModal .uat-modal-body label[for] {
+  display: block !important;
+  font-size: 14px;
+  font-weight: 500;
+  margin-bottom: var(--uat-slider-label-gap) !important;
+}
+
+#unifiedAutoTradeModal .uat-modal-body label.uat-slider-label--compact,
+#mobileUnifiedAutoTradeModal .uat-modal-body label.uat-slider-label--compact {
+  margin-bottom: 8px !important;
+}
+
+#unifiedAutoTradeModal .value-bubble-container,
+#mobileUnifiedAutoTradeModal .value-bubble-container {
+  position: relative !important;
+  margin-bottom: var(--uat-slider-block-gap) !important;
+  width: 100%;
+  box-sizing: border-box;
+  min-width: 0;
+}
+
+#unifiedAutoTradeModal .value-bubble-container.uat-dual-range,
+#mobileUnifiedAutoTradeModal .value-bubble-container.uat-dual-range {
+  padding-top: var(--uat-slider-dual-pad-top) !important;
+  padding-bottom: var(--uat-slider-dual-pad-bottom) !important;
+}
+
+#unifiedAutoTradeModal .value-bubble-container [id$="ValueDisplay"],
+#unifiedAutoTradeModal .value-bubble-container [id$="MinDisplay"],
+#unifiedAutoTradeModal .value-bubble-container [id$="MaxDisplay"],
+#unifiedAutoTradeModal .value-bubble-container #sliderValueDisplay,
+#mobileUnifiedAutoTradeModal .value-bubble-container [id$="ValueDisplay"],
+#mobileUnifiedAutoTradeModal .value-bubble-container [id$="MinDisplay"],
+#mobileUnifiedAutoTradeModal .value-bubble-container [id$="MaxDisplay"],
+#mobileUnifiedAutoTradeModal .value-bubble-container #m_sliderValueDisplay {
+  top: calc(-1 * var(--uat-slider-bubble-lift)) !important;
+}
+
+#unifiedAutoTradeModal .uat-test-filter-label,
+#unifiedAutoTradeModal #regimeWindowPickerRow label,
+#unifiedAutoTradeModal label:has(input[type="checkbox"]),
+#mobileUnifiedAutoTradeModal .uat-test-filter-label,
+#mobileUnifiedAutoTradeModal #m_regimeWindowPickerRow label,
+#mobileUnifiedAutoTradeModal label:has(input[type="checkbox"]) {
+  display: flex !important;
+  margin-bottom: 0 !important;
+}
+
+#unifiedAutoTradeModal .uat-expiration-scalp-min-fill-hint,
+#mobileUnifiedAutoTradeModal .uat-expiration-scalp-min-fill-hint {
+  margin: 0 0 var(--uat-slider-label-gap) 0 !important;
+}

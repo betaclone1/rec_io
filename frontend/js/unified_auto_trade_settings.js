@@ -279,6 +279,13 @@
         return Promise.resolve();
       }
       if (__uatModalMountPromise) return __uatModalMountPromise;
+      if (!document.getElementById('uat-slider-spacing-css')) {
+        var spacingLink = document.createElement('link');
+        spacingLink.id = 'uat-slider-spacing-css';
+        spacingLink.rel = 'stylesheet';
+        spacingLink.href = uatAssetUrl('/styles/uat_slider_spacing.css');
+        document.head.appendChild(spacingLink);
+      }
       __uatModalMountPromise = fetch(uatAssetUrl('/tabs/partials/unified_auto_trade_modal.html'), { credentials: 'include' })
         .then(function (r) { return r.text(); })
         .then(function (html) {

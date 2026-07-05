@@ -1,0 +1,52 @@
+---
+description: "NON-NEGOTIABLE: No fallbacks. Missing data stays missing until the real source delivers it."
+globs: []
+alwaysApply: true
+---
+
+# NO FALLBACKS (non-negotiable)
+
+**Do not add fallbacks anywhere in this codebase.** A fallback that writes substitute data when the authoritative source is missing is **data corruption**, not resilience. It makes the system look healthy while polluting Postgres, trade rows, analytics, and operator trust.
+
+## The rule
+
+When required input is missing, delayed, or failed:
+
+1. **Leave the field NULL / row incomplete / operation failed** — as designed.
+2. **Log clearly** and use the **real** ingestion path (WS, API poll, migration, retry, scheduler).
+3. **Fix the source or the waiter** — not a parallel fake source.
+
+**Forbidden:** silently substituting a second-best value so downstream code "works."
+
+## Forbidden patterns (do not add these)
+
+| Pattern | Why it is banned |
+|--------|-------------------|
+| `if market_result is None: use symbol_expiration / symbol_close / strike math` | Confirms trades against spot guesses, not venue outcome |
+| `if api fails: use cached / stale / ticker WS / last known` for **persisted** domain fields | Writes fiction to the DB |
+| Default constants for NOT NULL gaps (`0`, `''`, `'hourly'`, `'W'`) when the real value is unknown | Hides missing pipeline |
+| `try/except: pass` or return a synthetic object so callers do not error | Hides failure; defers explosion |
+| "Helpful" backfill in app code that **estimates** what the venue would have said | Same as above |
+| Dual code paths: primary + fallback that both **write** | Fallback always wins in prod at 2am |
+
+## Allowed (not fallbacks)
+
+- **NULL until authoritative data arrives** (e.g. `win_loss_confirmed IS NULL` until `market_result` from Kalshi).
+- **Explicit scheduled fetch** from the authoritative API (e.g. 5-min Kalshi `/events` backfill).
+- **Retries** on the same source — not a different substitute source.
+- **UI-only placeholders** that are never persisted (show "pending" — do not write a guess to `trades_*`).
+- **Greenfield defaults** in `CREATE TABLE` / migrations where the default is a real business default, not a lie about external state.
+
+## Before you ship
+
+Ask: *"If this fallback runs in production, will an operator believe the row is complete when it is not?"*
+
+If yes → **remove the fallback** and implement wait/retry/poll/subscribe on the real source.
+
+## Recent example (do not repeat)
+
+`win_loss_confirmed` was set from `symbol_close` / `symbol_expiration` when `market_result` was still NULL. Rows looked confirmed; venue outcome arrived later (or never on the row). **Correct behavior:** NULL until Kalshi lifecycle or API backfill sets `market_result`, then confirm from that only.
+
+## When touching existing fallbacks
+
+**Remove them** as part of the task when you find them — do not preserve "just in case." If removal surfaces a gap, add the proper waiter/backfill/subscription, not another fallback layer.

@@ -1431,26 +1431,31 @@ def _backfill_symbol_expiration_past_due_closed(now_est: datetime) -> None:
 
 
 def _apply_win_loss_confirmed_for_trade_ids(cursor, trade_ids) -> None:
-    """Recompute win_loss_confirmed where symbol_expiration and win_loss are set."""
+    """Recompute win_loss_confirmed from venue ``market_result`` when present."""
     if not trade_ids:
         return
+    from backend.core.kalshi_lifecycle_trade_outcome import compute_win_loss_confirmed_from_venue
+
     for tid in trade_ids:
         cursor.execute(
             f"""
-            SELECT strike, side, symbol_expiration, win_loss
+            SELECT side, win_loss, market_result
             FROM {_tm_trades_table()}
             WHERE id = %s
-              AND symbol_expiration IS NOT NULL
               AND win_loss IS NOT NULL
-              AND win_loss_confirmed IS NULL
+              AND market_result IS NOT NULL
+              AND TRIM(market_result::text) <> ''
             """,
             (tid,),
         )
         row = cursor.fetchone()
         if not row:
             continue
-        strike, side, sym_exp, win_loss = row
-        wlc = _compute_win_loss_confirmed(strike, side, sym_exp, win_loss)
+        side, win_loss, market_result = row
+        mr = str(market_result).strip().lower()
+        if mr not in ("yes", "no"):
+            continue
+        wlc = compute_win_loss_confirmed_from_venue(side, mr, win_loss)
         if wlc is None:
             continue
         cursor.execute(
@@ -5164,6 +5169,20 @@ def update_trade_status_with_ret_pct(trade_id, status, closed_at=None, sell_pric
         _symbol_wide_loss_after_close(trade_id)
         # Check and update cycle metrics if all trades in cycle are closed
         check_and_update_cycle_metrics(trade_id)
+        try:
+            pg_conn_mr = get_postgresql_connection()
+            if pg_conn_mr:
+                with pg_conn_mr.cursor() as cur_mr:
+                    cur_mr.execute(
+                        f"SELECT ticker FROM {_tm_trades_table()} WHERE id = %s",
+                        (trade_id,),
+                    )
+                    mr_row = cur_mr.fetchone()
+                pg_conn_mr.close()
+                if mr_row and mr_row[0]:
+                    _schedule_market_result_backfill_for_ticker(str(mr_row[0]))
+        except Exception as e:
+            log(f"[CLOSE] market_result backfill schedule failed trade_id={trade_id}: {e}")
 
     if close_ledger_paper is not None:
         bp, pos, pnl_v = close_ledger_paper
@@ -7062,56 +7081,15 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
     return True
 
 
-def _hypothetical_win_loss_at_expiration(strike, side, symbol_expiration) -> Optional[str]:
-    """W/L if the trade were held to expiration given spot at cycle end (same rules as paper settlement)."""
-    if symbol_expiration is None or strike is None or side is None:
-        return None
-    try:
-        strike_clean = str(strike).replace("$", "").replace(",", "")
-        strike_float = float(strike_clean)
-        sym_exp = float(symbol_expiration)
-    except (ValueError, TypeError):
-        return None
-    side_u = str(side).strip().upper()
-    if side_u in ("Y", "YES"):
-        return "W" if sym_exp >= strike_float else "L"
-    if side_u in ("N", "NO"):
-        return "W" if sym_exp <= strike_float else "L"
-    return None
-
-
-def _normalize_win_loss_for_confirm(actual) -> Optional[str]:
-    if actual is None:
-        return None
-    a = str(actual).strip().upper()
-    if not a:
-        return None
-    if a in ("D", "DRAW", "TIE", "PUSH"):
-        return None
-    if a[0] == "W":
-        return "W"
-    if a[0] == "L":
-        return "L"
-    if a in ("1", "TRUE", "YES"):
-        return "W"
-    if a in ("0", "FALSE", "NO"):
-        return "L"
-    return None
-
-
-def _compute_win_loss_confirmed(strike, side, symbol_expiration, win_loss_actual) -> Optional[bool]:
-    hypo = _hypothetical_win_loss_at_expiration(strike, side, symbol_expiration)
-    act = _normalize_win_loss_for_confirm(win_loss_actual)
-    if hypo is None or act is None:
-        return None
-    return hypo == act
-
-
 def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
-    """Last persistence step for a closed live/paper trade: set ``win_loss_confirmed`` from venue or spot-at-expiry."""
+    """Set ``win_loss_confirmed`` when venue ``market_result`` is already known.
+
+    Rows without ``market_result`` stay ``win_loss_confirmed IS NULL`` until the Kalshi
+    lifecycle WS or periodic API backfill applies the venue outcome.
+    """
     cursor.execute(
         f"""
-        SELECT strike, side, symbol_expiration, symbol_close, win_loss, status, close_method, market_result
+        SELECT side, win_loss, status, market_result
         FROM {_tm_trades_table()} WHERE id = %s
         """,
         (trade_id,),
@@ -7119,33 +7097,17 @@ def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
     row = cursor.fetchone()
     if not row:
         return
-    strike, side, sym_exp, sym_close, win_loss, row_status, close_method, market_result = row
+    side, win_loss, row_status, market_result = row
     if row_status != "closed":
         return
-    wlc = None
-    try:
-        cm = str(close_method or "").strip().lower()
-    except Exception:
-        cm = ""
-    if cm == "expired" and market_result:
-        from backend.core.kalshi_lifecycle_trade_outcome import compute_win_loss_confirmed_from_venue
+    if market_result is None:
+        return
+    mr = str(market_result).strip().lower()
+    if mr not in ("yes", "no"):
+        return
+    from backend.core.kalshi_lifecycle_trade_outcome import compute_win_loss_confirmed_from_venue
 
-        mr = str(market_result).strip().lower()
-        if mr in ("yes", "no"):
-            wlc = compute_win_loss_confirmed_from_venue(side, mr, win_loss)
-    if wlc is None:
-        eff_sym_exp = sym_exp
-        if eff_sym_exp is None and sym_close is not None:
-            try:
-                eff_sym_exp = float(sym_close)
-            except (TypeError, ValueError):
-                eff_sym_exp = None
-        if eff_sym_exp is not None:
-            try:
-                eff_sym_exp = float(eff_sym_exp)
-            except (TypeError, ValueError):
-                eff_sym_exp = None
-        wlc = _compute_win_loss_confirmed(strike, side, eff_sym_exp, win_loss)
+    wlc = compute_win_loss_confirmed_from_venue(side, mr, win_loss)
     if wlc is None:
         return
     cursor.execute(
@@ -7690,33 +7652,43 @@ def _backfill_market_result_for_ticker_now(ticker: str) -> int:
         return 0
 
 
-def backfill_expired_market_results_from_kalshi(limit: int = 250) -> None:
-    """
-    Repair missed lifecycle outcomes by polling Kalshi /events for expired rows still missing
-    ``market_result``. This is a safety net when WS/Redis fanout drops a ``determined`` event.
-    """
-    if _trade_manager_scheduler_shutdown.is_set():
-        return
+def _distinct_tickers_missing_market_result(limit: int) -> list[str]:
+    """Distinct Kalshi tickers on terminal rows still awaiting venue ``market_result``."""
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return []
     try:
-        pg_conn = get_postgresql_connection()
-        if not pg_conn:
-            return
         with pg_conn.cursor() as cursor:
             cursor.execute(
                 f"""
                 SELECT DISTINCT ticker
                 FROM {_tm_trades_table()}
-                WHERE status = 'expired'
+                WHERE status IN ('expired', 'closed')
                   AND market_result IS NULL
                   AND ticker IS NOT NULL
                   AND TRIM(ticker::text) <> ''
+                  AND LOWER(TRIM(COALESCE(exchange, 'kalshi'))) = 'kalshi'
                 ORDER BY ticker
                 LIMIT %s
                 """,
                 (int(limit),),
             )
-            tickers = [str(r[0]).strip() for r in (cursor.fetchall() or []) if r and r[0]]
+            return [str(r[0]).strip() for r in (cursor.fetchall() or []) if r and r[0]]
+    finally:
         pg_conn.close()
+
+
+def backfill_missing_market_results_from_kalshi(limit: int = 250) -> None:
+    """
+    Poll Kalshi /events for any terminal trade row still missing ``market_result``.
+
+    Covers ``expired`` and early ``closed`` rows (e.g. auto_probability exits). Settlement
+    timing varies by contract; this is the safety net when lifecycle WS drops an event.
+    """
+    if _trade_manager_scheduler_shutdown.is_set():
+        return
+    try:
+        tickers = _distinct_tickers_missing_market_result(int(limit))
         if not tickers:
             return
 
@@ -7757,11 +7729,104 @@ def backfill_expired_market_results_from_kalshi(limit: int = 250) -> None:
         log(f"[5-MIN CHECK] Kalshi outcome backfill error: {e}")
 
 
-def check_expired_trades_for_settlements():
-    """Periodic sweep: finalize ``expired`` trades once ``market_result`` is present."""
+def backfill_expired_market_results_from_kalshi(limit: int = 250) -> None:
+    """Backward-compatible alias for ``backfill_missing_market_results_from_kalshi``."""
+    backfill_missing_market_results_from_kalshi(limit=limit)
+
+
+def sweep_win_loss_confirmed_from_market_result(limit: int = 500) -> None:
+    """Recompute ``win_loss_confirmed`` from venue ``market_result`` for terminal rows."""
     if _trade_manager_scheduler_shutdown.is_set():
         return
-    backfill_expired_market_results_from_kalshi()
+    pg_conn = None
+    try:
+        pg_conn = get_postgresql_connection()
+        if not pg_conn:
+            return
+        from backend.core.kalshi_lifecycle_trade_outcome import compute_win_loss_confirmed_from_venue
+
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, side, win_loss, market_result, win_loss_confirmed
+                FROM {_tm_trades_table()}
+                WHERE status IN ('expired', 'closed')
+                  AND win_loss IS NOT NULL
+                  AND market_result IS NOT NULL
+                  AND TRIM(market_result::text) <> ''
+                ORDER BY id
+                LIMIT %s
+                """,
+                (int(limit),),
+            )
+            rows = cursor.fetchall() or []
+            updated = 0
+            for trade_id, side, win_loss, market_result, wlc_before in rows:
+                mr = str(market_result).strip().lower()
+                if mr not in ("yes", "no"):
+                    continue
+                wlc = compute_win_loss_confirmed_from_venue(side, mr, win_loss)
+                if wlc is None:
+                    continue
+                if wlc_before is not None and (wlc_before is wlc or wlc_before == wlc):
+                    continue
+                cursor.execute(
+                    f"""
+                    UPDATE {_tm_trades_table()}
+                    SET win_loss_confirmed = %s
+                    WHERE id = %s
+                      AND status IN ('expired', 'closed')
+                    """,
+                    (wlc, trade_id),
+                )
+                if cursor.rowcount:
+                    updated += 1
+                    if wlc is False:
+                        log(
+                            f"[5-MIN CHECK] win_loss_confirmed mismatch repaired "
+                            f"trade_id={trade_id} market_result={mr} win_loss={win_loss}"
+                        )
+            pg_conn.commit()
+        if updated:
+            log(f"[5-MIN CHECK] win_loss_confirmed sweep updated rows={updated}")
+    except Exception as e:
+        log(f"[5-MIN CHECK] win_loss_confirmed sweep error: {e}")
+        if pg_conn:
+            try:
+                pg_conn.rollback()
+            except Exception:
+                pass
+    finally:
+        if pg_conn:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
+
+
+def _schedule_market_result_backfill_for_ticker(ticker: str) -> None:
+    """Best-effort immediate API poll after close; periodic sweep catches delayed settlements."""
+    mt = str(ticker or "").strip()
+    if not mt:
+        return
+
+    def _run() -> None:
+        try:
+            applied = _backfill_market_result_for_ticker_now(mt)
+            if applied:
+                log(f"[CLOSE] immediate market_result backfill rows={applied} ticker={mt}")
+        except Exception as e:
+            log(f"[CLOSE] immediate market_result backfill failed ticker={mt}: {e}")
+
+    threading.Thread(target=_run, daemon=True, name=f"mr-backfill-{mt[:24]}").start()
+
+
+def check_expired_trades_for_settlements():
+    """Periodic sweep: backfill missing outcomes and finalize expired rows."""
+    if _trade_manager_scheduler_shutdown.is_set():
+        return
+    backfill_missing_market_results_from_kalshi()
+    sweep_win_loss_confirmed_from_market_result()
     sweep_finalize_expired_trades_with_market_result()
 
 

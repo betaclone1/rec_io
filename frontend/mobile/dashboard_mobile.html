@@ -8,6 +8,7 @@
   <title>Dashboard</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="../styles/global.css">
+  <link rel="stylesheet" href="../styles/uat_slider_spacing.css">
   
   <!-- Preload critical images -->
   <link rel="preload" href="../images/icons/list_view_icon.png" as="image" type="image/png">
@@ -8642,8 +8643,8 @@
         <!-- HOURLY HTC Strategy Section -->
         <div id="m_htcStrategySection" style="display: contents;">
         <div class="uat-section-title">Auto Entry</div>
-        <label for="m_timeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Time Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_timeWindowSliderContainer" style="font-size:14px; color:#333; font-weight:500;">Time Window:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <div id="m_timeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing:border-box;">
             <div id="m_minTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
             <div id="m_maxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
@@ -8653,14 +8654,14 @@
           </div>
         </div>
 
-        <label for="m_autoEntryMinVolume" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_autoEntryMinVolume" style="font-size:14px; color:#333; font-weight:500;">Minimum Volume:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_minVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
 
-        <label for="m_probabilityWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Probability Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+        <label for="m_probabilityWindowSlider" style="font-size:14px; color:#333; font-weight:500;">Win Probability Window:</label>
+        <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
           <!-- Probability Window Slider Container -->
           <div id="m_probabilityWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
             <!-- Min Probability Handle -->
@@ -8678,15 +8679,15 @@
 
         <div id="m_risingDevilMinAskRangeSection" style="display:none; margin-top:8px;">
         <label for="m_risingDevilMinAskRange" style="display:block; font-size:14px; color:#333; margin:12px 0 8px 0; font-weight:500;">Minimum Ask Range</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:8px; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_risingDevilMinAskRange" min="0" max="100" step="1" value="70" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_risingDevilMinAskRangeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.7000</div>
         </div>
         </div>
 
         <div id="m_expirationScalpAskWindowSection" style="display:none;">
-        <label for="m_expirationScalpAskWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Active-Side Ask Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px; box-sizing:border-box;">
+        <label for="m_expirationScalpAskWindowSliderContainer" style="font-size:14px; color:#333; font-weight:500;">Active-Side Ask Window:</label>
+        <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%; box-sizing:border-box;">
           <div id="m_expirationScalpAskWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
             <div id="m_esMinAskHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
             <div id="m_esMaxAskHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
@@ -8695,17 +8696,17 @@
             <div id="m_expirationScalpAskWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9900</div>
           </div>
         </div>
-        <label for="m_expirationScalpMinFillPriceSlider" style="font-size:14px; color:#333; margin-bottom:8px; font-weight:500;">Minimum Fill Price:</label>
+        <label for="m_expirationScalpMinFillPriceSlider" class="uat-slider-label--compact" style="font-size:14px; color:#333; font-weight:500;">Minimum Fill Price:</label>
         <p class="uat-expiration-scalp-min-fill-hint" style="font-size:12px; color:#888; margin:0 0 34px 0;">0 disables. Executor rejects opens when estimated orderbook VWAP fill is below this.</p>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_expirationScalpMinFillPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="m_expirationScalpMinFillPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
         </div>
 
         <div id="m_uatNonExpirationScalpAutoEntry">
-        <label for="m_cooldownWindowSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; padding-top:4px; padding-bottom:28px;">
+        <label for="m_cooldownWindowSlider" style="font-size:14px; color:#333; font-weight:500;">Cooldown Window:</label>
+        <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
           <!-- Cooldown Window Slider Container -->
           <div id="m_cooldownWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
             <!-- Min Cooldown Window Handle -->
@@ -8722,14 +8723,14 @@
         </div>
 
 
-        <label for="m_autoEntryDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Differential:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+        <label for="m_autoEntryDiff" style="font-size:14px; color:#333; font-weight:500;">Minimum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_autoEntryDiff" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_diffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">+0.00</div>
         </div>
 
-        <label for="m_autoEntryMaxDiff" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Maximum Differential:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+        <label for="m_autoEntryMaxDiff" style="font-size:14px; color:#333; font-weight:500;">Maximum Differential:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_autoEntryMaxDiff" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
@@ -8749,15 +8750,15 @@
             <span style="font-size:13px;color:#333;">Use symbol-wide loss prevention</span>
           </div>
           <div id="m_lossPreventionWinStreakGroup" style="margin-top:16px;">
-            <label for="m_winStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+            <label for="m_winStreak" style="font-size:14px; color:#333; font-weight:500;">Win Streak Threshold:</label>
+            <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
               <input type="range" id="m_winStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
               <div id="m_winStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
             </div>
           </div>
           <div id="m_lossPreventionTimeGroup" style="display:none;margin-top:16px;">
-            <label for="m_lossPreventionDuration" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Duration (hours):</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+            <label for="m_lossPreventionDuration" style="font-size:14px; color:#333; font-weight:500;">Duration (hours):</label>
+            <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
               <input type="range" id="m_lossPreventionDuration" min="1" max="72" step="1" value="4" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
               <div id="m_lossPreventionDurationVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">4h</div>
             </div>
@@ -8776,28 +8777,28 @@
         </div>
 
         <div id="mobileSpikeAlertSliderGroup" style="display:none;">
-        <label for="m_spikeMomentum" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Level (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_spikeMomentum" style="font-size:14px; color:#333; font-weight:500;">Momentum Spike Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_spikeMomentum" min="50" max="100" value="60" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_spikeMomentumVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±60</div>
         </div>
 
-        <label for="m_spikeCooldown" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Level (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_spikeCooldown" style="font-size:14px; color:#333; font-weight:500;">Cooldown Level (±):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_spikeCooldown" min="50" max="100" value="55" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_spikeCooldownVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±55</div>
         </div>
 
-        <label for="m_spikeTime" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Cooldown Time (minutes):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_spikeTime" style="font-size:14px; color:#333; font-weight:500;">Cooldown Time (minutes):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_spikeTime" min="0" max="180" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_spikeTimeVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15 min</div>
         </div>
         </div>
 
         <div id="m_probAdjSpikeGroup" style="display:none;" data-strategy-shows-prob-adj="0" aria-hidden="true">
-        <label id="m_probAdjLabel" for="m_probAdjSlider" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Probability Adjustment (%):</label>
-        <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label id="m_probAdjLabel" for="m_probAdjSlider" style="font-size:14px; color:#333; font-weight:500;">Probability Adjustment (%):</label>
+        <div id="m_probAdjContainer" class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_probAdjSlider" min="0" max="20" step="0.5" value="5" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="m_probAdjValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
@@ -8817,7 +8818,7 @@
         <div class="uat-section-title">Auto Stop</div>
 
         <label for="m_stopProb" style="font-size:14px; color:#333; margin-bottom:56px; font-weight:500;">Current Win Probability:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_stopProb" min="0" max="100" value="40" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_stopProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">40%</div>
         </div>
@@ -8841,7 +8842,7 @@
 
         <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:56px; font-weight:500;">Stop Loss Price:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_stopLossPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
@@ -8878,8 +8879,8 @@
           <span style="font-size:13px; color:#666;">Auto-close trades during momentum spikes</span>
         </div>
 
-        <label for="m_momentumThreshold" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Spike Threshold (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+        <label for="m_momentumThreshold" style="font-size:14px; color:#333; font-weight:500;">Momentum Spike Threshold (±):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_momentumThreshold" min="10" max="100" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_momentumThresholdVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±35</div>
         </div>
@@ -8889,8 +8890,8 @@
           <span style="font-size:13px; color:#666;">Enable verification period before auto-stop</span>
         </div>
 
-        <label for="m_verifySeconds" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Verification Duration (seconds):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+        <label for="m_verifySeconds" style="font-size:14px; color:#333; font-weight:500;">Verification Duration (seconds):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_verifySeconds" min="5" max="60" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_verifySecondsVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15s</div>
         </div>
@@ -8902,8 +8903,8 @@
         <div id="m_msStrategySection" style="display: none;">
         <div class="uat-section-title">Auto Entry</div>
         <!-- Auto Entry -->
-        <label for="m_msTimeWindowSliderContainer" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Scalp Time Window:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_msTimeWindowSliderContainer" style="font-size:14px; color:#333; font-weight:500;">Momentum Scalp Time Window:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <div id="m_msTimeWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:8px; box-sizing:border-box;">
             <div id="m_msMinTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
             <div id="m_msMaxTimeHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
@@ -8913,20 +8914,20 @@
           </div>
         </div>
         
-        <label for="m_msMomentumScalpEntryThreshold" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Momentum Threshold (±):</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_msMomentumScalpEntryThreshold" style="font-size:14px; color:#333; font-weight:500;">Momentum Threshold (±):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_msMomentumScalpEntryThreshold" min="0" max="100" step="1" value="35" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_msMomentumThresholdVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">±35</div>
         </div>
         
-        <label for="m_msAutoEntryMinVolume" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Volume:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_msAutoEntryMinVolume" style="font-size:14px; color:#333; font-weight:500;">Minimum Volume:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_msAutoEntryMinVolume" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_msMinVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
         
-        <label for="m_msAutoEntryProb" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Minimum Win Probability:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_msAutoEntryProb" style="font-size:14px; color:#333; font-weight:500;">Minimum Win Probability:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_msAutoEntryProb" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_msProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0%</div>
         </div>
@@ -8947,15 +8948,15 @@
             <span style="font-size:13px;color:#333;">Use symbol-wide loss prevention</span>
           </div>
           <div id="m_msLossPreventionWinStreakGroup" style="margin-top:16px;">
-            <label for="m_msWinStreak" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Win Streak Threshold:</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+            <label for="m_msWinStreak" style="font-size:14px; color:#333; font-weight:500;">Win Streak Threshold:</label>
+            <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
               <input type="range" id="m_msWinStreak" min="0" max="30" step="1" value="22" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
               <div id="m_msWinStreakVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">22</div>
             </div>
           </div>
           <div id="m_msLossPreventionTimeGroup" style="display:none;margin-top:16px;">
-            <label for="m_msLossPreventionDuration" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Duration (hours):</label>
-            <div class="value-bubble-container" style="position:relative; margin-bottom:8px; width:100%; box-sizing:border-box;">
+            <label for="m_msLossPreventionDuration" style="font-size:14px; color:#333; font-weight:500;">Duration (hours):</label>
+            <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
               <input type="range" id="m_msLossPreventionDuration" min="1" max="72" step="1" value="4" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
               <div id="m_msLossPreventionDurationVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">4h</div>
             </div>
@@ -8972,7 +8973,7 @@
         <!-- Auto Stop -->
         <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
         <label for="m_stopLossPriceSliderMs" style="font-size:14px; color:#333; margin-bottom:56px; font-weight:500;">Stop Loss Price:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSliderMs" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_stopLossPriceValueDisplayMs" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
@@ -9004,14 +9005,14 @@
           <input type="hidden" id="m_msAutoStopMinTTC" value="60">
         </div>
         
-        <label for="m_msTrailingStop" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Trailing Stop Amount:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_msTrailingStop" style="font-size:14px; color:#333; font-weight:500;">Trailing Stop Amount:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_msTrailingStop" min="0" max="100" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_msTrailingStopVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.10</div>
         </div>
         
-        <label for="m_msProfitTarget" style="font-size:14px; color:#333; margin-bottom:34px; font-weight:500;">Profit Target:</label>
-        <div class="value-bubble-container" style="position:relative; margin-bottom:24px; width:100%; box-sizing:border-box;">
+        <label for="m_msProfitTarget" style="font-size:14px; color:#333; font-weight:500;">Profit Target:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_msProfitTarget" min="50" max="100" step="1" value="99" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_msProfitTargetVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.99</div>
         </div>

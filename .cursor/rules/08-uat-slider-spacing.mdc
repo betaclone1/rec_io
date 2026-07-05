@@ -1,0 +1,32 @@
+---
+description: "Monitor settings modal slider spacing — universal design constant (desktop + mobile)."
+globs: ["frontend/**/*.html", "frontend/**/*.js", "frontend/styles/**"]
+alwaysApply: false
+---
+
+# UAT slider spacing (design constant)
+
+Monitor auto-trade settings modals (`#unifiedAutoTradeModal`, `#mobileUnifiedAutoTradeModal`) use **one shared stylesheet**: `frontend/styles/uat_slider_spacing.css`.
+
+## Rules
+
+1. **Never** set inline `margin-bottom: 8px` (or other ad-hoc values) on `.value-bubble-container`. It causes value bubbles (`top: -32px`) to overlap labels.
+2. **Never** rely on `margin-bottom` on `<label>` without `display: block` — inline labels ignore vertical margin.
+3. **Do not** duplicate spacing in inline styles. The shared CSS enforces:
+   - Label gap: `34px` (`--uat-slider-label-gap`)
+   - Block gap: `24px` (`--uat-slider-block-gap`)
+   - Bubble lift: `32px` (`--uat-slider-bubble-lift`)
+4. Dual-handle range sliders: add class `uat-dual-range` on the container (not inline padding).
+5. Label + hint text (e.g. Minimum Fill Price): label gets `uat-slider-label--compact`; hint uses `.uat-expiration-scalp-min-fill-hint`.
+
+## When adding a new slider
+
+```html
+<label for="mySlider">My Setting:</label>
+<div class="value-bubble-container">
+  <input type="range" id="mySlider" … />
+  <div id="mySliderValueDisplay">…</div>
+</div>
+```
+
+Load `/styles/uat_slider_spacing.css` (already linked from trade_monitor, dashboard_mobile, and modal mount JS).
