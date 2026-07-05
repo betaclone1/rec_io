@@ -118,6 +118,96 @@
     .error {
       color: #ef4444;
     }
+
+    .admin-section-title {
+      margin: 28px 0 12px;
+      font-size: 15px;
+      font-weight: 600;
+      color: var(--text-primary);
+    }
+
+    .master-events-controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+      align-items: flex-end;
+      margin-bottom: 10px;
+    }
+
+    .master-events-controls label {
+      display: block;
+      font-size: 11px;
+      color: var(--text-secondary);
+      margin-bottom: 4px;
+    }
+
+    .master-events-controls select,
+    .master-events-controls input[type="number"] {
+      padding: 6px 8px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      background: var(--bg-primary);
+      color: var(--text-primary);
+      font-size: 12px;
+      font-family: inherit;
+    }
+
+    .master-events-btn {
+      padding: 7px 14px;
+      border-radius: 4px;
+      border: 1px solid var(--border-color);
+      background: var(--accent-color);
+      color: #fff;
+      font-size: 12px;
+      cursor: pointer;
+      font-family: inherit;
+    }
+
+    .master-events-btn.secondary {
+      background: var(--bg-primary);
+      color: var(--text-primary);
+    }
+
+    .master-events-table {
+      width: 100%;
+      min-width: 900px;
+      border-collapse: collapse;
+      font-size: 12px;
+    }
+
+    .master-events-table th,
+    .master-events-table td {
+      padding: 8px 10px;
+      border-bottom: 1px solid var(--border-color);
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .master-events-table th {
+      position: sticky;
+      top: 0;
+      background: var(--bg-secondary);
+      z-index: 1;
+    }
+
+    .sev-critical { color: #f87171; font-weight: 600; }
+    .sev-warning { color: #fbbf24; }
+    .sev-info { color: var(--text-secondary); }
+
+    .detail-link {
+      color: var(--accent-color);
+      cursor: pointer;
+      text-decoration: underline;
+      background: none;
+      border: none;
+      padding: 0;
+      font: inherit;
+    }
+
+    .master-events-message {
+      max-width: 420px;
+      word-break: break-word;
+    }
   </style>
 </head>
 <body>
@@ -128,6 +218,49 @@
       placeholder="Match any column (name, email, user ID, status, …)" autocomplete="off" spellcheck="false">
   </div>
   <div id="tableHost"></div>
+
+  <h2 class="admin-section-title">System Event Log</h2>
+  <div id="masterEventsStatus"></div>
+  <div class="master-events-controls">
+    <div>
+      <label for="masterEventsCategory">Category</label>
+      <select id="masterEventsCategory">
+        <option value="">All</option>
+        <option value="RESTART">RESTART</option>
+        <option value="WS">WS</option>
+        <option value="DEPLOY">DEPLOY</option>
+        <option value="TRADING_HALT">TRADING_HALT</option>
+        <option value="MAINTENANCE">MAINTENANCE</option>
+        <option value="ANOMALY">ANOMALY</option>
+        <option value="MONITOR">MONITOR</option>
+        <option value="BACKUP">BACKUP</option>
+      </select>
+    </div>
+    <div>
+      <label for="masterEventsSeverity">Severity</label>
+      <select id="masterEventsSeverity">
+        <option value="">All</option>
+        <option value="critical">critical</option>
+        <option value="warning">warning</option>
+        <option value="info">info</option>
+      </select>
+    </div>
+    <div>
+      <label for="masterEventsLimit">Limit</label>
+      <select id="masterEventsLimit">
+        <option value="50">50</option>
+        <option value="100" selected>100</option>
+        <option value="200">200</option>
+      </select>
+    </div>
+    <div>
+      <button type="button" class="master-events-btn" id="masterEventsRefresh">Refresh</button>
+    </div>
+    <div>
+      <button type="button" class="master-events-btn secondary" id="masterEventsLiveToggle">Live: off</button>
+    </div>
+  </div>
+  <div class="table-wrap" id="masterEventsHost"></div>
 
   <script>
     (function () {
@@ -491,6 +624,176 @@
       }
       load({ quiet: false });
       setupAdminToolsDbChangesWs();
+    })();
+  </script>
+  <script>
+    (function () {
+      var _liveTimer = null;
+      var _liveOn = false;
+      var _eventsPaused = false;
+
+      function esc(s) {
+        if (s == null) return '';
+        return String(s)
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;');
+      }
+
+      function formatEventTimestamp(val) {
+        if (val == null || val === '') return '—';
+        var s = String(val).trim();
+        var d = new Date(s);
+        if (isNaN(d.getTime())) return esc(s);
+        var mm = String(d.getMonth() + 1).padStart(2, '0');
+        var dd = String(d.getDate()).padStart(2, '0');
+        var yyyy = d.getFullYear();
+        var hh = String(d.getHours()).padStart(2, '0');
+        var min = String(d.getMinutes()).padStart(2, '0');
+        var ss = String(d.getSeconds()).padStart(2, '0');
+        return esc(mm + '/' + dd + '/' + yyyy + ' ' + hh + ':' + min + ':' + ss);
+      }
+
+      function sevClass(sev) {
+        var s = (sev || 'info').toLowerCase();
+        if (s === 'critical') return 'sev-critical';
+        if (s === 'warning') return 'sev-warning';
+        return 'sev-info';
+      }
+
+      function openDetailLog(detailRef) {
+        if (!detailRef) return;
+        var script = String(detailRef).replace(/^logs\//, '').replace(/\.(out|err)\.log$/, '').replace(/\.log$/, '');
+        if (!script) return;
+        window.open(
+          '/log-viewer.html?script=' + encodeURIComponent(script),
+          'log_' + script,
+          'width=1200,height=800,scrollbars=yes,resizable=yes'
+        );
+      }
+
+      function renderMasterEvents(data) {
+        var host = document.getElementById('masterEventsHost');
+        var status = document.getElementById('masterEventsStatus');
+        if (!host) return;
+        var events = (data && data.events) || [];
+        var total = (data && data.total) != null ? data.total : events.length;
+        if (status) {
+          status.innerHTML = '<div style="font-size:11px;color:var(--text-secondary);margin-bottom:8px;">'
+            + esc(String(events.length)) + ' shown of ' + esc(String(total)) + ' matching events</div>';
+        }
+        if (!events.length) {
+          host.innerHTML = '<div class="empty">No system events found.</div>';
+          return;
+        }
+        var html = '<table class="master-events-table"><thead><tr>'
+          + '<th>Timestamp</th><th>Severity</th><th>Category</th><th>Source</th><th>Message</th><th>Detail</th>'
+          + '</tr></thead><tbody>';
+        events.forEach(function (ev) {
+          html += '<tr>'
+            + '<td>' + formatEventTimestamp(ev.timestamp) + '</td>'
+            + '<td class="' + sevClass(ev.severity) + '">' + esc(ev.severity || 'info') + '</td>'
+            + '<td>' + esc(ev.category || '') + '</td>'
+            + '<td>' + esc(ev.source || '') + '</td>'
+            + '<td class="master-events-message">' + esc(ev.message || '') + '</td>'
+            + '<td>';
+          if (ev.detail_ref) {
+            html += '<button type="button" class="detail-link" data-script="' + esc(ev.detail_ref) + '">'
+              + esc(ev.detail_ref) + '</button>';
+          } else {
+            html += '—';
+          }
+          html += '</td></tr>';
+        });
+        html += '</tbody></table>';
+        host.innerHTML = html;
+        host.querySelectorAll('.detail-link').forEach(function (btn) {
+          btn.addEventListener('click', function () {
+            openDetailLog(btn.getAttribute('data-script'));
+          });
+        });
+      }
+
+      async function loadMasterEvents(opts) {
+        opts = opts || {};
+        var quiet = opts.quiet === true;
+        var host = document.getElementById('masterEventsHost');
+        var catEl = document.getElementById('masterEventsCategory');
+        var sevEl = document.getElementById('masterEventsSeverity');
+        var limEl = document.getElementById('masterEventsLimit');
+        if (!quiet && host) {
+          host.innerHTML = '<div class="loading">Loading events…</div>';
+        }
+        var params = new URLSearchParams();
+        params.set('limit', (limEl && limEl.value) || '100');
+        params.set('offset', '0');
+        if (catEl && catEl.value) params.set('category', catEl.value);
+        if (sevEl && sevEl.value) params.set('severity', sevEl.value);
+        try {
+          var res = await fetch(
+            window.location.origin + '/api/user/admin/master_events?' + params.toString(),
+            { cache: 'no-store' }
+          );
+          var data = await res.json().catch(function () { return null; });
+          if (res.status === 403) {
+            if (host) host.innerHTML = '<div class="error">Forbidden</div>';
+            return;
+          }
+          if (!res.ok || !data || data.error) {
+            if (host) host.innerHTML = '<div class="error">' + esc((data && data.error) || 'Request failed') + '</div>';
+            return;
+          }
+          renderMasterEvents(data);
+        } catch (e) {
+          if (host) host.innerHTML = '<div class="error">Could not load events.</div>';
+        }
+      }
+
+      function setLive(on) {
+        _liveOn = on;
+        var btn = document.getElementById('masterEventsLiveToggle');
+        if (btn) btn.textContent = 'Live: ' + (on ? 'on' : 'off');
+        if (_liveTimer) {
+          clearInterval(_liveTimer);
+          _liveTimer = null;
+        }
+        if (on && !_eventsPaused) {
+          _liveTimer = setInterval(function () {
+            loadMasterEvents({ quiet: true });
+          }, 15000);
+        }
+      }
+
+      var refreshBtn = document.getElementById('masterEventsRefresh');
+      if (refreshBtn) {
+        refreshBtn.addEventListener('click', function () { loadMasterEvents({ quiet: false }); });
+      }
+      var liveBtn = document.getElementById('masterEventsLiveToggle');
+      if (liveBtn) {
+        liveBtn.addEventListener('click', function () { setLive(!_liveOn); });
+      }
+      ['masterEventsCategory', 'masterEventsSeverity', 'masterEventsLimit'].forEach(function (id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('change', function () { loadMasterEvents({ quiet: false }); });
+      });
+
+      window.addEventListener('message', function (event) {
+        if (event.origin !== window.location.origin) return;
+        if (!event.data || event.data.type !== 'tab-visibility') return;
+        _eventsPaused = event.data.visible !== true;
+        if (_eventsPaused) {
+          if (_liveTimer) {
+            clearInterval(_liveTimer);
+            _liveTimer = null;
+          }
+        } else if (_liveOn) {
+          setLive(true);
+          loadMasterEvents({ quiet: true });
+        }
+      });
+
+      loadMasterEvents({ quiet: false });
     })();
   </script>
 </body>

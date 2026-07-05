@@ -9250,6 +9250,30 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
 
 ---
 
+### Table: `system.event_log`
+
+High-level operational timeline for admin review (restarts, halts, deploys, websocket issues). **Timestamps are US Eastern wall time** (`TIMESTAMP WITHOUT TIME ZONE`). Dual-written with human-readable `logs/master_events.log`. Migration `20260704_1500_system_event_log`. Writer: `backend.util.master_system_log.log_system_event`.
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `id` | `bigint(64)` | NO | nextval | Surrogate key |
+| `timestamp` | `timestamp without time zone` | NO | - | Event time (EST wall) |
+| `category` | `text` | NO | - | `RESTART`, `WS`, `DEPLOY`, `TRADING_HALT`, `MAINTENANCE`, `ANOMALY`, `MONITOR`, `BACKUP` |
+| `severity` | `text` | NO | info | `info`, `warning`, or `critical` |
+| `source` | `text` | NO | - | Originating service or script |
+| `message` | `text` | NO | - | Human-readable summary |
+| `detail_ref` | `text` | YES | - | Supervisor program name or log basename for drill-down |
+| `metadata` | `jsonb` | NO | `{}` | Optional structured context |
+
+#### Indexes
+
+- `event_log_timestamp_idx` on `(timestamp DESC)`
+- `event_log_category_idx` on `(category)`
+
+---
+
 ### Table: `system.installation_access_log`
 
 #### Columns

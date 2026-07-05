@@ -1407,12 +1407,14 @@ def fetch_event_json(event_ticker):
         return None
 
 
-def sync_balance(*, full: bool = False):
+def sync_balance(*, full: bool = False, skip_automatic_mtb_rake: bool = False):
     """
     Live balance + account history sync.
 
     full=True: always write per-subaccount and hero rows (no 120s throttle). Use on
     kalshi_account_sync startup baseline so restarts refresh all balances.
+
+    skip_automatic_mtb_rake: skip profit-rake during this poll (manual CASH→MTB funding).
     """
     if full:
         logger.info("Full account/subaccount balance sync (startup or forced)")
@@ -1468,6 +1470,7 @@ def sync_balance(*, full: bool = False):
                     _slot,
                     throttle=not full,
                     deposit_cycle=bool(new_deposit_events),
+                    skip_automatic_mtb_rake=skip_automatic_mtb_rake,
                 )
                 pg_conn.commit()
             try:

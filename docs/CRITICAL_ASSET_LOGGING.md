@@ -23,6 +23,11 @@ Components that are essential for reliability and incident investigation must ke
    - Default remains 10MB stdout / 5MB stderr, 5 backups (unchanged).
    - Single destination: stdout/stderr only; no script-owned log files unless documented.
 
+4. **Master system event log** (`logs/master_events.log` + `system.event_log`)
+   - Curated admin timeline (restarts, halts, deploys, WS disconnects); not a replacement for per-service logs.
+   - File rotation: 20MB × 10 backups (same class as critical-service stdout retention).
+   - Written by `backend.util.master_system_log`; see LOGGING_INVENTORY.md §5.1.
+
 ## Gaps that led to 2026-03-14 investigation limits
 
 - Supervisord log was in `/tmp` with no rotation; on prod the file was the only copy and pre-incident entries were not in the segments we inspected; `/tmp` is also lost on reboot.

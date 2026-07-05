@@ -260,6 +260,34 @@ class MonitorManager:
             _logger.info("%s: %s", event_type, msg)
         else:
             _logger.debug("%s: %s", event_type, msg)
+
+        master_map = {
+            "CREATE": ("MONITOR", "info"),
+            "DRAWDOWN_EMERGENCY_HALT": ("TRADING_HALT", "critical"),
+            "DRAWDOWN_EMERGENCY_HALT_FAILED": ("TRADING_HALT", "critical"),
+            "WEBSOCKET_ERROR": ("ANOMALY", "warning"),
+        }
+        cat_sev = master_map.get(event_type)
+        if event_type == "SUCCESS":
+            low = message.lower()
+            if "remove monitor" in low or "regenerated and updated for monitor" in low:
+                cat_sev = ("MONITOR", "info")
+        if cat_sev:
+            try:
+                from backend.util.master_system_log import log_system_event
+
+                cat, sev = cat_sev
+                detail = f"monitor_manager_{_mm_worker_slot()}"
+                log_system_event(
+                    category=cat,
+                    message=f"{event_type}: {message}",
+                    source="monitor_manager",
+                    severity=sev,
+                    detail_ref=detail,
+                    metadata=data,
+                )
+            except Exception:
+                pass
     
     # === MONITOR PROCESS MANAGEMENT ===
     

@@ -8,8 +8,9 @@ import os
 import secrets
 from datetime import date, datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Query, Request
 from fastapi.responses import JSONResponse
 from psycopg2 import sql
 
@@ -438,6 +439,148 @@ async def admin_master_users_rows():
         return {"rows": out}
     except Exception as e:
         logger.warning("[AUTH] admin/master_users: %s", e)
+        return JSONResponse(status_code=500, content={"error": "Query failed"})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+        except Exception:
+            pass
+
+
+_MASTER_EVENT_CATEGORIES = frozenset(
+    {
+        "RESTART",
+        "WS",
+        "DEPLOY",
+        "TRADING_HALT",
+        "MAINTENANCE",
+        "ANOMALY",
+        "MONITOR",
+        "BACKUP",
+    }
+)
+_MASTER_EVENT_SEVERITIES = frozenset({"info", "warning", "critical"})
+
+
+@user_router.get("/admin/master_events")
+async def admin_master_events(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    category: Optional[str] = Query(None),
+    severity: Optional[str] = Query(None),
+    since: Optional[str] = Query(None, description="ISO date or datetime (EST wall) lower bound"),
+):
+    """Paginated master system event log. ``master_admin`` only."""
+    u = resolved_tenant_user_no_for_app()
+    if not _session_is_master_admin(u):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    cat_filter = (category or "").strip().upper() or None
+    if cat_filter and cat_filter not in _MASTER_EVENT_CATEGORIES:
+        return JSONResponse(status_code=400, content={"error": f"Invalid category: {category!r}"})
+
+    sev_filter = (severity or "").strip().lower() or None
+    if sev_filter and sev_filter not in _MASTER_EVENT_SEVERITIES:
+        return JSONResponse(status_code=400, content={"error": f"Invalid severity: {severity!r}"})
+
+    since_dt: Optional[datetime] = None
+    if since and since.strip():
+        raw = since.strip()
+        try:
+            if len(raw) == 10 and raw[4] == "-" and raw[7] == "-":
+                since_dt = datetime.strptime(raw, "%Y-%m-%d")
+            else:
+                since_dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+                if since_dt.tzinfo is not None:
+                    since_dt = since_dt.astimezone(ZoneInfo("America/New_York")).replace(tzinfo=None)
+        except ValueError:
+            return JSONResponse(status_code=400, content={"error": "Invalid since parameter"})
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return JSONResponse(status_code=503, content={"error": "Database unavailable"})
+    try:
+        clauses = ["1=1"]
+        params: List[Any] = []
+        if cat_filter:
+            clauses.append("category = %s")
+            params.append(cat_filter)
+        if sev_filter:
+            clauses.append("severity = %s")
+            params.append(sev_filter)
+        if since_dt is not None:
+            clauses.append("timestamp >= %s")
+            params.append(since_dt)
+
+        where_sql = " AND ".join(clauses)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT COUNT(*) FROM system.event_log WHERE {where_sql}",
+                tuple(params),
+            )
+            total_row = cur.fetchone()
+            total = int(total_row[0]) if total_row and total_row[0] is not None else 0
+
+            cur.execute(
+                f"""
+                SELECT id, timestamp, category, severity, source, message, detail_ref, metadata
+                FROM system.event_log
+                WHERE {where_sql}
+                ORDER BY timestamp DESC, id DESC
+                LIMIT %s OFFSET %s
+                """,
+                tuple(params) + (limit, offset),
+            )
+            rows = cur.fetchall()
+
+        events = []
+        for row in rows:
+            events.append(
+                {
+                    "id": row[0],
+                    "timestamp": _json_safe_cell(row[1]),
+                    "category": row[2],
+                    "severity": row[3],
+                    "source": row[4],
+                    "message": row[5],
+                    "detail_ref": row[6],
+                    "metadata": row[7] if row[7] is not None else {},
+                }
+            )
+        return {"events": events, "total": total, "limit": limit, "offset": offset}
+    except Exception as e:
+        logger.warning("[AUTH] admin/master_events: %s", e)
+        return JSONResponse(status_code=500, content={"error": "Query failed"})
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
+
+
+@user_router.get("/admin/master_events/categories")
+async def admin_master_event_categories():
+    """Distinct event categories present in the log. ``master_admin`` only."""
+    u = resolved_tenant_user_no_for_app()
+    if not _session_is_master_admin(u):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+
+    conn = get_system_postgresql_connection()
+    if not conn:
+        return JSONResponse(status_code=503, content={"error": "Database unavailable"})
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT DISTINCT category FROM system.event_log ORDER BY category"
+            )
+            cats = [r[0] for r in cur.fetchall() if r and r[0]]
+        return {"categories": cats}
+    except Exception as e:
+        logger.warning("[AUTH] admin/master_events/categories: %s", e)
         return JSONResponse(status_code=500, content={"error": "Query failed"})
     finally:
         try:

@@ -51,6 +51,28 @@ def _configure_sm_logging():
 
 _sm_logger = _configure_sm_logging()
 
+
+def _sm_master_log(
+    category: str,
+    message: str,
+    severity: str = "info",
+    detail_ref: str = "system_monitor",
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    try:
+        from backend.util.master_system_log import log_system_event
+
+        log_system_event(
+            category=category,
+            message=message,
+            source="system_monitor",
+            severity=severity,
+            detail_ref=detail_ref,
+            metadata=metadata,
+        )
+    except Exception:
+        pass
+
 # Add project root to path for imports
 current_dir = os.path.dirname(os.path.abspath(__file__))
 project_root = os.path.dirname(current_dir)
@@ -816,6 +838,7 @@ class SystemMonitor:
             # import user_notifications
             
             _sm_logger.warning("TRIGGERING MASTER RESTART")
+            _sm_master_log("RESTART", "MASTER RESTART triggered by system monitor", severity="critical", detail_ref="supervisord")
             
             # Send notification - DISABLED TO PREVENT FALSE ALERTS
             # message = "SYSTEM-TRIGGERED MASTER RESTART: System monitor detected critical failures. MASTER RESTART initiated."
@@ -968,6 +991,12 @@ class SystemMonitor:
                     if not self.trading_suspended:
                         self.trading_suspended = True
                         _sm_logger.warning("CRITICAL: Services down - automated trading suspended")
+                        _sm_master_log(
+                            "RESTART",
+                            f"{len(failed_services)} services down — automated trading suspended: {', '.join(failed_services)}",
+                            severity="critical",
+                            metadata={"failed_services": failed_services},
+                        )
                     
                     # Try individual restarts first
                     self.restart_attempts += 1
@@ -1040,6 +1069,12 @@ class SystemMonitor:
                     # If max attempts reached, trigger MASTER RESTART
                     if self.restart_attempts >= self.max_restart_attempts:
                         _sm_logger.warning("Maximum restart attempts reached - triggering MASTER RESTART")
+                        _sm_master_log(
+                            "RESTART",
+                            "Maximum per-service restart attempts reached — triggering MASTER RESTART",
+                            severity="critical",
+                            detail_ref="supervisord",
+                        )
                         self.trigger_master_restart()
                         self.restart_attempts = 0  # Reset for next cycle
                 else:

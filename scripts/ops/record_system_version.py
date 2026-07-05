@@ -75,6 +75,19 @@ def main() -> int:
                 (next_ver,),
             )
         conn.commit()
+        try:
+            from backend.util.master_system_log import log_system_event
+
+            log_system_event(
+                category="DEPLOY",
+                message=f"System version recorded: {next_ver}",
+                source="record_system_version",
+                severity="info",
+                detail_ref="supervisord",
+                metadata={"version": next_ver},
+            )
+        except Exception:
+            pass
         print(next_ver)
         return 0
     except Exception as e:

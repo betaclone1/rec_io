@@ -305,6 +305,19 @@ Cross-check of the **project `logs/`** directory and other log locations. Done 2
 
 ---
 
+## 5.1 Master system event log (dual-write exception)
+
+| Aspect | Details |
+|--------|---------|
+| **Mechanism** | `backend.util.master_system_log.log_system_event()` — curated high-level events only |
+| **Destinations** | Human-readable `logs/master_events.log` (RotatingFileHandler 20MB × 10) **and** PostgreSQL `system.event_log` |
+| **CLI** | `scripts/ops/log_system_event.py` for shell scripts (`MASTER_RESTART.sh`, `git_update_system.sh`, prod pull) |
+| **Categories** | `RESTART`, `WS`, `DEPLOY`, `TRADING_HALT`, `MAINTENANCE`, `ANOMALY`, `MONITOR`, `BACKUP` |
+| **Admin UI** | Admin Tools → System Event Log panel (`GET /api/user/admin/master_events`) |
+| **Notable** | Fail-open (never blocks trading/restarts). Per-service detail via `detail_ref` → log-viewer popup. **Lean policy:** one master line per operator MASTER RESTART (success or abort); no maintenance sub-steps; watchdog services suppressed while `core.system_state.mode = maintenance`; no ws_connected / CFD echo of service stdout. |
+
+---
+
 ## 6. Next steps (for Phase 2)
 
 - Script-by-script: replace `print` with `logging`, set levels, move verbose/debug lines to DEBUG.

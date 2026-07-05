@@ -131,6 +131,23 @@ def _emit_disturbance(event_type: str, **payload: Any) -> None:
     _disturbance_queue.append(
         {"type": event_type, "ts": datetime.now(timezone.utc).isoformat(), **payload}
     )
+    if event_type == "ws_disconnect":
+        try:
+            from backend.util.master_system_log import log_system_event
+
+            err = payload.get("error", "unknown")
+            n_subs = payload.get("ob_sub_count", "")
+            log_system_event(
+                category="WS",
+                message=f"Kalshi market websocket disconnected ({err})"
+                + (f"; {n_subs} orderbook subs" if n_subs != "" else ""),
+                source="market_watchdog_ws_kalshi",
+                severity="warning",
+                detail_ref="market_watchdog_ws_kalshi",
+                metadata={"event_type": event_type, **payload},
+            )
+        except Exception:
+            pass
 
 
 def _flush_disturbances_sync() -> None:

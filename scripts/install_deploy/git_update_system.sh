@@ -46,6 +46,23 @@ print_header() {
     echo -e "${PURPLE}=============================================================================${NC}" | tee -a "$UPDATE_LOG"
 }
 
+_log_git_master_event() {
+    local severity="$1"
+    local message="$2"
+    local py="python3"
+    if [[ -x "${PROJECT_ROOT}/.venv/bin/python" ]]; then
+        py="${PROJECT_ROOT}/.venv/bin/python"
+    fi
+    local detail_log
+    detail_log="$(basename "$UPDATE_LOG")"
+    if [[ -f "${PROJECT_ROOT}/scripts/ops/log_system_event.py" ]]; then
+        "$py" "${PROJECT_ROOT}/scripts/ops/log_system_event.py" \
+            --category DEPLOY --severity "$severity" \
+            --message "$message" --source git_update \
+            --detail-ref "$detail_log" 2>/dev/null || true
+    fi
+}
+
 # Function to check if we're in a git repository
 check_git_repository() {
     if [[ ! -d "$PROJECT_ROOT/.git" ]]; then
@@ -269,6 +286,7 @@ show_update_summary() {
     cd "$PROJECT_ROOT"
     LOCAL_COMMIT=$(git rev-parse HEAD)
     echo "✅ Updated to commit: $(git log --oneline -1)" | tee -a "$UPDATE_LOG"
+    _log_git_master_event info "Git update completed — $(git log --oneline -1)"
     echo "✅ Backup created at: $BACKUP_PATH" | tee -a "$UPDATE_LOG"
     echo "✅ Update log: $UPDATE_LOG" | tee -a "$UPDATE_LOG"
     echo "" | tee -a "$UPDATE_LOG"
@@ -369,6 +387,7 @@ main() {
         "update")
             print_header
             print_status "Starting REC.IO git update process..."
+            _log_git_master_event info "Git update started"
             
             # Check if we're in a git repository
             check_git_repository
@@ -382,6 +401,7 @@ main() {
             # Pull updates
             pull_updates || {
                 print_error "Failed to pull updates"
+                _log_git_master_event critical "Git pull failed"
                 exit 1
             }
             

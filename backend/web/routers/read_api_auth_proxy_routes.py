@@ -75,6 +75,19 @@ async def patch_admin_master_users(request: Request):
     return await _forward(request, "PATCH", "/api/user/admin/master_users", body)
 
 
+@read_api_auth_proxy_router.get("/api/user/admin/master_events")
+async def get_admin_master_events(request: Request):
+    path = "/api/user/admin/master_events"
+    if request.url.query:
+        path = f"{path}?{request.url.query}"
+    return await _forward(request, "GET", path)
+
+
+@read_api_auth_proxy_router.get("/api/user/admin/master_events/categories")
+async def get_admin_master_event_categories(request: Request):
+    return await _forward(request, "GET", "/api/user/admin/master_events/categories")
+
+
 @read_api_auth_proxy_router.post("/api/user/change-password")
 async def change_password(request: Request):
     body = await request.body()

@@ -493,6 +493,87 @@ def get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table: str = "users.su
 AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT = "CASH"
 KALSHI_MTB_SUBACCOUNT_NUMBER = 1
 KALSHI_CASH_SUBACCOUNT_NUMBER = 0
+MTB_SUBACCOUNT_NAME = "Master Trading Bankroll"
+CASH_SUBACCOUNT_NAMES = frozenset({"CASH", "PRIMARY"})
+
+
+def is_cash_to_mtb_funding_transfer(from_name: str, to_name: str) -> bool:
+    """True when moving idle CASH wallet funds into the trading bankroll."""
+    return str(from_name) in CASH_SUBACCOUNT_NAMES and str(to_name) == MTB_SUBACCOUNT_NAME
+
+
+def bump_mtb_base_value_for_cash_funding(
+    cursor,
+    subaccounts_table: str,
+    amount_cents: int,
+) -> int:
+    """
+    Raise MTB ``base_value`` by ``amount_cents`` before a CASH→MTB funding transfer.
+
+    Recomputes realized_pnl / realized_pnl_pct against the **current** MTB balance so a
+    post-transfer Kalshi poll does not look like a profit spike and trigger automatic rake.
+    Returns the new base_value in cents.
+    """
+    if int(amount_cents) <= 0:
+        raise ValueError("amount_cents must be positive")
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+
+    mtb_balance, base_value = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+    if mtb_balance is None:
+        raise ValueError("Master Trading Bankroll row not found")
+
+    anchor = int(base_value) if base_value is not None else int(mtb_balance)
+    new_base_value = anchor + int(amount_cents)
+    realized_pnl = int(mtb_balance) - new_base_value
+    realized_pnl_pct = _mtb_realized_pnl_pct(int(mtb_balance), new_base_value)
+
+    sch, tbl = _split_fqn(subaccounts_table)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL(
+            """
+            UPDATE {}
+            SET base_value = %s, realized_pnl = %s, realized_pnl_pct = %s
+            WHERE subaccount = %s
+            """
+        ).format(ident),
+        (new_base_value, realized_pnl, realized_pnl_pct, MTB_SUBACCOUNT_NAME),
+    )
+    return new_base_value
+
+
+def revert_mtb_base_value_cash_funding_bump(
+    cursor,
+    subaccounts_table: str,
+    amount_cents: int,
+) -> None:
+    """Undo :func:`bump_mtb_base_value_for_cash_funding` when Kalshi transfer fails."""
+    if int(amount_cents) <= 0:
+        return
+    if not _allowed_subaccounts_fqn(subaccounts_table):
+        raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+
+    mtb_balance, base_value = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+    if mtb_balance is None or base_value is None:
+        return
+
+    new_base_value = max(0, int(base_value) - int(amount_cents))
+    realized_pnl = int(mtb_balance) - new_base_value
+    realized_pnl_pct = _mtb_realized_pnl_pct(int(mtb_balance), new_base_value)
+
+    sch, tbl = _split_fqn(subaccounts_table)
+    ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
+    cursor.execute(
+        sql.SQL(
+            """
+            UPDATE {}
+            SET base_value = %s, realized_pnl = %s, realized_pnl_pct = %s
+            WHERE subaccount = %s
+            """
+        ).format(ident),
+        (new_base_value, realized_pnl, realized_pnl_pct, MTB_SUBACCOUNT_NAME),
+    )
 
 
 def _mtb_realized_pnl_pct(mtb_balance: int, base_value: Optional[int]) -> Optional[float]:
@@ -1155,6 +1236,7 @@ def poll_live_account_balances(
     throttle: bool = True,
     _after_automatic_rake: bool = False,
     deposit_cycle: bool = False,
+    skip_automatic_mtb_rake: bool = False,
 ) -> Tuple[bool, bool]:
     """
     Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
@@ -1163,6 +1245,8 @@ def poll_live_account_balances(
 
     On suspected settlement double-count (cash up, stale portfolio_value), skips the DB write,
     logs WARNING, and repolls with REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff.
+
+    ``skip_automatic_mtb_rake``: set after manual CASH→MTB funding (base_value already raised).
     """
     from backend.bookkeeper.kalshi_portfolio_balance import (
         fetch_portfolio_balance_detail,
@@ -1187,8 +1271,10 @@ def poll_live_account_balances(
 
     _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_by_number)
     refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
-    if not _after_automatic_rake and maybe_execute_live_automatic_mtb_rake(
-        cursor, slot, subaccounts_table=sa_fqn
+    if (
+        not skip_automatic_mtb_rake
+        and not _after_automatic_rake
+        and maybe_execute_live_automatic_mtb_rake(cursor, slot, subaccounts_table=sa_fqn)
     ):
         return poll_live_account_balances(
             cursor,
@@ -1196,6 +1282,7 @@ def poll_live_account_balances(
             throttle=False,
             _after_automatic_rake=True,
             deposit_cycle=deposit_cycle,
+            skip_automatic_mtb_rake=skip_automatic_mtb_rake,
         )
 
     active_numbers = sorted(
@@ -1670,6 +1757,60 @@ def sync_paper_balance_feed_after_close(pnl_cents: int, buy_price: float, positi
         raise
     finally:
         conn.close()
+
+
+def refresh_paper_snapshot_after_manual_internal_transfer(
+    cursor,
+    *,
+    user_no: str,
+    cash_delta_cents: int = 0,
+) -> Tuple[bool, bool]:
+    """
+    Write one paper hero row after a manual internal transfer.
+
+    ``cash_delta_cents``: change to hero cash (negative when funding MTB from CASH).
+    Skips automatic MTB rake. Notifies frontend and monitor_manager via apply_balance_snapshot.
+    """
+    from backend.core.time_eastern import now_est
+    from backend.trading_mode import paper_account_balance_fqn, paper_subaccounts_fqn
+
+    slot = str(user_no).zfill(4)[-4:]
+    ab_fqn = paper_account_balance_fqn(slot)
+    ab_sch, ab_tbl = ab_fqn.split(".", 1)
+    ab_ident = sql.SQL("{}.{}").format(sql.Identifier(ab_sch), sql.Identifier(ab_tbl))
+    cursor.execute(
+        sql.SQL(
+            """
+            SELECT balance, COALESCE(positions, 0)
+            FROM {}
+            ORDER BY id DESC
+            LIMIT 1
+            """
+        ).format(ab_ident)
+    )
+    prev = cursor.fetchone()
+    if not prev:
+        return False, False
+    cash = int(prev[0] or 0) + int(cash_delta_cents)
+    pos = max(0, int(prev[1] or 0))
+    if cash < 0:
+        raise ValueError("paper cash would be negative after internal transfer")
+    ts = now_est().isoformat()
+    return apply_balance_snapshot(
+        cursor,
+        balance_amount=cash,
+        portfolio_value_raw=pos,
+        positions_value=pos,
+        total_exposure=pos,
+        portfolio_value=cash + pos,
+        account_balance_table=ab_fqn,
+        subaccounts_table=paper_subaccounts_fqn(slot),
+        current_timestamp=ts,
+        throttle=False,
+        notify_db_name="account_balance_paper",
+        record_internal_transfers=False,
+        paper_bankroll_force_match=True,
+    )
 
 
 def apply_paper_aggregate_snapshot(

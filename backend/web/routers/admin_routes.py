@@ -7,8 +7,11 @@ import shlex
 import subprocess
 from typing import Any, Dict
 
-from fastapi import APIRouter
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi import APIRouter, Request
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+
+from backend.core.tenant_context import resolved_tenant_user_no_for_app
+from backend.web.auth_routes import _session_is_master_admin
 
 from backend.util.paths import (
     get_dynamic_project_root,
@@ -18,6 +21,13 @@ from backend.util.paths import (
 )
 
 admin_router = APIRouter(tags=["admin"])
+
+
+def _require_master_admin() -> JSONResponse | None:
+    u = resolved_tenant_user_no_for_app()
+    if not _session_is_master_admin(u):
+        return JSONResponse(status_code=403, content={"error": "Forbidden"})
+    return None
 
 
 @admin_router.post("/api/admin/supervisor-status")
@@ -179,6 +189,10 @@ async def execute_command(request: Dict[str, Any]):
 @admin_router.post("/api/admin/get-log-stream")
 async def get_log_stream(request: Dict[str, Any]):
     """Stream log output for a specific script."""
+    denied = _require_master_admin()
+    if denied is not None:
+        return denied
+
     script_name = request.get("script", "")
     log_type = request.get("logType", "out")
 
@@ -296,6 +310,19 @@ async def create_backup():
                         if backup_file.endswith(".tar.gz"):
                             backup_path = os.path.join(project_dir, "backup", backup_file)
                             if os.path.exists(backup_path):
+                                try:
+                                    from backend.util.master_system_log import log_system_event
+
+                                    log_system_event(
+                                        category="BACKUP",
+                                        message=f"Database backup created: {backup_file}",
+                                        source="admin_routes",
+                                        severity="info",
+                                        detail_ref="main_app",
+                                        metadata={"backup_file": backup_file},
+                                    )
+                                except Exception:
+                                    pass
                                 return {
                                     "success": True,
                                     "output": output,

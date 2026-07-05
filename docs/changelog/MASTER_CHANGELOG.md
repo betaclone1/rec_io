@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-05 — Release v3.8.1: Master system event log, CASH→MTB funding fix, admin timeline
+
+**Summary**
+- **Release: v3.8.1**
+- **Master system event log:** New `system.event_log` table (migration **`20260704_1500_system_event_log`**) plus dual-sink writer (`backend/util/master_system_log.py`, `logs/master_events.log`). REST endpoints on admin tools for timeline browse; hooks in `MASTER_RESTART`, deploy scripts, auth halts, `monitor_manager`, `system_monitor`, and Kalshi WS ingest.
+- **CASH→MTB manual funding:** `initiate-transfer` now bumps MTB `base_value` before Kalshi transfer, suppresses automatic profit-rake on the post-transfer balance poll, and uses a single full `sync_balance(full=True)` instead of a duplicate bankroll snapshot (fixes false rake + double-count after funding from CASH).
+- **Paper internal transfers:** Same base bump + hero snapshot path; automatic rake skipped on manual transfer refresh.
+- **Ops:** `record_system_version.py` logs deploy events; `simple_git_pull_on_prod.sh` and `git_update_system.sh` emit deploy log entries.
+- **Database:** Migration **`20260704_1500_system_event_log`**; `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260704_1500_system_event_log.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services: `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_executor_*`, `kalshi_account_sync_*`, `monitor_manager_*`; spot-check Admin Tools system events timeline and a CASH→MTB manual transfer does not trigger automatic rake.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.1`
+
+---
+
 ## 2026-06-28 — Release v3.8.0: Monitor reverse mode, min fill price gate, strike orderbook projection
 
 **Summary**

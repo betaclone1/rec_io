@@ -57,6 +57,31 @@ print_header() {
     echo -e "${PURPLE}=============================================================================${NC}"
 }
 
+# Append to master system event log (fail-open).
+_log_master_event() {
+    local category="$1"
+    local severity="$2"
+    local message="$3"
+    local detail_ref="${4:-}"
+    local py="${REC_PYTHON_EXECUTABLE:-python3}"
+    if [ ! -x "$py" ] && [ -x "${REC_PROJECT_ROOT}/.venv/bin/python" ]; then
+        py="${REC_PROJECT_ROOT}/.venv/bin/python"
+    fi
+    if [ -f "${REC_PROJECT_ROOT}/scripts/ops/log_system_event.py" ]; then
+        if [ -n "$detail_ref" ]; then
+            "$py" "${REC_PROJECT_ROOT}/scripts/ops/log_system_event.py" \
+                --category "$category" --severity "$severity" \
+                --message "$message" --source "MASTER_RESTART" \
+                --detail-ref "$detail_ref" 2>/dev/null || true
+        else
+            "$py" "${REC_PROJECT_ROOT}/scripts/ops/log_system_event.py" \
+                --category "$category" --severity "$severity" \
+                --message "$message" --source "MASTER_RESTART" \
+                --detail-ref "supervisord" 2>/dev/null || true
+        fi
+    fi
+}
+
 # Sanitization gate before restart: not enforced (snapshot→new prod; first-boot
 # wipe is opt-in in first_boot_sanitize.sh via REC_ENABLE_FIRST_BOOT_SANITIZE=1).
 # check_sanitization_status() {
@@ -350,6 +375,7 @@ _master_restart_exit_cleanup() {
     if [ "${_MASTER_RESTART_MAINT_ACTIVE:-0}" != "1" ]; then
         return 0
     fi
+    _log_master_event "RESTART" "critical" "MASTER RESTART aborted before completion" "supervisord"
     print_warning "MASTER_RESTART did not finish all steps; setting core.system_state.mode to 'normal' (trading re-enabled)..."
     PGPASSWORD="${POSTGRES_PASSWORD:-${DB_PASSWORD:-rec_io_password}}" psql -h localhost -U rec_io_user -d rec_io_db <<'EOF' >/dev/null 2>&1
 INSERT INTO core.system_state (id, mode)
@@ -573,7 +599,7 @@ master_restart() {
     
     # Create logs directory if it doesn't exist
     print_status "Ensuring logs directory exists..."
-    mkdir -p "$PROJECT_ROOT/logs"
+    mkdir -p "$REC_PROJECT_ROOT/logs"
     print_success "Logs directory ready"
     echo ""
 
@@ -700,6 +726,7 @@ EOF
     verify_supervisord_alive || true
 
     print_success "MASTER RESTART completed successfully!"
+    _log_master_event "RESTART" "info" "MASTER RESTART completed successfully" "supervisord"
     echo ""
     print_status "System is now ready for trading operations."
 }
