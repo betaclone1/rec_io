@@ -7652,28 +7652,53 @@ def _backfill_market_result_for_ticker_now(ticker: str) -> int:
         return 0
 
 
-def _distinct_tickers_missing_market_result(limit: int) -> list[str]:
-    """Distinct Kalshi tickers on terminal rows still awaiting venue ``market_result``."""
+def _distinct_tickers_missing_market_result(limit: int) -> tuple[list[str], int]:
+    """Distinct Kalshi tickers awaiting venue ``market_result``.
+
+    Returns ``(tickers, expired_ticker_count)``. **Expired rows are always included in
+    full** so hourly holds are not starved by the large ``closed`` backlog.
+    """
     pg_conn = get_postgresql_connection()
     if not pg_conn:
-        return []
+        return [], 0
+    base_where = """
+        market_result IS NULL
+        AND ticker IS NOT NULL
+        AND TRIM(ticker::text) <> ''
+        AND LOWER(TRIM(COALESCE(exchange, 'kalshi'))) = 'kalshi'
+    """
     try:
         with pg_conn.cursor() as cursor:
             cursor.execute(
                 f"""
                 SELECT DISTINCT ticker
                 FROM {_tm_trades_table()}
-                WHERE status IN ('expired', 'closed')
-                  AND market_result IS NULL
-                  AND ticker IS NOT NULL
-                  AND TRIM(ticker::text) <> ''
-                  AND LOWER(TRIM(COALESCE(exchange, 'kalshi'))) = 'kalshi'
+                WHERE status = 'expired'
+                  AND {base_where}
                 ORDER BY ticker
-                LIMIT %s
-                """,
-                (int(limit),),
+                """
             )
-            return [str(r[0]).strip() for r in (cursor.fetchall() or []) if r and r[0]]
+            expired_tickers = [
+                str(r[0]).strip() for r in (cursor.fetchall() or []) if r and r[0]
+            ]
+            remaining = max(0, int(limit) - len(expired_tickers))
+            closed_tickers: list[str] = []
+            if remaining > 0:
+                cursor.execute(
+                    f"""
+                    SELECT DISTINCT ticker
+                    FROM {_tm_trades_table()}
+                    WHERE status = 'closed'
+                      AND {base_where}
+                    ORDER BY ticker
+                    LIMIT %s
+                    """,
+                    (remaining,),
+                )
+                closed_tickers = [
+                    str(r[0]).strip() for r in (cursor.fetchall() or []) if r and r[0]
+                ]
+        return expired_tickers + closed_tickers, len(expired_tickers)
     finally:
         pg_conn.close()
 
@@ -7688,7 +7713,7 @@ def backfill_missing_market_results_from_kalshi(limit: int = 250) -> None:
     if _trade_manager_scheduler_shutdown.is_set():
         return
     try:
-        tickers = _distinct_tickers_missing_market_result(int(limit))
+        tickers, expired_ticker_count = _distinct_tickers_missing_market_result(int(limit))
         if not tickers:
             return
 
@@ -7723,7 +7748,8 @@ def backfill_missing_market_results_from_kalshi(limit: int = 250) -> None:
         if applied > 0:
             log(
                 f"[5-MIN CHECK] Kalshi outcome backfill applied rows={applied} "
-                f"tickers_checked={checked} candidates={len(tickers)}"
+                f"tickers_checked={checked} candidates={len(tickers)} "
+                f"expired_candidates={expired_ticker_count}"
             )
     except Exception as e:
         log(f"[5-MIN CHECK] Kalshi outcome backfill error: {e}")

@@ -42,22 +42,31 @@ def test_finalize_closed_wlc_uses_venue_result():
 
 
 @patch("backend.trade_manager.get_postgresql_connection")
-def test_distinct_tickers_missing_market_result_includes_closed(mock_conn):
+def test_distinct_tickers_missing_market_result_prioritizes_expired(mock_conn):
     import backend.trade_manager as tm
 
     cursor = MagicMock()
-    cursor.fetchall.return_value = [("KXBTCD-26JUL0518-T63099.99",)]
+    cursor.fetchall.side_effect = [
+        [("KXBTCD-26JUL0519-T63399.99",)],
+        [("KXBTCD-26JUL0518-T63099.99",)],
+    ]
     pg = MagicMock()
     pg.cursor.return_value.__enter__.return_value = cursor
     mock_conn.return_value = pg
 
-    tickers = tm._distinct_tickers_missing_market_result(50)
+    tickers, expired_n = tm._distinct_tickers_missing_market_result(50)
 
-    assert tickers == ["KXBTCD-26JUL0518-T63099.99"]
-    sql = cursor.execute.call_args[0][0]
-    assert "'closed'" in sql
-    assert "'expired'" in sql
-    assert "market_result IS NULL" in sql
+    assert tickers == [
+        "KXBTCD-26JUL0519-T63399.99",
+        "KXBTCD-26JUL0518-T63099.99",
+    ]
+    assert expired_n == 1
+    assert cursor.execute.call_count == 2
+    expired_sql = cursor.execute.call_args_list[0][0][0]
+    closed_sql = cursor.execute.call_args_list[1][0][0]
+    assert "status = 'expired'" in expired_sql
+    assert "status = 'closed'" in closed_sql
+    assert "LIMIT" in closed_sql
 
 
 @patch("backend.core.kalshi_lifecycle_trade_outcome.apply_lifecycle_market_result_for_ticker")
@@ -77,7 +86,7 @@ def test_backfill_missing_market_results_applies_closed_ticker(
     import backend.trade_manager as tm
 
     mock_shutdown.is_set.return_value = False
-    mock_tickers.return_value = ["KXBTCD-26JUL0518-T63099.99"]
+    mock_tickers.return_value = (["KXBTCD-26JUL0518-T63099.99"], 0)
     mock_event_ticker.return_value = "KXBTCD-26JUL0518"
     mock_fetch.return_value = {"markets": []}
     mock_norm.return_value = "no"
