@@ -3543,20 +3543,50 @@
       return patched > 0;
     }
 
+    function tradeHistoryResolveTradeId(t) {
+      if (!t) return null;
+      if (t.trade_id != null) return Number(t.trade_id);
+      if (t.id != null) return Number(t.id);
+      return null;
+    }
+
+    function tradeHistoryUpsertHotMark(partial) {
+      if (!partial || partial.trade_id == null) return;
+      const tid = Number(partial.trade_id);
+      if (!Number.isFinite(tid)) return;
+      const prev = _thHotPathMarks.get(tid) || { trade_id: tid };
+      const next = Object.assign({}, prev);
+      if (partial.sell_price != null) next.sell_price = partial.sell_price;
+      if (partial.sell != null) next.sell_price = partial.sell;
+      if (partial.pnl != null) next.pnl = partial.pnl;
+      if (partial.ret_pct != null) next.ret_pct = partial.ret_pct;
+      if (partial.current_pnl != null) next.current_pnl = partial.current_pnl;
+      _thHotPathMarks.set(tid, next);
+    }
+
     function tradeHistoryMarkFromActiveTradeRecord(t) {
-      if (!t || t.trade_id == null) return null;
-      const mark = { trade_id: Number(t.trade_id) };
+      const tid = tradeHistoryResolveTradeId(t);
+      if (tid == null || !Number.isFinite(tid)) return null;
+      const mark = { trade_id: tid };
       const mcp = t.current_close_price;
       if (mcp != null && mcp !== '') {
         const mp = Number(mcp);
         if (Number.isFinite(mp)) mark.sell_price = Math.round((1.0 - mp) * 1000000) / 1000000;
+      }
+      if (t.sell_price != null && mark.sell_price == null) {
+        const sp = Number(t.sell_price);
+        if (Number.isFinite(sp)) mark.sell_price = sp;
       }
       const cp = t.current_pnl;
       if (cp != null && String(cp).trim() !== '') {
         const pv = Number(String(cp).replace(/,/g, ''));
         if (Number.isFinite(pv)) mark.pnl = pv;
       }
-      return mark.trade_id != null && (mark.sell_price != null || mark.pnl != null) ? mark : null;
+      if (t.pnl != null && mark.pnl == null) {
+        const pv = Number(t.pnl);
+        if (Number.isFinite(pv)) mark.pnl = pv;
+      }
+      return mark.sell_price != null || mark.pnl != null ? mark : null;
     }
 
     function tradeHistoryMarksFromActiveTradesPayload(data) {
@@ -3574,10 +3604,10 @@
     function tradeHistoryTradeHasPersistedMarks(trade) {
       const st = String(trade && trade.status != null ? trade.status : '').trim().toLowerCase();
       if (st !== 'closed') return false;
-      return (
-        trade.sell_price != null ||
-        (trade.pnl != null && trade.pnl !== undefined && trade.pnl !== '')
-      );
+      const sp = trade.sell_price;
+      if (sp != null && sp !== '' && Number.isFinite(Number(sp))) return true;
+      const pnl = trade.pnl;
+      return pnl != null && pnl !== '' && Number.isFinite(Number(pnl));
     }
 
     /** Keep last live sell/pnl through expiration until trade_manager writes final closed values. */
@@ -3595,10 +3625,7 @@
         _thHotPathMarks.delete(tid);
         return;
       }
-      if (!tradeHistoryShouldRetainHotMarks(trade)) {
-        _thHotPathMarks.delete(tid);
-        return;
-      }
+      if (!tradeHistoryShouldRetainHotMarks(trade)) return;
       const m = _thHotPathMarks.get(tid);
       if (m) tradeHistoryApplyMarkToTradeObject(trade, m);
     }
@@ -3612,7 +3639,7 @@
     function tradeHistoryApplyMarksToCache(marks) {
       if (!Array.isArray(marks) || !marks.length) return false;
       marks.forEach(function (m) {
-        if (m && m.trade_id != null) _thHotPathMarks.set(Number(m.trade_id), m);
+        tradeHistoryUpsertHotMark(m);
       });
       _thLastHotMarkAt = Date.now();
       tradeHistoryUpdateHotPathStatus();
@@ -3627,8 +3654,9 @@
     }
 
     function tradeHistoryMarkFromInitRow(t) {
-      if (!t || t.trade_id == null) return null;
-      const mark = { trade_id: Number(t.trade_id) };
+      const tid = tradeHistoryResolveTradeId(t);
+      if (tid == null || !Number.isFinite(tid)) return null;
+      const mark = { trade_id: tid };
       if (t.sell_price != null) mark.sell_price = t.sell_price;
       if (t.pnl != null) mark.pnl = t.pnl;
       if (mark.sell_price == null && mark.pnl == null) return null;
@@ -3639,13 +3667,7 @@
       if (!Array.isArray(patches) || !patches.length) return false;
       patches.forEach(function (p) {
         if (!p || p.trade_id == null) return;
-        const tid = Number(p.trade_id);
-        const prev = _thHotPathMarks.get(tid) || { trade_id: tid };
-        const next = Object.assign({}, prev);
-        if (p.sell != null) next.sell_price = p.sell;
-        if (p.pnl != null) next.pnl = p.pnl;
-        if (p.ret_pct != null) next.ret_pct = p.ret_pct;
-        _thHotPathMarks.set(tid, next);
+        tradeHistoryUpsertHotMark(p);
       });
       _thLastHotMarkAt = Date.now();
       tradeHistoryUpdateHotPathStatus();
