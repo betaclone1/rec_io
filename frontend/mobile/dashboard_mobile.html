@@ -1832,6 +1832,7 @@
     let monitorHealthRefreshTimer = null;
     let marketDataRefreshTimer = null;
     let monitorListRefreshDebounceTimer = null;
+    let monitorsSoftRefreshInFlight = false;
     let dbChangesBankrollDebounceTimer = null;
     let dbChangesBankrollPendingStreams = null;
     let dbChangesBankrollRefreshInFlight = false;
@@ -3284,8 +3285,33 @@
       return String(m && m.status != null ? m.status : '').trim().toLowerCase() === 'archived';
     }
 
-    // Load monitors from API
-    async function loadMonitors() {
+    function newMonitorPlaceholderRow() {
+      return {
+        "id": "NEW_MONITOR",
+        "symbol": "+",
+        "strategy": "NEW MONITOR",
+        "status": "new",
+        "autoTrade": false,
+        "trades": "",
+        "winRate": "",
+        "return": "",
+        "pnl": "",
+        "uptime": "",
+        "name": "NEW_MONITOR",
+        "bankroll_allotment": 0,
+        "auto_trade_status": "inactive"
+      };
+    }
+
+    function monitorsHasRealRows(list) {
+      return Array.isArray(list) && list.some((m) => m && m.id && m.id !== 'NEW_MONITOR');
+    }
+
+    // Load monitors from API. Returns true when monitors were updated from a good response.
+    async function loadMonitors(options) {
+      const opts = options || {};
+      const hadMonitors = monitorsHasRealRows(monitors);
+      const retainOnError = opts.retainOnError !== false && hadMonitors;
       try {
         const response = await fetch('/api/monitors?t=' + Date.now());
         const data = await response.json();
@@ -3314,51 +3340,56 @@
           });
           
           console.log(`Loaded ${data.count} monitors from API`);
-        } else {
-          console.error(
-            'Failed to load monitors:',
-            data && data.message != null ? data.message : data,
-            'status:',
-            data && data.status,
-            'monitors array:',
-            data && Array.isArray(data.monitors),
-          );
-          // Fallback to empty array with NEW_MONITOR
-          monitors = [{
-            "id": "NEW_MONITOR",
-            "symbol": "+",
-            "strategy": "NEW MONITOR",
-            "status": "new",
-            "autoTrade": false,
-            "trades": "",
-            "winRate": "",
-            "return": "",
-            "pnl": "",
-            "uptime": "",
-            "name": "NEW_MONITOR",
-            "bankroll_allotment": 0,
-            "auto_trade_status": "inactive"
-          }];
+          return true;
         }
+        console.error(
+          'Failed to load monitors:',
+          data && data.message != null ? data.message : data,
+          'status:',
+          data && data.status,
+          'monitors array:',
+          data && Array.isArray(data.monitors),
+        );
+        if (retainOnError) {
+          console.warn('[Dashboard mobile] Keeping last good monitor list after API error response');
+          return false;
+        }
+        monitors = [newMonitorPlaceholderRow()];
+        return false;
       } catch (error) {
         console.error('Error loading monitors:', error);
-        // Fallback to empty array with NEW_MONITOR
-        monitors = [{
-          "id": "NEW_MONITOR",
-          "symbol": "+",
-          "strategy": "NEW MONITOR",
-          "status": "new",
-          "autoTrade": false,
-          "trades": "",
-          "winRate": "",
-          "return": "",
-          "pnl": "",
-          "uptime": "",
-          "name": "NEW_MONITOR",
-          "bankroll_allotment": 0,
-          "auto_trade_status": "inactive"
-        }];
+        if (retainOnError) {
+          console.warn('[Dashboard mobile] Keeping last good monitor list after fetch failure');
+          return false;
+        }
+        monitors = [newMonitorPlaceholderRow()];
+        return false;
       }
+    }
+
+    // Reorder existing tile DOM nodes to match newMonitorIds; does not rebuild tiles.
+    function reorderMonitorTiles(newMonitorIds) {
+      const grid = document.getElementById('monitors-grid');
+      if (!grid) return;
+      const tileById = new Map();
+      let newMonitorTile = null;
+      grid.querySelectorAll('.monitor-tile').forEach(tile => {
+        if (tile.classList.contains('new-monitor')) {
+          newMonitorTile = tile;
+        } else {
+          const id = tile.getAttribute('data-monitor-id');
+          if (id) tileById.set(id, tile);
+        }
+      });
+      newMonitorIds.forEach(id => {
+        const tile = tileById.get(id);
+        if (tile) grid.appendChild(tile);
+      });
+      if (newMonitorTile) grid.appendChild(newMonitorTile);
+    }
+
+    function initializeSortable() {
+      /* Mobile dashboard: no drag-reorder UI */
     }
 
     // Initialize monitors
@@ -6439,10 +6470,17 @@
     }
 
     async function refreshMonitorsSoft() {
+      if (dashboardMobileTabPaused) return;
+      if (monitorsSoftRefreshInFlight) return;
+      monitorsSoftRefreshInFlight = true;
       try {
         console.log('Dashboard mobile: refreshing monitor data from database...');
         const oldMonitors = [...monitors];
-        await loadMonitors();
+        const loaded = await loadMonitors();
+        if (!loaded) {
+          console.warn('Dashboard mobile: soft monitor refresh skipped (keeping visible tiles)');
+          return;
+        }
         try {
           applyCurrentSort();
         } catch (sortErr) {
@@ -6486,15 +6524,19 @@
         await loadAllocationData();
       } catch (e) {
         console.error('Dashboard mobile: error refreshing monitor data:', e);
+      } finally {
+        monitorsSoftRefreshInFlight = false;
       }
     }
 
     function scheduleMonitorsSoftRefresh(delayMs = 700) {
+      if (dashboardMobileTabPaused) return;
       if (monitorListRefreshDebounceTimer) {
         clearTimeout(monitorListRefreshDebounceTimer);
       }
       monitorListRefreshDebounceTimer = setTimeout(() => {
         monitorListRefreshDebounceTimer = null;
+        if (dashboardMobileTabPaused) return;
         refreshMonitorsSoft();
       }, delayMs);
     }
@@ -7938,6 +7980,14 @@
       if (marketDataRefreshTimer) {
         clearTimeout(marketDataRefreshTimer);
         marketDataRefreshTimer = null;
+      }
+      if (monitorListRefreshDebounceTimer) {
+        clearTimeout(monitorListRefreshDebounceTimer);
+        monitorListRefreshDebounceTimer = null;
+      }
+      if (monitorHistoryRefreshDebounceTimer) {
+        clearTimeout(monitorHistoryRefreshDebounceTimer);
+        monitorHistoryRefreshDebounceTimer = null;
       }
     }
 

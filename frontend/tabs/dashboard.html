@@ -2028,6 +2028,7 @@
     let dashboardDbChangesWsUnsub = null;
     let monitorHealthRefreshTimer = null;
     let monitorListRefreshDebounceTimer = null;
+    let monitorsSoftRefreshInFlight = false;
     // Coalesce db_change-driven bankroll refreshes (unbounded parallel async onmessage can OOM the renderer).
     let dbChangesBankrollDebounceTimer = null;
     let dbChangesBankrollPendingStreams = null;
@@ -3635,8 +3636,33 @@
       return String(m && m.status != null ? m.status : '').trim().toLowerCase() === 'archived';
     }
 
-    // Load monitors from API
-    async function loadMonitors() {
+    function newMonitorPlaceholderRow() {
+      return {
+        "id": "NEW_MONITOR",
+        "symbol": "+",
+        "strategy": "NEW MONITOR",
+        "status": "new",
+        "autoTrade": false,
+        "trades": "",
+        "winRate": "",
+        "return": "",
+        "pnl": "",
+        "uptime": "",
+        "name": "NEW_MONITOR",
+        "bankroll_allotment": 0,
+        "auto_trade_status": "inactive"
+      };
+    }
+
+    function monitorsHasRealRows(list) {
+      return Array.isArray(list) && list.some((m) => m && m.id && m.id !== 'NEW_MONITOR');
+    }
+
+    // Load monitors from API. Returns true when monitors were updated from a good response.
+    async function loadMonitors(options) {
+      const opts = options || {};
+      const hadMonitors = monitorsHasRealRows(monitors);
+      const retainOnError = opts.retainOnError !== false && hadMonitors;
       try {
         const response = await fetch('/api/monitors?t=' + Date.now());
         const data = await response.json();
@@ -3666,50 +3692,30 @@
           
           console.log(`Loaded ${data.count} monitors from API`);
           console.log(`[DEBUG] First monitor data:`, monitors[0]);
-        } else {
-          console.error(
-            'Failed to load monitors:',
-            data && data.message != null ? data.message : data,
-            'status field:',
-            data && data.status,
-            'monitors is array:',
-            data && Array.isArray(data.monitors),
-          );
-          // Fallback to empty array with NEW_MONITOR
-          monitors = [{
-            "id": "NEW_MONITOR",
-            "symbol": "+",
-            "strategy": "NEW MONITOR",
-            "status": "new",
-            "autoTrade": false,
-            "trades": "",
-            "winRate": "",
-            "return": "",
-            "pnl": "",
-            "uptime": "",
-            "name": "NEW_MONITOR",
-            "bankroll_allotment": 0,
-            "auto_trade_status": "inactive"
-          }];
+          return true;
         }
+        console.error(
+          'Failed to load monitors:',
+          data && data.message != null ? data.message : data,
+          'status field:',
+          data && data.status,
+          'monitors is array:',
+          data && Array.isArray(data.monitors),
+        );
+        if (retainOnError) {
+          console.warn('[Dashboard] Keeping last good monitor list after API error response');
+          return false;
+        }
+        monitors = [newMonitorPlaceholderRow()];
+        return false;
       } catch (error) {
         console.error('Error loading monitors:', error);
-        // Fallback to empty array with NEW_MONITOR
-        monitors = [{
-          "id": "NEW_MONITOR",
-          "symbol": "+",
-          "strategy": "NEW MONITOR",
-          "status": "new",
-          "autoTrade": false,
-          "trades": "",
-          "winRate": "",
-          "return": "",
-          "pnl": "",
-          "uptime": "",
-          "name": "NEW_MONITOR",
-          "bankroll_allotment": 0,
-          "auto_trade_status": "inactive"
-        }];
+        if (retainOnError) {
+          console.warn('[Dashboard] Keeping last good monitor list after fetch failure');
+          return false;
+        }
+        monitors = [newMonitorPlaceholderRow()];
+        return false;
       }
     }
 
@@ -6758,12 +6764,19 @@
     }
 
     async function refreshMonitorsSoft() {
+      if (dashboardTabPaused) return;
+      if (monitorsSoftRefreshInFlight) return;
+      monitorsSoftRefreshInFlight = true;
       try {
         console.log('Dashboard: Refreshing monitor data from database...');
         const oldMonitors = [...monitors]; // Keep reference to old data
         const oldMonitorIds = oldMonitors.map(m => m.id).filter(id => id !== 'NEW_MONITOR');
         
-        await loadMonitors();
+        const loaded = await loadMonitors();
+        if (!loaded) {
+          console.warn('Dashboard: soft monitor refresh skipped (keeping visible tiles)');
+          return;
+        }
         applyCurrentSort();
 
         if (
@@ -6806,15 +6819,19 @@
         await loadAllocationData();
       } catch (e) {
         console.error('Error refreshing monitor data:', e);
+      } finally {
+        monitorsSoftRefreshInFlight = false;
       }
     }
 
     function scheduleMonitorsSoftRefresh(delayMs = 600) {
+      if (dashboardTabPaused) return;
       if (monitorListRefreshDebounceTimer) {
         clearTimeout(monitorListRefreshDebounceTimer);
       }
       monitorListRefreshDebounceTimer = setTimeout(() => {
         monitorListRefreshDebounceTimer = null;
+        if (dashboardTabPaused) return;
         refreshMonitorsSoft();
       }, delayMs);
     }
@@ -8206,6 +8223,14 @@
       if (monitorHealthRefreshTimer) {
         clearTimeout(monitorHealthRefreshTimer);
         monitorHealthRefreshTimer = null;
+      }
+      if (monitorListRefreshDebounceTimer) {
+        clearTimeout(monitorListRefreshDebounceTimer);
+        monitorListRefreshDebounceTimer = null;
+      }
+      if (monitorHistoryRefreshDebounceTimer) {
+        clearTimeout(monitorHistoryRefreshDebounceTimer);
+        monitorHistoryRefreshDebounceTimer = null;
       }
     }
 
