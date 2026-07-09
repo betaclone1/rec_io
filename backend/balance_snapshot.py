@@ -1147,6 +1147,9 @@ def detect_settlement_balance_glitch(
     """
   Return (is_glitch, reason) when Kalshi balance likely double-counts settlement cash
   with stale open-position marks (balance up, portfolio_value not down, total up ~cash).
+
+  Does not fire when both previous and current open-position marks are zero — that pattern
+  matches internal CASH→MTB funding (cash up, no marks), not settlement double-count.
     """
     if not prev_row:
         return False, ""
@@ -1154,16 +1157,20 @@ def detect_settlement_balance_glitch(
     prev_cash = int(prev_row.get("balance") or 0)
     prev_pv = int(prev_row.get("portfolio_value") or 0)
     prev_portfolio = int(prev_row.get("portfolio") or (prev_cash + prev_pv))
+    api_pv = int(pv_cents)
+
+    if prev_pv == 0 and api_pv == 0:
+        return False, ""
 
     cash_delta = int(cash_cents) - prev_cash
     if cash_delta < _balance_glitch_min_cash_delta_cents():
         return False, ""
 
-    pv_delta = int(pv_cents) - prev_pv
+    pv_delta = api_pv - prev_pv
     if pv_delta <= -cash_delta * 0.25:
         return False, ""
 
-    new_portfolio = int(cash_cents) + int(pv_cents)
+    new_portfolio = int(cash_cents) + api_pv
     portfolio_delta = new_portfolio - prev_portfolio
     if portfolio_delta < cash_delta * 0.85:
         return False, ""
@@ -1314,6 +1321,7 @@ def poll_live_account_balances(
         glitch_reason = ""
         if (
             _balance_glitch_guard_enabled()
+            and not skip_automatic_mtb_rake
             and not _after_automatic_rake
             and not deposit_cycle
             and 1 in details_by_number

@@ -57,6 +57,14 @@ def test_detect_settlement_balance_glitch_no_prev_row():
     assert reason == ""
 
 
+def test_detect_settlement_balance_glitch_not_funding_cash_to_mtb():
+    """CASH→MTB funding: MTB cash up, flat marks — not settlement double-count."""
+    prev = _mtb_prev_row(274888, 0, 274888)
+    is_glitch, reason = detect_settlement_balance_glitch(prev, 424888, 0)
+    assert is_glitch is False
+    assert reason == ""
+
+
 def test_poll_live_account_balances_skips_glitch_then_writes_clean(monkeypatch):
     """101125: first fetch glitchy, second fetch clean → one write after repoll."""
     prev = _mtb_prev_row(296449, 103796, 400245)
