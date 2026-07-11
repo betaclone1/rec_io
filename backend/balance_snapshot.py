@@ -1145,11 +1145,15 @@ def detect_settlement_balance_glitch(
     pv_cents: int,
 ) -> Tuple[bool, str]:
     """
-  Return (is_glitch, reason) when Kalshi balance likely double-counts settlement cash
-  with stale open-position marks (balance up, portfolio_value not down, total up ~cash).
+    Return (is_glitch, reason) when Kalshi balance likely double-counts settlement cash
+    with stale open-position marks (balance up, portfolio_value flat/up, total up ~cash).
 
-  Does not fire when both previous and current open-position marks are zero — that pattern
-  matches internal CASH→MTB funding (cash up, no marks), not settlement double-count.
+    True glitch: cash credited while the settled position mark is still in portfolio_value.
+    Valid win (cheap contracts): cash jumps by near face value while marks only drop by the
+    prior small open mark — PV decreases, so this must not fire.
+
+    Does not fire when both previous and current open-position marks are zero — that pattern
+    matches internal CASH→MTB funding (cash up, no marks), not settlement double-count.
     """
     if not prev_row:
         return False, ""
@@ -1166,8 +1170,10 @@ def detect_settlement_balance_glitch(
     if cash_delta < _balance_glitch_min_cash_delta_cents():
         return False, ""
 
+    # Any PV decrease means open marks are clearing — not the stale double-count glitch.
+    # (Requiring PV drop ≥ 25% of cash falsely blocked cheap winners: large cash, small marks.)
     pv_delta = api_pv - prev_pv
-    if pv_delta <= -cash_delta * 0.25:
+    if pv_delta < 0:
         return False, ""
 
     new_portfolio = int(cash_cents) + api_pv

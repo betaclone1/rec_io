@@ -65,6 +65,14 @@ def test_detect_settlement_balance_glitch_not_funding_cash_to_mtb():
     assert reason == ""
 
 
+def test_detect_settlement_balance_glitch_not_cheap_winner_small_pv_drop():
+    """Winning settlement: large cash credit, small PV drop (cheap marks) must write."""
+    prev = _mtb_prev_row(475398, 6715, 482113)
+    is_glitch, reason = detect_settlement_balance_glitch(prev, 597010, 486)
+    assert is_glitch is False
+    assert reason == ""
+
+
 def test_poll_live_account_balances_skips_glitch_then_writes_clean(monkeypatch):
     """101125: first fetch glitchy, second fetch clean → one write after repoll."""
     prev = _mtb_prev_row(296449, 103796, 400245)
