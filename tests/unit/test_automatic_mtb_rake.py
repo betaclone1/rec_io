@@ -4,6 +4,7 @@ from unittest.mock import MagicMock, patch
 
 from backend.balance_snapshot import (
     AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT,
+    apply_balance_snapshot,
     compute_automatic_mtb_rake_amount_cents,
     maybe_execute_live_automatic_mtb_rake,
 )
@@ -74,3 +75,130 @@ def test_maybe_execute_live_automatic_mtb_rake_blocked_off_production(mock_host,
         cur, "0001", subaccounts_table="users_0001.subaccounts_0001"
     )
     mock_xfer.assert_not_called()
+
+
+@patch("backend.balance_snapshot.get_drawdown_trading_controls", return_value=(False, 50))
+@patch("backend.balance_snapshot.get_mtb_snapshot_from_subaccounts", return_value=(51000, 50500))
+def test_force_bankroll_to_mtb_base_sets_bankroll_current_to_new_base(_snap, _dd):
+    """After rake, sticky high-water bankroll must reset to the new MTB base_value."""
+
+    class Cur:
+        def __init__(self):
+            self.calls = []
+            # prev portfolio, prev bankroll_current (sticky high-water)
+            self._fetch = [(56000, 56000)]
+
+        def execute(self, q, p=None):
+            self.calls.append((str(q), p))
+
+        def fetchone(self):
+            if self._fetch:
+                return self._fetch.pop(0)
+            return None
+
+    cur = Cur()
+    inserted, stepped = apply_balance_snapshot(
+        cur,
+        balance_amount=51000,
+        portfolio_value_raw=0,
+        positions_value=0,
+        total_exposure=0,
+        portfolio_value=51000,
+        account_balance_table="users_0001.account_balance_0001",
+        subaccounts_table="users_0001.subaccounts_0001",
+        current_timestamp="2026-07-12T12:00:00",
+        throttle=False,
+        record_internal_transfers=False,
+        live_mtb_balance_cents=51000,
+        force_bankroll_to_mtb_base=True,
+        notify_frontend=False,
+        notify_monitors=False,
+    )
+    assert inserted is True
+    assert stepped is False
+    insert_calls = [c for c in cur.calls if "INSERT INTO" in c[0]]
+    assert insert_calls
+    # INSERT args: balance, exposure, positions, portfolio, bankroll_current, ...
+    assert insert_calls[0][1][4] == 50500
+
+
+@patch("backend.balance_snapshot.get_drawdown_trading_controls", return_value=(False, 50))
+@patch(
+    "backend.balance_snapshot.subaccounts_update",
+    return_value=(51000, True),
+)
+@patch("backend.balance_snapshot.get_mtb_snapshot_from_subaccounts", return_value=(51000, 50500))
+def test_paper_transfer_triggered_sets_bankroll_to_new_base(_snap, _su, _dd):
+    class Cur:
+        def __init__(self):
+            self.calls = []
+            self._fetch = [(56000, 56000)]
+
+        def execute(self, q, p=None):
+            self.calls.append((str(q), p))
+
+        def fetchone(self):
+            if self._fetch:
+                return self._fetch.pop(0)
+            return None
+
+    cur = Cur()
+    inserted, _ = apply_balance_snapshot(
+        cur,
+        balance_amount=51000,
+        portfolio_value_raw=0,
+        positions_value=0,
+        total_exposure=0,
+        portfolio_value=51000,
+        account_balance_table="users_0001.account_balance_paper_0001",
+        subaccounts_table="users_0001.subaccounts_paper_0001",
+        current_timestamp="2026-07-12T12:00:00",
+        throttle=False,
+        record_internal_transfers=True,
+        notify_frontend=False,
+        notify_monitors=False,
+    )
+    assert inserted is True
+    insert_calls = [c for c in cur.calls if "INSERT INTO" in c[0]]
+    assert insert_calls[0][1][4] == 50500
+
+
+@patch("backend.balance_snapshot.get_drawdown_trading_controls", return_value=(False, 50))
+@patch("backend.balance_snapshot.get_mtb_snapshot_from_subaccounts", return_value=(757037, 750000))
+def test_force_bankroll_current_cents_mirrors_without_sticky(_snap, _dd):
+    """Hero aggregate must accept a lower sab #1 bankroll_current (no re-sticky)."""
+
+    class Cur:
+        def __init__(self):
+            self.calls = []
+            self._fetch = [(1520382, 815694)]
+
+        def execute(self, q, p=None):
+            self.calls.append((str(q), p))
+
+        def fetchone(self):
+            if self._fetch:
+                return self._fetch.pop(0)
+            return None
+
+    cur = Cur()
+    inserted, _ = apply_balance_snapshot(
+        cur,
+        balance_amount=100000,
+        portfolio_value_raw=0,
+        positions_value=0,
+        total_exposure=0,
+        portfolio_value=1520382,
+        account_balance_table="users_0001.account_balance_0001",
+        subaccounts_table="users_0001.subaccounts_0001",
+        current_timestamp="2026-07-12T12:00:00",
+        throttle=False,
+        record_internal_transfers=False,
+        live_mtb_balance_cents=757037,
+        force_bankroll_current_cents=757037,
+        notify_frontend=False,
+        notify_monitors=False,
+    )
+    assert inserted is True
+    insert_calls = [c for c in cur.calls if "INSERT INTO" in c[0]]
+    assert insert_calls[0][1][4] == 757037

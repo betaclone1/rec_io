@@ -795,6 +795,8 @@ def apply_balance_snapshot(
     paper_bankroll_force_match: bool = False,
     live_mtb_balance_cents: Optional[int] = None,
     skip_bankroll_ratchet: bool = False,
+    force_bankroll_to_mtb_base: bool = False,
+    force_bankroll_current_cents: Optional[int] = None,
     notify_frontend: bool = True,
     notify_monitors: bool = True,
     defer_monitor_notify: bool = False,
@@ -812,6 +814,12 @@ def apply_balance_snapshot(
 
     ``skip_bankroll_ratchet`` (live only): keep ``bankroll_current`` sticky while updating cash /
     portfolio / MTB columns — used on deposit/withdrawal routing ticks (0↔2 Kalshi transfers).
+
+    ``force_bankroll_to_mtb_base``: after an automatic MTB rake, set ``bankroll_current`` to the
+    new MTB ``base_value`` (not sticky high-water and not post-rake MTB balance).
+
+    ``force_bankroll_current_cents``: set ``bankroll_current`` to this exact value (hero aggregate
+    mirrors subaccount #1 without re-applying the sticky ratchet).
 
     Drawdown emergency halts (``bankroll_stepped_down`` → monitor_manager) run only when the
     snapshot table matches global trading mode (live tables in LIVE mode, paper in PAPER mode).
@@ -904,15 +912,34 @@ def apply_balance_snapshot(
 
     if is_subaccount_balance and subaccount_number != 1:
         pass  # bankroll_current already set above
+    elif force_bankroll_to_mtb_base or transfer_triggered:
+        # After automatic MTB rake: bankroll_current tracks the new base_value, not MTB total.
+        _, mtb_base_for_bankroll = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
+        if mtb_base_for_bankroll is None:
+            raise ValueError(
+                f"MTB base_value required after rake to set bankroll_current ({account_balance_table})"
+            )
+        bankroll_current = int(mtb_base_for_bankroll)
+        bankroll_stepped_down = False
+    elif force_bankroll_current_cents is not None:
+        # Hero aggregate: mirror MTB sab bankroll_current exactly (no second sticky pass).
+        bankroll_current = int(force_bankroll_current_cents)
+        bankroll_stepped_down = False
+        if (
+            prev_bankroll is not None
+            and bankroll_current < int(prev_bankroll)
+            and drawdown_halt_on
+        ):
+            drawdown_threshold = int(round(int(prev_bankroll) * _dd_ratio))
+            if bankroll_current <= drawdown_threshold and int(prev_bankroll) > drawdown_threshold:
+                bankroll_stepped_down = True
     elif skip_bankroll_ratchet and not is_paper and not is_subaccount_balance:
         bankroll_current = (
             int(prev_bankroll) if prev_bankroll is not None else int(master_bankroll_balance)
         )
         bankroll_stepped_down = False
     elif is_paper or live_mtb_balance_cents is not None or positions_value == 0:
-        if transfer_triggered:
-            bankroll_current = master_bankroll_balance
-        elif paper_bankroll_force_match and is_paper:
+        if paper_bankroll_force_match and is_paper:
             bankroll_current = master_bankroll_balance
         else:
             drawdown_threshold = (int(round(prev_bankroll * _dd_ratio)) if prev_bankroll else None)
@@ -1056,6 +1083,7 @@ def aggregate_account_balance_from_subaccounts(
     subaccount_numbers: list[int],
     current_timestamp: str,
     throttle: bool = True,
+    force_bankroll_to_mtb_base: bool = False,
 ) -> Tuple[bool, bool]:
     """
     Sum latest per-subaccount balance snapshots; copy MTB bankroll fields from subaccount 1.
@@ -1100,7 +1128,11 @@ def aggregate_account_balance_from_subaccounts(
         throttle=throttle,
         notify_db_name="account_balance",
         record_internal_transfers=False,
-        live_mtb_balance_cents=bankroll_current,
+        # Ratchet input unused when forcing; keep MTB total semantics for live_mtb path clarity.
+        live_mtb_balance_cents=int(mtb_balance) if mtb_balance is not None else bankroll_current,
+        force_bankroll_to_mtb_base=force_bankroll_to_mtb_base,
+        # Mirror sab #1 bankroll_current exactly — do not re-sticky on the hero row.
+        force_bankroll_current_cents=None if force_bankroll_to_mtb_base else bankroll_current,
         notify_frontend=True,
         notify_monitors=True,
         defer_monitor_notify=True,
@@ -1213,6 +1245,7 @@ def _write_polled_subaccount_balances(
     details_by_number: Dict[int, dict],
     current_timestamp: str,
     throttle: bool,
+    force_bankroll_to_mtb_base: bool = False,
 ) -> Tuple[bool, bool]:
     """Persist per-subaccount rows and hero aggregate from pre-fetched Kalshi balance details."""
     from backend.trading_mode import subaccount_balance_table_fqn
@@ -1242,6 +1275,7 @@ def _write_polled_subaccount_balances(
             notify_db_name="account_balance",
             record_internal_transfers=False,
             live_mtb_balance_cents=live_mtb,
+            force_bankroll_to_mtb_base=force_bankroll_to_mtb_base and int(n) == 1,
             notify_frontend=False,
             notify_monitors=False,
         )
@@ -1258,6 +1292,7 @@ def _write_polled_subaccount_balances(
         subaccount_numbers=polled,
         current_timestamp=current_timestamp,
         throttle=throttle,
+        force_bankroll_to_mtb_base=force_bankroll_to_mtb_base,
     )
 
 
@@ -1274,6 +1309,7 @@ def poll_live_account_balances(
     Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
 
     When automatic MTB rake fires, posts Kalshi transfer #1→#0 and repolls once (full refresh).
+    The post-rake write sets ``bankroll_current`` (MTB sab + hero) to the new MTB ``base_value``.
 
     On suspected settlement double-count (cash up, stale portfolio_value), skips the DB write,
     logs WARNING, and repolls with REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff.
@@ -1415,6 +1451,7 @@ def poll_live_account_balances(
             details_by_number=details_by_number,
             current_timestamp=ts,
             throttle=throttle,
+            force_bankroll_to_mtb_base=_after_automatic_rake,
         )
 
 
