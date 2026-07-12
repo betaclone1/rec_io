@@ -90,6 +90,24 @@ def _subaccount_row_exists(cursor, subaccounts_ident, name: str) -> bool:
     return cursor.fetchone() is not None
 
 
+def _subaccount_kalshi_number_for_label(cursor, subaccounts_ident, name: str) -> int | None:
+    """
+    Resolve display label → Kalshi subaccount number.
+
+    ``id`` is the Kalshi number; ``subaccount`` is display-only (may be renamed).
+    """
+    if name in _CASH_NAMES:
+        return 0
+    cursor.execute(
+        sql.SQL("SELECT id FROM {} WHERE subaccount = %s").format(subaccounts_ident),
+        (name,),
+    )
+    row = cursor.fetchone()
+    if not row or row[0] is None:
+        return None
+    return int(row[0])
+
+
 def _insert_manual_transfer_row(
     cursor,
     *,
@@ -325,6 +343,7 @@ async def initiate_transfer(request: Request):
         cash_to_mtb = is_cash_to_mtb_funding_transfer(from_name, to_name)
 
         conn = get_postgresql_connection()
+        from_num = to_num = None
         try:
             with conn.cursor() as cursor:
                 from_balance, bal_err = _from_transfer_balance_cents(
@@ -341,20 +360,20 @@ async def initiate_transfer(request: Request):
                     return {"ok": False, "error": f"insufficient balance in {from_name}"}
                 if not _subaccount_row_exists(cursor, sa_ident, to_name):
                     return {"ok": False, "error": f"subaccount not found: {to_name}"}
+                if not paper:
+                    from_num = _subaccount_kalshi_number_for_label(cursor, sa_ident, from_name)
+                    to_num = _subaccount_kalshi_number_for_label(cursor, sa_ident, to_name)
+                    if from_num is None:
+                        return {"ok": False, "error": f"subaccount not found: {from_name}"}
+                    if to_num is None:
+                        return {"ok": False, "error": f"subaccount not found: {to_name}"}
         finally:
             conn.close()
 
         if not paper:
             from backend.bookkeeper.kalshi_subaccount_transfer import (
                 apply_subaccount_transfer,
-                subaccount_name_to_number,
             )
-
-            try:
-                from_num = subaccount_name_to_number(from_name)
-                to_num = subaccount_name_to_number(to_name)
-            except ValueError as exc:
-                return {"ok": False, "error": str(exc)}
 
             if cash_to_mtb:
                 conn = get_postgresql_connection()
