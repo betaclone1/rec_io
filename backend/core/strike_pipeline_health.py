@@ -35,6 +35,46 @@ def strike_pipeline_health_strict_mode_enabled() -> bool:
     return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
+def pipeline_health_pending_reason(reason: str | None) -> bool:
+    """True when health is unknown/unavailable — tile lights stay green (trade gates stay fail-closed)."""
+    r = str(reason or "").strip().lower()
+    if not r:
+        return True
+    return (
+        r.startswith("pipeline_health_missing")
+        or r.startswith("pipeline_gate_exception:")
+        or r == "pipeline_health_pending"
+    )
+
+
+def display_pipeline_health(ok: bool, reason: str) -> dict:
+    """
+    Map gate result to monitor tile light fields.
+
+    Optimistic when pending/unknown so dashboards do not flash red before real health arrives.
+    """
+    if ok:
+        return {
+            "healthy": True,
+            "state": "healthy",
+            "reason": reason or "ok",
+            "age_sec": None,
+        }
+    if pipeline_health_pending_reason(reason):
+        return {
+            "healthy": True,
+            "state": "healthy",
+            "reason": f"pending:{reason}",
+            "age_sec": None,
+        }
+    return {
+        "healthy": False,
+        "state": "degraded",
+        "reason": reason or "degraded",
+        "age_sec": None,
+    }
+
+
 def pipeline_spot_flatline_window_sec() -> int:
     """Freshness window for Redis live_state and PG spot fallbacks (ring / legacy 1s log)."""
     return int(os.getenv("PIPELINE_SPOT_FLATLINE_WINDOW_SEC", "120"))

@@ -6589,10 +6589,12 @@ async def add_trade(request: Request):
                 if pg_u:
                     try:
                         with pg_u.cursor() as cu:
+                            # Keep order_id_open: a failed top-up must still be able to
+                            # revert to partial/open without orphaning the Kalshi fill.
                             cu.execute(
                                 f"""
                                 UPDATE {_tm_trades_table()}
-                                SET status = %s, order_id_open = NULL
+                                SET status = %s
                                 WHERE id = %s AND status = %s
                                 """,
                                 ("pending", int(tid_top), "partial"),
@@ -6664,21 +6666,134 @@ async def add_trade(request: Request):
         return {"id": trade_id}
 
 
+def _filled_position_cents_or_contracts(position) -> float:
+    """Parse trades.position for fill-size checks; 0.0 if missing/unparseable."""
+    if position is None:
+        return 0.0
+    try:
+        return float(position)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _revert_filled_pending_after_open_rejection(
+    trade_id: int,
+    ticket_id: Optional[str],
+    error_type: str,
+    *,
+    position,
+    initial_count,
+    monitor_identifier: Optional[str],
+) -> dict:
+    """
+    Partial top-up / open rejection after IOC already filled some size.
+
+    Never DELETE: restore ``partial`` or ``open`` so Kalshi fills stay in the trade log.
+    """
+    pos_f = _filled_position_cents_or_contracts(position)
+    try:
+        ic_f = float(initial_count) if initial_count is not None else None
+    except (TypeError, ValueError):
+        ic_f = None
+    next_status = "open" if ic_f is not None and pos_f + 1e-6 >= ic_f else "partial"
+    log(
+        f"{error_type} ERROR - PRESERVING FILLED TRADE {trade_id} "
+        f"(position={pos_f}, reverting pending → {next_status})"
+    )
+    if ticket_id:
+        log_event(
+            ticket_id,
+            f"MANAGER: {error_type} — preserving filled trade as {next_status} (not deleting)",
+            trade_id=trade_id,
+        )
+
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        log("CANNOT CONNECT TO DATABASE TO REVERT FILLED PENDING TRADE")
+        return {"message": "Database connection error", "id": trade_id}
+
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                UPDATE {_tm_trades_table()}
+                SET status = %s
+                WHERE id = %s AND status = 'pending'
+                """,
+                (next_status, trade_id),
+            )
+            updated = cursor.rowcount
+            pg_conn.commit()
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+
+    if updated > 0:
+        if monitor_identifier:
+            notify_active_trade_supervisor_direct_with_monitor(
+                trade_id, ticket_id, next_status, monitor_identifier
+            )
+        else:
+            notify_active_trade_supervisor_direct(trade_id, ticket_id, next_status)
+        return {
+            "message": f"Filled trade preserved as {next_status} after {error_type.lower()}",
+            "id": trade_id,
+            "status": next_status,
+        }
+
+    log(f"NO PENDING FILLED TRADE FOUND TO REVERT id={trade_id}")
+    return {"message": "No pending filled trade found to revert", "id": trade_id}
+
+
 def _delete_pending_trade_for_rejection(trade_id: int, ticket_id: Optional[str], error_type: str) -> dict:
-    """Delete pending trade (same behavior as insufficient_resting_volume handling)."""
+    """
+    Open-order rejection cleanup.
+
+    Zero-fill ``pending`` rows are deleted (same as insufficient_resting_volume).
+    Rows that already have filled ``position`` (e.g. failed partial top-up) are
+    reverted to ``partial``/``open`` — deleting them orphans live Kalshi fills.
+    """
+    monitor_identifier = None
+    position = None
+    initial_count = None
+    pg_conn = get_postgresql_connection()
+    if pg_conn:
+        try:
+            with pg_conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT monitor, position, initial_count
+                    FROM {_tm_trades_table()}
+                    WHERE id = %s
+                    """,
+                    (trade_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    monitor_identifier = row[0]
+                    position = row[1]
+                    initial_count = row[2]
+        finally:
+            try:
+                pg_conn.close()
+            except Exception:
+                pass
+
+    if _filled_position_cents_or_contracts(position) > 0:
+        return _revert_filled_pending_after_open_rejection(
+            trade_id,
+            ticket_id,
+            error_type,
+            position=position,
+            initial_count=initial_count,
+            monitor_identifier=monitor_identifier,
+        )
+
     log(f"{error_type} ERROR - DELETING PENDING TRADE")
     if ticket_id:
         log_event(ticket_id, f"MANAGER: {error_type} - DELETING PENDING TRADE")
-
-    monitor_identifier = None
-    pg_conn = get_postgresql_connection()
-    if pg_conn:
-        with pg_conn.cursor() as cursor:
-            cursor.execute(f"SELECT monitor FROM {_tm_trades_table()} WHERE id = %s", (trade_id,))
-            row = cursor.fetchone()
-            if row and row[0]:
-                monitor_identifier = row[0]
-        pg_conn.close()
 
     pg_conn = get_postgresql_connection()
     if pg_conn:

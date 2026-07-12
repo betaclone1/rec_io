@@ -3449,8 +3449,12 @@
     function getMonitorPowerLightClass(monitor) {
       const isActive = monitor && monitor.status === 'active';
       if (!isActive) return 'inactive';
-      const isDegraded = String(monitor?.monitor_health_state || '').toLowerCase() === 'degraded' || monitor?.monitor_healthy === false;
-      return isDegraded ? 'degraded' : 'active';
+      // Optimistic: unknown/missing health stays green; only explicit degraded → red.
+      const state = String(monitor?.monitor_health_state || '').toLowerCase();
+      const reason = String(monitor?.monitor_health_reason || '').toLowerCase();
+      const pending = !state || reason.startsWith('pending:') || reason.includes('pipeline_health_missing') || reason.startsWith('pipeline_gate_exception');
+      if (state === 'degraded' && !pending) return 'degraded';
+      return 'active';
     }
 
     function getMonitorPowerLightTitle(monitor) {
@@ -7436,7 +7440,10 @@
             light.classList.add('inactive');
             light.title = 'Click to activate monitor';
           } else {
-            const degraded = String(health.monitor_health_state || '').toLowerCase() === 'degraded' || health.monitor_healthy === false;
+            const state = String(health.monitor_health_state || '').toLowerCase();
+            const reasonText = String(health.monitor_health_reason || '').toLowerCase();
+            const pending = !state || reasonText.startsWith('pending:') || reasonText.includes('pipeline_health_missing') || reasonText.startsWith('pipeline_gate_exception');
+            const degraded = state === 'degraded' && !pending;
             light.classList.add(degraded ? 'degraded' : 'active');
             if (degraded) {
               const reason = health.monitor_health_reason ? ` (${health.monitor_health_reason})` : '';

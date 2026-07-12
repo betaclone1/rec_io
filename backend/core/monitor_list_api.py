@@ -26,6 +26,7 @@ from backend.core.symbol_wide_loss_prevention import (
     symbol_wide_loss_prevention_state,
 )
 from backend.core.strike_pipeline_health import (
+    display_pipeline_health,
     evaluate_pipeline_gate_conn,
     strike_pipeline_health_strict_mode_enabled,
 )
@@ -219,12 +220,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                         exc,
                     )
                     ok, rsn = False, f"pipeline_gate_exception:{exc}"
-                health_by_symbol_market[(sym, mkt)] = {
-                    "healthy": ok,
-                    "state": "healthy" if ok else "degraded",
-                    "reason": "ok" if ok else rsn,
-                    "age_sec": None,
-                }
+                health_by_symbol_market[(sym, mkt)] = display_pipeline_health(ok, rsn)
 
     conn.close()
 
@@ -571,9 +567,11 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
                     formatted_monitor["monitor_health_reason"] = h["reason"]
                     formatted_monitor["monitor_health_age_sec"] = h["age_sec"]
                 else:
-                    formatted_monitor["monitor_healthy"] = False
-                    formatted_monitor["monitor_health_state"] = "degraded"
-                    formatted_monitor["monitor_health_reason"] = "pipeline_health_missing"
+                    # Optimistic UI: unknown/pending health is green until we have a real
+                    # degraded reading (trade gates still fail closed separately).
+                    formatted_monitor["monitor_healthy"] = True
+                    formatted_monitor["monitor_health_state"] = "healthy"
+                    formatted_monitor["monitor_health_reason"] = "pipeline_health_pending"
                     formatted_monitor["monitor_health_age_sec"] = None
         else:
             formatted_monitor["monitor_healthy"] = True

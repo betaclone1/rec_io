@@ -43,7 +43,9 @@ def test_compute_automatic_mtb_rake_none_when_below_target():
 @patch("backend.balance_snapshot.refresh_mtb_realized_pnl_from_balance")
 @patch("backend.balance_snapshot.compute_automatic_mtb_rake_amount_cents", return_value=2500)
 @patch("backend.balance_snapshot.get_mtb_snapshot_from_subaccounts", return_value=(10000, 5000))
+@patch("backend.balance_snapshot._live_automatic_mtb_rake_host_allowed", return_value=True)
 def test_maybe_execute_live_automatic_mtb_rake_calls_kalshi_1_to_0(
+    _host_ok,
     _snap,
     _compute,
     _refresh,
@@ -62,3 +64,13 @@ def test_maybe_execute_live_automatic_mtb_rake_calls_kalshi_1_to_0(
     assert mock_post_db.call_args[0][2] == 2500  # transfer_amount
     assert mock_post_db.call_args[0][3] == 7500  # new_mtb_balance
     assert mock_post_db.call_args[1].get("to_subaccount", AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT) == "CASH"
+
+
+@patch("backend.bookkeeper.kalshi_subaccount_transfer.apply_subaccount_transfer")
+@patch("backend.balance_snapshot._live_automatic_mtb_rake_host_allowed", return_value=False)
+def test_maybe_execute_live_automatic_mtb_rake_blocked_off_production(mock_host, mock_xfer):
+    cur = MagicMock()
+    assert not maybe_execute_live_automatic_mtb_rake(
+        cur, "0001", subaccounts_table="users_0001.subaccounts_0001"
+    )
+    mock_xfer.assert_not_called()

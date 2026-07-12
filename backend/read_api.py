@@ -61,6 +61,7 @@ from backend.core.performance_rollups import (
 )
 from backend.core.monitor_list_api import get_monitors_api_payload
 from backend.core.strike_pipeline_health import (
+    display_pipeline_health,
     evaluate_pipeline_gate_conn,
     strike_pipeline_health_strict_mode_enabled,
 )
@@ -1252,11 +1253,12 @@ async def get_monitors_health(user_id: Optional[str] = None) -> Dict[str, Any]:
                     ok, rsn = evaluate_pipeline_gate_conn(
                         conn, exchange="kalshi", market=mkt, symbol=sym
                     )
+                    disp = display_pipeline_health(ok, rsn)
                     health_by_symbol_market[(sym, mkt)] = {
-                        "monitor_healthy": ok,
-                        "monitor_health_state": "healthy" if ok else "degraded",
-                        "monitor_health_reason": "ok" if ok else rsn,
-                        "monitor_health_age_sec": None,
+                        "monitor_healthy": disp["healthy"],
+                        "monitor_health_state": disp["state"],
+                        "monitor_health_reason": disp["reason"],
+                        "monitor_health_age_sec": disp["age_sec"],
                     }
         conn.close()
 
@@ -1279,9 +1281,9 @@ async def get_monitors_health(user_id: Optional[str] = None) -> Dict[str, Any]:
                         out[monitor_key] = dict(h)
                     else:
                         out[monitor_key] = {
-                            "monitor_healthy": False,
-                            "monitor_health_state": "degraded",
-                            "monitor_health_reason": "pipeline_health_missing",
+                            "monitor_healthy": True,
+                            "monitor_health_state": "healthy",
+                            "monitor_health_reason": "pipeline_health_pending",
                             "monitor_health_age_sec": None,
                         }
             else:

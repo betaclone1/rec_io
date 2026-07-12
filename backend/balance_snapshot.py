@@ -702,6 +702,18 @@ def apply_automatic_mtb_rake_post_transfer_db(
     )
 
 
+def _live_automatic_mtb_rake_host_allowed() -> bool:
+    """
+    Live Kalshi MTB→CASH rake must only run on the production host.
+
+    Local supervisord often uses the same prod Kalshi API keys against a separate
+    Postgres. If automatic_transfers is on locally, rake POSTs hit the live venue
+    while the transfer ledger is written only to the laptop DB — invisible on prod
+    and unaffected by turning auto off in the production UI.
+    """
+    return os.getenv("REC_ENVIRONMENT", "").strip().lower() == "production"
+
+
 def maybe_execute_live_automatic_mtb_rake(
     cursor,
     user_no: str,
@@ -713,6 +725,13 @@ def maybe_execute_live_automatic_mtb_rake(
     Updates MTB base_value in DB; caller should repoll all subaccount balances afterward.
     """
     slot = str(user_no).zfill(4)[-4:]
+    if not _live_automatic_mtb_rake_host_allowed():
+        _LOG.warning(
+            "Automatic MTB rake blocked: REC_ENVIRONMENT=%r (live Kalshi rake is production-only; user %s)",
+            os.getenv("REC_ENVIRONMENT"),
+            slot,
+        )
+        return False
     refresh_mtb_realized_pnl_from_balance(cursor, subaccounts_table)
     transfer_amount = compute_automatic_mtb_rake_amount_cents(cursor, subaccounts_table)
     if transfer_amount is None:
