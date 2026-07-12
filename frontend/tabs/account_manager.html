@@ -384,6 +384,14 @@
           <div><span style="min-width: 90px; display: inline-block;">PnL %</span><span id="manage-mtb-pnl-pct">—</span></div>
         </div>
       </div>
+      <div class="row" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #4a5568;">
+        <div style="font-size: 12px; color: #c4c4c4;">
+          <div style="margin-bottom: 8px;"><span style="min-width: 90px; display: inline-block;">Cash Reserve</span></div>
+          <div style="display: flex; align-items: center; gap: 8px;">
+            <input type="text" id="manage-cash-reserve-base-value" placeholder="$0.00" style="width: 110px; padding: 4px 8px; font-size: 12px; background: #2a3441; color: #fff; border: 1px solid #4a5568; border-radius: 4px; box-sizing: border-box;" />
+          </div>
+        </div>
+      </div>
         <div class="modal-buttons">
           <button type="submit" class="refresh-button" id="manage-transfers-submit">Submit</button>
           <button type="button" id="manage-transfers-cancel" style="background: #4a5568; color: white; border: none; padding: 6px 12px; border-radius: 4px; cursor: pointer; font-size: 12px;">Cancel</button>
@@ -1008,6 +1016,8 @@
       document.getElementById("manage-mtb-pnl-pct").textContent = "…";
       const baseValueInput = document.getElementById("manage-mtb-base-value");
       if (baseValueInput) baseValueInput.value = "";
+      const cashReserveBaseInput = document.getElementById("manage-cash-reserve-base-value");
+      if (cashReserveBaseInput) cashReserveBaseInput.value = "";
       let subaccounts = [];
       try {
         const res = await fetch(window.location.origin + "/api/subaccounts");
@@ -1017,6 +1027,12 @@
         console.error("Failed to fetch subaccounts:", e);
       }
       const mtb = subaccounts.find(s => s.subaccount === "Master Trading Bankroll");
+      const cashReserve = subaccounts.find(s => Number(s.id) === 2)
+        || subaccounts.find(s =>
+          s.subaccount === "Cash Reserve"
+          || s.subaccount === "undefined_2"
+          || s.subaccount === "Cash Transfer"
+        );
       const checkbox = document.getElementById("manage-transfers-automatic-checkbox");
       const targetPct = document.getElementById("manage-transfers-target-pct");
       const transferAmt = document.getElementById("manage-transfers-transfer-amt");
@@ -1032,10 +1048,16 @@
       } else if (baseValueInput) {
         baseValueInput.value = "";
       }
+      if (cashReserveBaseInput && cashReserve && cashReserve.base_value != null) {
+        cashReserveBaseInput.value = "$" + (Number(cashReserve.base_value) / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+      } else if (cashReserveBaseInput) {
+        cashReserveBaseInput.value = "";
+      }
       document.getElementById("manage-mtb-balance").textContent = mtb ? fmt(mtb.balance) : "—";
       document.getElementById("manage-mtb-pnl").textContent = mtb ? fmt(mtb.realized_pnl) : "—";
       document.getElementById("manage-mtb-pnl-pct").textContent = mtb ? fmtPct(mtb.realized_pnl_pct) : "—";
       modal._mtbBalanceCents = mtb && mtb.balance != null ? Number(mtb.balance) : null;
+      modal._cashReserveSubaccountName = cashReserve?.subaccount || null;
     }
 
     function closeManageTransfersModal() {
@@ -1078,10 +1100,14 @@
       const targetPctVal = document.getElementById("manage-transfers-target-pct")?.value;
       const transferAmtVal = document.getElementById("manage-transfers-transfer-amt")?.value;
       const baseValueRaw = document.getElementById("manage-mtb-base-value")?.value?.trim() || "";
+      const cashReserveBaseRaw = document.getElementById("manage-cash-reserve-base-value")?.value?.trim() || "";
       const targetPctNum = targetPctVal !== "" && targetPctVal != null ? parseFloat(targetPctVal) : null;
       const transferAmtNum = transferAmtVal !== "" && transferAmtVal != null ? parseFloat(transferAmtVal) : null;
       const baseValueDollars = baseValueRaw.replace(/[$,\s]/g, "") ? parseFloat(baseValueRaw.replace(/[$,\s]/g, "")) : NaN;
       const baseValueCents = (!isNaN(baseValueDollars) && baseValueDollars >= 0) ? Math.round(baseValueDollars * 100) : null;
+      const cashReserveDollars = cashReserveBaseRaw.replace(/[$,\s]/g, "") ? parseFloat(cashReserveBaseRaw.replace(/[$,\s]/g, "")) : NaN;
+      const cashReserveBaseCents = (!isNaN(cashReserveDollars) && cashReserveDollars >= 0) ? Math.round(cashReserveDollars * 100) : null;
+      const cashReserveName = document.getElementById("manage-transfers-modal")?._cashReserveSubaccountName || "Cash Reserve";
       try {
         const resAuto = await fetch(window.location.origin + "/api/subaccounts/automatic-transfers", {
           method: "PATCH",
@@ -1117,6 +1143,18 @@
           const dataBase = await resBase.json();
           if (!dataBase.ok) {
             alert(dataBase.error || "Failed to update base value.");
+            return;
+          }
+        }
+        if (cashReserveBaseCents !== null) {
+          const resCr = await fetch(window.location.origin + "/api/subaccounts/base-value", {
+            method: "PATCH",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ subaccount: cashReserveName, base_value: cashReserveBaseCents })
+          });
+          const dataCr = await resCr.json();
+          if (!dataCr.ok) {
+            alert(dataCr.error || "Failed to update Cash Reserve base value.");
             return;
           }
         }
