@@ -1089,19 +1089,19 @@ def aggregate_account_balance_from_subaccounts(
 
 
 def _subaccount_numbers_from_subaccounts_table(cursor, subaccounts_table: str) -> list[int]:
-    """Kalshi subaccount numbers implied by rows in users.subaccounts_* (incl. undefined_N)."""
-    from backend.bookkeeper.kalshi_subaccount_transfer import subaccount_name_to_number
+    """Kalshi subaccount numbers = row ``id`` values in users.subaccounts_* (label is display-only)."""
     from backend.trading_mode import sql_ident_qualified_table
 
     ident = sql_ident_qualified_table(subaccounts_table)
-    cursor.execute(sql.SQL("SELECT subaccount FROM {}").format(ident))
+    cursor.execute(sql.SQL("SELECT id FROM {}").format(ident))
     out: set[int] = set()
-    for (name,) in cursor.fetchall() or []:
-        if not name:
+    for row in cursor.fetchall() or []:
+        raw = row[0] if not isinstance(row, dict) else row.get("id")
+        if raw is None:
             continue
         try:
-            out.add(int(subaccount_name_to_number(str(name))))
-        except ValueError:
+            out.add(int(raw))
+        except (TypeError, ValueError):
             continue
     return sorted(out)
 

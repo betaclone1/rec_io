@@ -449,17 +449,25 @@ async def get_subaccounts(
                             "(credentials or API); rows may be stale",
                             slot,
                         )
-                    if kalshi_balances is not None:
-                        from backend.kalshi_account_sync_ws import (
-                            refresh_live_subaccounts_from_kalshi,
-                        )
+                    else:
+                        try:
+                            from backend.kalshi_account_sync_ws import (
+                                refresh_live_subaccounts_from_kalshi,
+                            )
 
-                        refresh_live_subaccounts_from_kalshi(
-                            cursor,
-                            slot,
-                            sa_fqn,
-                            None,
-                        )
+                            refresh_live_subaccounts_from_kalshi(
+                                cursor,
+                                slot,
+                                sa_fqn,
+                                None,
+                            )
+                        except Exception:
+                            _read_logger.exception(
+                                "subaccounts read: Kalshi refresh failed for user %s; "
+                                "serving existing DB rows",
+                                slot,
+                            )
+                            conn.rollback()
                 sa_ident = sql_ident_qualified_table(sa_fqn)
                 cursor.execute(
                     sql.SQL(
@@ -477,6 +485,7 @@ async def get_subaccounts(
         finally:
             conn.close()
     except Exception:
+        _read_logger.exception("GET /api/subaccounts failed")
         return {"subaccounts": []}
 
 

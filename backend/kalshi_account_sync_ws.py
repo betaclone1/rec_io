@@ -710,7 +710,6 @@ def _sql_qual_table(qualified: str):
 
 
 from backend.bookkeeper.kalshi_subaccount_transfer import (
-    KALSHI_SUBACCOUNT_NUMBER_TO_NAME,
     kalshi_subaccount_row_name,
 )
 
@@ -719,38 +718,53 @@ def _upsert_subaccount_balance(
     cursor,
     table_ident,
     table_fqn: str,
-    subaccount_name: str,
+    subaccount_number: int,
     balance_cents: int,
 ) -> None:
+    """
+    Write Kalshi cash balance for one subaccount number.
+
+    ``id`` is the Kalshi subaccount number. ``subaccount`` is only a display label —
+    never used as the match key, and never overwritten on update.
+    Insert only when Kalshi reports a number that has no row yet (default label only).
+    """
+    num = int(subaccount_number)
+    cents = int(balance_cents)
     try:
         cursor.execute(
-            psql.SQL("UPDATE {} SET balance = %s WHERE subaccount = %s").format(table_ident),
-            (int(balance_cents), subaccount_name),
+            psql.SQL("UPDATE {} SET balance = %s WHERE id = %s").format(table_ident),
+            (cents, num),
         )
         if cursor.rowcount == 0:
-            # Seed rows use explicit id 0,1,2; the serial may still point at 2 — allocate id manually.
-            cursor.execute(psql.SQL("SELECT COALESCE(MAX(id), -1) + 1 FROM {}").format(table_ident))
-            new_id = int(cursor.fetchone()[0])
+            default_label = kalshi_subaccount_row_name(num)
             cursor.execute(
                 psql.SQL(
-                    "INSERT INTO {} (id, subaccount, balance, automatic_transfers) VALUES (%s, %s, %s, FALSE)"
+                    "INSERT INTO {} (id, subaccount, balance, automatic_transfers) "
+                    "VALUES (%s, %s, %s, FALSE)"
                 ).format(table_ident),
-                (new_id, subaccount_name, int(balance_cents)),
+                (num, default_label, cents),
             )
+            # Keep serial ahead of explicit Kalshi ids (setval rejects 0).
             cursor.execute(
-                "SELECT setval(pg_get_serial_sequence(%s, 'id'), %s, true)",
-                (table_fqn, new_id),
+                psql.SQL(
+                    "SELECT setval("
+                    "pg_get_serial_sequence(%s, 'id'), "
+                    "GREATEST((SELECT MAX(id) FROM {}), 1), "
+                    "true)"
+                ).format(table_ident),
+                (table_fqn,),
             )
             logger.info(
-                "Inserted subaccount row %s balance=%s cents on %s",
-                subaccount_name,
-                balance_cents,
+                "Inserted subaccount id=%s label=%s balance=%s cents on %s",
+                num,
+                default_label,
+                cents,
                 table_fqn,
             )
     except Exception as exc:
         logger.error(
-            "Failed to upsert subaccount %s on %s: %s",
-            subaccount_name,
+            "Failed to upsert subaccount id=%s on %s: %s",
+            num,
             table_fqn,
             exc,
         )
@@ -773,8 +787,9 @@ def _sync_subaccounts_from_kalshi_poll(cursor, subaccounts_table, balances_by_nu
     """
     Write Kalshi subaccount cash balances into users.subaccounts_* (live).
 
-    One row per entry in GET /portfolio/subaccounts/balances (including #0 CASH).
-    Unmapped subaccount numbers are stored as ``undefined_<n>``.
+    One row per Kalshi subaccount number from GET /portfolio/subaccounts/balances
+    (including #0 CASH). Matches by ``id`` (= Kalshi number); preserves display labels.
+    Does not create rows for numbers Kalshi did not report.
     """
     from backend.balance_snapshot import refresh_mtb_realized_pnl_from_balance
     from backend.trading_mode import sql_ident_qualified_table
@@ -785,14 +800,13 @@ def _sync_subaccounts_from_kalshi_poll(cursor, subaccounts_table, balances_by_nu
     synced = []
     for num in sorted(balances_by_number.keys()):
         cents = balances_by_number[num]
-        name = kalshi_subaccount_row_name(num)
-        _upsert_subaccount_balance(cursor, ident, subaccounts_table, name, int(cents))
-        synced.append(name)
+        _upsert_subaccount_balance(cursor, ident, subaccounts_table, int(num), int(cents))
+        synced.append(int(num))
     if synced:
         logger.debug(
-            "Kalshi subaccount balances synced on %s: %s",
+            "Kalshi subaccount balances synced on %s: ids=%s",
             subaccounts_table,
-            ", ".join(synced),
+            synced,
         )
     return refresh_mtb_realized_pnl_from_balance(cursor, subaccounts_table)
 

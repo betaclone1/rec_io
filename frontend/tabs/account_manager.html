@@ -117,6 +117,11 @@
     #manage-transfers-modal .modal-box input[type="number"]::-webkit-inner-spin-button {
       margin-left: 10px;
     }
+    .panel-container {
+      width: 75%;
+      max-width: 100%;
+      box-sizing: border-box;
+    }
     #initiate-transfer-modal .modal-box .row,
     #manage-transfers-modal .modal-box .row,
     #paper-balance-modal .modal-box .row { margin-bottom: 12px; }
@@ -186,7 +191,7 @@
   </style>
 </head>
 <body>
-    <div class="panel-container" style="width: 750px;">
+    <div class="panel-container">
         <div class="panel">
       <div class="panel-header">Account Information</div>
       
@@ -270,7 +275,7 @@
 
   <div id="account-manager-market-panels">
   <!-- Open Positions panel -->
-  <div class="panel-container" style="width: 750px;">
+  <div class="panel-container">
     <div class="panel">
       <div class="panel-header">Open Positions</div>
       <div class="panel-body">
@@ -293,7 +298,7 @@
   </div>
 
   <!-- Fills panel -->
-  <div class="panel-container" style="width: 750px;">
+  <div class="panel-container">
     <div class="panel">
       <div class="panel-header">Fills</div>
      
@@ -318,7 +323,7 @@
   </div>
 
   <!-- Settlements panel -->
-  <div class="panel-container" style="width: 750px;">
+  <div class="panel-container">
     <div class="panel">
       <div class="panel-header">Settlements</div>
       <div class="panel-body" style="height: 200px; overflow-y: auto;">
