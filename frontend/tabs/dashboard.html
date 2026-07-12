@@ -480,6 +480,20 @@
       color: #a0aec0;
     }
 
+    .performance-cash-reserve-diff {
+      margin-left: 6px;
+      font-size: 12px;
+      font-weight: 600;
+    }
+
+    .performance-cash-reserve-diff.positive {
+      color: #48bb78;
+    }
+
+    .performance-cash-reserve-diff.negative {
+      color: #e53e3e;
+    }
+
     .performance-cash-label {
       margin-right: 6px;
     }
@@ -1868,6 +1882,7 @@
           <div class="performance-cash-row performance-cash-reserve">
             <span class="performance-cash-label">Cash Reserve:</span>
             <span class="performance-cash-value" id="perf-cash-reserve">—</span>
+            <span class="performance-cash-reserve-diff" id="perf-cash-reserve-diff" hidden></span>
           </div>
         </div>
         <!-- Symbol prices and change data commented out - may move elsewhere later
@@ -5493,10 +5508,37 @@
           );
         setEl('perf-cash-balance', cash && cash.balance != null ? formatUsdCents(cash.balance) : '—');
         setEl('perf-cash-reserve', cashReserve && cashReserve.balance != null ? formatUsdCents(cashReserve.balance) : '—');
+        const diffEl = document.getElementById('perf-cash-reserve-diff');
+        if (diffEl) {
+          const bal = cashReserve && cashReserve.balance != null ? Number(cashReserve.balance) : null;
+          const base = cashReserve && cashReserve.base_value != null ? Number(cashReserve.base_value) : null;
+          if (bal == null || base == null || !Number.isFinite(bal) || !Number.isFinite(base) || bal === base) {
+            diffEl.hidden = true;
+            diffEl.textContent = '';
+            diffEl.classList.remove('positive', 'negative');
+          } else {
+            const absDollars = Math.abs(bal - base) / 100;
+            const absFmt = new Intl.NumberFormat('en-US', {
+              minimumFractionDigits: 2,
+              maximumFractionDigits: 2,
+            }).format(absDollars);
+            const above = bal > base;
+            diffEl.hidden = false;
+            diffEl.textContent = `${above ? '+' : '-'} $${absFmt}`;
+            diffEl.classList.toggle('positive', above);
+            diffEl.classList.toggle('negative', !above);
+          }
+        }
       } catch (error) {
         console.error('Error loading cash balance:', error);
         setEl('perf-cash-balance', '—');
         setEl('perf-cash-reserve', '—');
+        const diffEl = document.getElementById('perf-cash-reserve-diff');
+        if (diffEl) {
+          diffEl.hidden = true;
+          diffEl.textContent = '';
+          diffEl.classList.remove('positive', 'negative');
+        }
       }
     }
 
