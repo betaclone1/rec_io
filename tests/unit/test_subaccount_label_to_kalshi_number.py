@@ -24,9 +24,9 @@ def test_cash_aliases_map_to_zero_without_db():
 def test_custom_label_resolves_via_row_id():
     cursor = MagicMock()
     cursor.fetchone.return_value = (2,)
-    assert _subaccount_kalshi_number_for_label(cursor, _ident(), "Cash Reserve") == 2
+    assert _subaccount_kalshi_number_for_label(cursor, _ident(), "Reserve") == 2
     assert cursor.execute.call_count == 1
-    assert cursor.execute.call_args.args[1] == ("Cash Reserve",)
+    assert cursor.execute.call_args.args[1] == ("Reserve",)
 
 
 def test_missing_label_returns_none():

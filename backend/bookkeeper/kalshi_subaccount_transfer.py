@@ -9,9 +9,11 @@ KALSHI_SUBACCOUNT_NAME_TO_NUMBER: dict[str, int] = {
     "CASH": 0,
     "Master Trading Bankroll": 1,
     "undefined_2": 2,
+    "Reserve": 2,
     # Legacy labels (pre-migration rows / transfer history display)
     "PRIMARY": 0,
     "Cash Transfer": 2,
+    "Cash Reserve": 2,
 }
 
 KALSHI_SUBACCOUNT_NUMBER_TO_NAME: dict[int, str] = {

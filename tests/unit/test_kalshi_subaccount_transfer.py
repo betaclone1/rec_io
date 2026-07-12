@@ -12,6 +12,8 @@ def test_subaccount_name_to_number():
     assert subaccount_name_to_number("Master Trading Bankroll") == 1
     assert subaccount_name_to_number("undefined_2") == 2
     assert subaccount_name_to_number("Cash Transfer") == 2
+    assert subaccount_name_to_number("Cash Reserve") == 2
+    assert subaccount_name_to_number("Reserve") == 2
     assert subaccount_name_to_number("undefined_3") == 3
 
 

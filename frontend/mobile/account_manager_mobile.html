@@ -458,7 +458,7 @@
                     </div>
                     <div class="row" style="margin-top: 12px; padding-top: 12px; border-top: 1px solid #4a5568;">
                         <div style="font-size: 12px; color: #c4c4c4;">
-                            <div style="margin-bottom: 8px;"><span style="min-width: 90px; display: inline-block;">Cash Reserve</span></div>
+                            <div style="margin-bottom: 8px;"><span style="min-width: 90px; display: inline-block;">Reserve</span></div>
                             <div style="display: flex; align-items: center; gap: 8px;">
                                 <input type="text" id="manage-cash-reserve-base-value" placeholder="$0.00" style="width: 110px; padding: 4px 8px; font-size: 12px; background: #2a3441; color: #fff; border: 1px solid #4a5568; border-radius: 4px; box-sizing: border-box;" />
                             </div>
@@ -977,7 +977,8 @@
             const mtb = subaccounts.find(s => s.subaccount === "Master Trading Bankroll");
             const cashReserve = subaccounts.find(s => Number(s.id) === 2)
                 || subaccounts.find(s =>
-                    s.subaccount === "Cash Reserve"
+                    s.subaccount === "Reserve"
+                    || s.subaccount === "Cash Reserve"
                     || s.subaccount === "undefined_2"
                     || s.subaccount === "Cash Transfer"
                 );
@@ -1047,7 +1048,7 @@
             const baseValueCents = (!isNaN(baseValueDollars) && baseValueDollars >= 0) ? Math.round(baseValueDollars * 100) : null;
             const cashReserveDollars = cashReserveBaseRaw.replace(/[$,\s]/g, "") ? parseFloat(cashReserveBaseRaw.replace(/[$,\s]/g, "")) : NaN;
             const cashReserveBaseCents = (!isNaN(cashReserveDollars) && cashReserveDollars >= 0) ? Math.round(cashReserveDollars * 100) : null;
-            const cashReserveName = document.getElementById("manage-transfers-modal")?._cashReserveSubaccountName || "Cash Reserve";
+            const cashReserveName = document.getElementById("manage-transfers-modal")?._cashReserveSubaccountName || "Reserve";
             try {
                 const resAuto = await fetch(window.location.origin + "/api/subaccounts/automatic-transfers", {
                     method: "PATCH", headers: { "Content-Type": "application/json" },
@@ -1079,7 +1080,7 @@
                         body: JSON.stringify({ subaccount: cashReserveName, base_value: cashReserveBaseCents })
                     });
                     const dataCr = await resCr.json();
-                    if (!dataCr.ok) { alert(dataCr.error || "Failed to update Cash Reserve base value."); return; }
+                    if (!dataCr.ok) { alert(dataCr.error || "Failed to update Reserve base value."); return; }
                 }
                 closeManageTransfersModal();
                 loadAccountData();

@@ -1670,7 +1670,7 @@
           <span class="performance-cash-value" id="perf-cash-balance">—</span>
         </div>
         <div class="performance-cash-row performance-cash-reserve">
-          <span class="performance-cash-label">Cash Reserve:</span>
+          <span class="performance-cash-label">Reserve:</span>
           <span class="performance-cash-value" id="perf-cash-reserve">—</span>
           <span class="performance-cash-reserve-diff" id="perf-cash-reserve-diff" hidden></span>
         </div>
@@ -5153,7 +5153,8 @@
           || subaccounts.find(s => Number(s.id) === 0);
         const cashReserve = subaccounts.find(s => Number(s.id) === 2)
           || subaccounts.find(s =>
-            s.subaccount === 'Cash Reserve'
+            s.subaccount === 'Reserve'
+            || s.subaccount === 'Cash Reserve'
             || s.subaccount === 'undefined_2'
             || s.subaccount === 'Cash Transfer'
           );
@@ -5175,7 +5176,7 @@
             }).format(absDollars);
             const above = bal > base;
             diffEl.hidden = false;
-            diffEl.textContent = `${above ? '+' : '-'} $${absFmt}`;
+            diffEl.textContent = `${above ? '+' : '-'}$${absFmt}`;
             diffEl.classList.toggle('positive', above);
             diffEl.classList.toggle('negative', !above);
           }
