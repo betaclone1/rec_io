@@ -265,6 +265,8 @@ class MonitorManager:
             "CREATE": ("MONITOR", "info"),
             "DRAWDOWN_EMERGENCY_HALT": ("TRADING_HALT", "critical"),
             "DRAWDOWN_EMERGENCY_HALT_FAILED": ("TRADING_HALT", "critical"),
+            "DRAWDOWN_EMERGENCY_HALT_EMAIL": ("TRADING_HALT", "info"),
+            "DRAWDOWN_EMERGENCY_HALT_EMAIL_FAILED": ("TRADING_HALT", "warning"),
             "WEBSOCKET_ERROR": ("ANOMALY", "warning"),
         }
         cat_sev = master_map.get(event_type)
@@ -715,6 +717,7 @@ environment={env_vars}
         then force every monitor row to paper_trade=TRUE and test_filter=TRUE and set trading_halt_active.
         """
         from backend.core.system_settings_store import (
+            get_drawdown_trading_controls,
             set_drawdown_halt_monitor_snapshot_with_cursor,
             set_trading_halt_active_with_cursor,
             utc_now_iso_and_est_wall_for_halt_snapshot,
@@ -725,7 +728,27 @@ environment={env_vars}
             conn = self.get_database_connection()
             slot = _mm_worker_slot()
             ml = _mm_monitor_list_qualified()
+            settings_ident = sql.SQL("{}.{}").format(
+                sql.Identifier(f"users_{slot}"),
+                sql.Identifier(f"system_settings_{slot}"),
+            )
+            already_halted = False
+            drawdown_pct: Any = None
+            halt_est_wall = ""
+            monitors: List[Dict[str, Any]] = []
+            n_updated = 0
             with conn.cursor() as cursor:
+                cursor.execute(
+                    sql.SQL(
+                        "SELECT COALESCE(trading_halt_active, false) FROM {} WHERE id = 1"
+                    ).format(settings_ident)
+                )
+                halt_row = cursor.fetchone()
+                already_halted = bool(halt_row[0]) if halt_row else False
+                _, drawdown_pct = get_drawdown_trading_controls(
+                    cursor, user_number=slot
+                )
+
                 cursor.execute(
                     sql.SQL(
                         "SELECT id, name, status, paper_trade, test_filter FROM {} ORDER BY id"
@@ -733,7 +756,6 @@ environment={env_vars}
                 )
                 rows = cursor.fetchall()
 
-                monitors: List[Dict[str, Any]] = []
                 for mid, name, status, paper_trade, test_filter in rows:
                     monitors.append(
                         {
@@ -780,12 +802,39 @@ environment={env_vars}
                 "snapshot_storage": f"users_{slot}.system_settings_{slot}.drawdown_halt_monitor_snapshot",
                 "monitors_snapshotted": len(monitors),
                 "monitors_updated": int(n_updated),
+                "halt_already_active": already_halted,
             }
             self.log_event(
                 "DRAWDOWN_EMERGENCY_HALT",
                 "Drawdown step-down: snapshot saved and all monitors forced to paper + test_filter.",
                 out,
             )
+            if not already_halted:
+                try:
+                    from backend.util.registration_email import (
+                        send_drawdown_trading_halt_alert,
+                    )
+
+                    sent_to = send_drawdown_trading_halt_alert(
+                        user_no=slot,
+                        halt_initiated_at_est=str(halt_est_wall or ""),
+                        monitors_updated=int(n_updated),
+                        drawdown_threshold_pct=drawdown_pct,
+                    )
+                    out["alert_email_to"] = sent_to
+                    self.log_event(
+                        "DRAWDOWN_EMERGENCY_HALT_EMAIL",
+                        f"Drawdown halt alert emailed to {sent_to}",
+                        {"user_no": slot, "to": sent_to},
+                    )
+                except Exception as mail_err:
+                    # Halt already committed — do not fail the latch on SMTP/recipient errors.
+                    self.log_event(
+                        "DRAWDOWN_EMERGENCY_HALT_EMAIL_FAILED",
+                        f"Drawdown halt email failed: {mail_err}",
+                        {"user_no": slot},
+                    )
+                    out["alert_email_error"] = str(mail_err)
             return out
         except Exception as e:
             if conn:

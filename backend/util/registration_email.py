@@ -1,15 +1,15 @@
 """
 Send transactional email for master_users self-registration (verification code).
 
-Uses Gmail SMTP with an app password. Configure:
+Uses Gmail / Google Workspace SMTP with an app password. Configure:
   REC_ALERTS_SMTP_HOST     (default smtp.gmail.com)
   REC_ALERTS_SMTP_PORT     (default 587)
-  REC_ALERTS_SMTP_USER     (default rec.io.alerts@gmail.com)
+  REC_ALERTS_SMTP_USER     (default alerts@rec-io.com)
   REC_ALERTS_SMTP_PASSWORD (required to send unless file below; Google app password)
   REC_ALERTS_SMTP_PASSWORD_FILE (optional; first line = password, avoids env embedding)
   REC_ALERTS_SMTP_FROM     (optional From header; defaults to REC_ALERTS_SMTP_USER)
   REC_ALERTS_ADMIN_NOTIFY_EMAIL (optional; inbox for new-user application alerts after
-    email verification; default rec.io.alerts@gmail.com)
+    email verification; default alerts@rec-io.com)
   REC_PUBLIC_BASE_URL (optional; overrides default https://rec-io.com for verification links
     in email, e.g. http://localhost:3000 for local testing)
 
@@ -89,7 +89,7 @@ def _smtp_password() -> str:
 def _smtp_config():
     host = (os.getenv("REC_ALERTS_SMTP_HOST") or "smtp.gmail.com").strip()
     port = int((os.getenv("REC_ALERTS_SMTP_PORT") or "587").strip())
-    user = (os.getenv("REC_ALERTS_SMTP_USER") or "rec.io.alerts@gmail.com").strip()
+    user = (os.getenv("REC_ALERTS_SMTP_USER") or "alerts@rec-io.com").strip()
     password = _smtp_password()
     from_addr = (os.getenv("REC_ALERTS_SMTP_FROM") or user).strip()
     return host, port, user, password, from_addr
@@ -211,7 +211,107 @@ def send_alerts_smtp_test_email(to_email: str) -> None:
 
 def _admin_notify_email() -> str:
     """Inbox for new-user application alerts (after email verification)."""
-    return (os.getenv("REC_ALERTS_ADMIN_NOTIFY_EMAIL") or "rec.io.alerts@gmail.com").strip()
+    return (os.getenv("REC_ALERTS_ADMIN_NOTIFY_EMAIL") or "alerts@rec-io.com").strip()
+
+
+def lookup_master_user_alert_recipient(
+    user_no: str,
+) -> tuple[str | None, str, str]:
+    """
+    Return (email, first_name, last_name) for a tenant slot from system.master_users.
+    Missing names are empty strings; missing email is None.
+    """
+    slot = (user_no or "").strip()
+    if not slot:
+        return None, "", ""
+    try:
+        from backend.core.config.database import get_system_postgresql_connection
+    except Exception:
+        return None, "", ""
+    conn = None
+    try:
+        conn = get_system_postgresql_connection()
+        if not conn:
+            return None, "", ""
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT email, first_name, last_name
+                FROM system.master_users
+                WHERE user_no = %s
+                LIMIT 1
+                """,
+                (slot,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None, "", ""
+        email = (row[0] or "").strip() or None
+        first = (row[1] or "").strip()
+        last = (row[2] or "").strip()
+        return email, first, last
+    except Exception:
+        return None, "", ""
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def lookup_master_user_email(user_no: str) -> str | None:
+    """Return system.master_users.email for a tenant slot, or None if missing."""
+    email, _, _ = lookup_master_user_alert_recipient(user_no)
+    return email
+
+
+def send_drawdown_trading_halt_alert(
+    *,
+    user_no: str,
+    halt_initiated_at_est: str = "",
+    monitors_updated: int | None = None,
+    drawdown_threshold_pct: float | str | None = None,
+    to_email: str | None = None,
+) -> str:
+    """
+    Notify the tenant (master_users.email) that a drawdown trading halt was initiated.
+
+    Returns the recipient address that was used. Raises if SMTP is not configured or
+    no recipient email can be resolved.
+    """
+    db_email, first_name, last_name = lookup_master_user_alert_recipient(user_no)
+    recipient = (to_email or "").strip() or (db_email or "")
+    if not recipient:
+        raise RuntimeError(
+            f"No recipient email for drawdown halt (user_no={user_no!r}); "
+            "master_users.email missing and to_email not provided"
+        )
+    slot = (user_no or "").strip() or "?"
+    full_name = f"{first_name} {last_name}".strip()
+    user_label = full_name if full_name else f"user {slot}"
+    when = (halt_initiated_at_est or "").strip() or "just now (ET)"
+    pct_line = ""
+    if drawdown_threshold_pct is not None and str(drawdown_threshold_pct).strip() != "":
+        pct_line = f"Configured drawdown threshold: {drawdown_threshold_pct}% of bankroll_current\n"
+    mon_line = ""
+    if monitors_updated is not None:
+        mon_line = f"Monitors forced to paper + test_filter: {int(monitors_updated)}\n"
+    subject = "Rec.io Trading Halt - Drawdown Detection"
+    body = (
+        "A drawdown protection trading halt has been initiated.\n\n"
+        f"User:              {user_label}\n"
+        f"Initiated (ET):    {when}\n"
+        f"{pct_line}"
+        f"{mon_line}"
+        "\n"
+        "All monitors were switched to paper_trade + test_filter. "
+        "Clear or restore trade operations from Admin / system settings when ready.\n"
+        "\n"
+        "— rec.io alerts\n"
+    )
+    send_plaintext_alerts_email(recipient, subject, body)
+    return recipient
 
 
 def send_new_user_application_submitted_alert(

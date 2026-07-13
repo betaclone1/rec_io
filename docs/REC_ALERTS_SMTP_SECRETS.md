@@ -16,7 +16,7 @@ The app loads the password from the first match:
 2. **`REC_ALERTS_SMTP_PASSWORD_FILE`** — absolute path to a file whose **first line** is the app password (no newline needed at end).
 3. Default path under the repo: **`backend/data/secrets/rec_alerts_smtp_password.txt`** (same one-line format).
 
-Optional non-secret overrides: `REC_ALERTS_SMTP_HOST`, `REC_ALERTS_SMTP_PORT`, `REC_ALERTS_SMTP_USER`, `REC_ALERTS_SMTP_FROM`, `REC_ALERTS_ADMIN_NOTIFY_EMAIL` (inbox for post-verification new-user application alerts; default `rec.io.alerts@gmail.com` — see `registration_email.py`), `REC_PUBLIC_BASE_URL` (overrides default `https://rec-io.com` for verification links in email, e.g. local testing).
+Optional non-secret overrides: `REC_ALERTS_SMTP_HOST`, `REC_ALERTS_SMTP_PORT`, `REC_ALERTS_SMTP_USER`, `REC_ALERTS_SMTP_FROM`, `REC_ALERTS_ADMIN_NOTIFY_EMAIL` (inbox for post-verification new-user application alerts; default `alerts@rec-io.com` — see `registration_email.py`), `REC_PUBLIC_BASE_URL` (overrides default `https://rec-io.com` for verification links in email, e.g. local testing).
 
 ## Local development
 
