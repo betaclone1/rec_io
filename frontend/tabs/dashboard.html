@@ -1025,13 +1025,7 @@
     }
 
     .list-view .monitor-uptime {
-      min-width: 80px;
-      text-align: center;
-      margin-right: 16px;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: none;
     }
 
     .tile-view .monitor-uptime {
@@ -1315,7 +1309,8 @@
 
     /* List View Tile Layout */
     .list-view .monitor-tile {
-      width: 80%;
+      width: 100%;
+      box-sizing: border-box;
       height: 40px;
       flex-direction: row;
       align-items: center;
@@ -1335,7 +1330,8 @@
       cursor: pointer;
       transition: all 0.2s ease;
       user-select: none;
-      width: 80%;
+      width: 100%;
+      box-sizing: border-box;
       height: 40px;
     }
 
@@ -2070,6 +2066,8 @@
     let monitorHealthRefreshTimer = null;
     let monitorListRefreshDebounceTimer = null;
     let monitorsSoftRefreshInFlight = false;
+    // Bumped on hard refresh so an older in-flight soft fetch cannot stomp tiles (halt race).
+    let monitorsRefreshGeneration = 0;
     // Coalesce db_change-driven bankroll refreshes (unbounded parallel async onmessage can OOM the renderer).
     let dbChangesBankrollDebounceTimer = null;
     let dbChangesBankrollPendingStreams = null;
@@ -3597,7 +3595,6 @@
                 <div class="stat-label">PnL</div>
               </div>
             </div>
-            <div class="monitor-uptime">${monitor.uptime}</div>
             <div class="monitor-name">${monitor.id === 'NEW_MONITOR' ? monitor.name : `Monitor ${monitor.name.slice(-5)}`}</div>
             <div class="monitor-controls">
               <div style="display: flex; align-items: center;">
@@ -3608,7 +3605,6 @@
                   draggable="false"
                   onclick="openUnifiedAutoTradeSettings('${monitor.id}')"
                 />
-                <div class="auto-trade-label">AUTO TRADE</div>
                 <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
               </div>
             </div>
@@ -3651,7 +3647,6 @@
                     draggable="false"
                     onclick="openUnifiedAutoTradeSettings('${monitor.id}')"
                   />
-                  <span class="auto-trade-label">AUTO TRADE</span>
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
                 </div>
                 <div style="display: flex; align-items: center;">
@@ -3740,6 +3735,13 @@
           throw new Error('monitors_http_' + response.status);
         }
         if (data.status === 'ok' && Array.isArray(data.monitors)) {
+          if (
+            opts.refreshGeneration != null &&
+            opts.refreshGeneration !== monitorsRefreshGeneration
+          ) {
+            console.warn('Dashboard: discarding stale monitors fetch');
+            return false;
+          }
           monitors = data.monitors;
           if (typeof data.global_paper_mode === 'boolean') {
             window.globalPaperMode = data.global_paper_mode;
@@ -6868,10 +6870,22 @@
       }, 400);
     }
 
+    function cancelScheduledMonitorsSoftRefresh() {
+      if (monitorListRefreshDebounceTimer) {
+        clearTimeout(monitorListRefreshDebounceTimer);
+        monitorListRefreshDebounceTimer = null;
+      }
+    }
+
     async function refreshMonitorsHard(reason) {
       if (dashboardTabPaused) return;
-      console.log('Dashboard: hard refresh monitors', reason || '');
-      const loaded = await loadMonitors();
+      // Halt UPDATEs also fire db_changes → soft refresh. Cancel + bump so a stale
+      // soft /api/monitors response cannot repaint LIVE after this hard rebuild.
+      cancelScheduledMonitorsSoftRefresh();
+      const gen = ++monitorsRefreshGeneration;
+      console.log('Dashboard: hard refresh monitors', reason || '', 'gen', gen);
+      const loaded = await loadMonitors({ refreshGeneration: gen });
+      if (gen !== monitorsRefreshGeneration) return;
       if (!loaded) {
         console.warn('Dashboard: hard refresh skipped (keeping visible tiles)');
         return;
@@ -6881,6 +6895,7 @@
       } catch (e) {
         console.error('Dashboard: applyCurrentSort during hard refresh failed', e);
       }
+      if (gen !== monitorsRefreshGeneration) return;
       initializeMonitors();
       initializeSortable();
       if (
@@ -6894,6 +6909,7 @@
           console.error('monitorHistoryDisplay.refresh during hard refresh failed:', e);
         }
       }
+      if (gen !== monitorsRefreshGeneration) return;
       await loadAllocationData();
     }
 
@@ -6901,12 +6917,17 @@
       if (dashboardTabPaused) return;
       if (monitorsSoftRefreshInFlight) return;
       monitorsSoftRefreshInFlight = true;
+      const gen = monitorsRefreshGeneration;
       try {
-        console.log('Dashboard: Refreshing monitor data from database...');
+        console.log('Dashboard: Refreshing monitor data from database...', 'gen', gen);
         const oldMonitors = [...monitors]; // Keep reference to old data
         const oldMonitorIds = oldMonitors.map(m => m.id).filter(id => id !== 'NEW_MONITOR');
         
-        const loaded = await loadMonitors();
+        const loaded = await loadMonitors({ refreshGeneration: gen });
+        if (gen !== monitorsRefreshGeneration) {
+          console.log('Dashboard: soft refresh aborted (newer hard refresh)');
+          return;
+        }
         if (!loaded) {
           console.warn('Dashboard: soft monitor refresh skipped (keeping visible tiles)');
           return;
@@ -6924,6 +6945,7 @@
             console.error('monitorHistoryDisplay.refresh during soft monitor refresh failed:', e);
           }
         }
+        if (gen !== monitorsRefreshGeneration) return;
         
         // Filter out NEW_MONITOR and archived monitors for comparison
         const newVisibleMonitors = monitors.filter(m => !isMonitorArchivedRow(m) && m.id !== 'NEW_MONITOR');
@@ -8003,7 +8025,7 @@
      *
      * /ws/preferences:
      * - trading_mode (+ global_paper_mode) → fetchTradingModeFromServer + balance + portfolio tabs + loadMonitors + init.
-     * - monitor_list_updated → trading halt UI + scheduleMonitorsSoftRefresh.
+     * - monitor_list_updated → trading halt UI; force_tile_rebuild → hard refresh else soft.
      * - auto_trade_toggled | paper_trade_toggled | cooldown_timer_change | auto_trade_status_change → per-tile DOM.
      *
      * - performance_rollups → same debounced batch (rollup NOTIFY after trade close). Strip + ``tiles_matrix``

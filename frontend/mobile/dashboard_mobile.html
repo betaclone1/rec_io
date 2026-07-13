@@ -915,13 +915,7 @@
     }
 
     .list-view .monitor-uptime {
-      min-width: 80px;
-      text-align: center;
-      margin-right: 16px;
-      height: 100%;
-      display: flex;
-      align-items: center;
-      justify-content: center;
+      display: none;
     }
 
     /* Monitor Bottom Row for List View */
@@ -1235,7 +1229,8 @@
 
     /* List View Tile Layout */
     .list-view .monitor-tile {
-      width: 80%;
+      width: 100%;
+      box-sizing: border-box;
       height: 40px;
       flex-direction: row;
       align-items: center;
@@ -1255,7 +1250,8 @@
       cursor: pointer;
       transition: all 0.2s ease;
       user-select: none;
-      width: 80%;
+      width: 100%;
+      box-sizing: border-box;
       height: 40px;
     }
 
@@ -1847,6 +1843,8 @@
     let marketDataRefreshTimer = null;
     let monitorListRefreshDebounceTimer = null;
     let monitorsSoftRefreshInFlight = false;
+    // Bumped on hard refresh so an older in-flight soft fetch cannot stomp tiles (halt race).
+    let monitorsRefreshGeneration = 0;
     let dbChangesBankrollDebounceTimer = null;
     let dbChangesBankrollPendingStreams = null;
     let dbChangesBankrollRefreshInFlight = false;
@@ -3215,7 +3213,6 @@
               </div>
             </div>
               <div class="monitor-bottom-row">
-              <div class="monitor-uptime">${monitor.uptime}</div>
               <div class="paper-trading-toggle ${(monitor.paper_trade === true || monitor.paper_trade === 'true' || monitor.paper_trade === 1) ? 'paper-mode' : 'live-mode'}"
                 onclick="togglePaperTrade('${monitor.id}')"
                 title="${regimePaperToggleTitleAttr(monitor)}"
@@ -3236,7 +3233,6 @@
                   draggable="false"
                   onclick="openMobileUnifiedAutoTradeSettings('${monitor.id}')"
                 />
-                <div class="auto-trade-label">AUTO TRADE</div>
                 <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
               </div>
             </div>
@@ -3279,7 +3275,6 @@
                     draggable="false"
                     onclick="openMobileUnifiedAutoTradeSettings('${monitor.id}')"
                   />
-                  <span class="auto-trade-label">AUTO TRADE</span>
                   <div class="auto-trade-toggle ${monitor.autoTrade ? 'active' : ''} ${monitor.status === 'inactive' ? 'disabled' : ''}" ${monitor.status !== 'inactive' ? `onclick="toggleAutoTrade('${monitor.id}')"` : ''}></div>
                 </div>
                 <div style="display: flex; align-items: center;">
@@ -3368,6 +3363,13 @@
           throw new Error('monitors_http_' + response.status);
         }
         if (data.status === 'ok' && Array.isArray(data.monitors)) {
+          if (
+            opts.refreshGeneration != null &&
+            opts.refreshGeneration !== monitorsRefreshGeneration
+          ) {
+            console.warn('Dashboard mobile: discarding stale monitors fetch');
+            return false;
+          }
           monitors = data.monitors;
           if (typeof data.global_paper_mode === 'boolean') {
             window.globalPaperMode = data.global_paper_mode;
@@ -6553,10 +6555,20 @@
       }, 400);
     }
 
+    function cancelScheduledMonitorsSoftRefresh() {
+      if (monitorListRefreshDebounceTimer) {
+        clearTimeout(monitorListRefreshDebounceTimer);
+        monitorListRefreshDebounceTimer = null;
+      }
+    }
+
     async function refreshMonitorsHard(reason) {
       if (dashboardMobileTabPaused) return;
-      console.log('Dashboard mobile: hard refresh monitors', reason || '');
-      const loaded = await loadMonitors();
+      cancelScheduledMonitorsSoftRefresh();
+      const gen = ++monitorsRefreshGeneration;
+      console.log('Dashboard mobile: hard refresh monitors', reason || '', 'gen', gen);
+      const loaded = await loadMonitors({ refreshGeneration: gen });
+      if (gen !== monitorsRefreshGeneration) return;
       if (!loaded) {
         console.warn('Dashboard mobile: hard refresh skipped (keeping visible tiles)');
         return;
@@ -6566,6 +6578,7 @@
       } catch (e) {
         console.error('Dashboard mobile: applyCurrentSort during hard refresh failed', e);
       }
+      if (gen !== monitorsRefreshGeneration) return;
       initializeMonitors();
       if (window.monitorHistoryDisplay && window.monitorHistoryDisplay.isInitialized) {
         window.monitorHistoryDisplay.updateMonitorTiles();
@@ -6582,6 +6595,7 @@
           console.error('Dashboard mobile: monitorHistoryDisplay.refresh during hard refresh failed:', e);
         }
       }
+      if (gen !== monitorsRefreshGeneration) return;
       await loadAllocationData();
     }
 
@@ -6589,10 +6603,15 @@
       if (dashboardMobileTabPaused) return;
       if (monitorsSoftRefreshInFlight) return;
       monitorsSoftRefreshInFlight = true;
+      const gen = monitorsRefreshGeneration;
       try {
-        console.log('Dashboard mobile: refreshing monitor data from database...');
+        console.log('Dashboard mobile: refreshing monitor data from database...', 'gen', gen);
         const oldMonitors = [...monitors];
-        const loaded = await loadMonitors();
+        const loaded = await loadMonitors({ refreshGeneration: gen });
+        if (gen !== monitorsRefreshGeneration) {
+          console.log('Dashboard mobile: soft refresh aborted (newer hard refresh)');
+          return;
+        }
         if (!loaded) {
           console.warn('Dashboard mobile: soft monitor refresh skipped (keeping visible tiles)');
           return;
@@ -6614,6 +6633,7 @@
             console.error('Dashboard mobile: monitorHistoryDisplay.refresh during soft monitor refresh failed:', e);
           }
         }
+        if (gen !== monitorsRefreshGeneration) return;
 
         const oldMonitorIds = oldMonitors.map(m => m.id).filter(id => id !== 'NEW_MONITOR');
         const newVisibleMonitors = monitors.filter(m => !isMonitorArchivedRow(m) && m.id !== 'NEW_MONITOR');
