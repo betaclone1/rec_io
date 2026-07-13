@@ -516,6 +516,8 @@ def _fanout_monitor_list_trading_halt_ws(user_number: str) -> None:
             "message": "system_settings_trading_halt",
             "trading_halt_active": halt_active,
             "tenant_user_no": _norm_slot(u),
+            # Clear/restore changes paper_trade + test_filter across monitors.
+            "force_tile_rebuild": True,
         }
         if row:
             payload["trading_halt_reason"] = row.get("trading_halt_reason")

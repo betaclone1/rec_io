@@ -645,7 +645,12 @@ environment={env_vars}
         except Exception as e:
             self.log_event("WEBSOCKET_ERROR", f"Failed frontend fanout ({context}): {e}")
 
-    def _notify_frontend_monitor_list_updated(self, message: str = "Monitor list updated") -> None:
+    def _notify_frontend_monitor_list_updated(
+        self,
+        message: str = "Monitor list updated",
+        *,
+        force_tile_rebuild: bool = False,
+    ) -> None:
         """Whenever monitor_manager changes monitor_list, alert frontend so displays refresh."""
         slot = _mm_resolve_user_no(None)
         body: Dict[str, Any] = {
@@ -653,6 +658,8 @@ environment={env_vars}
             "message": message,
             "tenant_user_no": slot,
         }
+        if force_tile_rebuild:
+            body["force_tile_rebuild"] = True
         try:
             from backend.core.system_settings_store import fetch_system_settings_row
 
@@ -899,7 +906,14 @@ environment={env_vars}
                     )
 
             self.log_event("BANKROLL_UPDATE", "Bankroll update processed successfully", combined_result)
-            self._notify_frontend_monitor_list_updated("Bankroll / monitor list updated")
+            force_rebuild = bool(
+                emergency_halt_result is not None
+                and emergency_halt_result.get("status") == "success"
+            )
+            self._notify_frontend_monitor_list_updated(
+                "Bankroll / monitor list updated",
+                force_tile_rebuild=force_rebuild,
+            )
             return combined_result
 
         except Exception as e:

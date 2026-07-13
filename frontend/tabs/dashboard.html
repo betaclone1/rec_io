@@ -6868,6 +6868,35 @@
       }, 400);
     }
 
+    async function refreshMonitorsHard(reason) {
+      if (dashboardTabPaused) return;
+      console.log('Dashboard: hard refresh monitors', reason || '');
+      const loaded = await loadMonitors();
+      if (!loaded) {
+        console.warn('Dashboard: hard refresh skipped (keeping visible tiles)');
+        return;
+      }
+      try {
+        applyCurrentSort();
+      } catch (e) {
+        console.error('Dashboard: applyCurrentSort during hard refresh failed', e);
+      }
+      initializeMonitors();
+      initializeSortable();
+      if (
+        window.monitorHistoryDisplay &&
+        window.monitorHistoryDisplay.isInitialized &&
+        typeof currentView !== 'undefined'
+      ) {
+        try {
+          await window.monitorHistoryDisplay.refreshFromServer(currentView);
+        } catch (e) {
+          console.error('monitorHistoryDisplay.refresh during hard refresh failed:', e);
+        }
+      }
+      await loadAllocationData();
+    }
+
     async function refreshMonitorsSoft() {
       if (dashboardTabPaused) return;
       if (monitorsSoftRefreshInFlight) return;
@@ -8060,7 +8089,11 @@
               updateTradingHaltUiFromSettingsPayload(data);
             }
           }
-          scheduleMonitorsSoftRefresh(700);
+          if (data.force_tile_rebuild === true) {
+            void refreshMonitorsHard('force_tile_rebuild');
+          } else {
+            scheduleMonitorsSoftRefresh(700);
+          }
         }
 
         if (data.type === 'cooldown_timer_change') {
