@@ -2865,7 +2865,8 @@
       
       monitorTiles.forEach(tile => {
         const monitorId = tile.getAttribute('data-monitor-id');
-        const newMonitor = newMonitors.find(m => m.id === monitorId);
+        // data-monitor-id is always a string; API ids may be numbers — never use ===
+        const newMonitor = newMonitors.find(m => String(m.id) === String(monitorId));
         
         if (newMonitor) {
           const isTfTilePoll =
@@ -6904,9 +6905,22 @@
         const hasRemovals = oldMonitorIds.some(id => !newMonitorIds.includes(id));
         const hasOrderChange = oldMonitorIds.length === newMonitorIds.length &&
                               oldMonitorIds.some((id, index) => newMonitorIds[index] !== id);
+        const paperOrTestChanged = newVisibleMonitors.some((nm) => {
+          const om = oldMonitors.find((o) => String(o.id) === String(nm.id));
+          if (!om) return false;
+          const np =
+            nm.paper_trade === true || nm.paper_trade === 'true' || nm.paper_trade === 1 || nm.paper_trade === '1';
+          const op =
+            om.paper_trade === true || om.paper_trade === 'true' || om.paper_trade === 1 || om.paper_trade === '1';
+          const nt =
+            nm.test_filter === true || nm.test_filter === 'true' || nm.test_filter === 1 || nm.test_filter === '1';
+          const ot =
+            om.test_filter === true || om.test_filter === 'true' || om.test_filter === 1 || om.test_filter === '1';
+          return np !== op || nt !== ot;
+        });
         
-        if (hasAdditions || hasRemovals) {
-          console.log('Dashboard: Monitor list changed (add/remove), re-rendering tiles...');
+        if (hasAdditions || hasRemovals || paperOrTestChanged) {
+          console.log('Dashboard: Monitor list/mode changed, re-rendering tiles...');
           initializeMonitors();
           initializeSortable();
         } else if (hasOrderChange) {
@@ -7602,7 +7616,7 @@
         
         // Update toggle switch state
         const toggle = tile.querySelector('.paper-trading-toggle');
-        const monitorData = monitors.find(m => m.id === monitorId);
+        const monitorData = monitors.find(m => String(m.id) === String(monitorId));
         if (toggle) {
           if (paperTrade) {
             toggle.classList.remove('live-mode');
