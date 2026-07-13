@@ -2876,6 +2876,24 @@
           if (isTfTilePoll) tile.classList.add('test-filter-monitor');
           else tile.classList.remove('test-filter-monitor');
 
+          // Soft refresh must also sync LIVE/PAPER/TEST visual (not just stats).
+          // Bulk halt updates paper_trade + test_filter without add/remove, so without
+          // this the toggle stays stale until a full page reload.
+          const isPaperPoll =
+            newMonitor.paper_trade === true ||
+            newMonitor.paper_trade === 'true' ||
+            newMonitor.paper_trade === 1 ||
+            newMonitor.paper_trade === '1';
+          if (typeof updatePaperTradingUI === 'function') {
+            updatePaperTradingUI(monitorId, isPaperPoll);
+          } else if (isPaperPoll) {
+            tile.classList.remove('live-mode');
+            tile.classList.add('paper-mode');
+          } else {
+            tile.classList.remove('paper-mode');
+            tile.classList.add('live-mode');
+          }
+
           const tradesCountValue = getMonitorStatValue(newMonitor, 'trades', newMonitor.trades);
           const winStreakTooltip = getMonitorStatValue(newMonitor, 'win_streak', newMonitor.win_streak);
           const winLossValue = getMonitorStatValue(newMonitor, 'win_loss', newMonitor.winRate);

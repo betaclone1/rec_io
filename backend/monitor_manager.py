@@ -810,31 +810,45 @@ environment={env_vars}
                 out,
             )
             if not already_halted:
-                try:
-                    from backend.util.registration_email import (
-                        send_drawdown_trading_halt_alert,
-                    )
+                # SMTP to Gmail can hang ~30s on hosts with outbound SMTP blocked
+                # (e.g. DigitalOcean). Never block halt fanout / bankroll allotment on that.
+                import threading
 
-                    sent_to = send_drawdown_trading_halt_alert(
-                        user_no=slot,
-                        halt_initiated_at_est=str(halt_est_wall or ""),
-                        monitors_updated=int(n_updated),
-                        drawdown_threshold_pct=drawdown_pct,
-                    )
-                    out["alert_email_to"] = sent_to
-                    self.log_event(
-                        "DRAWDOWN_EMERGENCY_HALT_EMAIL",
-                        f"Drawdown halt alert emailed to {sent_to}",
-                        {"user_no": slot, "to": sent_to},
-                    )
-                except Exception as mail_err:
-                    # Halt already committed — do not fail the latch on SMTP/recipient errors.
-                    self.log_event(
-                        "DRAWDOWN_EMERGENCY_HALT_EMAIL_FAILED",
-                        f"Drawdown halt email failed: {mail_err}",
-                        {"user_no": slot},
-                    )
-                    out["alert_email_error"] = str(mail_err)
+                mail_slot = slot
+                mail_when = str(halt_est_wall or "")
+                mail_n = int(n_updated)
+                mail_pct = drawdown_pct
+
+                def _send_halt_email_bg() -> None:
+                    try:
+                        from backend.util.registration_email import (
+                            send_drawdown_trading_halt_alert,
+                        )
+
+                        sent_to = send_drawdown_trading_halt_alert(
+                            user_no=mail_slot,
+                            halt_initiated_at_est=mail_when,
+                            monitors_updated=mail_n,
+                            drawdown_threshold_pct=mail_pct,
+                        )
+                        self.log_event(
+                            "DRAWDOWN_EMERGENCY_HALT_EMAIL",
+                            f"Drawdown halt alert emailed to {sent_to}",
+                            {"user_no": mail_slot, "to": sent_to},
+                        )
+                    except Exception as mail_err:
+                        self.log_event(
+                            "DRAWDOWN_EMERGENCY_HALT_EMAIL_FAILED",
+                            f"Drawdown halt email failed: {mail_err}",
+                            {"user_no": mail_slot},
+                        )
+
+                threading.Thread(
+                    target=_send_halt_email_bg,
+                    name=f"drawdown-halt-email-{mail_slot}",
+                    daemon=True,
+                ).start()
+                out["alert_email"] = "queued"
             return out
         except Exception as e:
             if conn:

@@ -1,25 +1,33 @@
 # Alerts email secrets (local and production)
 
-## File: `rec_alerts_smtp_password.txt` (not in git)
+## Preferred (production / DigitalOcean): Gmail API OAuth
 
-Put your **Google app password** for `alerts@rec-io.com` on **exactly one line** in that file. No comments, no extra lines. Google shows the password as four groups with spaces; **pasting with spaces is fine** — the app strips them before login.
+DigitalOcean blocks outbound SMTP (ports 25/465/587). Use Gmail API over HTTPS instead.
 
-You must use an **App password** (Google Account → Security → 2-Step Verification → App passwords), not your normal Google password. The Workspace account needs 2-Step Verification enabled first.
+### File: `rec_alerts_gmail_oauth.json` (not in git)
 
-Create or fix permissions (run from repo root):
+Created by:
 
 ```bash
-install -m 600 /dev/null backend/data/secrets/rec_alerts_smtp_password.txt
-# then edit the file and paste the app password on line 1
+PYTHONPATH=. python3 scripts/setup_gmail_api_alerts_oauth.py \
+  --client-secrets /path/to/client_secret.json
 ```
 
-Restart **`main_app`** and **`monitor_manager`** (tenant workers) after changing this file — drawdown halt alerts are sent from `monitor_manager`.
+See **`docs/REC_ALERTS_SMTP_SECRETS.md`** for the Google Cloud OAuth client steps (sign in as `alerts@rec-io.com`).
 
-Optional overrides (environment / supervisord, not this folder): `REC_ALERTS_SMTP_USER`, `REC_ALERTS_SMTP_FROM`, `REC_ALERTS_SMTP_HOST`, `REC_ALERTS_SMTP_PORT`. Defaults match `alerts@rec-io.com` and Gmail SMTP.
+Copy the resulting JSON to prod:
 
-## Production
+`/opt/rec_io_server/backend/data/secrets/rec_alerts_gmail_oauth.json` (mode **600**)
 
-This directory is **not** deployed from git. After you sync code to prod, **create the same path** on the server and the same file, e.g. under `/opt/rec_io_server/backend/data/secrets/rec_alerts_smtp_password.txt`, with **600** permissions and ownership matching the user that runs `main_app` / `monitor_manager`. See **`docs/REC_ALERTS_SMTP_SECRETS.md`**.
+Then restart **`main_app`** and **`monitor_manager_*`**.
+
+## Optional (laptop SMTP only): app password
+
+### File: `rec_alerts_smtp_password.txt` (not in git)
+
+One line = Google app password for `alerts@rec-io.com`. Works locally; usually **not** reachable from DigitalOcean droplets.
+
+Optional overrides: `REC_ALERTS_SMTP_USER`, `REC_ALERTS_SMTP_FROM`, `REC_ALERTS_SMTP_HOST`, `REC_ALERTS_SMTP_PORT`, `REC_ALERTS_GMAIL_OAUTH_FILE`.
 
 ## Test
 

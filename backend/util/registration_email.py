@@ -1,20 +1,23 @@
 """
-Send transactional email for master_users self-registration (verification code).
+Send transactional email for master_users self-registration and operator alerts.
 
-Uses Gmail / Google Workspace SMTP with an app password. Configure:
+Preferred on production (DigitalOcean blocks outbound SMTP 25/465/587):
+  Gmail API over HTTPS using OAuth for alerts@rec-io.com
+  backend/data/secrets/rec_alerts_gmail_oauth.json
+  (create once with scripts/setup_gmail_api_alerts_oauth.py)
+
+Also supported (works on laptop; usually blocked on DO droplets):
   REC_ALERTS_SMTP_HOST     (default smtp.gmail.com)
   REC_ALERTS_SMTP_PORT     (default 587)
   REC_ALERTS_SMTP_USER     (default alerts@rec-io.com)
-  REC_ALERTS_SMTP_PASSWORD (required to send unless file below; Google app password)
-  REC_ALERTS_SMTP_PASSWORD_FILE (optional; first line = password, avoids env embedding)
+  REC_ALERTS_SMTP_PASSWORD / REC_ALERTS_SMTP_PASSWORD_FILE /
+    backend/data/secrets/rec_alerts_smtp_password.txt
   REC_ALERTS_SMTP_FROM     (optional From header; defaults to REC_ALERTS_SMTP_USER)
-  REC_ALERTS_ADMIN_NOTIFY_EMAIL (optional; inbox for new-user application alerts after
-    email verification; default alerts@rec-io.com)
-  REC_PUBLIC_BASE_URL (optional; overrides default https://rec-io.com for verification links
-    in email, e.g. http://localhost:3000 for local testing)
 
-If none of the above are set, a repo-local file is tried (gitignored):
-  backend/data/secrets/rec_alerts_smtp_password.txt  — single line, Gmail app password
+Other:
+  REC_ALERTS_ADMIN_NOTIFY_EMAIL (default alerts@rec-io.com)
+  REC_PUBLIC_BASE_URL (optional; overrides default https://rec-io.com for verification links)
+  REC_ALERTS_GMAIL_OAUTH_FILE (optional absolute path to OAuth JSON)
 
 Legacy: system_monitor / cascading_failure_detector used scripts/user_notifications.py
 (Gmail SMTP to SMS); that module was removed and call sites are commented DISABLED.
@@ -22,16 +25,23 @@ Legacy: system_monitor / cascading_failure_detector used scripts/user_notificati
 
 from __future__ import annotations
 
+import base64
 import html
+import json
 import os
 import smtplib
 import ssl
 from datetime import date, datetime
 from email.message import EmailMessage
+from typing import Any
 from urllib.parse import quote
+
+import requests
 
 # Verification links in outbound email always use this origin unless REC_PUBLIC_BASE_URL is set.
 _VERIFICATION_EMAIL_SITE_ORIGIN_DEFAULT = "https://rec-io.com"
+_GMAIL_TOKEN_URL = "https://oauth2.googleapis.com/token"
+_GMAIL_SEND_URL = "https://gmail.googleapis.com/gmail/v1/users/me/messages/send"
 
 
 def _normalize_smtp_secret(raw: str) -> str:
@@ -61,6 +71,45 @@ def _default_smtp_password_file_path() -> str:
         )
     except Exception:
         return ""
+
+
+def _default_gmail_oauth_file_path() -> str:
+    try:
+        from backend.util.paths import get_project_root
+
+        return os.path.join(
+            get_project_root(),
+            "backend",
+            "data",
+            "secrets",
+            "rec_alerts_gmail_oauth.json",
+        )
+    except Exception:
+        return ""
+
+
+def _gmail_oauth_file_path() -> str:
+    override = (os.getenv("REC_ALERTS_GMAIL_OAUTH_FILE") or "").strip()
+    return override or _default_gmail_oauth_file_path()
+
+
+def _load_gmail_oauth() -> dict[str, Any] | None:
+    path = _gmail_oauth_file_path()
+    if not path or not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    client_id = str(data.get("client_id") or "").strip()
+    client_secret = str(data.get("client_secret") or "").strip()
+    refresh_token = str(data.get("refresh_token") or "").strip()
+    if not (client_id and client_secret and refresh_token):
+        return None
+    return data
 
 
 def _smtp_password() -> str:
@@ -96,7 +145,7 @@ def _smtp_config():
 
 
 def registration_verification_email_configured() -> bool:
-    return bool(_smtp_password())
+    return _load_gmail_oauth() is not None or bool(_smtp_password())
 
 
 def _smtp_password_or_raise() -> tuple[str, str, int, str, str]:
@@ -108,6 +157,87 @@ def _smtp_password_or_raise() -> tuple[str, str, int, str, str]:
             "or backend/data/secrets/rec_alerts_smtp_password.txt"
         )
     return host, port, user, password, from_addr
+
+
+def _alerts_from_addr() -> str:
+    return (
+        os.getenv("REC_ALERTS_SMTP_FROM")
+        or os.getenv("REC_ALERTS_SMTP_USER")
+        or "alerts@rec-io.com"
+    ).strip()
+
+
+def _gmail_access_token(oauth: dict[str, Any]) -> str:
+    resp = requests.post(
+        _GMAIL_TOKEN_URL,
+        data={
+            "client_id": str(oauth["client_id"]).strip(),
+            "client_secret": str(oauth["client_secret"]).strip(),
+            "refresh_token": str(oauth["refresh_token"]).strip(),
+            "grant_type": "refresh_token",
+        },
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Gmail OAuth token refresh failed HTTP {resp.status_code}: {resp.text[:400]}"
+        )
+    payload = resp.json()
+    token = str(payload.get("access_token") or "").strip()
+    if not token:
+        raise RuntimeError("Gmail OAuth token refresh returned no access_token")
+    return token
+
+
+def _email_message_to_gmail_raw(msg: EmailMessage) -> str:
+    raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+    return raw.rstrip("=")
+
+
+def _send_via_gmail_api(msg: EmailMessage, oauth: dict[str, Any]) -> None:
+    token = _gmail_access_token(oauth)
+    raw = _email_message_to_gmail_raw(msg)
+    resp = requests.post(
+        _GMAIL_SEND_URL,
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+        json={"raw": raw},
+        timeout=30,
+    )
+    if resp.status_code >= 400:
+        raise RuntimeError(
+            f"Gmail API send failed HTTP {resp.status_code}: {resp.text[:500]}"
+        )
+
+
+def _send_via_smtp(msg: EmailMessage) -> None:
+    host, port, user, password, _from_addr = _smtp_password_or_raise()
+    context = ssl.create_default_context()
+    with smtplib.SMTP(host, port, timeout=30) as server:
+        server.starttls(context=context)
+        server.login(user, password)
+        server.send_message(msg)
+
+
+def _send_alerts_email_message(msg: EmailMessage) -> None:
+    """
+    Prefer Gmail API (HTTPS) when OAuth secrets exist — required on DO droplets
+    where outbound SMTP is blocked. Otherwise use SMTP (local/dev).
+    """
+    oauth = _load_gmail_oauth()
+    if oauth is not None:
+        _send_via_gmail_api(msg, oauth)
+        return
+    if _smtp_password():
+        _send_via_smtp(msg)
+        return
+    raise RuntimeError(
+        "Alerts email not configured: need backend/data/secrets/rec_alerts_gmail_oauth.json "
+        "(see scripts/setup_gmail_api_alerts_oauth.py) or SMTP app password in "
+        "backend/data/secrets/rec_alerts_smtp_password.txt"
+    )
 
 
 def registration_verification_page_url(
@@ -132,18 +262,13 @@ def registration_verification_page_url(
 
 
 def send_plaintext_alerts_email(to_email: str, subject: str, body: str) -> None:
-    """Send one plain-text message using REC_ALERTS SMTP settings."""
-    host, port, user, password, from_addr = _smtp_password_or_raise()
+    """Send one plain-text message using REC_ALERTS Gmail API or SMTP settings."""
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = from_addr
+    msg["From"] = _alerts_from_addr()
     msg["To"] = to_email
     msg.set_content(body)
-    context = ssl.create_default_context()
-    with smtplib.SMTP(host, port, timeout=30) as server:
-        server.starttls(context=context)
-        server.login(user, password)
-        server.send_message(msg)
+    _send_alerts_email_message(msg)
 
 
 def _activation_login_href_and_label() -> tuple[str, str]:
@@ -160,7 +285,7 @@ def send_account_activated_email(
     """
     Notify a user that an admin approved their account (``pending_admin_approval`` → ``active``).
 
-    Uses the same REC_ALERTS SMTP stack as registration verification.
+    Uses the same REC_ALERTS transport as registration verification.
     """
     href, link_label = _activation_login_href_and_label()
     subject = "Your Rec-io.com Account Has Been Approved"
@@ -185,27 +310,22 @@ def send_account_activated_email(
         "to log in.</p>"
         "</body></html>"
     )
-    host, port, user, password, from_addr = _smtp_password_or_raise()
     msg = EmailMessage()
     msg["Subject"] = subject
-    msg["From"] = from_addr
+    msg["From"] = _alerts_from_addr()
     msg["To"] = to_email
     msg.set_content(plain)
     msg.add_alternative(html_body, subtype="html")
-    context = ssl.create_default_context()
-    with smtplib.SMTP(host, port, timeout=30) as server:
-        server.starttls(context=context)
-        server.login(user, password)
-        server.send_message(msg)
+    _send_alerts_email_message(msg)
 
 
 def send_alerts_smtp_test_email(to_email: str) -> None:
-    """Smoke-test REC_ALERTS SMTP (same config as registration verification)."""
+    """Smoke-test REC_ALERTS outbound email (Gmail API or SMTP)."""
     send_plaintext_alerts_email(
         to_email,
-        "rec.io alerts — SMTP test",
+        "rec.io alerts — outbound email test",
         "This is a test message from scripts/send_test_alerts_email.py.\n\n"
-        "If you received this, REC_ALERTS SMTP credentials are working.\n",
+        "If you received this, REC_ALERTS credentials are working.\n",
     )
 
 
@@ -277,7 +397,7 @@ def send_drawdown_trading_halt_alert(
     """
     Notify the tenant (master_users.email) that a drawdown trading halt was initiated.
 
-    Returns the recipient address that was used. Raises if SMTP is not configured or
+    Returns the recipient address that was used. Raises if email is not configured or
     no recipient email can be resolved.
     """
     db_email, first_name, last_name = lookup_master_user_alert_recipient(user_no)
@@ -358,7 +478,7 @@ def send_master_user_verification_email(
     full_name: str = "",
 ) -> None:
     """
-    Send a 6-digit verification code. Raises on SMTP/auth errors or missing password.
+    Send a 6-digit verification code. Raises on transport/auth errors or missing credentials.
     Includes a link to https://rec-io.com/register/verify (or REC_PUBLIC_BASE_URL).
     """
     subject = "Verify your rec.io account"
