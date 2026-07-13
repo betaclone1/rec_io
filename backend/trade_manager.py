@@ -6676,6 +6676,29 @@ def _filled_position_cents_or_contracts(position) -> float:
         return 0.0
 
 
+def _pending_row_has_retained_venue_fills(position, initial_count) -> bool:
+    """
+    True when a ``pending`` row already holds Kalshi-filled size that must not be deleted.
+
+    Virgin pending INSERT seeds ``position = initial_count`` (requested size) before any
+    venue fill. Partial top-up reuses the row with ``position`` = cumulative filled
+    contracts (``position < initial_count``). Using ``position > 0`` alone falsely
+    preserves never-posted rejects (see prod trade 28185).
+    """
+    pos_f = _filled_position_cents_or_contracts(position)
+    if pos_f <= 0:
+        return False
+    try:
+        ic_f = float(initial_count) if initial_count is not None else None
+    except (TypeError, ValueError):
+        ic_f = None
+    if ic_f is None or ic_f <= 0:
+        # Without a request size we cannot tell seed from fill — do not preserve.
+        return False
+    # Retained fills only when filled size is strictly below the original request.
+    return pos_f + 1e-6 < ic_f
+
+
 def _revert_filled_pending_after_open_rejection(
     trade_id: int,
     ticket_id: Optional[str],
@@ -6751,8 +6774,8 @@ def _delete_pending_trade_for_rejection(trade_id: int, ticket_id: Optional[str],
     """
     Open-order rejection cleanup.
 
-    Zero-fill ``pending`` rows are deleted (same as insufficient_resting_volume).
-    Rows that already have filled ``position`` (e.g. failed partial top-up) are
+    Zero-fill / never-posted ``pending`` rows are deleted (same as insufficient_resting_volume).
+    Partial top-up rows that already hold venue fills (``position < initial_count``) are
     reverted to ``partial``/``open`` — deleting them orphans live Kalshi fills.
     """
     monitor_identifier = None
@@ -6781,7 +6804,7 @@ def _delete_pending_trade_for_rejection(trade_id: int, ticket_id: Optional[str],
             except Exception:
                 pass
 
-    if _filled_position_cents_or_contracts(position) > 0:
+    if _pending_row_has_retained_venue_fills(position, initial_count):
         return _revert_filled_pending_after_open_rejection(
             trade_id,
             ticket_id,
