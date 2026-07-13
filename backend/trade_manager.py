@@ -2097,29 +2097,45 @@ def _load_orderbook_from_sidecar(ticker: str) -> Optional[dict]:
 
 
 def _fetch_orderbook_for_projection(ticker: str) -> tuple[Optional[dict], str]:
-    """Return orderbook bids map for projection, preferring local sidecar over Kalshi REST."""
-    ob = _load_orderbook_from_sidecar(ticker)
-    if ob is not None:
-        return ob, "sidecar"
+    """Return orderbook bids map for projection from Redis (same feed as trade_executor).
 
-    url = f"https://external-api.kalshi.com/trade-api/v2/markets/{ticker}/orderbook"
+    Shape: ``{"yes_dollars": [[px, size], ...], "no_dollars": [[px, size], ...]}``.
+    No REST / sidecar fallback — missing Redis book stays a miss.
+    """
+    mt = str(ticker or "").strip()
+    if not mt:
+        return None, "missing_ticker"
+
     try:
-        resp = requests.get(
-            url,
-            headers={
-                "Accept": "application/json",
-                "User-Agent": "TradeManagerOrderbookProjection/1.0",
-            },
-            timeout=10,
+        from backend.core.trade_monitor_live_orderbook_payload import (
+            load_orderbook_snapshot_from_redis,
         )
-        if not resp.ok:
-            return None, f"orderbook_http_{resp.status_code}"
-        payload = resp.json()
     except Exception as e:
-        return None, f"orderbook_request_failed:{e}"
+        return None, f"orderbook_redis_import_failed:{e}"
 
-    ob = payload.get("orderbook_fp") or payload.get("orderbook") or {}
-    return ob, "ok"
+    snap = load_orderbook_snapshot_from_redis(mt)
+    if not snap or snap.get("valid") is False:
+        return None, "orderbook_miss"
+
+    yes_bids: list[list[float]] = []
+    no_bids: list[list[float]] = []
+    for side_key, out in (("yes", yes_bids), ("no", no_bids)):
+        levels = snap.get(side_key)
+        if not isinstance(levels, dict):
+            continue
+        for px_raw, sz_raw in levels.items():
+            try:
+                p = float(px_raw)
+                sz = float(sz_raw)
+            except (TypeError, ValueError):
+                continue
+            if sz <= 0 or p <= 0 or p >= 1:
+                continue
+            out.append([p, sz])
+
+    if not yes_bids and not no_bids:
+        return None, "orderbook_miss"
+    return {"yes_dollars": yes_bids, "no_dollars": no_bids}, "redis"
 
 
 def _normalize_trade_side(side_val: object) -> Optional[str]:
@@ -2133,7 +2149,7 @@ def _normalize_trade_side(side_val: object) -> Optional[str]:
 
 def _project_orderbook_entry(ticker: str, side: str, position: int) -> dict:
     """
-    Build taker projection from current orderbook (REST bids flipped to asks).
+    Build taker projection from Redis orderbook (bids flipped to asks).
     Returns keys: ok, reason, initial_proj_price, initial_proj_fees, available_contracts.
     """
     result = {
