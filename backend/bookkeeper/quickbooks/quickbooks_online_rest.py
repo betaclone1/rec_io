@@ -593,46 +593,60 @@ def create_transfer(
     return body
 
 
-def create_journal_entry_two_line(
+def create_journal_entry_lines(
     cfg: QboConfig,
     access_token: str,
     *,
     txn_date: str,
     private_note: str,
-    amount: float,
-    debit_account_id: str,
-    credit_account_id: str,
+    lines: list[dict[str, Any]],
     timeout_sec: float = 60.0,
 ) -> dict[str, Any]:
     """
-    Balanced two-line journal entry: Debit first account, Credit second, same ``amount``.
+    Post a balanced multi-line JournalEntry.
+
+    Each ``lines`` item: ``{"posting_type": "Debit"|"Credit", "account_id": str, "amount": float}``.
+    Debit totals must equal credit totals (to the cent).
     """
+    if not lines:
+        raise ValueError("Journal entry requires at least one line")
+    qbo_lines: list[dict[str, Any]] = []
+    debit_total = 0.0
+    credit_total = 0.0
+    for i, raw in enumerate(lines):
+        posting = str(raw.get("posting_type") or "").strip()
+        if posting not in ("Debit", "Credit"):
+            raise ValueError(f"Journal line[{i}] posting_type must be Debit or Credit")
+        aid = str(raw.get("account_id") or "").strip()
+        if not aid:
+            raise ValueError(f"Journal line[{i}] missing account_id")
+        amt = round(float(raw["amount"]), 2)
+        if amt <= 0:
+            raise ValueError(f"Journal line[{i}] amount must be positive")
+        if posting == "Debit":
+            debit_total = round(debit_total + amt, 2)
+        else:
+            credit_total = round(credit_total + amt, 2)
+        qbo_lines.append(
+            {
+                "DetailType": "JournalEntryLineDetail",
+                "Amount": amt,
+                "JournalEntryLineDetail": {
+                    "PostingType": posting,
+                    "AccountRef": {"value": aid},
+                },
+            }
+        )
+    if debit_total != credit_total:
+        raise ValueError(
+            f"Journal entry unbalanced: debits={debit_total:.2f} credits={credit_total:.2f}"
+        )
     base = api_base_url(cfg.environment)
     url = f"{base}/v3/company/{cfg.realm_id}/journalentry"
-    amt = round(float(amount), 2)
-    if amt <= 0:
-        raise ValueError("Journal amount must be positive")
     payload: dict[str, Any] = {
         "TxnDate": txn_date,
         "PrivateNote": private_note,
-        "Line": [
-            {
-                "DetailType": "JournalEntryLineDetail",
-                "Amount": amt,
-                "JournalEntryLineDetail": {
-                    "PostingType": "Debit",
-                    "AccountRef": {"value": str(debit_account_id)},
-                },
-            },
-            {
-                "DetailType": "JournalEntryLineDetail",
-                "Amount": amt,
-                "JournalEntryLineDetail": {
-                    "PostingType": "Credit",
-                    "AccountRef": {"value": str(credit_account_id)},
-                },
-            },
-        ],
+        "Line": qbo_lines,
     }
     resp = requests.post(
         url,
@@ -653,3 +667,38 @@ def create_journal_entry_two_line(
         _fail_json_http("JournalEntry", resp, body)
     _log_intuit_response(resp, "qbo_journalentry")
     return body
+
+
+def create_journal_entry_two_line(
+    cfg: QboConfig,
+    access_token: str,
+    *,
+    txn_date: str,
+    private_note: str,
+    amount: float,
+    debit_account_id: str,
+    credit_account_id: str,
+    timeout_sec: float = 60.0,
+) -> dict[str, Any]:
+    """
+    Balanced two-line journal entry: Debit first account, Credit second, same ``amount``.
+    """
+    return create_journal_entry_lines(
+        cfg,
+        access_token,
+        txn_date=txn_date,
+        private_note=private_note,
+        lines=[
+            {
+                "posting_type": "Debit",
+                "account_id": debit_account_id,
+                "amount": amount,
+            },
+            {
+                "posting_type": "Credit",
+                "account_id": credit_account_id,
+                "amount": amount,
+            },
+        ],
+        timeout_sec=timeout_sec,
+    )

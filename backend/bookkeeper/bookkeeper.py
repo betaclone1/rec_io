@@ -31,9 +31,13 @@ from pathlib import Path
 from typing import Any
 
 from backend.bookkeeper.kalshi_portfolio_balance import fetch_total_portfolio_cents
+from backend.bookkeeper.kalshi_reconcile_credits import (
+    build_kalshi_reconcile_je_lines,
+    sum_credits_cents_for_txn_date,
+)
 from backend.bookkeeper.quickbooks import (
     QboConfig,
-    create_journal_entry_two_line,
+    create_journal_entry_lines,
     create_transfer,
     get_chart_of_accounts,
     load_qbo_config,
@@ -267,7 +271,19 @@ def main(argv: list[str] | None = None) -> int:
         "--trading-income-account",
         default="Trading Income",
         metavar="NAME",
-        help="QBO income account for P/L side (default: Trading Income).",
+        help="QBO income account for residual P/L (default: Trading Income).",
+    )
+    parser.add_argument(
+        "--interest-income-account",
+        default="Interest Income",
+        metavar="NAME",
+        help="QBO income account for Kalshi interest credits (default: Interest Income).",
+    )
+    parser.add_argument(
+        "--incentives-income-account",
+        default="Kalshi Incentives Income",
+        metavar="NAME",
+        help="QBO income account for Kalshi incentive credits (default: Kalshi Incentives Income).",
     )
     parser.add_argument(
         "--min-diff",
@@ -662,6 +678,32 @@ def main(argv: list[str] | None = None) -> int:
             kalshi_row = _account_row_by_id(accounts, kalshi_aid)
             qb_kalshi_bal = _current_balance_float(kalshi_row)
             diff = round(qb_kalshi_bal - kalshi_dollars, 2)
+            txn_date = args.txn_date or date.today().isoformat()
+            credits_by_type = sum_credits_cents_for_txn_date(user_no, txn_date)
+            interest_dollars = round(credits_by_type.get("interest", 0) / 100.0, 2)
+            incentive_dollars = round(credits_by_type.get("incentive", 0) / 100.0, 2)
+            interest_aid = None
+            incentives_aid = None
+            if interest_dollars > 0:
+                interest_aid = account_id_by_exact_name(
+                    accounts, args.interest_income_account
+                )
+                if not interest_aid:
+                    logger.error(
+                        "Unknown QBO account: %r (needed for interest credits)",
+                        args.interest_income_account,
+                    )
+                    return 1
+            if incentive_dollars > 0:
+                incentives_aid = account_id_by_exact_name(
+                    accounts, args.incentives_income_account
+                )
+                if not incentives_aid:
+                    logger.error(
+                        "Unknown QBO account: %r (needed for incentive credits)",
+                        args.incentives_income_account,
+                    )
+                    return 1
         except (FileNotFoundError, ValueError, RuntimeError, OSError) as e:
             logger.error("%s", e)
             return 1
@@ -680,50 +722,82 @@ def main(argv: list[str] | None = None) -> int:
             f"  QBO [{args.kalshi_account}] CurrentBalance: ${qb_kalshi_bal:.2f}"
         )
         print(f"  Gap (QB − Kalshi): ${diff:.2f}")
+        print(
+            f"  Credits on {txn_date} (ET): "
+            f"interest ${interest_dollars:.2f}, incentives ${incentive_dollars:.2f}"
+        )
 
         ad = abs(diff)
-        if ad < args.min_diff:
+        if ad < args.min_diff and interest_dollars <= 0 and incentive_dollars <= 0:
             print(
-                f"Within min-diff ({args.min_diff}); no journal entry needed."
+                f"Within min-diff ({args.min_diff}) and no credits; no journal entry needed."
             )
             return 0
 
-        amt = round(ad, 2)
-        txn_date = args.txn_date or date.today().isoformat()
+        try:
+            je_lines = build_kalshi_reconcile_je_lines(
+                gap=diff,
+                interest_dollars=interest_dollars,
+                incentive_dollars=incentive_dollars,
+                kalshi_account_id=kalshi_aid,
+                trading_income_account_id=income_aid,
+                interest_income_account_id=interest_aid,
+                incentives_income_account_id=incentives_aid,
+            )
+        except ValueError as e:
+            logger.error("%s", e)
+            return 1
 
+        if not je_lines:
+            print("No journal lines to post.")
+            return 0
+
+        trading_line = next(
+            (L for L in je_lines if L.get("label") == "Trading Income"), None
+        )
         if diff > 0:
-            # QB higher than Kalshi → realized losses: Debit Trading Income, Credit Kalshi asset
-            debit_id, credit_id = income_aid, kalshi_aid
-            scenario = "QB > Kalshi (loss): Debit Trading Income, Credit Kalshi Trading Account"
-            note = (
-                "Rec IO bookkeeper: reconcile Kalshi — QB Kalshi balance exceeds Kalshi portfolio "
-                f"(gap ${amt:.2f})"
+            scenario = (
+                "QB > Kalshi (loss): Credit Kalshi asset; "
+                "income side includes credits split"
+            )
+        elif diff < 0:
+            scenario = (
+                "QB < Kalshi (gain): Debit Kalshi asset; "
+                "income side includes credits split"
             )
         else:
-            # QB lower than Kalshi → realized profits: Debit Kalshi, Credit Trading Income
-            debit_id, credit_id = kalshi_aid, income_aid
-            scenario = "QB < Kalshi (gain): Debit Kalshi Trading Account, Credit Trading Income"
-            note = (
-                "Rec IO bookkeeper: reconcile Kalshi — Kalshi portfolio exceeds QB Kalshi balance "
-                f"(gap ${amt:.2f})"
+            scenario = "Gap ~0 with credits: reclassify Trading Income → credit income accounts"
+
+        note = f"Rec IO bookkeeper: reconcile Kalshi — gap ${ad:.2f}"
+        if interest_dollars > 0:
+            note += f"; interest ${interest_dollars:.2f}"
+        if incentive_dollars > 0:
+            note += f"; incentives ${incentive_dollars:.2f}"
+        if trading_line:
+            note += (
+                f"; trading {trading_line['posting_type']} "
+                f"${trading_line['amount']:.2f}"
             )
 
         print(f"  Entry: {scenario}")
-        print(f"  Amount: ${amt:.2f}  TxnDate {txn_date}")
+        print(f"  TxnDate {txn_date}")
+        for L in je_lines:
+            print(
+                f"    {L['posting_type']:6} {L.get('label') or L['account_id']}: "
+                f"${L['amount']:.2f}"
+            )
 
         if args.reconcile_dry_run:
             print("(dry-run: no JournalEntry POST)")
             return 0
 
         try:
-            result = create_journal_entry_two_line(
+            result = create_journal_entry_lines(
                 cfg,
                 access,
                 txn_date=txn_date,
                 private_note=note,
-                amount=amt,
-                debit_account_id=debit_id,
-                credit_account_id=credit_id,
+                lines=je_lines,
             )
         except (RuntimeError, ValueError) as e:
             logger.error("%s", e)
