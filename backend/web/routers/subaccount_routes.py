@@ -116,11 +116,12 @@ def _insert_manual_transfer_row(
     from_name: str,
     to_name: str,
     amount_cents: int,
+    status: str | None = "applied",
 ) -> None:
     insert_xfer = sql.SQL(
         """
-        INSERT INTO {} (timestamp, type, "from", "to", amount, initiated)
-        VALUES (%s, %s, %s, %s, %s, %s)
+        INSERT INTO {} (timestamp, type, "from", "to", amount, initiated, status)
+        VALUES (%s, %s, %s, %s, %s, %s, %s)
         """
     ).format(xfer_ident)
     cursor.execute(
@@ -132,6 +133,7 @@ def _insert_manual_transfer_row(
             to_name,
             amount_cents,
             "manual",
+            status,
         ),
     )
 
