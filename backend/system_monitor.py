@@ -426,7 +426,7 @@ class SystemMonitor:
             conn = psycopg2.connect(**cfg)
             cursor = conn.cursor()
             ring_total = 0
-            for sym in ("btc", "eth", "sol", "xrp"):
+            for sym in ("btc", "eth", "sol", "xrp", "doge"):
                 cursor.execute(
                     psql.SQL("SELECT COUNT(*) FROM {}.{}").format(
                         psql.Identifier("live_data"),

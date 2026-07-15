@@ -723,7 +723,7 @@ class StrikeTableGenerator:
         self.interval = interval.lower()  # "hourly" or "15m"
         if self.unified_15m and self.interval != "15m":
             raise ValueError("unified_15m requires interval 15m")
-        if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp"):
+        if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp", "doge"):
             raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP, DOGE")
         logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
         self.calculator = LookupProbabilityCalculator(symbol, database_conn=database_conn)
@@ -2594,7 +2594,7 @@ def main():
     if not args.symbol:
         parser.error('symbol is required unless --master-15m')
     symbol = args.symbol.upper()
-    if interval == '15m' and symbol.lower() not in ('btc', 'eth', 'sol', 'xrp'):
+    if interval == '15m' and symbol.lower() not in ('btc', 'eth', 'sol', 'xrp', 'doge'):
         parser.error('--interval 15m only supported for BTC, ETH, SOL, XRP, DOGE')
     if mode == "continuous":
         run_continuous_generation(interval_sec, symbol, interval=interval)
