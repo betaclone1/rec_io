@@ -36,6 +36,10 @@ TS_TZ="${BOOKKEEPER_LOG_TZ:-America/New_York}"
 
 {
   echo "=== $(TZ="$TS_TZ" date '+%Y-%m-%d %H:%M:%S %Z') | REC_USER_NO=${REC_USER_NO} ==="
-  "$VENV_PY" -m backend.bookkeeper.bookkeeper --user-no "$REC_USER_NO" --reconcile-kalshi
+  # --reconcile-prior-day: runs just after midnight ET, so reconcile the just-closed
+  #   day and pull its interest/incentive credits on their own calendar date.
+  # Idempotent: skips if a reconcile JE already exists for that date (unless --force).
+  "$VENV_PY" -m backend.bookkeeper.bookkeeper --user-no "$REC_USER_NO" \
+    --reconcile-kalshi --reconcile-prior-day
   echo ""
 } >>"$LOG_FILE" 2>&1

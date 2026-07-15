@@ -7,7 +7,7 @@ Interest Income / Kalshi Incentives Income.
 """
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import date, datetime, timedelta
 from typing import Any
 
 from psycopg2 import sql
@@ -18,6 +18,31 @@ from backend.trading_mode import credits_history_table_for_user, sql_ident_quali
 # Kalshi credit_history ``type`` values we map to QBO income accounts.
 CREDIT_TYPE_INTEREST = "interest"
 CREDIT_TYPE_INCENTIVE = "incentive"
+
+# Stable substring in every daily reconcile JE PrivateNote; used for idempotency.
+RECONCILE_NOTE_MARKER = "Rec IO bookkeeper: reconcile Kalshi"
+
+
+def resolve_reconcile_txn_date(
+    explicit_txn_date: str | None,
+    prior_day: bool,
+    *,
+    today: date | None = None,
+) -> str:
+    """
+    Pick the reconcile / credit-window date (``YYYY-MM-DD``).
+
+    - Explicit ``--txn-date`` always wins.
+    - Else ``prior_day`` (nightly cron just after midnight ET) → yesterday, so the
+      just-closed day's credits are captured on the calendar date they carry.
+    - Else today.
+    """
+    if explicit_txn_date:
+        return str(explicit_txn_date)[:10]
+    base = today or date.today()
+    if prior_day:
+        base = base - timedelta(days=1)
+    return base.isoformat()
 
 
 def sum_credits_cents_for_txn_date(user_no: str, txn_date: str | date) -> dict[str, int]:

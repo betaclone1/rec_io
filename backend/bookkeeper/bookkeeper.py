@@ -32,7 +32,9 @@ from typing import Any
 
 from backend.bookkeeper.kalshi_portfolio_balance import fetch_total_portfolio_cents
 from backend.bookkeeper.kalshi_reconcile_credits import (
+    RECONCILE_NOTE_MARKER,
     build_kalshi_reconcile_je_lines,
+    resolve_reconcile_txn_date,
     sum_credits_cents_for_txn_date,
 )
 from backend.bookkeeper.quickbooks import (
@@ -42,6 +44,7 @@ from backend.bookkeeper.quickbooks import (
     get_chart_of_accounts,
     load_qbo_config,
     refresh_access_token,
+    run_report_query,
     run_transaction_list_report,
     transaction_list_report_to_row_dicts,
 )
@@ -224,6 +227,36 @@ def _account_row_by_id(
     return None
 
 
+def existing_reconcile_je_ids(
+    cfg: QboConfig, access_token: str, txn_date: str
+) -> list[str]:
+    """
+    Ids of daily-reconcile JournalEntries already posted for ``txn_date``.
+
+    Matches on ``TxnDate`` and the stable ``RECONCILE_NOTE_MARKER`` in PrivateNote,
+    so manual/other JEs on that date are ignored. Used to keep the nightly cron
+    idempotent (no duplicate credit reclass / gap posting on reruns).
+    """
+    day = str(txn_date)[:10]
+    q = (
+        "select Id, PrivateNote, TxnDate from JournalEntry "
+        f"where TxnDate = '{day}' maxresults 1000"
+    )
+    body = run_report_query(cfg, access_token, q)
+    qr = body.get("QueryResponse") or {}
+    rows = qr.get("JournalEntry") or []
+    if isinstance(rows, dict):
+        rows = [rows]
+    out: list[str] = []
+    for r in rows:
+        if not isinstance(r, dict):
+            continue
+        note = r.get("PrivateNote") or ""
+        if RECONCILE_NOTE_MARKER in note:
+            out.append(str(r.get("Id")))
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         description=(
@@ -260,6 +293,23 @@ def main(argv: list[str] | None = None) -> int:
         "--reconcile-dry-run",
         action="store_true",
         help="With --reconcile-kalshi, print analysis only (no journal entry).",
+    )
+    parser.add_argument(
+        "--reconcile-prior-day",
+        action="store_true",
+        help=(
+            "With --reconcile-kalshi and no --txn-date, reconcile YESTERDAY (ET). "
+            "Use for the nightly cron that runs just after midnight so the just-closed "
+            "day's interest/incentive credits land on their own calendar date."
+        ),
+    )
+    parser.add_argument(
+        "--force",
+        action="store_true",
+        help=(
+            "With --reconcile-kalshi, post even if a reconcile JournalEntry already "
+            "exists for the target date (default: skip to stay idempotent)."
+        ),
     )
     parser.add_argument(
         "--kalshi-account",
@@ -678,7 +728,10 @@ def main(argv: list[str] | None = None) -> int:
             kalshi_row = _account_row_by_id(accounts, kalshi_aid)
             qb_kalshi_bal = _current_balance_float(kalshi_row)
             diff = round(qb_kalshi_bal - kalshi_dollars, 2)
-            txn_date = args.txn_date or date.today().isoformat()
+            txn_date = resolve_reconcile_txn_date(
+                args.txn_date, args.reconcile_prior_day
+            )
+            existing_ids = existing_reconcile_je_ids(cfg, access, txn_date)
             credits_by_type = sum_credits_cents_for_txn_date(user_no, txn_date)
             interest_dollars = round(credits_by_type.get("interest", 0) / 100.0, 2)
             incentive_dollars = round(credits_by_type.get("incentive", 0) / 100.0, 2)
@@ -726,6 +779,18 @@ def main(argv: list[str] | None = None) -> int:
             f"  Credits on {txn_date} (ET): "
             f"interest ${interest_dollars:.2f}, incentives ${incentive_dollars:.2f}"
         )
+        if existing_ids:
+            print(
+                f"  Existing reconcile JE for {txn_date}: Id(s) {existing_ids}"
+            )
+
+        if existing_ids and not args.force and not args.reconcile_dry_run:
+            print(
+                f"Reconcile JournalEntry already exists for {txn_date} "
+                f"(Id(s) {existing_ids}); skipping to stay idempotent. "
+                "Use --force to post anyway."
+            )
+            return 0
 
         ad = abs(diff)
         if ad < args.min_diff and interest_dollars <= 0 and incentive_dollars <= 0:

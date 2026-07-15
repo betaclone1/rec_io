@@ -2,13 +2,40 @@
 
 from __future__ import annotations
 
+from datetime import date
+
 import pytest
 
-from backend.bookkeeper.kalshi_reconcile_credits import build_kalshi_reconcile_je_lines
+from backend.bookkeeper.kalshi_reconcile_credits import (
+    build_kalshi_reconcile_je_lines,
+    resolve_reconcile_txn_date,
+)
 
 
 def _line_map(lines: list[dict]) -> dict[tuple[str, str], float]:
     return {(L["posting_type"], L["label"]): L["amount"] for L in lines}
+
+
+def test_resolve_txn_date_explicit_wins() -> None:
+    assert (
+        resolve_reconcile_txn_date("2026-07-04", True, today=date(2026, 7, 15))
+        == "2026-07-04"
+    )
+
+
+def test_resolve_txn_date_prior_day_is_yesterday() -> None:
+    # Nightly cron just after midnight ET reconciles the just-closed day.
+    assert (
+        resolve_reconcile_txn_date(None, True, today=date(2026, 7, 15))
+        == "2026-07-14"
+    )
+
+
+def test_resolve_txn_date_default_is_today() -> None:
+    assert (
+        resolve_reconcile_txn_date(None, False, today=date(2026, 7, 15))
+        == "2026-07-15"
+    )
 
 
 def test_gain_splits_interest_and_incentives_from_trading_income() -> None:
