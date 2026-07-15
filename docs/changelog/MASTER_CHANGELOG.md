@@ -16,24 +16,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Database:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated for DOGE live tables and trades `min_fill_price`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260713_1500_doge_live_tables.up.sql`, `.down.sql`,  
   `scripts/migrations/20260715_1200_trades_min_fill_price.up.sql`, `.down.sql`
-- [ ] Apply pending migrations from repo root before restart:  
+- [x] Apply pending migrations from repo root before restart:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services (regenerates supervisor with `DOGEUSD_RTI` in CFB index list):  
+- [x] Restart services (regenerates supervisor with `DOGEUSD_RTI` in CFB index list):  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify DOGE live pipeline on prod:  
+- [x] Verify DOGE live pipeline on prod:  
   `psql` — `SELECT symbol FROM live_data.symbols_list WHERE UPPER(symbol)='DOGE';` returns one row;  
   `tail -50 logs/cfbenchmarks_price_watchdog.out.log | grep -i DOGEUSD` shows ticks after restart;  
   `tail -50 logs/strike_table_generator_ws_15m.out.log | grep -i DOGE` shows 15m strike processing (or no errors for KXDOGE15M).
-- [ ] Verify health/logs for `main_app`, `trade_manager_*`, `trade_executor_*`, `cfbenchmarks_price_watchdog`, `strike_table_generator_ws_15m`.
-- [ ] Record release in DB:  
+- [x] Verify health/logs for `main_app`, `trade_manager_*`, `trade_executor_*`, `cfbenchmarks_price_watchdog`, `strike_table_generator_ws_15m`.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.2`
+- [x] Hotfix follow-up (post-deploy): pull `fde0690` (DOGE in 15m strike allowlist) and restart `strike_table_generator_ws_15m`, `market_watchdog_ws_kalshi`, `cfbenchmarks_price_watchdog`.
 
 ---
 
