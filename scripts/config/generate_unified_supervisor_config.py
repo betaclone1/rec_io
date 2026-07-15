@@ -440,7 +440,7 @@ class SupervisorConfigGenerator:
         cfb_env = (
             env_global
             + ',CFBENCHMARKS_PUBLISH_MODE="live_state"'
-            + ',CFBENCHMARKS_INDEX_IDS="BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI"'
+            + ',CFBENCHMARKS_INDEX_IDS="BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI,DOGEUSD_RTI"'
             + ',CFBENCHMARKS_RING_PG="1"'
         )
         services.append(

@@ -131,7 +131,7 @@ def main() -> int:
         description="Check parity between strike_table_15m and strike_table_ws_15m."
     )
     parser.add_argument("--exchange", default="kalshi")
-    parser.add_argument("--symbols", default="BTC,ETH,SOL,XRP")
+    parser.add_argument("--symbols", default="BTC,ETH,SOL,XRP,DOGE")
     parser.add_argument("--max-prob-delta", type=float, default=2.0)
     parser.add_argument("--max-row-diff", type=int, default=0)
     parser.add_argument("--max-ask-mismatch", type=int, default=0)

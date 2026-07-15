@@ -101,6 +101,8 @@ def probability_symbol_from_kalshi_ticker(market_ticker: str) -> Optional[str]:
         return "sol"
     if "XRP" in u:
         return "xrp"
+    if "DOGE" in u:
+        return "doge"
     return None
 
 

@@ -31,13 +31,15 @@ from contextlib import contextmanager
 from collections import defaultdict
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-_HIGH_PRECISION_STRIKE_SYMBOLS = frozenset({"SOL", "XRP"})
+_HIGH_PRECISION_STRIKE_SYMBOLS = frozenset({"SOL", "XRP", "DOGE"})
 
 
 def _symbol_from_ticker_hint(ticker: Optional[str]) -> Optional[str]:
     if not ticker:
         return None
     t = str(ticker).upper()
+    if "DOGE" in t:
+        return "DOGE"
     if "XRP" in t:
         return "XRP"
     if "SOL" in t:

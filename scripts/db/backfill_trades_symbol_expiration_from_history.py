@@ -43,7 +43,7 @@ from backend.core.tenant_script_args import add_user_no_argument, resolve_user_n
 CONTRACT_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2})(am|pm)$", re.IGNORECASE)
 CONTRACT_15M_FULL_PATTERN = re.compile(r".*\s([0-9]{1,2}):([0-9]{2})\s*(am|pm)", re.IGNORECASE)
 CONTRACT_15M_HOUR_PATTERN = re.compile(r".*\s([0-9]{1,2}):[0-9]{2}\s*(am|pm)", re.IGNORECASE)
-_HIGH_PRECISION = frozenset({"SOL", "XRP"})
+_HIGH_PRECISION = frozenset({"SOL", "XRP", "DOGE"})
 
 
 def _sym_norm(symbol: Optional[str]) -> str:

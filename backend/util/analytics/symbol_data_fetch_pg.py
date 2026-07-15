@@ -56,7 +56,7 @@ def is_financial_symbol(symbol: str) -> bool:
     """
     # Financial symbols (indices, stocks)
     financial_symbols = ['SPX', 'NDX', 'SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
-    crypto_symbols = ['BTC', 'ETH', 'LTC', 'XRP', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
+    crypto_symbols = ['BTC', 'ETH', 'LTC', 'XRP', 'DOGE', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
     
     # Extract base symbol (remove /USD, -USD suffixes)
     base_symbol = symbol.split('/')[0].split('-')[0].upper()

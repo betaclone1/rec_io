@@ -130,7 +130,7 @@ def discover_markets_for_contract_cycle(
     returns all strike tickers sharing that cycle stem (e.g. ``KXBTCD-YYMONDDHH-T*``).
     """
     symbol = str(contract_symbol or "").strip().upper()
-    if symbol not in ("BTC", "ETH", "SOL", "XRP"):
+    if symbol not in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
         raise ValueError(f"unsupported contract_symbol: {contract_symbol!r}")
     cadence = str(contract_cadence or "").strip().lower()
     if cadence != "hourly":

@@ -19,7 +19,7 @@ WS rollover verification (no REST): JSONL ``rollover_15m`` at each quarter hour,
 ``WS_ROLLOVER_OK market_result … (lifecycle_ws)``.
 
 Env:
-  SANDBOX_KALSHI_SYMBOLS     Comma-separated symbols, default BTC,ETH,SOL,XRP
+  SANDBOX_KALSHI_SYMBOLS     Comma-separated symbols, default BTC,ETH,SOL,XRP,DOGE
   SANDBOX_KALSHI_15M_ONLY      default 0 (multi-strike hourly ATM window on)
   KALSHI_API_KEY_ID / KALSHI_PRIVATE_KEY_PATH
   REDIS_URL or REDIS_HOST, REDIS_PORT
@@ -71,11 +71,13 @@ SERIES_15M_BY_SYMBOL: dict[str, str] = {
     "ETH": "KXETH15M",
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
+    "DOGE": "KXDOGE15M",
 }
 SERIES_HOURLY_BY_SYMBOL: dict[str, str] = {
     "BTC": "KXBTCD",
     "ETH": "KXETHD",
     "SOL": "KXSOLD",
+    "DOGE": "KXDOGED",
 }
 
 EST = ZoneInfo("America/New_York")
@@ -431,6 +433,7 @@ def _hourly_spot_price(sym_u: str) -> Optional[float]:
         "BTC": "live_price_log_1s_btc",
         "ETH": "live_price_log_1s_eth",
         "SOL": "live_price_log_1s_sol",
+        "DOGE": "live_price_log_1s_doge",
     }.get(sym_u)
     if not pt:
         return None

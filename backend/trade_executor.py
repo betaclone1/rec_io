@@ -207,7 +207,7 @@ def _extract_symbol_from_ticker(ticker: Optional[str]) -> Optional[str]:
     if not t.startswith("KX"):
         return None
     body = t[2:]
-    for sym in ("BTC", "ETH", "SOL", "XRP"):
+    for sym in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
         if body.startswith(sym):
             return sym
     return None

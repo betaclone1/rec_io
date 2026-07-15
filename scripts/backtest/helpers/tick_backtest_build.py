@@ -81,6 +81,7 @@ _SYMBOL_TO_LIVE_TABLE = {
     "eth": "live_price_log_1s_eth",
     "sol": "live_price_log_1s_sol",
     "xrp": "live_price_log_1s_xrp",
+    "doge": "live_price_log_1s_doge",
 }
 
 _EXCHANGE = "kalshi"
@@ -98,7 +99,7 @@ def _live_table_for_ticker(market_ticker: str) -> str:
     sym = probability_symbol_from_kalshi_ticker(market_ticker)
     if not sym or sym not in _SYMBOL_TO_LIVE_TABLE:
         raise ValueError(
-            f"tick backtest only supports KXBTC/KXETH/KXSOL/KXXRP-style tickers; got {market_ticker!r}"
+            f"tick backtest only supports KXBTC/KXETH/KXSOL/KXXRP/KXDOGE-style tickers; got {market_ticker!r}"
         )
     return _SYMBOL_TO_LIVE_TABLE[sym]
 

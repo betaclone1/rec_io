@@ -8637,9 +8637,9 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ---
 
-### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`)
+### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`)
 
-**Population:** `backend/core/live_price_ring_90m.py` async writes from `cfbenchmarks_price_watchdog` (~1 tick/min). Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only. Migration `20260603_1200_live_price_ring_90m`. BTC/ETH: `numeric(10,2)`; SOL/XRP: `numeric(10,6)`.
+**Population:** `backend/core/live_price_ring_90m.py` async writes from `cfbenchmarks_price_watchdog` (~1 tick/min). Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only. Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. BTC/ETH: `numeric(10,2)`; SOL/XRP/DOGE: `numeric(10,6)`.
 
 #### Columns
 
@@ -8741,14 +8741,14 @@ Unified hourly Kalshi market ladder for **BTC** and **ETH** (and any future rows
 
 ### Table: `live_data.market_kalshi_15m`
 
-Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). Legacy split-symbol 15m market tables were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`**, migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns, and migration `20260327_2005_market_kalshi_15m_fp_text_columns` aligns fixed-point API fields (`volume_fp`, `open_interest_fp`) as text columns.
+Unified 15-minute market snapshots for tracked crypto symbols (BTC, ETH, SOL, XRP, DOGE). Multiple rows per symbol (one per venue market in the active event). **`exchange`** identifies the exchange/API source (e.g. `kalshi`). Legacy split-symbol 15m market tables were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`. On event rotation for a given symbol and exchange, those rows are deleted and repopulated; open-trade tickers may be preserved and re-inserted. `strike` is seeded from Kalshi `floor_strike`/subtitle at rollover. Migration `20260326_1000_venue_exchange_column_names` renames **`broker` → `exchange`**, migration `20260326_1600_market_kalshi_15m_drop_unused_legacy_columns` drops unused integer quote columns, and migration `20260327_2005_market_kalshi_15m_fp_text_columns` aligns fixed-point API fields (`volume_fp`, `open_interest_fp`) as text columns.
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_15m_id_seq'::regclass) | |
-| `symbol` | `character varying(10)` | NO | - | e.g. BTC, ETH, SOL, XRP |
+| `symbol` | `character varying(10)` | NO | - | e.g. BTC, ETH, SOL, XRP, DOGE |
 | `exchange` | `character varying(20)` | NO | - | e.g. `kalshi` |
 | `event_ticker` | `character varying(50)` | NO | - | |
 | `market_ticker` | `character varying(100)` | NO | - | |
@@ -8799,7 +8799,7 @@ Parallel 15-minute Kalshi market rows fed only by **`backend/market_watchdog_ws.
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('live_data.market_kalshi_ws_15m_id_seq'::regclass) | |
-| `symbol` | `character varying(10)` | NO | - | e.g. BTC, ETH, SOL, XRP |
+| `symbol` | `character varying(10)` | NO | - | e.g. BTC, ETH, SOL, XRP, DOGE |
 | `exchange` | `character varying(20)` | NO | - | e.g. `kalshi` |
 | `event_ticker` | `character varying(50)` | NO | - | From REST discovery (same as REST watchdog) |
 | `market_ticker` | `character varying(100)` | NO | - | |
@@ -8898,7 +8898,7 @@ Unified hourly strike snapshots for **BTC**, **ETH**, and any future symbols in 
 
 ### Table: `live_data.strike_table_15m`
 
-Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**). Rows are scoped by **`exchange`** (data-source key, e.g. `kalshi`, aligned with `live_data.market_kalshi_15m.exchange`). Populated by `backend/strike_table_generator.py --master-15m` and `backend/strike_table_generator_ws.py` (same table unless `STRIKE_TABLE_15M_TARGET` overrides). Legacy split-symbol `strike_table_15m_*` tables and **`strike_table_ws_15m`** were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`.
+Unified 15-minute strike table for all Kalshi 15m symbols (**BTC**, **ETH**, **SOL**, **XRP**, **DOGE**). Rows are scoped by **`exchange`** (data-source key, e.g. `kalshi`, aligned with `live_data.market_kalshi_15m.exchange`). Populated by `backend/strike_table_generator.py --master-15m` and `backend/strike_table_generator_ws.py` (same table unless `STRIKE_TABLE_15M_TARGET` overrides). Legacy split-symbol `strike_table_15m_*` tables and **`strike_table_ws_15m`** were dropped in migration `20260331_1200_live_data_drop_legacy_split_and_equity_tables`.
 
 Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_table_15m_drop_exchange_display`, `20260326_1000_venue_exchange_column_names` (renames **`broker` → `exchange`** on this table), `20260326_2000_strike_table_15m_db_notify` (trigger `strike_table_15m_rec_io_db_notify` → `public.rec_io_db_notify()` for real-time backbone / pilot UIs), `20260327_2030_strike_table_15m_open_interest_and_dollars_only` (drop legacy cents asks, widen volume precision, add open_interest), `20260328_2115_strike_table_final_quarter_ask_tracking` (final-window YES/NO ask min/max/range in dollars for full 15m cycles), `20260330_2130_strike_final_quarter_asks_numeric_4dp` (store those six columns as `NUMERIC(18,4)`), `20260331_1200_live_data_drop_legacy_split_and_equity_tables` (drops `strike_table_ws_15m` and split-symbol `strike_table_15m_*`), `20260329_1800_strike_tables_volume_open_interest_fp_text` (Kalshi depth columns **`volume_fp` / `open_interest_fp` TEXT** only; drops `volume` / `open_interest`), `20260402_2300_strike_table_yes_no_prob_columns` (literal **yes_prob_hourly** / **no_prob_hourly** / **yes_prob_15m** / **no_prob_15m** lookup legs), `20260515_1430_live_data_strike_tables_fair_price` (**fair_price** on **`live_data`** strike tables only — YES fair in Kalshi dollars: positive lookup leg ÷ 100).
 
@@ -10812,6 +10812,7 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `order_id_close` | `text` | YES | - | |
 | `time_in_force` | `text` | YES | - | Snapshot from monitor at open; Kalshi TIF enum string. Migration `20260426_1600_monitor_trades_execution_settings`. |
 | `order_type` | `text` | YES | - | Snapshot `limit` / `market` policy from monitor. Same migration. |
+| `min_fill_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor slippage floor at insert; **0.0000** = gate disabled. Migration `20260715_1200_trades_min_fill_price`. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |
@@ -10984,6 +10985,7 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `order_id_close` | text |
 | `time_in_force` | text |
 | `order_type` | text |
+| `min_fill_price` | numeric(6,4) |
 | `high_price` | numeric(10,4) |
 | `low_price` | numeric(10,4) |
 | `hour_idx` | smallint |

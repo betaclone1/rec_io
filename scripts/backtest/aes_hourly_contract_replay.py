@@ -29,7 +29,7 @@ def _window_for_hourly_close(date_et: str, hour_et: int) -> tuple[datetime, date
 
 def main(argv: list[str] | None = None) -> int:
     p = argparse.ArgumentParser(description="Exact-style AES replay for one hourly contract cycle.")
-    p.add_argument("--symbol", required=True, choices=("BTC", "ETH", "SOL", "XRP"))
+    p.add_argument("--symbol", required=True, choices=("BTC", "ETH", "SOL", "XRP", "DOGE"))
     p.add_argument("--date-et", required=True, help="ET date YYYY-MM-DD for contract close day.")
     p.add_argument("--hour-et", required=True, type=int, help="ET close hour (0-23).")
     p.add_argument("--monitor-id", required=True, type=int)

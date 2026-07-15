@@ -148,7 +148,7 @@ def publish_envelope_outputs(
             except Exception as e:
                 logger.warning("PG insert_tick failed %s: %s", symbol, e)
 
-    if price is not None and symbol in ("BTC", "ETH", "SOL", "XRP"):
+    if price is not None and symbol in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
         metrics = envelope.get("metrics") if isinstance(envelope.get("metrics"), dict) else {}
         ring_ts = str(metrics.get("timestamp") or ts or "").strip()
         if ring_ts:

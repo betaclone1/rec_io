@@ -2057,7 +2057,7 @@ async def get_live_symbol_status_snapshot() -> Dict[str, Any]:
         from backend.core.live_state_config import live_state_cache_enabled
         from backend.core.tradeflow_live_reads import symbol_metrics
 
-        allowed = ("BTC", "ETH", "SOL", "XRP")
+        allowed = ("BTC", "ETH", "SOL", "XRP", "DOGE")
         out: List[Dict[str, Any]] = []
         ts_out = None
         if live_state_cache_enabled():

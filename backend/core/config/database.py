@@ -398,6 +398,7 @@ def init_database():
                 order_id_close TEXT,
                 time_in_force TEXT,
                 order_type TEXT,
+                min_fill_price NUMERIC(6,4) NOT NULL DEFAULT 0.0000,
                 high_price DECIMAL(10,4),
                 low_price DECIMAL(10,4),
                 loss_prevention BOOLEAN DEFAULT FALSE,
@@ -486,6 +487,7 @@ def init_database():
                 order_id_close TEXT,
                 time_in_force TEXT,
                 order_type TEXT,
+                min_fill_price NUMERIC(6,4) NOT NULL DEFAULT 0.0000,
                 high_price NUMERIC(10,4),
                 low_price NUMERIC(10,4),
                 hour_idx SMALLINT,
@@ -1364,6 +1366,34 @@ def init_database():
                 movement_percentile DECIMAL(5,1)
             );
         """))
+
+        cursor.execute(_us("""
+            CREATE TABLE IF NOT EXISTS live_data.live_price_log_1s_doge (
+                timestamp TEXT PRIMARY KEY,
+                price DECIMAL(10,6),
+                one_minute_avg DECIMAL(10,6),
+                momentum DECIMAL(10,4),
+                delta_1m DECIMAL(10,4),
+                delta_2m DECIMAL(10,4),
+                delta_3m DECIMAL(10,4),
+                delta_4m DECIMAL(10,4),
+                delta_15m DECIMAL(10,4),
+                delta_30m DECIMAL(10,4),
+                momentum_percentile DECIMAL(5,1),
+                momentum_5s_avg DECIMAL(5,1),
+                momentum_30s_avg DECIMAL(5,1),
+                volatility DECIMAL(10,6),
+                volatility_percentile DECIMAL(5,1),
+                move_1m DECIMAL(10,4),
+                move_2m DECIMAL(10,4),
+                move_3m DECIMAL(10,4),
+                move_4m DECIMAL(10,4),
+                move_15m DECIMAL(10,4),
+                move_30m DECIMAL(10,4),
+                movement DECIMAL(10,4),
+                movement_percentile DECIMAL(5,1)
+            );
+        """))
         
         # Ensure movement columns exist on live_price_log tables
         cursor.execute(_us("""
@@ -1374,7 +1404,7 @@ def init_database():
                 ty text;
                 tbl regclass;
             BEGIN
-                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp'] LOOP
+                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp','live_price_log_1s_doge'] LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
                         FOREACH c IN ARRAY ARRAY['move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile'] LOOP
                             IF c = 'movement_percentile' THEN ty := 'DECIMAL(5,1)'; ELSE ty := 'DECIMAL(10,4)'; END IF;
@@ -1393,7 +1423,7 @@ def init_database():
             DECLARE
                 t text;
             BEGIN
-                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp'] LOOP
+                FOREACH t IN ARRAY ARRAY['live_price_log_1s_btc','live_price_log_1s_eth','live_price_log_1s_sol','live_price_log_1s_xrp','live_price_log_1s_doge'] LOOP
                     IF EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'live_data' AND table_name = t) THEN
                         IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = 'live_data' AND table_name = t AND column_name = 'momentum_percentile') THEN
                             EXECUTE format('ALTER TABLE live_data.%I ADD COLUMN momentum_percentile DECIMAL(5,1)', t);
@@ -1610,6 +1640,16 @@ def init_database():
 
         cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.price_change_xrp (
+                id SERIAL PRIMARY KEY,
+                change1h DECIMAL(10,6),
+                change3h DECIMAL(10,6),
+                change1d DECIMAL(10,6),
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+        """))
+
+        cursor.execute(_us("""
+            CREATE TABLE IF NOT EXISTS live_data.price_change_doge (
                 id SERIAL PRIMARY KEY,
                 change1h DECIMAL(10,6),
                 change3h DECIMAL(10,6),

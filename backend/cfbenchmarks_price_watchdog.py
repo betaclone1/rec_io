@@ -2,7 +2,7 @@
 """
 Kalshi cfbenchmarks_value price watchdog (multi-index, one WebSocket).
 
-Default indices: BRTI, ETHUSD_RTI, SOLUSD_RTI, XRPUSD_RTI.
+Default indices: BRTI, ETHUSD_RTI, SOLUSD_RTI, XRPUSD_RTI, DOGEUSD_RTI.
 
 Publish routing (CFBENCHMARKS_PUBLISH_MODE):
   experiment  — test UI only (rec_io:experiment:cfbenchmarks:*); default

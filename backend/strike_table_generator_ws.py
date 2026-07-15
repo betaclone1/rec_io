@@ -73,7 +73,7 @@ DEFAULT_PIPELINE_MAX_AGE_15M_SEC = 900
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
 # Per-symbol floor between full strike regens (pub/sub can fire many times per second).
 STRIKE_REGEN_MIN_INTERVAL_SEC = 0.25
-KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL"})
+KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "DOGE"})
 _last_regen_mono: dict[str, float] = {}
 
 
@@ -93,6 +93,7 @@ def _symbol_price_log_table(symbol: str) -> str | None:
         "ETH": "live_price_log_1s_eth",
         "SOL": "live_price_log_1s_sol",
         "XRP": "live_price_log_1s_xrp",
+        "DOGE": "live_price_log_1s_doge",
     }
     return mapping.get(str(symbol or "").upper())
 
@@ -679,7 +680,7 @@ def main() -> None:
     if args.market == "hourly":
         syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
         if not syms:
-            raise SystemExit("No valid hourly symbols configured (BTC, ETH, SOL)")
+            raise SystemExit("No valid hourly symbols configured (BTC, ETH, SOL, DOGE)")
     else:
         syms = tuple(s for s in syms if s in KALSHI_15M_SYMBOLS)
         if not syms:

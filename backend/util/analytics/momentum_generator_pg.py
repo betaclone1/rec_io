@@ -353,7 +353,7 @@ def is_financial_symbol(symbol: str) -> bool:
     Determine if a symbol is a financial symbol (stocks, indices) vs crypto.
     """
     financial_symbols = ['SPX', 'NDX', 'SPY', 'QQQ', 'AAPL', 'MSFT', 'GOOGL', 'AMZN', 'TSLA']
-    crypto_symbols = ['BTC', 'ETH', 'LTC', 'XRP', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
+    crypto_symbols = ['BTC', 'ETH', 'LTC', 'XRP', 'DOGE', 'ADA', 'DOT', 'SOL', 'AVAX', 'MATIC']
     
     base_symbol = symbol.split('/')[0].split('-')[0].upper()
     

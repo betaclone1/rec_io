@@ -6,6 +6,37 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-15 — Release v3.8.2: DOGE live pipeline, TM min-fill precheck, trades min_fill_price snapshot
+
+**Summary**
+- **Release: v3.8.2**
+- **DOGE support (new):** Migration **`20260713_1500_doge_live_tables`** adds `live_price_log_1s_doge`, `price_change_doge`, `live_price_ring_90m_doge`, and registers **DOGE** in `live_data.symbols_list`. CFB watchdog index **`DOGEUSD_RTI`**; Kalshi series **`KXDOGE15M`** / **`KXDOGED`** in market watchdog; 15m strike table + WS generator; trade monitor icon; analytics/backtest symbol lists updated.
+- **Slippage gate (trade_manager):** Early `min_fill_price` precheck on `initial_proj_price` for **paper and live** opens — rejects and deletes pending row before executor (same `SLIPPAGE FAILURE` path). TM orderbook projection uses Redis (parity with executor).
+- **Trades schema:** Migration **`20260715_1200_trades_min_fill_price`** adds `min_fill_price NUMERIC(6,4) NOT NULL DEFAULT 0.0000` on all tenant `trades_*` / `trades_simulated_*`; TM snapshots monitor floor at insert.
+- **Database:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` updated for DOGE live tables and trades `min_fill_price`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260713_1500_doge_live_tables.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260715_1200_trades_min_fill_price.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services (regenerates supervisor with `DOGEUSD_RTI` in CFB index list):  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify DOGE live pipeline on prod:  
+  `psql` — `SELECT symbol FROM live_data.symbols_list WHERE UPPER(symbol)='DOGE';` returns one row;  
+  `tail -50 logs/cfbenchmarks_price_watchdog.out.log | grep -i DOGEUSD` shows ticks after restart;  
+  `tail -50 logs/strike_table_generator_ws_15m.out.log | grep -i DOGE` shows 15m strike processing (or no errors for KXDOGE15M).
+- [ ] Verify health/logs for `main_app`, `trade_manager_*`, `trade_executor_*`, `cfbenchmarks_price_watchdog`, `strike_table_generator_ws_15m`.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.2`
+
+---
+
 ## 2026-07-05 — Release v3.8.1: Master system event log, CASH→MTB funding fix, admin timeline
 
 **Summary**

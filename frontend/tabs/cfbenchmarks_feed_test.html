@@ -101,6 +101,7 @@
     .cfb-price.eth { color: #b48cff; }
     .cfb-price.sol { color: #3dd68c; }
     .cfb-price.xrp { color: #94b8e8; }
+    .cfb-price.doge { color: #c2a633; }
     .cfb-price.coin { color: #5eb8ff; font-size: 28px; }
     .cfb-price-sub {
       font-family: 'IBM Plex Mono', monospace;
@@ -154,6 +155,7 @@
     .cfb-log-row .tag.eth { color: #b48cff; }
     .cfb-log-row .tag.sol { color: #3dd68c; }
     .cfb-log-row .tag.xrp { color: #94b8e8; }
+    .cfb-log-row .tag.doge { color: #c2a633; }
     .cfb-log-row .ts { color: #6a7488; }
   </style>
 </head>
@@ -250,6 +252,27 @@
         </div>
         <div class="cfb-mom1m coin-mom" id="cfb-coin-xrp-1mavg">CB 1m avg —</div>
         <div class="cfb-mom1m coin-mom" id="cfb-coin-xrp-mom1m">CB Mom 1m —</div>
+      </div>
+      <div class="cfb-panel compact" data-index="DOGEUSD_RTI">
+        <div class="cfb-panel-h">DOGEUSD_RTI → DOGE</div>
+        <div class="cfb-price-block">
+          <div class="cfb-price doge" data-field="price">—</div>
+          <div class="cfb-price-sub" data-field="sub">waiting</div>
+        </div>
+        <div class="cfb-compare">
+          <div class="cfb-diff" data-field="spread">spot vs CB: —</div>
+          <div class="cfb-diff" data-field="avg1m-diff">1m avg vs CB: —</div>
+        </div>
+        <div class="cfb-mom1m" data-field="mom1m">CFB Mom 1m —</div>
+      </div>
+      <div class="cfb-panel compact">
+        <div class="cfb-panel-h">Coinbase DOGE</div>
+        <div class="cfb-price-block">
+          <div class="cfb-price coin" id="cfb-coin-doge">—</div>
+          <div class="cfb-price-sub" id="cfb-coin-doge-sub">live_state</div>
+        </div>
+        <div class="cfb-mom1m coin-mom" id="cfb-coin-doge-1mavg">CB 1m avg —</div>
+        <div class="cfb-mom1m coin-mom" id="cfb-coin-doge-mom1m">CB Mom 1m —</div>
       </div>
       <div class="cfb-panel log-panel">
         <div class="cfb-panel-h">Recent ticks (all indices)</div>

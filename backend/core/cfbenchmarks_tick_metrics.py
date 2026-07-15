@@ -20,7 +20,7 @@ from backend.core.cfbenchmarks_feed_cache import symbol_for_index
 logger = logging.getLogger("cfbenchmarks_price_watchdog")
 
 _EST = ZoneInfo("America/New_York")
-_TRACKED_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP"})
+_TRACKED_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE"})
 _profiles_loaded = False
 _MAX_CFB_MOMENTUM = 120
 

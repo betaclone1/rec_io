@@ -99,7 +99,7 @@ class AnalyticsGUI:
         symbol_checkbox_frame.pack(fill=tk.X, pady=(0, 10))
         
         self.symbol_vars = {}
-        symbols = ['btc', 'eth', 'sol', 'xrp', 'spx', 'ndx']
+        symbols = ['btc', 'eth', 'sol', 'xrp', 'doge', 'spx', 'ndx']
         
         for i, symbol in enumerate(symbols):
             var = tk.BooleanVar()
@@ -113,7 +113,7 @@ class AnalyticsGUI:
         
         ttk.Button(symbol_button_frame, text="Select All", command=self.select_all).pack(side=tk.LEFT, padx=(0, 10))
         ttk.Button(symbol_button_frame, text="Select None", command=self.select_none).pack(side=tk.LEFT, padx=(0, 10))
-        ttk.Button(symbol_button_frame, text="Popular (BTC, ETH, SOL, XRP, SPX, NDX)", command=self.select_popular).pack(side=tk.LEFT)
+        ttk.Button(symbol_button_frame, text="Popular (BTC, ETH, SOL, XRP, DOGE, SPX, NDX)", command=self.select_popular).pack(side=tk.LEFT)
         
         # Step selection
         step_frame = ttk.LabelFrame(main_frame, text="Select Steps to Run", padding="10")
@@ -234,6 +234,7 @@ class AnalyticsGUI:
         self.symbol_vars['eth'].set(True)
         self.symbol_vars['sol'].set(True)
         self.symbol_vars['xrp'].set(True)
+        self.symbol_vars['doge'].set(True)
         self.symbol_vars['spx'].set(True)
         self.symbol_vars['ndx'].set(True)
         self.select_all_steps()  # Select all steps by default
@@ -255,6 +256,7 @@ class AnalyticsGUI:
         self.symbol_vars['eth'].set(True)
         self.symbol_vars['sol'].set(True)
         self.symbol_vars['xrp'].set(True)
+        self.symbol_vars['doge'].set(True)
         self.symbol_vars['spx'].set(True)
         self.symbol_vars['ndx'].set(True)
     

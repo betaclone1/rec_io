@@ -64,8 +64,8 @@ def _configure_logging():
 logger = _configure_logging()
 HEARTBEAT_INTERVAL_SEC = 300
 
-KALSHI_15M_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP"})
-DEFAULT_KALSHI_15M_SYMBOL_ORDER = ("BTC", "ETH", "SOL", "XRP")
+KALSHI_15M_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE"})
+DEFAULT_KALSHI_15M_SYMBOL_ORDER = ("BTC", "ETH", "SOL", "XRP", "DOGE")
 
 
 def fetch_kalshi_15m_symbols_ordered_from_db() -> tuple[str, ...]:
@@ -116,8 +116,8 @@ def fetch_kalshi_15m_symbols_ordered_from_db() -> tuple[str, ...]:
         return DEFAULT_KALSHI_15M_SYMBOL_ORDER
 
 
-# SOL/XRP: spot and strike spacing need sub-cent precision in strike tables and lookup interpolation.
-HIGH_PRECISION_PRICE_SYMBOLS = frozenset({"sol", "xrp"})
+# SOL/XRP/DOGE: spot and strike spacing need sub-cent precision in strike tables and lookup interpolation.
+HIGH_PRECISION_PRICE_SYMBOLS = frozenset({"sol", "xrp", "doge"})
 PRICE_BUFFER_DECIMAL_PLACES = 5
 BUFFER_PCT_DECIMAL_PLACES_ALT = 6
 
@@ -724,7 +724,7 @@ class StrikeTableGenerator:
         if self.unified_15m and self.interval != "15m":
             raise ValueError("unified_15m requires interval 15m")
         if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp"):
-            raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP")
+            raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP, DOGE")
         logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
         self.calculator = LookupProbabilityCalculator(symbol, database_conn=database_conn)
         logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
@@ -814,7 +814,7 @@ class StrikeTableGenerator:
         logger.debug("Unified strike_table_15m schema ready")
 
     def _normalize_floor_strike(self, floor_strike: float) -> float:
-        """Kalshi floor strike as stored key: integer dollars for BTC/ETH; 5dp for SOL/XRP."""
+        """Kalshi floor strike as stored key: integer dollars for BTC/ETH; 5dp for SOL/XRP/DOGE."""
         if uses_high_precision_price(self.symbol):
             return round_price_buffer(floor_strike)
         return float(int(round(float(floor_strike))))
@@ -2562,7 +2562,7 @@ def main():
         '--interval',
         choices=['hourly', '15m'],
         default='hourly',
-        help='Market interval: hourly (default) or 15m (BTC, ETH, SOL, XRP)',
+        help='Market interval: hourly (default) or 15m (BTC, ETH, SOL, XRP, DOGE)',
     )
     args = parser.parse_args()
     interval = args.interval
@@ -2583,7 +2583,7 @@ def main():
             syms = fetch_kalshi_15m_symbols_ordered_from_db()
         for s in syms:
             if s not in KALSHI_15M_SYMBOLS:
-                parser.error('Invalid symbol %s for --master-15m (expected subset of BTC, ETH, SOL, XRP)' % s)
+                parser.error('Invalid symbol %s for --master-15m (expected subset of BTC, ETH, SOL, XRP, DOGE)' % s)
         run_master_15m_continuous(args.master_interval_sec, data_exchange, syms)
         return
 
@@ -2595,7 +2595,7 @@ def main():
         parser.error('symbol is required unless --master-15m')
     symbol = args.symbol.upper()
     if interval == '15m' and symbol.lower() not in ('btc', 'eth', 'sol', 'xrp'):
-        parser.error('--interval 15m only supported for BTC, ETH, SOL, XRP')
+        parser.error('--interval 15m only supported for BTC, ETH, SOL, XRP, DOGE')
     if mode == "continuous":
         run_continuous_generation(interval_sec, symbol, interval=interval)
     else:

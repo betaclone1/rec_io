@@ -11,7 +11,7 @@
 | | Legacy (today) | CFB (target) |
 |---|----------------|--------------|
 | Feed | Coinbase WS ×4 processes | Kalshi `cfbenchmarks_value` ×1 WS |
-| Price | Coinbase spot | CFB index (BRTI, ETHUSD_RTI, SOLUSD_RTI, XRPUSD_RTI) |
+| Price | Coinbase spot | CFB index (BRTI, ETHUSD_RTI, SOLUSD_RTI, XRPUSD_RTI, DOGEUSD_RTI) |
 | Hot path | `live_state_cache.set_symbol` → `live_state_updated` | **Same** (when `CFBENCHMARKS_PUBLISH_MODE=live_state`) |
 | Test / shadow UI | N/A | `rec_io:experiment:cfbenchmarks:*` (optional in `experiment` / `shadow` modes) |
 | Supervisor | 4 programs | 1 program (disable the four legacy programs on cutover) |

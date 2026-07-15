@@ -1,5 +1,5 @@
 """
-Redis cache for Kalshi cfbenchmarks_value experiment (multi-index → BTC/ETH/SOL/XRP).
+Redis cache for Kalshi cfbenchmarks_value experiment (multi-index → BTC/ETH/SOL/XRP/DOGE).
 
 Experiment keys only unless cfbenchmarks_publish uses live_state mode (see docs/CFB_PRICE_WATCHDOG_CUTOVER.md).
 """
@@ -24,9 +24,16 @@ INDEX_TO_SYMBOL: Dict[str, str] = {
     "ETHUSD_RTI": "ETH",
     "SOLUSD_RTI": "SOL",
     "XRPUSD_RTI": "XRP",
+    "DOGEUSD_RTI": "DOGE",
 }
 
-DEFAULT_INDEX_IDS: List[str] = ["BRTI", "ETHUSD_RTI", "SOLUSD_RTI", "XRPUSD_RTI"]
+DEFAULT_INDEX_IDS: List[str] = [
+    "BRTI",
+    "ETHUSD_RTI",
+    "SOLUSD_RTI",
+    "XRPUSD_RTI",
+    "DOGEUSD_RTI",
+]
 DEFAULT_INDEX_IDS_CSV = ",".join(DEFAULT_INDEX_IDS)
 
 # Shorthand → Kalshi index_id (from indexlist / common nicknames)
@@ -35,6 +42,7 @@ INDEX_ALIASES: Dict[str, str] = {
     "SSOL": "SOLUSD_RTI",
     "SOL": "SOLUSD_RTI",
     "XRP": "XRPUSD_RTI",
+    "DOGE": "DOGEUSD_RTI",
 }
 
 

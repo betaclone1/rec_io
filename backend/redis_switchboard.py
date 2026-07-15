@@ -152,6 +152,7 @@ def _fetch_changes_by_symbol() -> dict:
                 ("ETH", "price_change_eth"),
                 ("SOL", "price_change_sol"),
                 ("XRP", "price_change_xrp"),
+                ("DOGE", "price_change_doge"),
             ):
                 try:
                     cur.execute(
@@ -340,7 +341,7 @@ def build_live_symbol_spot_from_cache():
         return None
     row_dicts = []
     spot_by_symbol: dict = {}
-    for sym in ("BTC", "ETH", "SOL", "XRP"):
+    for sym in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
         cached = live_state_cache.get_symbol_data(sym)
         if not cached:
             continue
@@ -414,7 +415,7 @@ def build_live_symbol_spot_payload():
             from backend.core import live_state_cache
 
             if live_state_cache_enabled():
-                for sym in ("BTC", "ETH", "SOL", "XRP"):
+                for sym in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
                     cached = live_state_cache.get_symbol_data(sym)
                     if not cached:
                         continue

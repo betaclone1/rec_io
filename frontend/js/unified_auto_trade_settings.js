@@ -2414,7 +2414,7 @@
       }
     }
 
-    /** Mouse-following "Monitor Settings" tooltip for dashboard monitor tiles and TM NEW gear (win-streak chrome via `.uat-monitor-settings-tooltip` CSS). */
+    /** Mouse-following cursor tooltips for monitor gear + auto-trade toggle (`.uat-monitor-settings-tooltip` chrome). */
     (function uatInstallMonitorSettingsGearCursorTooltip() {
       if (window.__uatMonitorGearCursorTipInstalled) return;
       window.__uatMonitorGearCursorTipInstalled = true;
@@ -2422,6 +2422,7 @@
       var tipEl = null;
       var timer = null;
       var anchor = null;
+      var label = null;
 
       function hide() {
         if (timer) {
@@ -2429,6 +2430,7 @@
           timer = null;
         }
         anchor = null;
+        label = null;
         if (tipEl) tipEl.classList.remove('is-visible');
       }
 
@@ -2455,13 +2457,16 @@
         tipEl.style.top = Math.max(8, y) + 'px';
       }
 
-      function gearFromEvent(e) {
+      /** @returns {{ el: Element, text: string }|null} */
+      function tipTargetFromEvent(e) {
         var t = e.target;
         if (!t || !t.closest) return null;
+        var toggle = t.closest('.auto-trade-toggle');
+        if (toggle) return { el: toggle, text: 'Auto Trade' };
         var img = t.closest('img.monitor-settings-icon');
-        if (img) return img;
+        if (img) return { el: img, text: 'Monitor Settings' };
         var btn = t.closest('button.tm-new-uat-settings-btn');
-        if (btn) return btn;
+        if (btn) return { el: btn, text: 'Monitor Settings' };
         return null;
       }
 
@@ -2487,17 +2492,18 @@
       document.addEventListener(
         'mouseover',
         function (e) {
-          var g = gearFromEvent(e);
-          if (!g) return;
-          if (anchor !== g) {
-            anchor = g;
+          var hit = tipTargetFromEvent(e);
+          if (!hit) return;
+          if (anchor !== hit.el) {
+            anchor = hit.el;
+            label = hit.text;
             ensureTip();
-            tipEl.textContent = 'Monitor Settings';
+            tipEl.textContent = label;
             position(e);
             if (timer) clearTimeout(timer);
             timer = setTimeout(function () {
               timer = null;
-              if (anchor === g) tipEl.classList.add('is-visible');
+              if (anchor === hit.el) tipEl.classList.add('is-visible');
             }, 80);
           } else {
             position(e);
@@ -2508,7 +2514,8 @@
 
       document.addEventListener('mousemove', function (e) {
         if (!anchor) return;
-        if (gearFromEvent(e) !== anchor) return;
+        var hit = tipTargetFromEvent(e);
+        if (!hit || hit.el !== anchor) return;
         position(e);
       });
 
@@ -2516,9 +2523,9 @@
         'mouseout',
         function (e) {
           if (!anchor) return;
-          if (!anchor.contains(e.target)) return;
+          if (!anchor.contains(e.target) && e.target !== anchor) return;
           var rel = e.relatedTarget;
-          if (!rel || !anchor.contains(rel)) {
+          if (!rel || (!anchor.contains(rel) && rel !== anchor)) {
             hide();
           }
         },

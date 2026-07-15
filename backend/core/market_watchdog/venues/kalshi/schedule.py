@@ -11,11 +11,13 @@ SERIES_15M_BY_SYMBOL: dict[str, str] = {
     "ETH": "KXETH15M",
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
+    "DOGE": "KXDOGE15M",
 }
 SERIES_HOURLY_BY_SYMBOL: dict[str, str] = {
     "BTC": "KXBTCD",
     "ETH": "KXETHD",
     "SOL": "KXSOLD",
+    "DOGE": "KXDOGED",
 }
 
 EST = ZoneInfo("America/New_York")

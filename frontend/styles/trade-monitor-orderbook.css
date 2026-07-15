@@ -199,6 +199,12 @@ font-size: 20px;
 font-weight: 800;
 }
 
+.trade-monitor-new .mkt-icon--doge {
+background: #c2a633;
+font-size: 20px;
+font-weight: 800;
+}
+
 .trade-monitor-new .mkt-icon--other {
 background: #4b5563;
 font-size: 18px;

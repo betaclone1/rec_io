@@ -1,14 +1,15 @@
 (function () {
   'use strict';
 
-  const INDICES = ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI'];
+  const INDICES = ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI', 'DOGEUSD_RTI'];
   const INDEX_TO_COIN = {
     BRTI: 'BTC',
     ETHUSD_RTI: 'ETH',
     SOLUSD_RTI: 'SOL',
     XRPUSD_RTI: 'XRP',
+    DOGEUSD_RTI: 'DOGE',
   };
-  const COINS = ['BTC', 'ETH', 'SOL', 'XRP'];
+  const COINS = ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE'];
   const INDEX_IDS_CSV = INDICES.join(',');
   const MAX_LOG_ROWS = 120;
 
@@ -44,7 +45,7 @@
 
   function fmtPrice(n, sym) {
     if (n == null || Number.isNaN(n)) return '—';
-    const maxFrac = sym === 'XRP' ? 4 : 2;
+    const maxFrac = sym === 'XRP' || sym === 'DOGE' ? 4 : 2;
     return Number(n).toLocaleString('en-US', {
       minimumFractionDigits: 2,
       maximumFractionDigits: maxFrac,
@@ -76,6 +77,7 @@
     if (sym === 'ETH') return 'tag eth';
     if (sym === 'SOL') return 'tag sol';
     if (sym === 'XRP') return 'tag xrp';
+    if (sym === 'DOGE') return 'tag doge';
     return 'tag btc';
   }
 
@@ -85,7 +87,7 @@
     }
     const diff = cfVal - coinVal;
     const pct = coinVal !== 0 ? (diff / coinVal) * 100 : 0;
-    const frac = sym === 'XRP' ? 4 : 2;
+    const frac = sym === 'XRP' || sym === 'DOGE' ? 4 : 2;
     return {
       text:
         label +

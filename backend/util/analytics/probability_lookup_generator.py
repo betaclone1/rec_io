@@ -106,8 +106,8 @@ class ProbabilityLookupGenerator:
         logger.info(f"📊 Max workers: {self.max_workers}")
 
     def _is_low_price_symbol(self) -> bool:
-        """Scoped carveout: only SOL/XRP use low-price buffer guards."""
-        return self.symbol in {"sol", "xrp"}
+        """Scoped carveout: SOL/XRP/DOGE use low-price buffer guards."""
+        return self.symbol in {"sol", "xrp", "doge"}
 
     def _resolve_price_profile_table(self, cursor) -> str:
         """
@@ -207,7 +207,12 @@ class ProbabilityLookupGenerator:
 
             # SOL/XRP: finer step sizing from price profile (historical analytics only).
             if self._is_low_price_symbol():
-                min_floor_usd = 0.05 if self.symbol == "xrp" else 0.25
+                if self.symbol == "xrp":
+                    min_floor_usd = 0.05
+                elif self.symbol == "doge":
+                    min_floor_usd = 0.05
+                else:
+                    min_floor_usd = 0.25
                 buffer_width_usd = max(buffer_width_usd, min_floor_usd)
                 step_floor = 0.0001
                 step_size_usd = max(step_floor, buffer_width_usd / target_steps)

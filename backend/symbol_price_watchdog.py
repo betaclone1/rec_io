@@ -108,6 +108,14 @@ SYMBOL_CONFIG = {
         'heartbeat_file': 'xrp_logger_heartbeat_postgresql.txt',
         'price_change_file': 'xrp_price_change_postgresql.json'
     },
+    'DOGE': {
+        'method': 'coinbase',
+        'api_endpoint': 'wss://ws-feed.exchange.coinbase.com',
+        'product_id': 'DOGE-USD',
+        'table_name': 'live_price_log_1s_doge',
+        'heartbeat_file': 'doge_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'doge_price_change_postgresql.json'
+    },
     'SPX': {
         'method': 'yahoo_finance',
         'yahoo_symbol': '^SPX',
@@ -136,7 +144,7 @@ VOLATILITY_CACHE = {}
 # Global movement profile cache (percentile -> movement_value)
 MOVEMENT_PROFILES = {}
 
-CRYPTO_LIVE_STATE_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP"})
+CRYPTO_LIVE_STATE_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE"})
 
 # Per-symbol monotonic time of last live_state publish (hot path throttle).
 _last_hot_publish_mono: Dict[str, float] = {}
@@ -1533,7 +1541,7 @@ async def log_symbol_price(symbol: str):
             await asyncio.sleep(5)
 
 async def poll_kraken_price_changes(symbol: str):
-    """Poll Kraken for price changes (supports BTC, ETH, SOL, XRP)."""
+    """Poll Kraken for price changes (supports BTC, ETH, SOL, XRP, DOGE)."""
     while True:
         try:
             # Configure Kraken API endpoints for different symbols
@@ -1545,6 +1553,8 @@ async def poll_kraken_price_changes(symbol: str):
                 url = "https://api.kraken.com/0/public/OHLC?pair=SOLUSD&interval=60"
             elif symbol == 'XRP':
                 url = "https://api.kraken.com/0/public/OHLC?pair=XRPUSD&interval=60"
+            elif symbol == 'DOGE':
+                url = "https://api.kraken.com/0/public/OHLC?pair=DOGEUSD&interval=60"
             else:
                 # Skip for unsupported symbols
                 await asyncio.sleep(60)

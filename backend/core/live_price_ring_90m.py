@@ -19,12 +19,13 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("cfbenchmarks_price_watchdog")
 
 _EST = ZoneInfo("America/New_York")
-_TRACKED = frozenset({"BTC", "ETH", "SOL", "XRP"})
+_TRACKED = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE"})
 _TABLE_BY_SYMBOL: Dict[str, str] = {
     "BTC": "live_price_ring_90m_btc",
     "ETH": "live_price_ring_90m_eth",
     "SOL": "live_price_ring_90m_sol",
     "XRP": "live_price_ring_90m_xrp",
+    "DOGE": "live_price_ring_90m_doge",
 }
 
 _executor: Optional[ThreadPoolExecutor] = None

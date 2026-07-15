@@ -1374,7 +1374,7 @@ def main():
 
     if args.list_symbols:
         # List available symbols (you can implement this if needed)
-        print("Available symbols: btc, eth, sol, xrp")
+        print("Available symbols: btc, eth, sol, xrp, doge")
         return
 
     symbol = args.symbol.lower()

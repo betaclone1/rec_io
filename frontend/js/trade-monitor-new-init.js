@@ -2380,6 +2380,7 @@
       ETH: { cls: 'mkt-icon--eth', imgSrc: dir + 'etherium_icon.jpeg', alt: 'Ethereum' },
       SOL: { cls: 'mkt-icon--sol', imgSrc: dir + 'solana_icon.jpeg', alt: 'Solana' },
       XRP: { cls: 'mkt-icon--xrp', imgSrc: dir + 'xripple_icon.jpeg', alt: 'XRP' },
+      DOGE: { cls: 'mkt-icon--doge', imgSrc: dir + 'doge_icon.jpeg', alt: 'Dogecoin' },
     };
     const spec = bySym[s];
     if (spec) return spec;
@@ -2388,7 +2389,7 @@
 
   function applyMonitorIconToElement(el, symbol) {
     if (!el || !el.classList.contains('mkt-icon')) return;
-    el.classList.remove('mkt-icon--btc', 'mkt-icon--eth', 'mkt-icon--sol', 'mkt-icon--xrp', 'mkt-icon--other');
+    el.classList.remove('mkt-icon--btc', 'mkt-icon--eth', 'mkt-icon--sol', 'mkt-icon--xrp', 'mkt-icon--doge', 'mkt-icon--other');
     const spec = monitorIconSpec(symbol);
     el.classList.add(spec.cls);
     el.replaceChildren();
@@ -2405,7 +2406,7 @@
     }
   }
 
-  /** 44px tile: raster icons for BTC/ETH/SOL/XRP; glyph fallback for other symbols. */
+  /** 44px tile: raster icons for BTC/ETH/SOL/XRP/DOGE; glyph fallback for other symbols. */
   function tmNewApplyMarketHeaderIcon(symbol) {
     const el = document.getElementById('mktIcon');
     if (!el) return;

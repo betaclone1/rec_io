@@ -17,7 +17,7 @@ _AVAILABLE_BUCKETS = [
     -90, -80, -70, -60, -50, -40, -30, -20, -10,
     10, 20, 30, 40, 50, 60, 70, 80, 90,
 ]
-_HIGH_PRECISION = frozenset({"sol", "xrp"})
+_HIGH_PRECISION = frozenset({"sol", "xrp", "doge"})
 
 _lock = threading.Lock()
 _by_symbol: Dict[str, "_SymbolTable"] = {}

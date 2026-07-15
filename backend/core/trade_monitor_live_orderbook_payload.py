@@ -44,7 +44,7 @@ _STRIKE_TABLE_HOURLY = "live_data.strike_table_hourly"
 
 def _parse_15m_ticker_end_est(market_ticker: str) -> Optional[datetime]:
     m = re.match(
-        r"^KX(?:BTC|ETH|SOL|XRP)15M-(\d{2}[A-Z]{3}\d{2}\d{4})-(\d{2})$",
+        r"^KX(?:BTC|ETH|SOL|XRP|DOGE)15M-(\d{2}[A-Z]{3}\d{2}\d{4})-(\d{2})$",
         str(market_ticker).strip(),
         re.IGNORECASE,
     )
@@ -436,7 +436,7 @@ def _resolve_market_row_from_live_cache(
     return None
 
 
-_LIVE_ORDERBOOK_SYMBOLS = ("BTC", "ETH", "SOL", "XRP")
+_LIVE_ORDERBOOK_SYMBOLS = ("BTC", "ETH", "SOL", "XRP", "DOGE")
 _LIVE_ORDERBOOK_MARKETS = ("15m", "hourly")
 
 

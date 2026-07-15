@@ -56,7 +56,7 @@
       - To monitor a different dataset shape, replace `fetchRecord()` and `renderRow()`.
       - Keep `fetchAll()` + WS reconnect/keepalive as shared plumbing.
     */
-    const SYMBOLS = ["BTC", "ETH", "SOL", "XRP"];
+    const SYMBOLS = ["BTC", "ETH", "SOL", "XRP", "DOGE"];
     const WATCH_DATABASES = new Set(["market_kalshi_15m", "strike_table_15m"]);
     const state = { fetchInFlight: false, pending: false, lastFetchAtMs: 0, throttleMs: 800 };
 

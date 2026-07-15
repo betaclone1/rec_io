@@ -65,13 +65,13 @@ function getActiveTradeSupervisorUrl(endpoint = '') {
 
 /**
  * Format symbol_open / symbol_close for trade tables.
- * SOL/XRP: show full DB precision (string passthrough or up to 5 fraction digits, grouped integer part).
+ * SOL/XRP/DOGE: show full DB precision (string passthrough or up to 5 fraction digits, grouped integer part).
  * Other symbols (e.g. BTC, ETH): whole dollars with grouping (legacy behavior).
  */
 function formatTradeSymbolSpot(symbol, rawValue) {
     if (rawValue === null || rawValue === undefined || rawValue === '') return '';
     const sym = (symbol || '').toString().trim().toUpperCase();
-    const altCoin = sym === 'SOL' || sym === 'XRP';
+    const altCoin = sym === 'SOL' || sym === 'XRP' || sym === 'DOGE';
     if (altCoin) {
         if (typeof rawValue === 'string') {
             const t = rawValue.trim();

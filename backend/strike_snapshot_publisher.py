@@ -42,7 +42,7 @@ def _discover_symbols() -> list[str]:
 
         conn = get_system_postgresql_connection()
         if not conn:
-            return ["BTC", "ETH", "SOL", "XRP"]
+            return ["BTC", "ETH", "SOL", "XRP", "DOGE"]
         with conn.cursor() as cur:
             cur.execute(
                 """
@@ -54,10 +54,10 @@ def _discover_symbols() -> list[str]:
             )
             rows = [r[0] for r in cur.fetchall() if r and r[0]]
         conn.close()
-        return rows if rows else ["BTC", "ETH", "SOL", "XRP"]
+        return rows if rows else ["BTC", "ETH", "SOL", "XRP", "DOGE"]
     except Exception as e:
         log.warning("symbol discovery failed: %s; using defaults", e)
-        return ["BTC", "ETH", "SOL", "XRP"]
+        return ["BTC", "ETH", "SOL", "XRP", "DOGE"]
 
 
 def _markets() -> list[str]:

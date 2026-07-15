@@ -69,10 +69,10 @@ def symbol_market_from_orderbook_ticker(market_ticker: str) -> tuple[Optional[st
     mt = str(market_ticker or "").strip().upper()
     if not mt:
         return None, None
-    m15 = re.match(r"^KX(BTC|ETH|SOL|XRP)15M-", mt)
+    m15 = re.match(r"^KX(BTC|ETH|SOL|XRP|DOGE)15M-", mt)
     if m15:
         return m15.group(1), "15m"
-    mh = re.match(r"^KX(BTC|ETH|SOL|XRP)D-", mt)
+    mh = re.match(r"^KX(BTC|ETH|SOL|XRP|DOGE)D-", mt)
     if mh:
         return mh.group(1), "hourly"
     return None, None

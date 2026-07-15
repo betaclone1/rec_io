@@ -430,6 +430,7 @@ def _hourly_spot_price(sym_u: str) -> Optional[float]:
         "BTC": "live_price_log_1s_btc",
         "ETH": "live_price_log_1s_eth",
         "SOL": "live_price_log_1s_sol",
+        "DOGE": "live_price_log_1s_doge",
     }.get(sym_u)
     if not pt:
         return None
