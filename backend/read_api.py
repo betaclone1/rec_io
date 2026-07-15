@@ -69,6 +69,7 @@ from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_
 from backend.core.tenant_strategy_list import load_strategy_picker_for_slot
 from backend.trading_mode import (
     account_balance_table_for_user,
+    credits_history_table_for_user,
     sql_ident_qualified_table,
     subaccounts_table_for_user,
     transfers_table_for_user,
@@ -689,6 +690,44 @@ async def get_transfers(
             conn.close()
     except Exception:
         return {"transfers": []}
+
+
+@app.get("/api/db/credits")
+async def get_credits(response: Response):
+    """Kalshi credit history (live-only) for the Account Info Credits table."""
+    _api_no_store_headers(response)
+    try:
+        from psycopg2.extras import RealDictCursor
+
+        slot = resolved_tenant_user_no_for_app()
+        conn = get_postgresql_connection()
+        if not conn:
+            return {"credits": []}
+        try:
+            c_ident = sql_ident_qualified_table(credits_history_table_for_user(slot))
+            with conn.cursor(cursor_factory=RealDictCursor) as cursor:
+                cursor.execute(
+                    sql.SQL(
+                        """
+                    SELECT credit_id, created_at, type, amount_cents, reason, status
+                    FROM {}
+                    ORDER BY created_at DESC
+                    LIMIT 100
+                    """
+                    ).format(c_ident)
+                )
+                rows = cursor.fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                ca = d.get("created_at")
+                d["created_at"] = ca.isoformat() if ca is not None else None
+                out.append(d)
+            return {"credits": out}
+        finally:
+            conn.close()
+    except Exception:
+        return {"credits": []}
 
 
 @app.get("/api/db/system_health")

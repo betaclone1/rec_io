@@ -308,6 +308,16 @@ def transfers_table_for_user(
     return f"users_{u}.transfers_{u}"
 
 
+def credits_history_table_for_user(user_number: str) -> str:
+    """Kalshi credit history log (per four-digit slot).
+
+    Live-only Kalshi data (no paper variant); populated by
+    ``kalshi_account_sync_ws.sync_credit_history``.
+    """
+    u = _norm_slot(user_number)
+    return f"users_{u}.credits_history_{u}"
+
+
 def subaccount_balance_table_fqn(user_number: str, subaccount_number: int) -> str:
     """Live per-subaccount balance history (Kalshi GET /portfolio/balance?subaccount=N)."""
     u = _norm_slot(user_number)

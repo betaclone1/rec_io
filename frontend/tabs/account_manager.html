@@ -269,6 +269,33 @@
             </div>
           </div>
         </div>
+
+        <!-- Credits expandable section -->
+        <div style="margin-top: 12px;">
+          <div class="panel-header" style="cursor: pointer; display: flex; justify-content: space-between; align-items: center; padding-bottom: 4px;" onclick="toggleCreditsPanel()">
+            <div style="display: flex; align-items: center;">
+              <span>Credits</span>
+              <span id="credits-expand-icon" style="font-size: 8px; transition: transform 0.3s ease; margin-left: 8px; transform: rotate(180deg);">▼</span>
+            </div>
+          </div>
+          <div id="credits-content" style="height: 136px; overflow: hidden; transition: height 0.3s ease;">
+            <div style="height: 136px; overflow-y: auto;">
+              <table class="data-table" style="width: 100%; font-size: 12px; text-align: center;">
+                <thead>
+                  <tr>
+                    <th>Timestamp</th>
+                    <th>Type</th>
+                    <th>Amount</th>
+                    <th>Reason</th>
+                  </tr>
+                </thead>
+                <tbody id="credits-body">
+                  <tr><td colspan="4">Loading...</td></tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -635,6 +662,8 @@
       if (subaccountsBody) subaccountsBody.innerHTML = "<tr><td colspan=\"2\">Syncing...</td></tr>";
       const transfersBody = document.getElementById("transfers-body");
       if (transfersBody) transfersBody.innerHTML = "<tr><td colspan=\"7\">Syncing...</td></tr>";
+      const creditsBody = document.getElementById("credits-body");
+      if (creditsBody) creditsBody.innerHTML = "<tr><td colspan=\"4\">Syncing...</td></tr>";
     }
 
     function escapeHtmlAccount(str) {
@@ -649,10 +678,11 @@
       const isPaper = REC_TRADING_MODE === "paper";
       const tm = REC_TRADING_MODE === "paper" || REC_TRADING_MODE === "live" ? REC_TRADING_MODE : "live";
       const tmq = "trading_mode=" + encodeURIComponent(tm);
-      const [balanceRes, subaccountsRes, transfersRes] = await Promise.all([
+      const [balanceRes, subaccountsRes, transfersRes, creditsRes] = await Promise.all([
         fetch(`${window.location.origin}/api/account/balance?${tmq}`, fetchOpts),
         fetch(window.location.origin + "/api/subaccounts?" + tmq, fetchOpts),
         fetch(window.location.origin + "/api/db/transfers?" + tmq, fetchOpts),
+        fetch(window.location.origin + "/api/db/credits", fetchOpts),
       ]);
       let settlementsRes;
       let fillsRes;
@@ -668,6 +698,7 @@
       const activeBal = await balanceRes.json();
       const subaccountsJson = await subaccountsRes.json();
       const transfersJson = await transfersRes.json();
+      const creditsJson = await creditsRes.json();
       const settlementsJson = isPaper ? { settlements: [] } : await settlementsRes.json();
       const fillsJson = isPaper ? { fills: [] } : await fillsRes.json();
       const positionsJson = isPaper ? { positions: [] } : await positionsRes.json();
@@ -686,6 +717,7 @@
       const fills = fillsJson.fills || [];
       const positions = positionsJson.positions || [];
       const transfers = transfersJson.transfers || [];
+      const credits = creditsJson.credits || [];
       
       window.fills = fills;
 
@@ -743,6 +775,26 @@
                 <td>${amountStr}</td>
                 <td>${t.status ?? ""}</td>
                 <td>${t.initiated ?? ""}</td>
+              </tr>`;
+            }).join("");
+      }
+
+      // Credits table (expandable section)
+      const creditsBody = document.getElementById("credits-body");
+      if (creditsBody) {
+        creditsBody.innerHTML = credits.length === 0
+          ? "<tr><td colspan=\"4\">No credits</td></tr>"
+          : credits.map(c => {
+              const amountCents = c.amount_cents != null ? c.amount_cents : 0;
+              const amountStr = "$" + (amountCents / 100).toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+              const ts = c.created_at
+                ? new Date(c.created_at).toLocaleString("en-US", { timeZone: "America/New_York" })
+                : "";
+              return `<tr>
+                <td>${escapeHtmlAccount(ts)}</td>
+                <td>${escapeHtmlAccount(c.type)}</td>
+                <td>${amountStr}</td>
+                <td>${escapeHtmlAccount(c.reason)}</td>
               </tr>`;
             }).join("");
       }
@@ -923,6 +975,19 @@
       if (!content || !icon) return;
       if (content.style.height === '0px' || content.style.height === '') {
         content.style.height = '180px';
+        icon.style.transform = 'rotate(180deg)';
+      } else {
+        content.style.height = '0px';
+        icon.style.transform = 'rotate(0deg)';
+      }
+    }
+
+    function toggleCreditsPanel() {
+      const content = document.getElementById('credits-content');
+      const icon = document.getElementById('credits-expand-icon');
+      if (!content || !icon) return;
+      if (content.style.height === '0px' || content.style.height === '') {
+        content.style.height = '136px';
         icon.style.transform = 'rotate(180deg)';
       } else {
         content.style.height = '0px';
