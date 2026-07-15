@@ -226,6 +226,13 @@ async def get_transfers(
     return await _get(request, path)
 
 
+@read_api_passthrough_router.get("/api/db/credits")
+async def get_credits(request: Request, response: Response):
+    """Proxy Kalshi credit history (live-only) for Account Info Credits table."""
+    _ = response
+    return await _get(request, "/api/db/credits")
+
+
 @read_api_passthrough_router.get("/api/db/system_health")
 async def get_system_health_from_db(request: Request) -> Response:
     return await _get(request, "/api/db/system_health")
