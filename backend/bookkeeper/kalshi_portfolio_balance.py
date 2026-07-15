@@ -2,8 +2,11 @@
 from __future__ import annotations
 
 import base64
+import logging
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 import requests
 from cryptography.hazmat.backends import default_backend
@@ -181,12 +184,33 @@ def fetch_total_portfolio_cents(user_no: str) -> tuple[int, dict]:
             "cannot confirm balance_breakdown against subaccounts"
         )
     sub_sum = sum(int(v) for v in sub_map.values())
-    if sub_sum != cash_cents:
+
+    # balance_breakdown (per exchange_index) and subaccount balances (per subaccount)
+    # are two different partitions of the same money, each a 4-decimal dollar string
+    # rounded to cents per row. Their aggregate cent-rounding drift is bounded by
+    # ceil((n_break + n_sub)/2); differences beyond that are a real discrepancy.
+    n_break = len([r for r in (data.get("balance_breakdown") or []) if isinstance(r, dict)])
+    n_sub = len(sub_map)
+    tolerance_cents = (n_break + n_sub + 1) // 2
+    drift = sub_sum - cash_cents
+    if abs(drift) > tolerance_cents:
         raise RuntimeError(
             f"Kalshi full-account cash mismatch for user {user_no}: "
             f"balance_breakdown_sum_cents={cash_cents} "
             f"subaccount_sum_cents={sub_sum} "
-            f"(subaccounts={dict(sorted(sub_map.items()))})"
+            f"(drift={drift}c > tolerance={tolerance_cents}c; "
+            f"subaccounts={dict(sorted(sub_map.items()))})"
+        )
+    if drift != 0:
+        logger.warning(
+            "Kalshi cash cross-check off by %+dc within rounding tolerance %dc for "
+            "user %s (balance_breakdown_sum=%d, subaccount_sum=%d); using "
+            "balance_breakdown as total",
+            drift,
+            tolerance_cents,
+            user_no,
+            cash_cents,
+            sub_sum,
         )
 
     total = cash_cents + pos_cents
@@ -195,6 +219,8 @@ def fetch_total_portfolio_cents(user_no: str) -> tuple[int, dict]:
         "portfolio_value_cents": pos_cents,
         "total_portfolio_cents": total,
         "subaccount_sum_cents": sub_sum,
+        "subaccount_cross_check_drift_cents": drift,
+        "subaccount_cross_check_tolerance_cents": tolerance_cents,
         "subaccount_balances_cents": dict(sorted(sub_map.items())),
         "legacy_top_level_balance_cents": int(data.get("balance") or 0),
     }

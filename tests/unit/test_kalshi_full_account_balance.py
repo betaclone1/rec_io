@@ -54,6 +54,38 @@ def test_fetch_total_portfolio_cents_uses_breakdown_and_confirms(monkeypatch) ->
     assert detail["legacy_top_level_balance_cents"] == 150376
 
 
+def test_fetch_total_portfolio_cents_tolerates_one_cent_rounding(monkeypatch) -> None:
+    # Two Kalshi partitions of the same money can round differently by ~1 cent;
+    # this must NOT abort the reconcile.
+    def fake_request(user_no, method, path, *, params=None, **kwargs):
+        resp = MagicMock()
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {
+            "balance_breakdown": [
+                {"balance": "1503.7600", "exchange_index": 0},
+                {"balance": "5720.8000", "exchange_index": 1},
+                {"balance": "6881.5700", "exchange_index": 2},
+            ],
+            "portfolio_value": 0,
+            "balance": 150376,
+        }
+        return resp
+
+    monkeypatch.setattr(kpb, "kalshi_prod_request", fake_request)
+    # subaccount sum is 1 cent higher than the breakdown sum
+    monkeypatch.setattr(
+        kpb,
+        "fetch_subaccount_balances_cents_map",
+        lambda user_no: {0: 150376, 1: 572080, 2: 688158, 3: 0},
+    )
+
+    total, detail = kpb.fetch_total_portfolio_cents("0001")
+    assert detail["balance_cents"] == 1410613
+    assert detail["subaccount_sum_cents"] == 1410614
+    assert detail["subaccount_cross_check_drift_cents"] == 1
+    assert total == 1410613
+
+
 def test_fetch_total_portfolio_cents_mismatch_raises(monkeypatch) -> None:
     def fake_request(user_no, method, path, *, params=None, **kwargs):
         resp = MagicMock()
