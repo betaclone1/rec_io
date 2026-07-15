@@ -698,10 +698,11 @@ def _legacy_fills_qualified() -> str:
 
 
 def _credits_history_qualified() -> str:
+    """Tenant-scoped credits history: ``users_<slot>.credits_history_<slot>``."""
     from backend.trading_mode import _norm_slot
 
     slot = _norm_slot(_kas_process_user_no())
-    return f"users.credits_history_{slot}"
+    return f"users_{slot}.credits_history_{slot}"
 
 
 def _sql_qual_table(qualified: str):
@@ -1298,7 +1299,7 @@ def sync_account_history(conn):
 
 
 def sync_credit_history(conn, kalshi_user_id: str) -> None:
-    """Poll v1 credit_history into users.credits_history_<slot>. Best-effort; caller commits."""
+    """Poll v1 credit_history into users_<slot>.credits_history_<slot>. Best-effort; caller commits."""
     if not conn or not kalshi_user_id:
         return
     tbl = _credits_history_qualified()
@@ -1313,6 +1314,11 @@ def sync_credit_history(conn, kalshi_user_id: str) -> None:
             (sch, _t),
         )
         if not cur.fetchone():
+            logger.warning(
+                "Credit history table missing: %s.%s (skipping sync)",
+                sch,
+                _t,
+            )
             return
     credits_accum = []
     cursor = None

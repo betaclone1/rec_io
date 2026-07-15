@@ -10072,7 +10072,7 @@ Unified Kalshi **hourly** active-trade tracking: **one table per user** (`active
 
 ---
 
-### Table: `users.credits_history_0001` (and per-slot `credits_history_<NNNN>`)
+### Table: `users_0001.credits_history_0001` (and per-slot `users_<NNNN>.credits_history_<NNNN>`)
 
 **Scope:** Migration **`20260513120000_account_sync_direction_credits`**. One table per tenant slot alongside `orders_<slot>`; populated from Kalshi v1 `GET /v1/users/{USERID}/credit_history` during balance sync (`kalshi_account_sync_ws.sync_credit_history`). Substitute **`users_<NNNN>`** / suffix per tenant parity rules.
 
