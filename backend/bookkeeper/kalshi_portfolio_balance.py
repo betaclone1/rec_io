@@ -100,6 +100,11 @@ def fetch_portfolio_balance_detail(
     GET /portfolio/balance for a tenant (optional ``subaccount`` query param).
 
     Returns ``balance_cents``, ``portfolio_value_cents``, ``total_portfolio_cents``.
+
+    When ``subaccount`` is set, this is that wallet's top-level ``balance`` field.
+    When omitted, callers that need **full-account** cash across subaccounts should
+    use ``fetch_total_portfolio_cents`` (``balance_breakdown``, confirmed vs subaccounts),
+    not this helper — top-level ``balance`` / ``balance_dollars`` can be primary-wallet only.
     """
     try:
         req_params = {"subaccount": int(subaccount)} if subaccount is not None else None
@@ -117,16 +122,82 @@ def fetch_portfolio_balance_detail(
     }
 
 
+def sum_balance_breakdown_cents(data: dict) -> int:
+    """
+    Sum ``balance_breakdown[].balance`` dollar strings from GET /portfolio/balance into cents.
+
+    Raises ``ValueError`` if breakdown is missing, empty, or not parseable.
+    Does **not** fall back to top-level ``balance`` / ``balance_dollars``.
+    """
+    from backend.core.kalshi_money import dollars_to_cents
+
+    rows = data.get("balance_breakdown")
+    if not isinstance(rows, list) or not rows:
+        raise ValueError(
+            "Kalshi GET /portfolio/balance missing non-empty balance_breakdown "
+            "(cannot use top-level balance / balance_dollars as full-account total)"
+        )
+    total = 0
+    for i, row in enumerate(rows):
+        if not isinstance(row, dict):
+            raise ValueError(f"Kalshi balance_breakdown[{i}] is not an object")
+        cents = dollars_to_cents(row.get("balance"))
+        if cents is None:
+            raise ValueError(
+                f"Kalshi balance_breakdown[{i}] has unparseable balance: {row.get('balance')!r}"
+            )
+        total += cents
+    return total
+
+
 def fetch_total_portfolio_cents(user_no: str) -> tuple[int, dict]:
     """
-    GET /portfolio/balance; return (cash + portfolio_value) in cents and raw JSON subset.
+    Full-account Kalshi total for bookkeeper reconcile, in cents.
 
-    Uses ``backend/data/users/user_NNNN/credentials/kalshi-credentials/prod``.
+    Cash = sum of ``balance_breakdown`` on GET /portfolio/balance (not top-level
+    ``balance`` / ``balance_dollars``, which may be primary-wallet only). Confirmed
+    against the sum of GET /portfolio/subaccounts/balances. Positions =
+    ``portfolio_value``. Total = cash + positions.
+
+    Raises if credentials/API fail, breakdown is missing, subaccounts cannot be
+    fetched, or cash vs subaccount sums disagree (no substitute / fallback).
     """
-    detail = fetch_portfolio_balance_detail(user_no)
-    if detail is None:
-        raise FileNotFoundError(f"Kalshi prod credentials or balance fetch failed for user {user_no}")
-    total = detail["total_portfolio_cents"]
+    try:
+        resp = kalshi_prod_request(user_no, "GET", "/portfolio/balance")
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise FileNotFoundError(
+            f"Kalshi prod credentials or balance fetch failed for user {user_no}: {e}"
+        ) from e
+
+    cash_cents = sum_balance_breakdown_cents(data)
+    pos_cents = int(data.get("portfolio_value") or 0)
+
+    sub_map = fetch_subaccount_balances_cents_map(user_no)
+    if sub_map is None:
+        raise RuntimeError(
+            f"Kalshi subaccount balances unavailable for user {user_no}; "
+            "cannot confirm balance_breakdown against subaccounts"
+        )
+    sub_sum = sum(int(v) for v in sub_map.values())
+    if sub_sum != cash_cents:
+        raise RuntimeError(
+            f"Kalshi full-account cash mismatch for user {user_no}: "
+            f"balance_breakdown_sum_cents={cash_cents} "
+            f"subaccount_sum_cents={sub_sum} "
+            f"(subaccounts={dict(sorted(sub_map.items()))})"
+        )
+
+    total = cash_cents + pos_cents
+    detail = {
+        "balance_cents": cash_cents,
+        "portfolio_value_cents": pos_cents,
+        "total_portfolio_cents": total,
+        "subaccount_sum_cents": sub_sum,
+        "subaccount_balances_cents": dict(sorted(sub_map.items())),
+        "legacy_top_level_balance_cents": int(data.get("balance") or 0),
+    }
     return total, detail
 
 

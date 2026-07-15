@@ -671,7 +671,9 @@ def main(argv: list[str] | None = None) -> int:
         )
         print(
             f"  Kalshi total portfolio: ${kalshi_dollars:.2f} "
-            f"(cash ${ks_detail['balance_cents']/100:.2f} + "
+            f"(full-account cash ${ks_detail['balance_cents']/100:.2f} "
+            f"from balance_breakdown, confirmed vs subaccounts "
+            f"${ks_detail.get('subaccount_sum_cents', ks_detail['balance_cents'])/100:.2f} + "
             f"positions ${ks_detail['portfolio_value_cents']/100:.2f})"
         )
         print(
