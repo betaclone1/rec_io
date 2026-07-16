@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from datetime import date, datetime, timedelta
 from typing import Any
+from zoneinfo import ZoneInfo
 
 from psycopg2 import sql
 
@@ -22,6 +23,14 @@ CREDIT_TYPE_INCENTIVE = "incentive"
 # Stable substring in every daily reconcile JE PrivateNote; used for idempotency.
 RECONCILE_NOTE_MARKER = "Rec IO bookkeeper: reconcile Kalshi"
 
+# Bookkeeper calendar day is always US Eastern (same as trading clock / credits).
+_ET = ZoneInfo("America/New_York")
+
+
+def eastern_today() -> date:
+    """Current calendar date in America/New_York (not the server process TZ)."""
+    return datetime.now(_ET).date()
+
 
 def resolve_reconcile_txn_date(
     explicit_txn_date: str | None,
@@ -30,16 +39,16 @@ def resolve_reconcile_txn_date(
     today: date | None = None,
 ) -> str:
     """
-    Pick the reconcile / credit-window date (``YYYY-MM-DD``).
+    Pick the reconcile / credit-window date (``YYYY-MM-DD``, Eastern).
 
     - Explicit ``--txn-date`` always wins.
-    - Else ``prior_day`` (nightly cron just after midnight ET) → yesterday, so the
-      just-closed day's credits are captured on the calendar date they carry.
-    - Else today.
+    - Else ``prior_day`` (nightly cron just after midnight ET) → yesterday Eastern,
+      so the just-closed day's credits are captured on the calendar date they carry.
+    - Else Eastern today.
     """
     if explicit_txn_date:
         return str(explicit_txn_date)[:10]
-    base = today or date.today()
+    base = today or eastern_today()
     if prior_day:
         base = base - timedelta(days=1)
     return base.isoformat()

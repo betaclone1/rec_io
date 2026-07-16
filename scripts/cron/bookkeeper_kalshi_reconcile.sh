@@ -29,6 +29,8 @@ if [[ ! -x "$VENV_PY" ]]; then
 fi
 
 export REC_USER_NO="${REC_USER_NO:-0001}"
+# Always Eastern for date.today()-style logic and log stamps (server OS may be UTC).
+export TZ="${TZ:-America/New_York}"
 LOG_DIR="${REPO_ROOT}/logs"
 mkdir -p "$LOG_DIR"
 LOG_FILE="${LOG_DIR}/bookkeeper_kalshi_reconcile.log"
