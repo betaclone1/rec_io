@@ -8902,11 +8902,15 @@
             <div id="m_expirationScalpAskWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9900</div>
           </div>
         </div>
-        <label for="m_expirationScalpMinFillPriceSlider" class="uat-slider-label--compact" style="font-size:14px; color:#333; font-weight:500;">Minimum Fill Price:</label>
-        <p class="uat-expiration-scalp-min-fill-hint" style="font-size:12px; color:#888; margin:0 0 34px 0;">0 disables. Executor rejects opens when estimated orderbook VWAP fill is below this.</p>
+        <label for="m_expirationScalpMinFillPriceSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Fill Price:</label>
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_expirationScalpMinFillPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="m_expirationScalpMinFillPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
+        </div>
+        <label for="m_expirationScalpMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_expirationScalpMinSlippageSlider" min="-100" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="m_expirationScalpMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
         </div>
 
@@ -8939,6 +8943,12 @@
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_autoEntryMaxDiff" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
+        </div>
+
+        <label for="m_autoEntryMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_autoEntryMinSlippageSlider" min="-100" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_autoEntryMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
 
         <div class="uat-loss-prevention-block" style="margin:16px 0;">
@@ -9136,6 +9146,12 @@
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_msAutoEntryProb" min="0" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_msProbVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0%</div>
+        </div>
+
+        <label for="m_msMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_msMinSlippageSlider" min="-100" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_msMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
         
         <hr style="border:none; border-top:1px solid #4a5568; margin:24px 0;">
@@ -10196,6 +10212,49 @@
         display.style.left = `${mobileUatRangeBubbleLeftPx(slider, percent)}px`;
       }
 
+      // Min Slippage gate slider (all strategies). Slider int -100..0 == dollars -0.1000..0.0000 (0.001 step).
+      const MOBILE_MIN_SLIPPAGE_SLIDERS = [
+        ['m_autoEntryMinSlippageSlider', 'm_autoEntryMinSlippageValueDisplay'],
+        ['m_expirationScalpMinSlippageSlider', 'm_expirationScalpMinSlippageValueDisplay'],
+        ['m_msMinSlippageSlider', 'm_msMinSlippageValueDisplay'],
+      ];
+      function updateMobileMinSlippageBubble(sliderId, displayId, rawValue) {
+        const slider = document.getElementById(sliderId);
+        const display = document.getElementById(displayId);
+        if (!slider || !display) return;
+        const n = Math.min(0, Math.max(-100, parseInt(rawValue, 10) || 0));
+        display.textContent = (n / 1000).toFixed(4);
+        const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+        const percent = (max === min) ? 0 : (n - min) / (max - min);
+        display.style.left = `${mobileUatRangeBubbleLeftPx(slider, percent)}px`;
+      }
+      function mobileUatLoadMinSlippage(data) {
+        const raw = (data && data.min_slippage !== undefined && data.min_slippage !== null)
+          ? parseFloat(data.min_slippage) : 0;
+        const asInt = Math.max(-100, Math.min(0, Math.round((Number.isFinite(raw) ? raw : 0) * 1000)));
+        MOBILE_MIN_SLIPPAGE_SLIDERS.forEach(function (pair) {
+          const sid = pair[0], did = pair[1];
+          const el = document.getElementById(sid);
+          if (!el) return;
+          el.value = asInt;
+          updateMobileMinSlippageBubble(sid, did, asInt);
+          if (!el._mobileMinSlippageWired) {
+            el._mobileMinSlippageWired = true;
+            el.addEventListener('input', function () { updateMobileMinSlippageBubble(sid, did, this.value); });
+          }
+        });
+      }
+      function mobileUatReadMinSlippage(isMS, isES) {
+        let id = 'm_autoEntryMinSlippageSlider';
+        if (isMS) id = 'm_msMinSlippageSlider';
+        else if (isES) id = 'm_expirationScalpMinSlippageSlider';
+        const el = document.getElementById(id);
+        if (!el) return 0;
+        const raw = parseInt(el.value, 10);
+        const v = Number.isFinite(raw) ? raw : 0;
+        return v < 0 ? parseFloat((v / 1000).toFixed(4)) : 0;
+      }
+
       function mobileUatBool(value) {
         return value === true || value === 'true' || value === 1 || value === '1';
       }
@@ -10658,6 +10717,8 @@
         // Regime Monitor settings (common across strategies)
         setChk('m_regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
         setVal('m_regimeWindowSelect', data.regime_window ?? '30d');
+        // Min Slippage gate (all strategies)
+        mobileUatLoadMinSlippage(data);
         {
           const v = data.test_filter;
           setChk('m_uatMonitorTestFilter', v !== undefined && v !== null ? !!v : !!(monitor && (monitor.test_filter === true || monitor.test_filter === 'true' || monitor.test_filter === 1)));
@@ -10920,6 +10981,10 @@
               esMfp.addEventListener('input', function() { updateMobileExpirationScalpMinFillPriceBubble(this.value); });
             }
           }
+          MOBILE_MIN_SLIPPAGE_SLIDERS.forEach(function (pair) {
+            const el = document.getElementById(pair[0]);
+            if (el) updateMobileMinSlippageBubble(pair[0], pair[1], el.value);
+          });
         }, 150);
 
         const saveBtn = document.getElementById('m_unifiedSave');
@@ -11088,6 +11153,9 @@
               payload.verification_period_enabled = document.getElementById('m_verifyEnabled').checked;
               payload.verification_period_seconds = parseInt(document.getElementById('m_verifySeconds').value, 10);
             }
+
+            // Min Slippage gate (all strategies): read from the active strategy section's slider.
+            payload.min_slippage = mobileUatReadMinSlippage(saveIsMS, saveIsES);
 
             Object.assign(payload, mobileUatReadLossPreventionPayload(saveIsMS));
 

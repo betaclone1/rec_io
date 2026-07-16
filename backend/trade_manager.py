@@ -520,7 +520,7 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
         with pg.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT time_in_force, order_type, min_fill_price
+                SELECT time_in_force, order_type, min_fill_price, min_slippage
                 FROM {_tm_monitor_list_table()}
                 WHERE id = %s
                 """,
@@ -532,7 +532,7 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 status_code=status.HTTP_400_BAD_REQUEST,
                 detail="monitor_not_found_for_execution_fields",
             )
-        tif, ot, min_fill_price = row[0], row[1], row[2]
+        tif, ot, min_fill_price, min_slippage = row[0], row[1], row[2], row[3]
         ok, err = validate_execution_fields(str(tif), str(ot))
         if not ok:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err or "invalid_execution_fields")
@@ -543,6 +543,13 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 mfp = float(min_fill_price)
                 if mfp > 0:
                     data["min_fill_price"] = round(mfp, 4)
+            except (TypeError, ValueError):
+                pass
+        # Monitor is authoritative for the slippage gate (enabled range -0.1000..0.0000).
+        if min_slippage is not None:
+            try:
+                ms = float(min_slippage)
+                data["min_slippage"] = round(ms, 4) if ms < 0 else 0.0
             except (TypeError, ValueError):
                 pass
     finally:
@@ -1974,6 +1981,20 @@ def _min_fill_price_for_db(trade: dict) -> float:
     return round(mfp, 4)
 
 
+def _min_slippage_for_db(trade: dict) -> float:
+    """Snapshot monitor min_slippage on insert; 0.0000 means gate disabled (enabled range -0.1000..0.0000)."""
+    raw = trade.get("min_slippage")
+    if raw is None:
+        return 0.0
+    try:
+        ms = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if ms >= 0:
+        return 0.0
+    return round(ms, 4)
+
+
 def _format_diff_from_prob_and_buy(prob_value: object, buy_price: object) -> Optional[str]:
     """Return diff text (+/- integer cents) from prob(percent) and buy_price(decimal)."""
     try:
@@ -2270,6 +2291,58 @@ def _min_fill_price_precheck_message(data: dict, projection: Optional[dict]) -> 
         return (
             f"min_fill_price_rejected: estimated_fill={est_f:.4f} min_fill_price={min_fill:.4f} "
             f"trigger_buy_price={trigger_px} available_contracts={avail}"
+        )
+    return None
+
+
+def _min_slippage_precheck_message(data: dict, projection: Optional[dict]) -> Optional[str]:
+    """
+    Early TM min_slippage gate (paper + live). Reuses the orderbook projection already
+    computed for ``initial_proj_price`` (same ladder walk as executor); no extra OB fetch.
+
+    Projected entry slippage = estimated orderbook fill (``initial_proj_price``) minus the
+    trigger/intended price (``buy_price`` on the ticket) — same sign convention as the
+    persisted ``slippage`` column (buy_price - initial_price).
+
+    Gate is enabled only when ``min_slippage`` < 0 (0.0000 disables; range -0.1000..0.0000).
+    Returns a rejection detail string when the trade should be deleted without sending to
+    the executor (or without paper-open). None = proceed.
+    """
+    raw_min = data.get("min_slippage")
+    if raw_min is None:
+        return None
+    try:
+        min_slip = float(raw_min)
+    except (TypeError, ValueError):
+        return None
+    if min_slip >= 0:
+        return None
+
+    est = None
+    avail = None
+    proj_reason = None
+    if projection is not None:
+        est = projection.get("initial_proj_price")
+        avail = projection.get("available_contracts")
+        proj_reason = projection.get("reason")
+    if est is None:
+        est = data.get("initial_proj_price")
+
+    trigger_px = data.get("buy_price")
+    if est is None or trigger_px is None:
+        return (
+            f"min_slippage_no_orderbook:{proj_reason or 'projection_failed'} "
+            f"min_slippage={min_slip:.4f}"
+        )
+    try:
+        proj_slip = float(est) - float(trigger_px)
+    except (TypeError, ValueError):
+        return f"min_slippage_no_orderbook:invalid_projection min_slippage={min_slip:.4f}"
+
+    if proj_slip + 1e-9 < min_slip:
+        return (
+            f"min_slippage_rejected: projected_slippage={proj_slip:.4f} min_slippage={min_slip:.4f} "
+            f"estimated_fill={float(est):.4f} trigger_buy_price={trigger_px} available_contracts={avail}"
         )
     return None
 
@@ -2934,6 +3007,7 @@ def insert_trade(trade):
 
                 slippage_for_db = _entry_slippage_value(trade.get("buy_price"), initial_price_for_db)
                 min_fill_price_for_db = _min_fill_price_for_db(trade)
+                min_slippage_for_db = _min_slippage_for_db(trade)
 
                 # Live active-row dedupe (same keys as simulated duplicate guard): second INSERT path
                 # returns the existing row when pending/open already exists for this monitor/strike.
@@ -3034,10 +3108,10 @@ def insert_trade(trade):
                         yes_ask_min_15m, yes_ask_max_15m, no_ask_min_15m, no_ask_max_15m,
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
-                        time_in_force, order_type, min_fill_price,
+                        time_in_force, order_type, min_fill_price, min_slippage,
                         subaccount,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -3071,6 +3145,7 @@ def insert_trade(trade):
                     trade.get("time_in_force"),
                     trade.get("order_type"),
                     min_fill_price_for_db,
+                    min_slippage_for_db,
                     int(trade.get("subaccount", 1)),
                 ))
                 last_id = cursor.fetchone()[0]
@@ -6331,6 +6406,34 @@ async def add_trade(request: Request):
         log_event(
             data.get("ticket_id", "UNKNOWN"),
             f"MANAGER: SLIPPAGE FAILURE (precheck) — {min_fill_precheck}",
+        )
+        return _delete_pending_trade_for_rejection(
+            trade_id,
+            data.get("ticket_id"),
+            "SLIPPAGE FAILURE",
+        )
+
+    # Early min_slippage gate (paper + live): reuse projection already computed above.
+    # Rejects when projected entry slippage (est fill - trigger price) is below the monitor
+    # floor. Same delete path as executor SLIPPAGE FAILURE; skips executor / paper-open.
+    min_slippage_precheck = _min_slippage_precheck_message(data, projection)
+    if min_slippage_precheck:
+        data["status"] = "pending"
+        trade_id, inserted_new = insert_trade(data)
+        if trade_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail="Failed to insert trade to database",
+            )
+        if not inserted_new:
+            log_event(
+                data.get("ticket_id", "UNKNOWN"),
+                "MANAGER: PRECHECK CANCEL — idempotent ticket reuse, skip slippage rejection delete",
+            )
+            return {"id": trade_id}
+        log_event(
+            data.get("ticket_id", "UNKNOWN"),
+            f"MANAGER: SLIPPAGE FAILURE (precheck) — {min_slippage_precheck}",
         )
         return _delete_pending_trade_for_rejection(
             trade_id,

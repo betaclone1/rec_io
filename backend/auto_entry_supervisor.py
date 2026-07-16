@@ -2679,19 +2679,26 @@ def trigger_auto_entry_trade(strike_data):
         # Get trade strategy from PostgreSQL
         trade_strategy = get_effective_trade_strategy()
         
-        # Get paper_trade setting from monitor config
+        # Get paper_trade + min_slippage gate settings from monitor config
         paper_trade = False
+        min_slippage = 0.0000
         try:
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute(f"SELECT paper_trade FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
+                cursor.execute(f"SELECT paper_trade, min_slippage FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
                 result = cursor.fetchone()
                 if result and result[0] is not None:
                     paper_trade = bool(result[0])
+                if result and result[1] is not None:
+                    try:
+                        ms = float(result[1])
+                        min_slippage = round(ms, 4) if ms < 0 else 0.0000
+                    except (TypeError, ValueError):
+                        min_slippage = 0.0000
             conn.close()
         except Exception as e:
-            log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade setting: {e}, defaulting to False")
+            log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade/min_slippage setting: {e}, defaulting to False/0.0000")
         
         # Prepare the trade data exactly like trade_initiator does (count_fp for full-chain consistency)
         trade_payload = {
@@ -2717,7 +2724,8 @@ def trigger_auto_entry_trade(strike_data):
             "loss_prevention": is_loss_prevention_sizing_state(loss_prevention),
             "loss_prevention_state": loss_prevention,
             "multiplier": get_current_multiplier(),
-            "paper_trade": paper_trade
+            "paper_trade": paper_trade,
+            "min_slippage": min_slippage
         }
         
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager_{ctx_user()} :{port}/trades | {trade_payload}")

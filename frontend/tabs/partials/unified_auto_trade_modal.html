@@ -465,11 +465,15 @@
             <div id="expirationScalpAskWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9900</div>
           </div>
         </div>
-        <label for="expirationScalpMinFillPriceSlider" class="uat-slider-label--compact" style="font-size:14px; color:#333; font-weight:500;">Minimum Fill Price:</label>
-        <p class="uat-expiration-scalp-min-fill-hint" style="font-size:12px; color:#888; margin:0 0 34px 0;">0 disables. Executor rejects opens when estimated orderbook VWAP fill is below this.</p>
+        <label for="expirationScalpMinFillPriceSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Fill Price:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="expirationScalpMinFillPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="expirationScalpMinFillPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
+        </div>
+        <label for="expirationScalpMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="expirationScalpMinSlippageSlider" min="-100" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="expirationScalpMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
         </div>
 
@@ -484,6 +488,12 @@
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="autoEntryMaxDifferentialSlider" min="-50" max="50" step="0.25" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="autoEntryMaxDifferentialValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="autoEntryMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="autoEntryMinSlippageSlider" min="-100" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="autoEntryMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
 
         <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />
@@ -726,6 +736,12 @@
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="msMaxPriceSpreadSlider" min="0" max="20" step="0.1" value="3" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="msMaxPriceSpreadValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
+        </div>
+
+        <label for="msMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="msMinSlippageSlider" min="-100" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="msMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
 
         <hr class="uat-modal-hr uat-modal-hr--16" aria-hidden="true" />

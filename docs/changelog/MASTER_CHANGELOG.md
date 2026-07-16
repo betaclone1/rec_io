@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-16 — Release v3.8.3: TM min_slippage gate, monitor slider, trades snapshot
+
+**Summary**
+- **Release: v3.8.3**
+- **Min slippage gate (trade_manager):** New early precheck on projected entry slippage (`initial_proj_price − buy_price`). When monitor `min_slippage` is below 0 (range -0.1000..0.0000; 0 disables), TM rejects paper and live opens before executor using the same pending-insert → delete → `SLIPPAGE FAILURE` path as min_fill. Reuses existing orderbook projection (no extra fetch).
+- **Monitor / AES / settings:** Migration **`20260716_1200_min_slippage_gate`** adds `min_slippage` to all tenant `monitor_list_*` (default 0.0000) and snapshots it on `trades_*` / `trades_simulated_*`. AES passes the value on the trade ticket; settings GET/SET validate and persist; new-monitor INSERT defaults to 0.0000.
+- **UI:** Min Slippage slider on all strategy monitor settings modals (desktop + mobile), last control before Loss Prevention (Expiration Scalp: after Min Fill Price). Hint lines removed; label spacing uses standard `--uat-slider-label-gap` (no compact class).
+- **Database:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` and greenfield `database.py` updated for `min_slippage`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260716_1200_min_slippage_gate.up.sql`, `.down.sql`
+- [ ] Apply migration from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260716_1200_min_slippage_gate`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services:  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify health/logs for `main_app`, `trade_manager_*`, `trade_executor_*`, `auto_entry_supervisor_*`, `monitor_manager_*`.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.3`
+
+---
+
 ## 2026-07-15 — Release v3.8.2: DOGE live pipeline, TM min-fill precheck, trades min_fill_price snapshot
 
 **Summary**

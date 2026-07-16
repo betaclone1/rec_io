@@ -60,7 +60,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 + """
                        , simulated_trade_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
                          COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
-                         COALESCE(symbol_wide_loss_prevention, FALSE)
+                         COALESCE(symbol_wide_loss_prevention, FALSE),
+                         min_slippage
             """
                 + f"""
                 FROM {ml} WHERE id = %s
@@ -153,6 +154,9 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 st_start = result[_sw_i + 2]
                 lp_method = str(result[_sw_i + 3]) if result[_sw_i + 3] is not None else "win_streak"
                 symbol_wide_on = bool(result[_sw_i + 4]) if result[_sw_i + 4] is not None else False
+                row["min_slippage"] = (
+                    float(result[_sw_i + 5]) if result[_sw_i + 5] is not None else 0.0000
+                )
                 st_start_iso = (
                     timestamptz_wire_iso_et(st_start)
                     if hasattr(st_start, "isoformat")

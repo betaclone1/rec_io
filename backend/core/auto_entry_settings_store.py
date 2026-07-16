@@ -239,6 +239,20 @@ def apply_auto_entry_settings(
             else:
                 update_fields.append("min_fill_price = %s")
                 update_values.append(round(mfp, 4))
+    if "min_slippage" in data:
+        ms_raw = data["min_slippage"]
+        if ms_raw is None or ms_raw == "":
+            update_fields.append("min_slippage = %s")
+            update_values.append(0.0000)
+        else:
+            ms = float(ms_raw)
+            if round(ms, 4) < -0.1000 or ms > 0:
+                return {
+                    "status": "error",
+                    "message": "min_slippage must be between -0.1000 and 0.0000 (0 disables)",
+                }
+            update_fields.append("min_slippage = %s")
+            update_values.append(round(ms, 4) if ms < 0 else 0.0000)
     def _boolish(v):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
