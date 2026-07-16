@@ -16,18 +16,18 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Database:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` and greenfield `database.py` updated for `min_slippage`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260716_1200_min_slippage_gate.up.sql`, `.down.sql`
-- [ ] Apply migration from repo root before restart:  
+- [x] Apply migration from repo root before restart:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260716_1200_min_slippage_gate`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services:  
+- [x] Restart services:  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify health/logs for `main_app`, `trade_manager_*`, `trade_executor_*`, `auto_entry_supervisor_*`, `monitor_manager_*`.
-- [ ] Record release in DB:  
+- [x] Verify health/logs for `main_app`, `trade_manager_*`, `trade_executor_*`, `auto_entry_supervisor_*`, `monitor_manager_*`.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.8.3`
 
 ---
