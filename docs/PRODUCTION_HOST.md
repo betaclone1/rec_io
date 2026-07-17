@@ -60,24 +60,25 @@ Edit the crontab for the **same Linux user** that can read the repo and credenti
 crontab -e
 ```
 
-Add (two lines: timezone for the job + schedule):
+Production droplets run with **OS timezone UTC**. Do **not** rely on `CRON_TZ` here — it is ignored and `30 0 * * *` fires at **00:30 UTC (20:30 Eastern)**. Use an hourly `:30` schedule; the wrapper script exits unless the Eastern wall clock is exactly `00:30` (works in both EDT and EST):
 
 ```cron
-CRON_TZ=America/New_York
-30 0 * * * /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
+30 * * * * REC_USER_NO=0001 /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
 ```
 
 To pin a different bookkeeper user:
 
 ```cron
-CRON_TZ=America/New_York
-30 0 * * * REC_USER_NO=0002 /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
+30 * * * * REC_USER_NO=0002 /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
 ```
 
-**Logs:** append-only **`/opt/rec_io_server/logs/bookkeeper_kalshi_reconcile.log`**.
+Manual / catch-up (bypass the Eastern gate):
 
-**Note:** Production droplets use **Linux** `cron`; **`CRON_TZ`** is honored (same pattern as [ARCHITECTURE.md](ARCHITECTURE.md)). This differs from macOS `cron`, which often ignores `CRON_TZ`.
+```bash
+BOOKKEEPER_FORCE=1 REC_USER_NO=0001 /opt/rec_io_server/scripts/cron/bookkeeper_kalshi_reconcile.sh
+```
 
+**Logs:** append-only **`/opt/rec_io_server/logs/bookkeeper_kalshi_reconcile.log`**. Silent no-ops from the hourly gate are not logged.
 ---
 
 ## Notes
