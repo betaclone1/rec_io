@@ -1094,7 +1094,11 @@
       const perfRow = document.getElementById('performanceBasedAllocation');
       if (perfRow && perfRow.parentElement) perfRow.parentElement.style.display = disp(!isExpirationScalp);
       const autoStopSection = document.getElementById('htcAutoStopSection');
-      if (autoStopSection) autoStopSection.style.display = disp(!isExpirationScalp);
+      if (autoStopSection) autoStopSection.style.display = '';
+      const probabilityAutoStopControls = document.getElementById('htcProbabilityAutoStopControls');
+      if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = disp(!isExpirationScalp);
+      const nonFloorAutoStopControls = document.getElementById('htcNonFloorAutoStopControls');
+      if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(!isExpirationScalp);
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
       if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
       const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');

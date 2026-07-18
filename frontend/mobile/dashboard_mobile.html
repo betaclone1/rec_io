@@ -9033,6 +9033,7 @@
         <div id="m_htcAutoStopSection">
         <div class="uat-section-title">Auto Stop</div>
 
+        <div id="m_htcProbabilityAutoStopControls">
         <label for="m_stopProb" style="font-size:14px; color:#333; margin-bottom:56px; font-weight:500;">Current Win Probability:</label>
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_stopProb" min="0" max="100" value="40" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -9057,6 +9058,7 @@
         </div>
 
         <hr style="border:none; border-top:1px solid #4a5568; margin:8px 0 16px 0;">
+        </div>
         <label for="m_stopLossPriceSlider" style="font-size:14px; color:#333; margin-bottom:56px; font-weight:500;">Stop Loss Price:</label>
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
@@ -9080,6 +9082,7 @@
           </div>
         </div>
 
+        <div id="m_htcNonFloorAutoStopControls">
         <label for="m_minTTC" style="font-size:14px; color:#333; margin-bottom:12px; font-weight:500;">Minimum Time to Close:</label>
         <div style="display:flex; align-items:center; gap:10px; margin-bottom:24px;">
           <div class="uat-min-ttc-shell" style="display:flex; align-items:center; border:1px solid #4a5568; border-radius:4px; background:#2a3441;">
@@ -9110,6 +9113,7 @@
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_verifySeconds" min="5" max="60" value="15" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_verifySecondsVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">15s</div>
+        </div>
         </div>
         </div>
         </div>
@@ -9470,7 +9474,11 @@
         const perfRow = document.getElementById('m_perfAlloc');
         if (perfRow && perfRow.parentElement) perfRow.parentElement.style.display = disp(!isExpirationScalp);
         const autoStopSection = document.getElementById('m_htcAutoStopSection');
-        if (autoStopSection) autoStopSection.style.display = disp(!isExpirationScalp);
+        if (autoStopSection) autoStopSection.style.display = '';
+        const probabilityAutoStopControls = document.getElementById('m_htcProbabilityAutoStopControls');
+        if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = disp(!isExpirationScalp);
+        const nonFloorAutoStopControls = document.getElementById('m_htcNonFloorAutoStopControls');
+        if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(!isExpirationScalp);
         const esAsk = document.getElementById('m_expirationScalpAskWindowSection');
         if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
         const nonScalpTail = document.getElementById('m_uatNonExpirationScalpAutoEntry');

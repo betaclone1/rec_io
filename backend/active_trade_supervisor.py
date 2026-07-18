@@ -6967,6 +6967,7 @@ def _try_stop_loss_ask_floor(
     verification_pending_trades,
     min_ttc_seconds,
     ttc_seconds,
+    check_probability_divergence: bool = True,
 ) -> bool:
     """
     Rip-cord when opposite-side ask (current_close_price) > (1 - stop_loss_price).
@@ -6981,6 +6982,8 @@ def _try_stop_loss_ask_floor(
     glitch vs model path disagree).
 
     Ignores probability verification. Respects min_ttc_seconds like probability auto-stop.
+    ``check_probability_divergence=False`` disables the separate model-vs-market
+    plausibility guard for strategies whose floor stop must not depend on probability.
     Returns True if this trade was handled (caller should continue to next trade).
     """
     try:
@@ -7072,7 +7075,7 @@ def _try_stop_loss_ask_floor(
             _stop_loss_floor_confirm_ticks.pop(tid_key, None)
 
         div_max = _stop_loss_floor_prob_mark_divergence_max_points()
-        if div_max > 0:
+        if check_probability_divergence and div_max > 0:
             prob_raw = trade.get("current_probability")
             if prob_raw is not None:
                 try:
@@ -7137,8 +7140,24 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
 
 
 def check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades):
-    """Expiration Scalp holds to settlement — no auto-stop."""
-    return
+    """
+    Expiration Scalp only uses the configured stop-loss ask floor.
+
+    It intentionally does not apply probability, minimum-TTC, momentum-spike,
+    or verification gates. A reached floor goes straight through the standard
+    market/IOC auto-close path; that path also handles the opt-in floor flip sell.
+    """
+    stop_floor = get_stop_loss_price()
+    for trade in active_trades:
+        _try_stop_loss_ask_floor(
+            trade,
+            stop_floor,
+            auto_stop_triggered_trades,
+            verification_pending_trades,
+            0,
+            0,
+            check_probability_divergence=False,
+        )
 
 
 def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades):
