@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
 from typing import Any, Dict, Optional
 
@@ -35,6 +36,29 @@ REDIS_KEY_PREFIX_ATS_ENROLL_RESULT = os.getenv(
 REDIS_CHANNEL_ATS_TM_NOTIFICATIONS = os.getenv(
     "REDIS_CHANNEL_ATS_TM_NOTIFICATIONS", "rec_io:ats_tm_notifications"
 )
+
+# Pubsub loop progress (monotonic seconds). Updated every get_message wake so idle
+# markets still look healthy; stalls only when the listen thread is dead or blocked
+# inside a handler.
+_subscriber_progress_mono: float = 0.0
+_subscriber_progress_lock = threading.Lock()
+_SUBSCRIBER_GET_MESSAGE_TIMEOUT_SEC = float(
+    os.getenv("ATS_ENROLL_SUBSCRIBER_GET_MESSAGE_TIMEOUT_SEC", "1.0")
+)
+
+
+def mark_subscriber_progress() -> None:
+    global _subscriber_progress_mono
+    with _subscriber_progress_lock:
+        _subscriber_progress_mono = time.monotonic()
+
+
+def subscriber_progress_age_sec() -> float:
+    """Seconds since last pubsub-loop progress. inf if never started."""
+    with _subscriber_progress_lock:
+        if _subscriber_progress_mono <= 0.0:
+            return float("inf")
+        return max(0.0, time.monotonic() - _subscriber_progress_mono)
 
 
 def _redis_client():
@@ -112,11 +136,15 @@ def wait_trade_open_enroll_ack(
     return None
 
 
-def start_enroll_subscriber_loop(handler, tm_notify_handler=None) -> None:
+def start_enroll_subscriber_loop(handler, tm_notify_handler=None, stop_event=None) -> None:
     """
     Blocking loop (run in a daemon thread).
     handler(msg: dict) -> None for REDIS_CHANNEL_ATS_ENROLL_REQUEST (open enroll).
     tm_notify_handler(msg: dict) -> None optional for REDIS_CHANNEL_ATS_TM_NOTIFICATIONS.
+
+    Uses timed get_message so mark_subscriber_progress advances even when quiet
+    (listen() alone only wakes on traffic and cannot detect a hung handler).
+    Optional stop_event (threading.Event) ends the loop for supervised restart.
     """
     r = redis_client_optional()
     if not r:
@@ -128,15 +156,40 @@ def start_enroll_subscriber_loop(handler, tm_notify_handler=None) -> None:
         channels.append(REDIS_CHANNEL_ATS_TM_NOTIFICATIONS)
     pubsub.subscribe(*channels)
     logger.info("ATS Redis subscribed to %s", channels)
-    for message in pubsub.listen():
-        if message["type"] != "message":
-            continue
+    mark_subscriber_progress()
+    timeout = max(0.2, float(_SUBSCRIBER_GET_MESSAGE_TIMEOUT_SEC))
+    try:
+        while True:
+            if stop_event is not None and stop_event.is_set():
+                logger.info("ATS enrollment subscriber stop requested")
+                break
+            mark_subscriber_progress()
+            try:
+                message = pubsub.get_message(
+                    ignore_subscribe_messages=True, timeout=timeout
+                )
+            except Exception as e:
+                logger.warning("ATS enrollment get_message error: %s", e)
+                time.sleep(min(2.0, timeout))
+                continue
+            if not message:
+                continue
+            if message.get("type") != "message":
+                continue
+            try:
+                ch = message.get("channel")
+                data = json.loads(message["data"])
+                if ch == REDIS_CHANNEL_ATS_TM_NOTIFICATIONS and tm_notify_handler:
+                    tm_notify_handler(data)
+                else:
+                    handler(data)
+            except Exception as e:
+                logger.warning("ATS enrollment message error: %s", e)
+            finally:
+                mark_subscriber_progress()
+    finally:
         try:
-            ch = message.get("channel")
-            data = json.loads(message["data"])
-            if ch == REDIS_CHANNEL_ATS_TM_NOTIFICATIONS and tm_notify_handler:
-                tm_notify_handler(data)
-            else:
-                handler(data)
-        except Exception as e:
-            logger.warning("ATS enrollment message error: %s", e)
+            pubsub.unsubscribe(*channels)
+            pubsub.close()
+        except Exception:
+            pass

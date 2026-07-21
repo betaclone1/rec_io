@@ -1052,6 +1052,27 @@ monitoring_thread = None
 monitoring_thread_lock = threading.Lock()
 _ats_live_state_wake = threading.Event()
 
+# Supervised Redis enroll + TM-notify subscriber (separate from monitoring thread).
+_enroll_subscriber_thread = None
+_enroll_subscriber_lock = threading.Lock()
+_enroll_subscriber_stop = threading.Event()
+_enroll_subscriber_restart_failures = 0
+_ATS_ENROLL_SUBSCRIBER_STALE_SEC = float(
+    os.getenv("ATS_ENROLL_SUBSCRIBER_STALE_SEC", "45")
+)
+_ATS_SELF_HEAL_SYNC_INTERVAL_SEC = float(
+    os.getenv("ATS_SELF_HEAL_SYNC_INTERVAL_SEC", "60")
+)
+_ATS_SELF_HEAL_GHOST_SWEEP_INTERVAL_SEC = float(
+    os.getenv("ATS_SELF_HEAL_GHOST_SWEEP_INTERVAL_SEC", "30")
+)
+_ats_self_heal_last_sync_mono = 0.0
+_ats_self_heal_last_ghost_sweep_mono = 0.0
+_ats_self_heal_last_process_restart_mono = 0.0
+_ATS_SELF_HEAL_PROCESS_RESTART_COOLDOWN_SEC = float(
+    os.getenv("ATS_SELF_HEAL_PROCESS_RESTART_COOLDOWN_SEC", "300")
+)
+
 # Cache for active trades data to reduce frontend load
 active_trades_cache = None
 active_trades_cache_time = 0
@@ -1530,10 +1551,64 @@ def _handle_ats_enroll_redis_message(data: dict) -> None:
         log(f"❌ ATS enroll redis handler: {e}")
 
 
-def start_ats_enroll_redis_subscriber():
-    """Daemon thread: consume rec_io:ats_enroll_request for this monitor."""
-    t = threading.Thread(target=_ats_enroll_subscriber_thread_main, daemon=True)
-    t.start()
+def _ats_enroll_subscriber_thread_main():
+    try:
+        from backend.core.ats_enrollment_redis import (
+            mark_subscriber_progress,
+            start_enroll_subscriber_loop,
+        )
+
+        mark_subscriber_progress()
+        start_enroll_subscriber_loop(
+            _handle_ats_enroll_redis_message,
+            _handle_ats_tm_notification_redis,
+            stop_event=_enroll_subscriber_stop,
+        )
+    except Exception as e:
+        log(f"❌ ATS enrollment subscriber exit: {e}")
+
+
+def start_ats_enroll_redis_subscriber(*, force: bool = False) -> bool:
+    """
+    Ensure daemon thread consuming enroll + TM notification channels is running.
+    Returns True if a live subscriber thread is in place after this call.
+    If force=True and an old thread is still alive (hung), returns False so caller
+    can escalate to process restart (daemon threads cannot be forcibly killed).
+    """
+    global _enroll_subscriber_thread, _enroll_subscriber_restart_failures
+    from backend.core.ats_enrollment_redis import mark_subscriber_progress
+
+    with _enroll_subscriber_lock:
+        alive = (
+            _enroll_subscriber_thread is not None
+            and _enroll_subscriber_thread.is_alive()
+        )
+        if alive and not force:
+            return True
+        if alive and force:
+            log(
+                "🚨 ATS ENROLL SUBSCRIBER: thread alive but stale/hung; "
+                "cannot kill in-process — escalate to process restart"
+            )
+            return False
+        _enroll_subscriber_stop.clear()
+        # Seed progress before thread runs so self-heal does not false-positive "stale".
+        mark_subscriber_progress()
+        t = threading.Thread(
+            target=_ats_enroll_subscriber_thread_main,
+            name="ats_enroll_subscriber",
+            daemon=True,
+        )
+        t.start()
+        _enroll_subscriber_thread = t
+        time.sleep(0.2)
+        if t.is_alive():
+            _enroll_subscriber_restart_failures = 0
+            log("✅ ATS ENROLL SUBSCRIBER: started")
+            return True
+        _enroll_subscriber_restart_failures += 1
+        log("❌ ATS ENROLL SUBSCRIBER: failed to stay alive after start")
+        return False
 
 
 def _handle_ats_tm_notification_redis(data: dict) -> None:
@@ -1603,15 +1678,6 @@ def _handle_ats_tm_notification_redis(data: dict) -> None:
         process_trade_manager_notification_core(trade_id, ticket_id, status)
     except Exception as e:
         log(f"❌ ATS tm notification redis: {e}")
-
-
-def _ats_enroll_subscriber_thread_main():
-    try:
-        from backend.core.ats_enrollment_redis import start_enroll_subscriber_loop
-
-        start_enroll_subscriber_loop(_handle_ats_enroll_redis_message, _handle_ats_tm_notification_redis)
-    except Exception as e:
-        log(f"❌ ATS enrollment subscriber exit: {e}")
 
 
 @app.route('/api/trade_manager_notification', methods=['POST'])
@@ -5157,10 +5223,13 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
             remove_closed_trade(tid)
             continue
         mon_db, st = m[0], m[1]
-        if str(mon_db or "").strip() != mon_tag:
-            continue
+        # Terminal trades must leave the Redis/PG pool even if monitor tags disagree
+        # (lost close notify left a ghost under this mid while trades_* already settled).
         if st in ("closed", "expired", "error", "deleted"):
             remove_closed_trade(tid)
+            continue
+        if str(mon_db or "").strip() != mon_tag:
+            continue
 
 
 def _purge_unified_active_trades_wrong_market() -> int:
@@ -5398,6 +5467,176 @@ def sync_with_trades_db():
         log(f"Error in sync_with_trades_db: {e}")
         log(traceback.format_exc())
 
+
+_TERMINAL_TRADE_STATUSES = frozenset({"closed", "expired", "error", "deleted"})
+
+
+def _is_terminal_trade_status(status: Optional[str]) -> bool:
+    return str(status or "").strip().lower() in _TERMINAL_TRADE_STATUSES
+
+
+def sweep_redis_active_trade_ghosts_vs_trades_db() -> int:
+    """
+    Drop Redis active_trades entries whose canonical trades_* row is missing or terminal.
+
+    Runs without relying on the enroll subscriber or a specific monitor binding.
+    Returns number of ghosts removed.
+    """
+    if not _redis_active_trades_on():
+        return 0
+    from backend.core import live_state_active_trades as ls_at
+
+    user = USER_NUMBER
+    try:
+        pool = ls_at.list_trades(user)
+    except Exception as e:
+        log(f"⚠️ SELF-HEAL ghost sweep: Redis list failed: {e}")
+        return 0
+    if not pool:
+        return 0
+
+    tids: List[int] = []
+    mid_by_tid: Dict[int, str] = {}
+    for rec in pool:
+        tid = rec.get("trade_id")
+        if tid is None:
+            continue
+        try:
+            tid_i = int(tid)
+        except (TypeError, ValueError):
+            continue
+        tids.append(tid_i)
+        mid_by_tid[tid_i] = str(rec.get("monitor_id") or "").strip()
+
+    if not tids:
+        return 0
+
+    conn = get_trades_db_connection()
+    if not conn:
+        return 0
+    status_by_id: Dict[int, str] = {}
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT id, status FROM {legacy_users_trades(user)} WHERE id = ANY(%s)",
+                (tids,),
+            )
+            for row in cur.fetchall():
+                status_by_id[int(row[0])] = str(row[1] or "").strip().lower()
+    except Exception as e:
+        log(f"⚠️ SELF-HEAL ghost sweep: trades lookup failed: {e}")
+        return 0
+    finally:
+        conn.close()
+
+    removed = 0
+    for tid in tids:
+        st = status_by_id.get(tid)
+        if st is not None and not _is_terminal_trade_status(st):
+            continue
+        mid = mid_by_tid.get(tid) or ""
+        reason = "missing from trades_*" if st is None else f"status={st}"
+        log(f"🧹 SELF-HEAL: removing Redis ghost trade_id={tid} ({reason})")
+        try:
+            if mid:
+                with ats_monitor_bind(user, mid):
+                    if remove_closed_trade(tid):
+                        removed += 1
+            else:
+                # No monitor_id on record — still HDEL by tenant.
+                if ls_at.remove_trade(user, tid):
+                    removed += 1
+                    log(f"🔚 CLOSED TRADE REMOVED FROM REDIS ACTIVE_TRADES (trade_id={tid})")
+        except Exception as e:
+            log(f"⚠️ SELF-HEAL: failed removing ghost trade_id={tid}: {e}")
+    if removed:
+        log(f"🧹 SELF-HEAL: removed {removed} Redis ghost trade(s)")
+        invalidate_active_trades_cache()
+        try:
+            broadcast_active_trades_change()
+        except Exception:
+            pass
+    return removed
+
+
+def _ats_self_heal_maybe_process_restart(reason: str) -> None:
+    global _ats_self_heal_last_process_restart_mono
+    now = time.monotonic()
+    if (
+        now - _ats_self_heal_last_process_restart_mono
+        < _ATS_SELF_HEAL_PROCESS_RESTART_COOLDOWN_SEC
+    ):
+        remaining = int(
+            _ATS_SELF_HEAL_PROCESS_RESTART_COOLDOWN_SEC
+            - (now - _ats_self_heal_last_process_restart_mono)
+        )
+        log(f"⏳ SELF-HEAL: process restart on cooldown ({remaining}s) — {reason}")
+        return
+    _ats_self_heal_last_process_restart_mono = now
+    log(f"🚨 SELF-HEAL: process restart — {reason}")
+    restart_active_trade_supervisor_process()
+
+
+def check_ats_self_heal() -> None:
+    """
+    Self-heal for stuck-alive ATS: enroll subscriber health, Redis ghosts, trades sync.
+
+    Existing failsafe only restarts when the monitoring thread is dead. This covers
+    the production failure mode where monitoring spins on a Redis ghost while the
+    enroll/TM-notify subscriber is dead or hung (no ACKs, missed closes).
+    """
+    global _ats_self_heal_last_sync_mono, _ats_self_heal_last_ghost_sweep_mono
+
+    # --- enroll / TM-notify subscriber ---
+    try:
+        from backend.core.ats_enrollment_redis import subscriber_progress_age_sec
+
+        with _enroll_subscriber_lock:
+            sub_alive = (
+                _enroll_subscriber_thread is not None
+                and _enroll_subscriber_thread.is_alive()
+            )
+        age = subscriber_progress_age_sec()
+        stale = age > _ATS_ENROLL_SUBSCRIBER_STALE_SEC
+        if not sub_alive:
+            log(
+                "🚨 SELF-HEAL: enroll subscriber thread dead — restarting subscriber"
+            )
+            if not start_ats_enroll_redis_subscriber():
+                _ats_self_heal_maybe_process_restart(
+                    "enroll subscriber failed to restart"
+                )
+        elif stale:
+            log(
+                f"🚨 SELF-HEAL: enroll subscriber stale "
+                f"(no progress for {age:.1f}s > {_ATS_ENROLL_SUBSCRIBER_STALE_SEC}s)"
+            )
+            if not start_ats_enroll_redis_subscriber(force=True):
+                _ats_self_heal_maybe_process_restart(
+                    "enroll subscriber hung (stale progress)"
+                )
+    except Exception as e:
+        log(f"⚠️ SELF-HEAL: subscriber check failed: {e}")
+
+    now = time.monotonic()
+
+    # --- Redis ghosts vs trades_* ---
+    if now - _ats_self_heal_last_ghost_sweep_mono >= _ATS_SELF_HEAL_GHOST_SWEEP_INTERVAL_SEC:
+        _ats_self_heal_last_ghost_sweep_mono = now
+        try:
+            sweep_redis_active_trade_ghosts_vs_trades_db()
+        except Exception as e:
+            log(f"⚠️ SELF-HEAL: ghost sweep failed: {e}")
+
+    # --- full sync (missing opens + residual closes) ---
+    if now - _ats_self_heal_last_sync_mono >= _ATS_SELF_HEAL_SYNC_INTERVAL_SEC:
+        _ats_self_heal_last_sync_mono = now
+        try:
+            sync_with_trades_db()
+        except Exception as e:
+            log(f"⚠️ SELF-HEAL: sync_with_trades_db failed: {e}")
+
+
 def sync_on_demand():
     """
     Sync on demand (called by other scripts when needed)
@@ -5533,6 +5772,13 @@ def start_event_driven_supervisor():
                         restart_active_trade_supervisor_process()
                     except Exception as e:
                         log(f"❌ BRUTE FORCE FAILSAFE: Process restart failed: {e}")
+
+            # Self-heal: enroll subscriber + Redis ghosts + periodic trades sync
+            # (covers stuck-alive monitoring on closed Redis ghosts / dead pubsub)
+            try:
+                check_ats_self_heal()
+            except Exception as e:
+                log(f"⚠️ SELF-HEAL: check_ats_self_heal failed: {e}")
             
             # Log failsafe status every 5 minutes (30 iterations)
             if not hasattr(start_event_driven_supervisor, 'failsafe_log_counter'):
@@ -5540,7 +5786,27 @@ def start_event_driven_supervisor():
             start_event_driven_supervisor.failsafe_log_counter += 1
             
             if start_event_driven_supervisor.failsafe_log_counter >= 30:  # Every 5 minutes
-                log(f"🛡️ BRUTE FORCE FAILSAFE: Health check - {active_count} active trades, monitoring thread alive: {monitoring_thread_alive}")
+                with _enroll_subscriber_lock:
+                    enroll_alive = (
+                        _enroll_subscriber_thread is not None
+                        and _enroll_subscriber_thread.is_alive()
+                    )
+                try:
+                    from backend.core.ats_enrollment_redis import subscriber_progress_age_sec
+
+                    enroll_age = subscriber_progress_age_sec()
+                    enroll_age_s = (
+                        f"{enroll_age:.0f}s"
+                        if enroll_age != float("inf")
+                        else "never"
+                    )
+                except Exception:
+                    enroll_age_s = "?"
+                log(
+                    f"🛡️ BRUTE FORCE FAILSAFE: Health check - {active_count} active trades, "
+                    f"monitoring thread alive: {monitoring_thread_alive}, "
+                    f"enroll subscriber alive: {enroll_alive}, progress age: {enroll_age_s}"
+                )
                 flush_stale_active_trades_past_contract_settlement()
                 start_event_driven_supervisor.failsafe_log_counter = 0
             
