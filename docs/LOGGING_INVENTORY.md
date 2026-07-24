@@ -314,7 +314,7 @@ Cross-check of the **project `logs/`** directory and other log locations. Done 2
 | **CLI** | `scripts/ops/log_system_event.py` for shell scripts (`MASTER_RESTART.sh`, `git_update_system.sh`, prod pull) |
 | **Categories** | `RESTART`, `WS`, `DEPLOY`, `TRADING_HALT`, `MAINTENANCE`, `ANOMALY`, `MONITOR`, `BACKUP` |
 | **Admin UI** | Admin Tools → System Event Log panel (`GET /api/user/admin/master_events`) |
-| **Notable** | Fail-open (never blocks trading/restarts). Per-service detail via `detail_ref` → log-viewer popup. **Lean policy:** one master line per operator MASTER RESTART (success or abort); no maintenance sub-steps; watchdog services suppressed while `core.system_state.mode = maintenance`; no ws_connected / CFD echo of service stdout. |
+| **Notable** | Fail-open (never blocks trading/restarts). Per-service detail via `detail_ref` → log-viewer popup. **Lean policy:** one master line per operator MASTER RESTART (success or abort); no maintenance sub-steps; watchdog services suppressed while `core.system_state.mode = maintenance`; no ws_connected / CFD echo of service stdout. **Strike pipeline:** after confirmed-unhealthy lasts `STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC` (default 90s), `strike_table_generator_ws` emits `ANOMALY` warning + recovery info via `note_pipeline_health_for_system_event` (source `strike_pipeline`, detail_ref `strike_table_generator_ws_{15m\|hourly}`). Brief floor_strike TBD rollover blips that never stay confirmed do not emit. |
 
 ---
 

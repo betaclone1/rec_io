@@ -4,7 +4,10 @@ from __future__ import annotations
 
 import os
 import re
+import threading
+import time
 from datetime import datetime, timedelta
+from typing import Any
 from zoneinfo import ZoneInfo
 
 TABLE = "strike_pipeline_health"
@@ -443,3 +446,146 @@ def evaluate_symbol_pipeline_gate_conn(
         if not ok:
             return False, f"market_{str(market).strip().lower()}:{rsn}"
     return _spot_series_passes_gate(conn, sym)
+
+
+# ---------------------------------------------------------------------------
+# Prolonged outage → System Event Log (master_events / system.event_log)
+# ---------------------------------------------------------------------------
+#
+# Confirmed-unhealthy already waits degrade_confirm_sec (~30s) before the
+# dashboard light goes red. Brief Kalshi floor_strike TBD blips at 15m rollover
+# usually clear before that. Emit a master event only after confirmed unhealthy
+# lasts STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC (default 90s), plus one recovery.
+
+_DEFAULT_PROLONGED_OUTAGE_SEC = 90
+
+_prolonged_lock = threading.Lock()
+_prolonged_state: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+
+def prolonged_outage_event_sec() -> int:
+    """Seconds of continuous confirmed-unhealthy before a System Event Log warning."""
+    raw = os.getenv("STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC")
+    if raw is None or str(raw).strip() == "":
+        return _DEFAULT_PROLONGED_OUTAGE_SEC
+    try:
+        return max(30, int(str(raw).strip()))
+    except ValueError:
+        return _DEFAULT_PROLONGED_OUTAGE_SEC
+
+
+def reset_prolonged_outage_event_state() -> None:
+    """Clear in-memory outage timers (tests / process restart)."""
+    with _prolonged_lock:
+        _prolonged_state.clear()
+
+
+def note_pipeline_health_for_system_event(
+    *,
+    exchange: str,
+    market: str,
+    symbol: str,
+    healthy: bool,
+    reason: str,
+    now_mono: float | None = None,
+) -> None:
+    """
+    Emit System Event Log entries for prolonged strike-pipeline outages and recovery.
+
+    Call when confirmed pipeline health is written (after degrade confirm masking).
+    Fail-open: never raises to callers.
+    """
+    ex = str(exchange or "").strip().lower() or "kalshi"
+    mk = str(market or "").strip().lower()
+    sym = str(symbol or "").strip().upper()
+    if not mk or not sym:
+        return
+
+    key = (ex, mk, sym)
+    now = float(now_mono if now_mono is not None else time.monotonic())
+    threshold = float(prolonged_outage_event_sec())
+    reason_s = str(reason or "").strip() or "unknown"
+
+    emit_outage: tuple[float, str] | None = None
+    emit_recovery: tuple[float, str] | None = None
+
+    with _prolonged_lock:
+        st = _prolonged_state.get(key)
+        if healthy:
+            if st and st.get("event_emitted") and st.get("unhealthy_since") is not None:
+                elapsed = now - float(st["unhealthy_since"])
+                emit_recovery = (elapsed, str(st.get("reason") or reason_s))
+            _prolonged_state.pop(key, None)
+        else:
+            if st is None or st.get("unhealthy_since") is None:
+                st = {
+                    "unhealthy_since": now,
+                    "event_emitted": False,
+                    "reason": reason_s,
+                }
+                _prolonged_state[key] = st
+            else:
+                st["reason"] = reason_s
+            elapsed = now - float(st["unhealthy_since"])
+            if (not st.get("event_emitted")) and elapsed >= threshold:
+                st["event_emitted"] = True
+                emit_outage = (elapsed, reason_s)
+
+    if emit_outage is None and emit_recovery is None:
+        return
+
+    try:
+        from backend.util.master_system_log import log_system_event
+    except Exception:
+        return
+
+    detail_ref = f"strike_table_generator_ws_{mk}"
+    source = "strike_pipeline"
+
+    if emit_outage is not None:
+        elapsed, rsn = emit_outage
+        try:
+            log_system_event(
+                category="ANOMALY",
+                severity="warning",
+                source=source,
+                message=(
+                    f"{ex} {mk} {sym} strike pipeline prolonged outage "
+                    f"({elapsed:.0f}s): {rsn}"
+                ),
+                detail_ref=detail_ref,
+                metadata={
+                    "exchange": ex,
+                    "market": mk,
+                    "symbol": sym,
+                    "elapsed_sec": round(elapsed, 1),
+                    "reason": rsn,
+                    "event": "prolonged_outage",
+                },
+            )
+        except Exception:
+            pass
+
+    if emit_recovery is not None:
+        elapsed, prior = emit_recovery
+        try:
+            log_system_event(
+                category="ANOMALY",
+                severity="info",
+                source=source,
+                message=(
+                    f"{ex} {mk} {sym} strike pipeline recovered after "
+                    f"{elapsed:.0f}s outage (was: {prior})"
+                ),
+                detail_ref=detail_ref,
+                metadata={
+                    "exchange": ex,
+                    "market": mk,
+                    "symbol": sym,
+                    "elapsed_sec": round(elapsed, 1),
+                    "prior_reason": prior,
+                    "event": "outage_recovered",
+                },
+            )
+        except Exception:
+            pass

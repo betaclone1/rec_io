@@ -29,6 +29,7 @@ from backend.core.exchange_ids import normalize_exchange
 from backend.core.strike_pipeline_health import (
     MARKET_15M,
     MARKET_HOURLY,
+    note_pipeline_health_for_system_event,
     pipeline_health_writer_dead_sec,
     strike_pipeline_health_strict_mode_enabled,
     upsert_strike_pipeline_health,
@@ -189,6 +190,14 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         super()._setup_unified_15m_schema(cursor, conn)
 
     def set_pipeline_health(self, *, healthy: bool, reason: str) -> None:
+        # System Event Log for prolonged confirmed outages (independent of DB upsert).
+        note_pipeline_health_for_system_event(
+            exchange=self.data_exchange,
+            market=self.pipeline_health_market,
+            symbol=self.symbol.upper(),
+            healthy=healthy,
+            reason=reason,
+        )
         conn = get_system_postgresql_connection()
         if not conn:
             return
