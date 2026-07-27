@@ -17,25 +17,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans / docs:** `historical-cycle-data-product` (draft), `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, schema reference updated.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260725_1035_live_price_ring_utc_timestamps.up.sql`, `.down.sql`,  
   `scripts/migrations/20260725_1045_live_price_ring_iso_z.up.sql`, `.down.sql`,  
   `scripts/migrations/20260725_1300_live_price_ring_cfb_avgs.up.sql`, `.down.sql`,  
   `scripts/migrations/20260725_1350_live_price_ring_full_precision.up.sql`, `.down.sql`,  
   `scripts/migrations/20260725_1421_live_metrics_ring_90m.up.sql`, `.down.sql`,  
   `scripts/migrations/20260726_1526_btc15m_cycle_package_hot.up.sql`, `.down.sql`
-- [ ] Apply pending migrations from repo root before restart:  
+- [x] Apply pending migrations from repo root before restart:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Ensure Drive OAuth secrets on prod (if upload desired):  
+- [x] Ensure Drive OAuth secrets on prod (if upload desired):  
   `backend/data/secrets/gdrive_oauth_client.json` and `gdrive_oauth_token.json` (mode 600); Node ≥ 18 available. Skip only if intentionally leaving `CYCLE_GDRIVE_UPLOAD=0`.
-- [ ] Restart services (regenerates supervisor: program **`cycle_packager`** replaces `btc15m_cycle_packager`):  
+- [x] Restart services (regenerates supervisor: program **`cycle_packager`** replaces `btc15m_cycle_packager`):  
   `./scripts/MASTER_RESTART.sh`
-- [ ] Verify: `supervisorctl status cycle_packager` RUNNING; CFB + `market_watchdog_ws_kalshi` healthy; after next UTC :05 packager pass, local/Drive packages under `KXBTC15M/` and `KXETH15M/` as expected.
-- [ ] Record release in DB:  
+- [x] Verify: `supervisorctl status cycle_packager` RUNNING; CFB + `market_watchdog_ws_kalshi` healthy; after next UTC :05 packager pass, local/Drive packages under `KXBTC15M/` and `KXETH15M/` as expected.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.0`
 
 ---
