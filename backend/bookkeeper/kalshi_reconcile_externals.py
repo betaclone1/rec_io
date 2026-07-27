@@ -26,8 +26,9 @@ _ET = ZoneInfo("America/New_York")
 
 # How far bank categorization may lag Kalshi ``applied``.
 DEFAULT_MATCH_WINDOW_DAYS = 14
-# How far back to load externals / QBO moves when adjusting the live gap.
-DEFAULT_LOOKBACK_DAYS = 90
+# Only recent externals can still sit in the live QBO↔Kalshi gap; older
+# unmatched DB rows (duplicates / pre-reset history) must not adjust today's books.
+DEFAULT_LOOKBACK_DAYS = 21
 
 
 @dataclass(frozen=True)
