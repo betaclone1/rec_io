@@ -37,6 +37,10 @@ from backend.bookkeeper.kalshi_reconcile_credits import (
     resolve_reconcile_txn_date,
     sum_credits_cents_for_txn_date,
 )
+from backend.bookkeeper.kalshi_reconcile_externals import (
+    adjusted_reconcile_gap,
+    compute_external_gap_adjustment,
+)
 from backend.bookkeeper.quickbooks import (
     QboConfig,
     create_journal_entry_lines,
@@ -727,11 +731,17 @@ def main(argv: list[str] | None = None) -> int:
                 return 1
             kalshi_row = _account_row_by_id(accounts, kalshi_aid)
             qb_kalshi_bal = _current_balance_float(kalshi_row)
-            diff = round(qb_kalshi_bal - kalshi_dollars, 2)
+            raw_diff = round(qb_kalshi_bal - kalshi_dollars, 2)
             txn_date = resolve_reconcile_txn_date(
                 args.txn_date, args.reconcile_prior_day
             )
             existing_ids = existing_reconcile_je_ids(cfg, access, txn_date)
+            ext_match = compute_external_gap_adjustment(
+                user_no, cfg, access, kalshi_aid
+            )
+            diff = adjusted_reconcile_gap(
+                raw_diff, ext_match.unmirrored_signed_dollars
+            )
             credits_by_type = sum_credits_cents_for_txn_date(user_no, txn_date)
             interest_dollars = round(credits_by_type.get("interest", 0) / 100.0, 2)
             incentive_dollars = round(credits_by_type.get("incentive", 0) / 100.0, 2)
@@ -774,7 +784,25 @@ def main(argv: list[str] | None = None) -> int:
         print(
             f"  QBO [{args.kalshi_account}] CurrentBalance: ${qb_kalshi_bal:.2f}"
         )
-        print(f"  Gap (QB − Kalshi): ${diff:.2f}")
+        print(f"  Gap raw (QB − Kalshi): ${raw_diff:.2f}")
+        print(
+            f"  Externals: matched {len(ext_match.matched)}, "
+            f"unmirrored {len(ext_match.unmatched)} "
+            f"(signed ${ext_match.unmirrored_signed_dollars:+.2f} into Kalshi)"
+        )
+        for ext, mv in ext_match.matched:
+            print(
+                f"    matched ext#{ext.id} ${ext.amount_dollars:+.2f} {ext.txn_date} "
+                f"<-> QBO {mv.entity} {mv.qbo_id} {mv.direction} "
+                f"${mv.amount_dollars:.2f} on {mv.txn_date}"
+            )
+        for ext in ext_match.unmatched:
+            print(
+                f"    UNMIRRORED ext#{ext.id} ${ext.amount_dollars:+.2f} "
+                f"{ext.txn_date} {ext.from_name} -> {ext.to_name} "
+                f"(excluded from Trading Income until QBO bank line appears)"
+            )
+        print(f"  Gap adjusted (excl. unmirrored externals): ${diff:.2f}")
         print(
             f"  Credits on {txn_date} (ET): "
             f"interest ${interest_dollars:.2f}, incentives ${incentive_dollars:.2f}"
@@ -823,17 +851,24 @@ def main(argv: list[str] | None = None) -> int:
         if diff > 0:
             scenario = (
                 "QB > Kalshi (loss): Credit Kalshi asset; "
-                "income side includes credits split"
+                "income side includes credits split "
+                "(externals excluded from gap)"
             )
         elif diff < 0:
             scenario = (
                 "QB < Kalshi (gain): Debit Kalshi asset; "
-                "income side includes credits split"
+                "income side includes credits split "
+                "(externals excluded from gap)"
             )
         else:
             scenario = "Gap ~0 with credits: reclassify Trading Income → credit income accounts"
 
         note = f"Rec IO bookkeeper: reconcile Kalshi — gap ${ad:.2f}"
+        if abs(ext_match.unmirrored_signed_dollars) >= 0.01:
+            note += (
+                f"; unmirrored externals ${ext_match.unmirrored_signed_dollars:+.2f} "
+                f"excluded"
+            )
         if interest_dollars > 0:
             note += f"; interest ${interest_dollars:.2f}"
         if incentive_dollars > 0:
