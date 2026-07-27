@@ -131,13 +131,14 @@ def _spot_series_passes_gate_live_state(symbol: str) -> tuple[bool, str]:
 
 def _spot_series_passes_gate_ring(conn, symbol: str) -> tuple[bool, str]:
     """CFB PG ring fallback when Redis live_state is stale or unavailable."""
+    from backend.core.live_price_ring_90m import _utc_wall_str
+
     sym = str(symbol or "").strip().upper()
     table = f"live_data.live_price_ring_90m_{sym.lower()}"
     window_sec = max(60, int(pipeline_spot_ring_flatline_window_sec()))
     min_distinct = max(1, int(pipeline_spot_flatline_min_distinct()))
-    cutoff = (datetime.now(ZoneInfo("America/New_York")) - timedelta(seconds=window_sec)).strftime(
-        "%Y-%m-%dT%H:%M:%S"
-    )
+    # Same ISO-8601 UTC (…mmmZ) format as ring writers — required for TEXT lexicographic compares.
+    cutoff = _utc_wall_str(datetime.now(ZoneInfo("UTC")) - timedelta(seconds=window_sec))
     try:
         with conn.cursor() as cur:
             cur.execute(

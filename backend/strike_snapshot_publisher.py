@@ -127,6 +127,24 @@ def main() -> int:
                             mkt,
                             arch_exc,
                         )
+                    try:
+                        from backend.core.cycle_hot_tables import (
+                            enqueue_strike_ladder_rows,
+                        )
+
+                        enqueue_strike_ladder_rows(
+                            wall_second=wall_second,
+                            ladder=payload,
+                            market=mkt,
+                            symbol=sym,
+                        )
+                    except Exception as cycle_exc:
+                        log.warning(
+                            "btc15m cycle strike append failed sym=%s market=%s: %s",
+                            sym,
+                            mkt,
+                            cycle_exc,
+                        )
 
 
 if __name__ == "__main__":

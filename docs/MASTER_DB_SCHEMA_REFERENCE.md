@@ -8639,14 +8639,16 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`)
 
-**Population:** `backend/core/live_price_ring_90m.py` async writes from `cfbenchmarks_price_watchdog` (~1 tick/min). Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only. Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. BTC/ETH: `numeric(10,2)`; SOL/XRP/DOGE: `numeric(10,6)`.
+**Population:** `backend/core/live_price_ring_90m.py` async writes from `cfbenchmarks_price_watchdog` (~1 Hz while connected). Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only (UTC→EST conversion for in-memory buffers). Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. CFB averages via `20260725_1300_live_price_ring_cfb_avgs`. UTC timestamp semantics + truncate cutover: `20260725_1035_live_price_ring_utc_timestamps`; ISO `Z` suffix: `20260725_1045_live_price_ring_iso_z`. Full API decimal width: `20260725_1350_live_price_ring_full_precision` (`NUMERIC(20,8)` for `price` / `avg_60s` / `last_60s_windowed_average_15min` on all symbols).
 
 #### Columns
 
 | Column Name | Data Type | Nullable | Default | Description |
 |-------------|-----------|----------|---------|-------------|
-| `timestamp` | `text` | NO | - | EST wall time (hot-path format) |
-| `price` | `numeric` | NO | - | Index print price |
+| `timestamp` | `text` | NO | - | CFB `data.time` as ISO-8601 UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` |
+| `price` | `numeric(20,8)` | NO | - | Index print (`cfbenchmarks_value` `data.value`) at full API decimal specificity |
+| `avg_60s` | `numeric(20,8)` | YES | - | Kalshi `avg_60s_data.value` at full API specificity; expected every tick. At exact `:00`/`:15`/`:30`/`:45` this is the settlement `symbol_close` used by `trade_manager` |
+| `last_60s_windowed_average_15min` | `numeric(20,8)` | YES | - | Kalshi settlement-minute average at full API specificity; only in final minute before `:00`/`:15`/`:30`/`:45`; NULL otherwise |
 
 #### Constraints
 
@@ -8655,6 +8657,34 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 #### Indexes
 
 - `idx_live_price_ring_90m_{symbol}_timestamp` on `timestamp` (btree)
+
+---
+
+### Table: `live_data.live_metrics_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`)
+
+**Population:** `backend/core/live_metrics_ring_90m.py` async fire-and-forget writes from `cfbenchmarks_price_watchdog` after live_state publish. Same ISO-8601 UTC `timestamp` as `live_price_ring_90m_*` (join key). Stores only profile-tied percentiles that cannot be reconstructed from the price series after analytics profiles change. Backtesting sidecar only — not consumed by the live pipeline. Migration `20260725_1421_live_metrics_ring_90m`. Rolling ~90 minutes (`CFBENCHMARKS_RING_PG_RETENTION_MIN`).
+
+#### Columns
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `timestamp` | `text` | NO | - | Same ISO-8601 UTC tick as price ring (`YYYY-MM-DDTHH:MM:SS.mmmZ`) |
+| `momentum_percentile` | `numeric(8,2)` | YES | - | Hot-path momentum percentile (analytics profile at tick time) |
+| `volatility_percentile` | `numeric(8,2)` | YES | - | Hot-path volatility percentile |
+| `movement_percentile` | `numeric(8,2)` | YES | - | Hot-path movement percentile |
+| `momentum_5s_avg` | `numeric(8,2)` | YES | - | CFB time-window momentum avg on percentile scale (5s) |
+| `momentum_10s_avg` | `numeric(8,2)` | YES | - | CFB time-window momentum avg on percentile scale (10s) |
+| `momentum_30s_avg` | `numeric(8,2)` | YES | - | CFB time-window momentum avg on percentile scale (30s) |
+| `momentum_1m_avg` | `numeric(8,2)` | YES | - | CFB time-window momentum avg on percentile scale (60s) |
+| `momentum_acceleration` | `numeric(8,2)` | YES | - | `momentum_10s_avg − momentum_1m_avg` |
+
+#### Constraints
+
+- **Primary Key:** on `timestamp`
+
+#### Indexes
+
+- `idx_live_metrics_ring_90m_{symbol}_timestamp` on `timestamp` (btree)
 
 ---
 
@@ -9444,6 +9474,37 @@ Append-only history of deployed application versions. **Current version** is the
   ```sql
   CREATE UNIQUE INDEX kalshi_level2_orderbook_pkey ON testing.kalshi_level2_orderbook USING btree (id)
   ```
+
+---
+
+### Per-ticker cycle package hot tables: `historical_data."{market_ticker}_*"`
+
+**Owner:** `backend/core/cycle_hot_tables.py` (legacy shim: `testing_btc15m_orderbook_cycle_pg.py`). Capture for warehousable cycle packages across symbols/series.
+
+**Enabled symbols (default):** `BTC`, `ETH` via `CYCLE_HOT_SYMBOLS`. Series ids via `CYCLE_SERIES_MAP` (default map includes `KXBTC15M`, `KXETH15M`, …).
+
+Per enabled market ticker (quoted identifiers), six tables:
+
+| Suffix | Role | Key columns |
+|--------|------|-------------|
+| `_snapshot` | OB baselines / resyncs | `seq`, `received_at` (UTC ISO-Z), `reason`, `yes`/`no` JSONB |
+| `_deltas` | OB deltas | `seq`, `received_at`, `side`, `price`, `delta`, `snapshot_seq` |
+| `_strike_table` | Irreversible strike path | `timestamp` (UTC ISO-Z), `probability_15m`, `yes_prob_15m`, `no_prob_15m`, `fair_price` |
+| `_price_ring` | Index spot + avgs (1 Hz) | `timestamp` PK, `price`, `avg_60s`, `last_60s_windowed_average_15min` |
+| `_metrics_ring` | Profile percentiles | `timestamp` PK + momentum/vol/movement fields (same as `live_metrics_ring_90m_*`) |
+| `_market_meta` | Cycle identity / settlement | `market_ticker` PK, `floor_strike` (NUMERIC, exact API digits — no float/int truncate), `volume_fp`, `market_result`, `updated_at` |
+
+**Writers:** Venue WS OB → snapshot/deltas + `market_result` on lifecycle; index/price publisher → price/metrics fan-out to hot tickers for the matching symbol (hot set **refreshed from PG** so new cycles are visible cross-process); strike snapshot publisher → strike rows + `floor_strike` / volume into `_market_meta`.
+
+**Packaging:** Hourly `cycle_packager` exports closed cycles (close + grace) to  
+`backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz`. Members include `market_meta.json`. **Quality gate** (non-force): non-empty deltas, price_ring, strike_table; `floor_strike` and `market_result` present — otherwise skip and leave PG tables for retry. Drops only after a passing package.
+Toggle: `CYCLE_HOT_PG=0` (legacy aliases `BTC15M_CYCLE_HOT_PG`, `TESTING_BTC15M_ORDERBOOK_CYCLE_PG`).
+
+---
+
+### Legacy note: former `testing."{market_ticker}_snapshot"` / `_deltas`
+
+Older local experiments used the `testing` schema. New writes go to `historical_data` as above.
 
 ---
 

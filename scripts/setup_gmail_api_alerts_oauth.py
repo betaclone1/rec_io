@@ -30,7 +30,13 @@ _REPO_ROOT = os.path.dirname(_SCRIPT_DIR)
 if _REPO_ROOT not in sys.path:
     sys.path.insert(0, _REPO_ROOT)
 
-_SCOPE = "https://www.googleapis.com/auth/gmail.send"
+# gmail.send = send mail; settings.basic = list verified Send mail as addresses
+# (needed to confirm alerts@ alias is usable, not another domain's default send-as).
+_SCOPES = [
+    "https://www.googleapis.com/auth/gmail.send",
+    "https://www.googleapis.com/auth/gmail.settings.basic",
+]
+_SCOPE = " ".join(_SCOPES)
 _AUTH_URL = "https://accounts.google.com/o/oauth2/v2/auth"
 _TOKEN_URL = "https://oauth2.googleapis.com/token"
 _REDIRECT = "http://127.0.0.1:8765/oauth2callback"

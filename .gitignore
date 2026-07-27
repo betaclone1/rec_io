@@ -15,6 +15,8 @@ logs/
 !backend/data/historical_data/
 !backend/data/historical_data/**
 
+# Cycle backtesting warehouse is local/prod only — do not track packages or tree
+backend/data/historical_data/backtesting_data/
 # INCLUDE live_data folder structure for system portability (MUST COME FIRST)
 !backend/data/live_data/
 !backend/data/live_data/markets/
@@ -159,6 +161,8 @@ backup/rec_io_db_backup_*
 rec_io_db_backup.sql
 *.sql
 !backend/data/historical_data/**
+# Cycle warehouse stays untracked even after historical_data re-includes above
+backend/data/historical_data/backtesting_data/
 # Reversible migrations must be tracked (identical codebase across envs).
 # When adding other must-track paths, add exceptions here; see docs/LOGGING_INVENTORY.md "Must-track paths".
 !scripts/migrations/

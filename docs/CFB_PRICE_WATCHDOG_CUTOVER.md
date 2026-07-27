@@ -138,26 +138,38 @@ Implementation: `backend/core/cfbenchmarks_feed_health.py`, wired in `cfbenchmar
 
 ## Expiration `symbol_close` (trade_manager)
 
-On contract expiry, ``trade_manager`` sets ``symbol_close`` to the **mean CFB spot** (`price`) from ``live_data.live_price_ring_90m_*`` for ticks in **(expiry − 60s, expiry]** (EST). No ``live_price_log_1s_*``. If the ring window is empty, falls back to current ``live_state`` spot.
-
-| Env | Default |
-|-----|---------|
-| `CFB_EXPIRATION_SYMBOL_CLOSE_WINDOW_SEC` | `60` |
+On contract expiry, ``trade_manager`` sets ``symbol_close`` to CFB ring ``avg_60s`` on the **exact quarter-hour close tick** (`:00` / `:15` / `:30` / `:45`) for that symbol. Ring timestamps are **UTC**. Applies to expired 15m and hourly trades. Early (pre-expiration) closes still use live_state spot. If the close tick / ``avg_60s`` is not in the ring yet, ``symbol_close`` stays NULL until repair/retry (no live_state substitute for expiration).
 
 ---
 
 ## PostgreSQL ring buffer (`CFBENCHMARKS_RING_PG`)
 
-Default **on**. Async writes to `live_data.live_price_ring_90m_{btc,eth,sol,xrp}` (~90 minutes, `timestamp` + `price` only). Does **not** block WS or `live_state`; failures are logged and dropped.
+Default **on**. Async writes to `live_data.live_price_ring_90m_{btc,eth,sol,xrp,doge}` (~90 minutes). Columns: ISO-8601 UTC ``timestamp`` (``…Z``, from CFB ``data.time``), ``price`` / ``avg_60s`` / ``last_60s_windowed_average_15min`` as ``NUMERIC(20,8)`` via ``Decimal`` from the raw API digit strings (no ``float`` truncation). ``last_60s_windowed_average_15min`` is present only in the final minute before quarter-hour close. Does **not** block WS or `live_state`; failures are logged and dropped.
 
-On startup, `hydrate_startup_buffers()` loads the ring into `symbol_tick_buffer` and replays the CFB momentum deque so deltas (through 30m) are valid immediately, minus restart downtime.
+On startup, `hydrate_startup_buffers()` loads the ring into `symbol_tick_buffer` (UTC→EST for in-memory alignment) and replays the CFB momentum deque so deltas (through 30m) are valid immediately, minus restart downtime.
 
 | Env | Default | Meaning |
 |-----|---------|---------|
 | `CFBENCHMARKS_RING_PG` | `1` | `0` disables ring writes and startup hydrate |
 | `CFBENCHMARKS_RING_PG_RETENTION_MIN` | `90` | Rolling window (minutes) |
 
-Migration: `20260603_1200_live_price_ring_90m`.
+Migration: `20260603_1200_live_price_ring_90m`; averages: `20260725_1300_live_price_ring_cfb_avgs`; UTC timestamps: `20260725_1035_live_price_ring_utc_timestamps`; ISO `Z` suffix: `20260725_1045_live_price_ring_iso_z`; full decimal width: `20260725_1350_live_price_ring_full_precision`.
+
+---
+
+## PostgreSQL metrics ring (`CFBENCHMARKS_METRICS_RING_PG`)
+
+Default **on**. Async companion tables `live_data.live_metrics_ring_90m_{btc,eth,sol,xrp,doge}` keyed by the **same** ISO-8601 UTC `timestamp` as the price ring. Stores profile-tied hot-path fields that cannot be reconstructed later from price alone: `momentum_percentile`, `volatility_percentile`, `movement_percentile`, `momentum_5s_avg`, `momentum_10s_avg`, `momentum_30s_avg`, `momentum_1m_avg`, `momentum_acceleration`.
+
+Writes are fire-and-forget (`ThreadPoolExecutor`); snapshot metrics off the tick row before submit so live_state is never blocked. Failures are logged and dropped. Backtesting only — not read by the live pipeline.
+
+| Env | Default | Meaning |
+|-----|---------|---------|
+| `CFBENCHMARKS_METRICS_RING_PG` | `1` | `0` disables metrics ring writes |
+| `CFBENCHMARKS_METRICS_RING_PG_WORKERS` | `2` | Thread pool size |
+| `CFBENCHMARKS_RING_PG_RETENTION_MIN` | `90` | Shared rolling window with price ring |
+
+Migration: `20260725_1421_live_metrics_ring_90m`.
 
 ---
 

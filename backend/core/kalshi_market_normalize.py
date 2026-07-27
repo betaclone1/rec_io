@@ -4,11 +4,46 @@ from __future__ import annotations
 
 import re
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any, Optional
 
 # Ticker JSON often decodes dollar fields as floats (e.g. 0.7 → wrong inferred precision).
 # Normalize to fixed widths for WS table TEXT columns (Kalshi-style).
 KALSHI_WS_TICKER_DOLLAR_PLACES = 4
 KALSHI_WS_TICKER_FP_PLACES = 2
+
+
+def decimal_from_api_number(raw: Any) -> Optional[Decimal]:
+    """
+    Preserve API decimal specificity (exact digit string → Decimal).
+
+    Prefer string/int/Decimal inputs. ``float`` is last-resort only (already lossy).
+    Never round or quantize.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, Decimal):
+        return raw
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return Decimal(raw)
+    if isinstance(raw, float):
+        return Decimal(str(raw))
+    s = str(raw).strip().replace("$", "").replace(",", "")
+    if not s:
+        return None
+    try:
+        return Decimal(s)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def exact_decimal_text(raw: Any) -> Optional[str]:
+    """Canonical non-scientific decimal text for storage / JSON (full API digits)."""
+    d = decimal_from_api_number(raw)
+    if d is None:
+        return None
+    return format(d, "f")
 
 
 def format_15m_strike_from_api_floor_strike(floor_strike) -> str:

@@ -212,7 +212,8 @@ def _rest_get(path: str, params: Optional[dict[str, Any]] = None) -> Any:
             time.sleep(5.0)
             r = requests.get(url, headers=REST_HEADERS, params=params or {}, timeout=30)
     r.raise_for_status()
-    return r.json()
+    # Preserve API decimal digit strings (floor_strike, etc.) — never json→float.
+    return r.json(parse_float=Decimal)
 
 
 def _prediscover_close_horizon(now: datetime) -> int:
@@ -624,10 +625,13 @@ def _schedule_from_markets_poll(
         ent = _market_to_entry(m, symbol, interval)
         if ent:
             rows.append(ent)
-            fs = _numeric_strike_from_market(m)
+            fs = m.get("floor_strike")
             if fs is not None and master is not None:
+                from backend.core.kalshi_market_normalize import decimal_from_api_number
+
+                exact = decimal_from_api_number(fs)
                 master.ticker_rest_meta[ent.market_ticker] = {
-                    "floor_strike": fs,
+                    "floor_strike": exact if exact is not None else fs,
                     "event_ticker": str(m.get("event_ticker") or ent.event_ticker or ""),
                 }
     return sorted(rows, key=lambda e: e.open_ts)
@@ -1069,10 +1073,15 @@ def _fetch_market_rest_meta_sync(market_ticker: str) -> dict[str, Any]:
             "title": m.get("title"),
             "subtitle": m.get("subtitle"),
         }
-        if fs is not None:
-            meta["floor_strike"] = fs
-        elif m.get("floor_strike") is not None:
-            meta["floor_strike"] = m.get("floor_strike")
+        # Exact API floor_strike only — never float-normalized ladder strike.
+        from backend.core.kalshi_market_normalize import decimal_from_api_number
+
+        exact_fs = decimal_from_api_number(m.get("floor_strike"))
+        if exact_fs is not None:
+            meta["floor_strike"] = exact_fs
+        elif fs is not None:
+            # Subtitle / -T ticker fallback when REST omits floor_strike.
+            meta["floor_strike"] = decimal_from_api_number(fs)
         lp = m.get("last_price_dollars") or m.get("last_price")
         if lp is not None and str(lp).strip() != "":
             from backend.core.kalshi_market_normalize import (
@@ -1100,6 +1109,18 @@ def _ensure_ticker_rest_meta(master: KalshiMarketWsMaster, market_ticker: str) -
     meta = _fetch_market_rest_meta_sync(mt)
     if meta:
         master.ticker_rest_meta[mt] = {**existing, **meta}
+        fs = master.ticker_rest_meta[mt].get("floor_strike")
+        if fs is not None:
+            try:
+                from backend.core.cycle_hot_tables import (
+                    enqueue_market_meta_update,
+                    is_cycle_ticker,
+                )
+
+                if is_cycle_ticker(mt):
+                    enqueue_market_meta_update(mt, floor_strike=fs)
+            except Exception as e:
+                log.debug("btc15m cycle floor_strike sidecar failed %s: %s", mt, e)
 
 
 def _last_price_dollars_from_ticker_msg(
@@ -1273,6 +1294,27 @@ def _apply_snapshot(
     if publish:
         _publish_book(master, mt)
     _emit_event("orderbook_snapshot", market_ticker=mt, seq=seq)
+    try:
+        from backend.core.cycle_hot_tables import enqueue_snapshot
+
+        reason = "resync" if int(b.get("resync_count") or 0) > 0 else "snapshot"
+        enqueue_snapshot(mt, yes=yes, no=no, seq=seq, reason=reason)
+    except Exception:
+        pass
+
+
+def _maybe_register_cycle_hot(market_ticker: str) -> None:
+    """Create/register hot cycle tables as soon as OB subscribe starts (before first snapshot)."""
+    try:
+        from backend.core.cycle_hot_tables import (
+            ensure_cycle_tables,
+            is_cycle_ticker,
+        )
+
+        if is_cycle_ticker(market_ticker):
+            ensure_cycle_tables(market_ticker)
+    except Exception as e:
+        log.debug("15m hot register at subscribe failed %s: %s", market_ticker, e)
 
 
 def _consume_ob_channel_seq(master: KalshiMarketWsMaster, seq: Any) -> tuple[str, Optional[int]]:
@@ -1314,7 +1356,13 @@ def _schedule_channel_resync(master: KalshiMarketWsMaster, reason: str) -> None:
 
 
 def _apply_delta(
-    master: KalshiMarketWsMaster, mt: str, msg: dict, seq: int, *, publish: bool = True
+    master: KalshiMarketWsMaster,
+    mt: str,
+    msg: dict,
+    seq: int,
+    sid: Optional[int] = None,
+    *,
+    publish: bool = True,
 ) -> None:
     b = _book(master, mt)
     if not b["valid"]:
@@ -1336,6 +1384,12 @@ def _apply_delta(
     b["ts_ms"] = int(time.time() * 1000)
     if publish:
         _publish_book(master, mt)
+    try:
+        from backend.core.cycle_hot_tables import enqueue_delta
+
+        enqueue_delta(mt, side=side, price=price, delta=delta, seq=seq)
+    except Exception:
+        pass
 
 
 def _extract_market_result(msg: dict[str, Any]) -> Optional[str]:
@@ -1496,6 +1550,16 @@ def _apply_market_result_ws(
         log.info("WS_ROLLOVER_OK market_result %s %s (lifecycle_ws)", mt, mr)
     elif source != "lifecycle_ws":
         log.info("settled %s %s (%s)", mt, mr, source)
+    try:
+        from backend.core.cycle_hot_tables import (
+            enqueue_market_meta_update,
+            is_cycle_ticker,
+        )
+
+        if is_cycle_ticker(mt):
+            enqueue_market_meta_update(mt, market_result=mr)
+    except Exception as e:
+        log.debug("15m cycle market_result sidecar failed %s: %s", mt, e)
 
 
 def _maybe_apply_market_result_from_ticker(
@@ -1600,6 +1664,7 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
     if master.orderbook_sid is None and want_ob:
         for mt in want_ob:
             _book(master, mt)
+            _maybe_register_cycle_hot(mt)
         await _ws_json(
             master,
             {
@@ -1617,6 +1682,7 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
         if add_ob and master.orderbook_sid:
             for mt in add_ob:
                 _book(master, mt)
+                _maybe_register_cycle_hot(mt)
             for chunk in _ticker_chunks(add_ob):
                 await _ws_json(
                     master,
@@ -2027,7 +2093,7 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 _invalidate_book(master, mt, f"seq_gap_{master.ob_channel_last_seq}", emit_event=False)
                 _queue_resync(master, [mt], "seq_gap")
             elif action == "apply":
-                _apply_delta(master, mt, msg, int(data["seq"]), publish=False)
+                _apply_delta(master, mt, msg, int(data["seq"]), sid, publish=False)
                 _mark_ob_dirty(master, mt)
                 ob_dirty_mt = mt
 
@@ -2174,4 +2240,13 @@ async def run_ingest(cfg: IngestConfig) -> None:
     ]
     if cfg.event_log_enabled or cfg.disturbance_log_enabled:
         tasks.append(_event_flush_loop())
-    await asyncio.gather(*tasks)
+    try:
+        await asyncio.gather(*tasks)
+    finally:
+        # Drain BTC 15m OB cycle recorder — never dump unpaid seqs on stop.
+        try:
+            from backend.core.cycle_hot_tables import drain_recorder
+
+            drain_recorder()
+        except Exception:
+            log.exception("OB cycle recorder drain failed")

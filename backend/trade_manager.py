@@ -1291,35 +1291,34 @@ def _symbol_close_live_spot(symbol: Optional[str]) -> Optional[float]:
 
 def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime) -> Optional[float]:
     """
-    Expiration settlement spot: mean of CFB ring ticks in the 60s before ``expiration_est``.
+    Expiration settlement spot: Kalshi CFB ``avg_60s`` on the exact quarter-hour close tick
+    (``:00`` / ``:15`` / ``:30`` / ``:45``) from ``live_data.live_price_ring_90m_*``.
 
-    Falls back to live_state spot when the ring has no ticks in that window (e.g. ring PG off).
+    Used for expired 15m and hourly trades. Early closes still use ``_symbol_close_live_spot``.
+    Returns NULL if that tick / ``avg_60s`` is not in the ring yet (no substitute spot).
     """
     if not symbol or expiration_est is None:
         return None
     sym_u = str(symbol).strip().upper()
     try:
-        from backend.core.live_price_ring_90m import avg_cfb_spot_60s_before_expiration
+        from backend.core.live_price_ring_90m import avg_60s_at_quarter_close
 
-        avg_px = avg_cfb_spot_60s_before_expiration(sym_u, expiration_est)
+        avg_px = avg_60s_at_quarter_close(sym_u, expiration_est)
         if avg_px is not None:
             out = normalize_trade_spot_price(symbol, avg_px)
             if out is not None:
                 log(
                     f"ℹ️ symbol_close for {sym_u} expiration: "
-                    f"cfb ring 60s avg={float(out)} (exp={expiration_est})"
+                    f"cfb ring avg_60s at close={float(out)} (exp={expiration_est})"
                 )
                 return float(out)
-    except Exception as e:
-        log(f"⚠️ cfb ring expiration avg for {symbol}: {e}")
-
-    spot = _symbol_close_live_spot(symbol)
-    if spot is not None:
         log(
-            f"ℹ️ symbol_close for {sym_u} expiration: live_state fallback spot={spot} "
-            f"(no ring ticks in 60s window)"
+            f"ℹ️ symbol_close for {sym_u} expiration: ring avg_60s tick not available yet "
+            f"(exp={expiration_est})"
         )
-    return spot
+    except Exception as e:
+        log(f"⚠️ cfb ring expiration avg_60s for {symbol}: {e}")
+    return None
 
 
 def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_date, contract: str) -> int:
@@ -1502,7 +1501,7 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
             symbol_close = _symbol_close_for_expiration(symbol, exp_est)
             if symbol_close is not None:
                 log_debug(
-                    f"📝 Repaired symbol_close for expired paper {trade_id} from CFB ring 60s avg"
+                    f"📝 Repaired symbol_close for expired paper {trade_id} from CFB ring avg_60s close tick"
                 )
                 with pg_conn_paper.cursor() as cursor:
                     cursor.execute(
@@ -7715,7 +7714,7 @@ def check_expired_trades():
                     )
                 if expiration_price_cache.get(cache_key) is None:
                     log(
-                        f"[15-MIN CHECK] No CFB ring 60s avg for expiration for {symbol} "
+                        f"[15-MIN CHECK] No CFB ring avg_60s close tick for expiration for {symbol} "
                         f"(ticker={ticker}, exp={expiration_est.strftime('%Y-%m-%d %H:%M:%S %Z')})"
                     )
 

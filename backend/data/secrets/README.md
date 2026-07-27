@@ -29,6 +29,38 @@ One line = Google app password for `alerts@rec-io.com`. Works locally; usually *
 
 Optional overrides: `REC_ALERTS_SMTP_USER`, `REC_ALERTS_SMTP_FROM`, `REC_ALERTS_SMTP_HOST`, `REC_ALERTS_SMTP_PORT`, `REC_ALERTS_GMAIL_OAUTH_FILE`.
 
+## Google Drive (cycle packages / scripts) — `eric@rec-io.com`
+
+Same pattern as Gmail OAuth: **not in git**, mode **600**, under `backend/data/secrets/`.
+
+### Files
+
+| File | Source |
+|------|--------|
+| `gdrive_oauth_client.json` | Desktop OAuth client (`gcp-oauth.keys.json` / GCP “Desktop app”) |
+| `gdrive_oauth_token.json` | User token after browser consent as **`eric@rec-io.com`** |
+
+Authorize once on a laptop (see `scripts/gdrive/README.md` / `create-doc.js auth` with `login_hint=eric@rec-io.com`), then copy both files to prod:
+
+```bash
+# from laptop (paths relative to repo root)
+scp .cursor/gcp-oauth.keys.json root@$REC_PROD_SSH_HOST:/opt/rec_io_server/backend/data/secrets/gdrive_oauth_client.json
+scp .cursor/gdrive-server-credentials.json root@$REC_PROD_SSH_HOST:/opt/rec_io_server/backend/data/secrets/gdrive_oauth_token.json
+ssh root@$REC_PROD_SSH_HOST 'chmod 600 /opt/rec_io_server/backend/data/secrets/gdrive_oauth_*.json'
+```
+
+### Env for scripts on prod
+
+```bash
+export GDRIVE_OAUTH_PATH=/opt/rec_io_server/backend/data/secrets/gdrive_oauth_client.json
+export GDRIVE_CREDENTIALS_PATH=/opt/rec_io_server/backend/data/secrets/gdrive_oauth_token.json
+export GDRIVE_BACKTESTING_DATA_FOLDER_ID=1Jlhz57hSXMYe8Yr_GtIJsaXY0GAW6L1v   # DATA/HISTORICAL_DATA/BACKTESTING_DATA
+```
+
+Requires **Node ≥ 18** on the host (`scripts/gdrive` uses `googleapis`). Upload: `node scripts/gdrive/upload-backtesting-data.js`.
+
+## Intuit OAuth (bookkeeper)
+
 ## Test
 
 ```bash

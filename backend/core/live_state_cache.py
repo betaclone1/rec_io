@@ -26,7 +26,8 @@ TTL_SEC = int(os.getenv("LIVE_STATE_TTL_SEC", "7200"))
 
 def _json_default(o: Any) -> Any:
     if isinstance(o, Decimal):
-        return float(o)
+        # Exact digit string — never float (loses API specificity).
+        return format(o, "f")
     return str(o)
 
 

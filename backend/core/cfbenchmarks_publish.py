@@ -148,15 +148,76 @@ def publish_envelope_outputs(
             except Exception as e:
                 logger.warning("PG insert_tick failed %s: %s", symbol, e)
 
-    if price is not None and symbol in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
-        metrics = envelope.get("metrics") if isinstance(envelope.get("metrics"), dict) else {}
-        ring_ts = str(metrics.get("timestamp") or ts or "").strip()
-        if ring_ts:
-            try:
-                from backend.core.live_price_ring_90m import enqueue_ring_tick
+    # Sidecar PG rings (backtesting only): never block live_state. Same UTC tick key.
+    if symbol in ("BTC", "ETH", "SOL", "XRP", "DOGE"):
+        try:
+            from backend.core.live_price_ring_90m import (
+                avg_value_from_cfb_obj,
+                decimal_from_cfb_value,
+                enqueue_ring_tick,
+                ring_timestamp_utc_from_source_ms,
+            )
 
-                enqueue_ring_tick(symbol, ring_ts, float(price))
-            except Exception as e:
-                logger.debug("ring PG enqueue skipped %s: %s", symbol, e)
+            ring_ts = ring_timestamp_utc_from_source_ms(envelope.get("source_ts_ms"))
+            if ring_ts:
+                ring_price = None
+                if price is not None:
+                    inner = (
+                        envelope.get("inner")
+                        if isinstance(envelope.get("inner"), dict)
+                        else {}
+                    )
+                    ring_price = decimal_from_cfb_value(inner.get("value"))
+                    if ring_price is None:
+                        ring_price = decimal_from_cfb_value(price)
+                    if ring_price is not None:
+                        enqueue_ring_tick(
+                            symbol,
+                            ring_ts,
+                            ring_price,
+                            avg_60s=avg_value_from_cfb_obj(
+                                envelope.get("avg_60s_data")
+                            ),
+                            last_60s_windowed_average_15min=avg_value_from_cfb_obj(
+                                envelope.get("last_60s_windowed_average_15min")
+                            ),
+                        )
+                if isinstance(tick_row, dict):
+                    try:
+                        from backend.core.live_metrics_ring_90m import (
+                            enqueue_metrics_ring_tick,
+                        )
+
+                        enqueue_metrics_ring_tick(symbol, ring_ts, tick_row)
+                    except Exception as e:
+                        logger.debug(
+                            "metrics ring PG enqueue skipped %s: %s", symbol, e
+                        )
+                # Per-ticker 15m cycle packages (historical_data hot tables).
+                try:
+                    from backend.core.cycle_hot_tables import (
+                        enabled_cycle_symbols,
+                        enqueue_cycle_price_metrics,
+                    )
+
+                    if symbol in enabled_cycle_symbols():
+                        enqueue_cycle_price_metrics(
+                            symbol=symbol,
+                            timestamp_utc=ring_ts,
+                            price=ring_price,
+                            avg_60s=avg_value_from_cfb_obj(
+                                envelope.get("avg_60s_data")
+                            ),
+                            last_60s_windowed_average_15min=avg_value_from_cfb_obj(
+                                envelope.get("last_60s_windowed_average_15min")
+                            ),
+                            metrics=tick_row if isinstance(tick_row, dict) else None,
+                        )
+                except Exception as e:
+                    logger.warning(
+                        "15m cycle ring enqueue skipped %s: %s", symbol, e
+                    )
+        except Exception as e:
+            logger.debug("ring PG enqueue skipped %s: %s", symbol, e)
 
     envelope["cfb_publish_mode"] = mode

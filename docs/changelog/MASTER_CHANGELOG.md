@@ -6,6 +6,40 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-27 — Release v3.9.0: Cycle packages (BTC+ETH), CFB rings, Drive warehouse
+
+**Summary**
+- **Release: v3.9.0**
+- **Cycle packages:** Per-ticker hot tables under `historical_data` (snapshot, deltas, strike, price/metrics rings, market_meta) with hourly `cycle_packager` → `.tar.xz` under `backtesting_data/{SERIES}/…`. Default symbols **BTC + ETH** (`CYCLE_HOT_SYMBOLS`); series map via `CYCLE_SERIES_MAP`. Modules renamed to generic `cycle_*` (not BTC/Kalshi-specific). Inclusive open/close CFB ticks; early hot registration at OB subscribe / live_state.
+- **Google Drive warehouse:** Post-package upload to `DATA/HISTORICAL_DATA/BACKTESTING_DATA` (`scripts/gdrive/upload-backtesting-data.js`, `CYCLE_GDRIVE_UPLOAD`). Prod needs OAuth secrets under `backend/data/secrets/` (see `backend/data/secrets/README.md`).
+- **CFB live rings:** `live_price_ring_90m_*` UTC ISO-Z + full precision + CFB avgs; new `live_metrics_ring_90m_*`. Migrations **`20260725_1035`**, **`1045`**, **`1300`**, **`1350`**, **`1421`**, plus cycle schema comment **`20260726_1526_btc15m_cycle_package_hot`**.
+- **Exact `floor_strike`:** Packages/meta keep Kalshi API decimal text (no int/float truncation).
+- **Plans / docs:** `historical-cycle-data-product` (draft), `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, schema reference updated.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260725_1035_live_price_ring_utc_timestamps.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260725_1045_live_price_ring_iso_z.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260725_1300_live_price_ring_cfb_avgs.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260725_1350_live_price_ring_full_precision.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260725_1421_live_metrics_ring_90m.up.sql`, `.down.sql`,  
+  `scripts/migrations/20260726_1526_btc15m_cycle_package_hot.up.sql`, `.down.sql`
+- [ ] Apply pending migrations from repo root before restart:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Ensure Drive OAuth secrets on prod (if upload desired):  
+  `backend/data/secrets/gdrive_oauth_client.json` and `gdrive_oauth_token.json` (mode 600); Node ≥ 18 available. Skip only if intentionally leaving `CYCLE_GDRIVE_UPLOAD=0`.
+- [ ] Restart services (regenerates supervisor: program **`cycle_packager`** replaces `btc15m_cycle_packager`):  
+  `./scripts/MASTER_RESTART.sh`
+- [ ] Verify: `supervisorctl status cycle_packager` RUNNING; CFB + `market_watchdog_ws_kalshi` healthy; after next UTC :05 packager pass, local/Drive packages under `KXBTC15M/` and `KXETH15M/` as expected.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.0`
+
+---
+
 ## 2026-07-16 — Release v3.8.3: TM min_slippage gate, monitor slider, trades snapshot
 
 **Summary**

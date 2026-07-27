@@ -33,6 +33,7 @@ import smtplib
 import ssl
 from datetime import date, datetime
 from email.message import EmailMessage
+from email.utils import formataddr, parseaddr
 from typing import Any
 from urllib.parse import quote
 
@@ -160,11 +161,27 @@ def _smtp_password_or_raise() -> tuple[str, str, int, str, str]:
 
 
 def _alerts_from_addr() -> str:
-    return (
+    """
+    From header for system mail. Display name defaults to ``Rec.io Alerts``;
+    override with REC_ALERTS_SMTP_FROM_NAME or a full ``Name <email>`` in
+    REC_ALERTS_SMTP_FROM.
+    """
+    raw = (
         os.getenv("REC_ALERTS_SMTP_FROM")
         or os.getenv("REC_ALERTS_SMTP_USER")
         or "alerts@rec-io.com"
     ).strip()
+    name_part, addr_part = parseaddr(raw)
+    if not addr_part and "@" in raw and "<" not in raw:
+        addr_part = raw
+    if not addr_part:
+        addr_part = "alerts@rec-io.com"
+    display = (
+        (os.getenv("REC_ALERTS_SMTP_FROM_NAME") or "").strip()
+        or name_part
+        or "Rec.io Alerts"
+    )
+    return formataddr((display, addr_part))
 
 
 def _gmail_access_token(oauth: dict[str, Any]) -> str:

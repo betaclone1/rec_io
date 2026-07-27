@@ -13,6 +13,8 @@ import backend.core.live_state_cache as live_state_cache
 from backend.core.exchange_ids import DEFAULT_EXCHANGE
 from backend.core.kalshi_market_normalize import (
     KALSHI_WS_TICKER_DOLLAR_PLACES,
+    decimal_from_api_number,
+    exact_decimal_text,
     normalize_kalshi_dollar_text,
 )
 from backend.core.market_watchdog.config import IngestConfig
@@ -100,18 +102,20 @@ def ticker_quote_body(
         "open_interest_fp": msg.get("open_interest_fp") or msg.get("open_interest"),
     }
     meta = rest_meta or {}
-    fs = meta.get("floor_strike")
-    if fs is not None:
+    fs_exact = exact_decimal_text(meta.get("floor_strike"))
+    if fs_exact is None:
+        fs_exact = exact_decimal_text(_numeric_strike_from_ticker(mt))
+    strike = None
+    if fs_exact is not None:
+        # Display only; floor_strike stays full API digits.
         try:
-            fs = float(fs)
-        except (TypeError, ValueError):
-            fs = None
-    if fs is None:
-        fs = _numeric_strike_from_ticker(mt)
-    strike = _strike_display(mt, fs)
+            strike = f"${decimal_from_api_number(fs_exact):,.2f}"
+        except Exception:
+            strike = f"${fs_exact}"
     if strike:
         body["strike"] = strike
-        body["floor_strike"] = fs
+    if fs_exact is not None:
+        body["floor_strike"] = fs_exact
     return body
 
 

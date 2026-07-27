@@ -3,6 +3,10 @@ Rolling 90-minute PG price ring for CFB watchdog startup hydration.
 
 Writes are async (ThreadPoolExecutor) and must not block WS / live_state hot path.
 Reads run once at process startup to populate symbol_tick_buffer (+ CFB momentum replay).
+
+Ring ``timestamp`` values are ISO-8601 UTC with a ``Z`` suffix
+(``YYYY-MM-DDTHH:MM:SS.mmmZ``), derived from CFB ``data.time`` (unix ms).
+Hot-path / in-memory buffers remain EST.
 """
 
 from __future__ import annotations
@@ -12,13 +16,15 @@ import logging
 import os
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal, InvalidOperation
+from typing import Any, Dict, List, Optional, Tuple, Union
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("cfbenchmarks_price_watchdog")
 
 _EST = ZoneInfo("America/New_York")
+_UTC = timezone.utc
 _TRACKED = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE"})
 _TABLE_BY_SYMBOL: Dict[str, str] = {
     "BTC": "live_price_ring_90m_btc",
@@ -49,45 +55,81 @@ def _table_for_symbol(symbol: str) -> Optional[str]:
     return _TABLE_BY_SYMBOL.get(str(symbol or "").strip().upper())
 
 
-def _cutoff_timestamp_est(minutes: int) -> str:
-    dt = datetime.now(_EST) - timedelta(minutes=minutes)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S")
-
-
-def _est_wall_str(dt: datetime) -> str:
+def _utc_wall_str(dt: datetime) -> str:
+    """ISO-8601 UTC with millisecond precision and ``Z`` suffix."""
     if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=_EST)
+        dt = dt.replace(tzinfo=_UTC)
     else:
-        dt = dt.astimezone(_EST)
-    return dt.strftime("%Y-%m-%dT%H:%M:%S")
+        dt = dt.astimezone(_UTC)
+    return dt.isoformat(timespec="milliseconds").replace("+00:00", "Z")
 
 
-def expiration_symbol_close_window_sec() -> int:
-    """Seconds of CFB ring ticks before expiry to average for ``symbol_close``."""
-    raw = os.getenv("CFB_EXPIRATION_SYMBOL_CLOSE_WINDOW_SEC", "60").strip()
+def _cutoff_timestamp_utc(minutes: int) -> str:
+    return _utc_wall_str(datetime.now(_UTC) - timedelta(minutes=minutes))
+
+
+def ring_timestamp_utc_from_source_ms(source_ts_ms: Any) -> Optional[str]:
+    """Format CFB ``data.time`` (unix ms) as ISO-8601 UTC for ring PG."""
+    if source_ts_ms is None:
+        return None
     try:
-        return max(1, int(raw))
+        ms = int(source_ts_ms)
     except (TypeError, ValueError):
-        return 60
+        return None
+    return _utc_wall_str(datetime.fromtimestamp(ms / 1000.0, tz=_UTC))
 
 
-def avg_cfb_spot_in_est_window(
+def _parse_ring_timestamp_utc(ts: str) -> Optional[datetime]:
+    s = str(ts or "").strip()
+    if not s:
+        return None
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=_UTC)
+        return dt.astimezone(_UTC)
+    except (TypeError, ValueError):
+        return None
+
+
+def utc_wall_to_est_wall(ts_utc: str) -> str:
+    """Convert a ring ISO UTC string to EST wall for in-memory buffer hydrate."""
+    dt = _parse_ring_timestamp_utc(ts_utc)
+    if dt is None:
+        return str(ts_utc or "")
+    est = dt.astimezone(_EST)
+    ms = est.microsecond // 1000
+    base = est.strftime("%Y-%m-%dT%H:%M:%S")
+    return f"{base}.{ms:03d}" if ms else base
+
+
+def avg_60s_at_quarter_close(
     symbol: str,
-    window_start_est: datetime,
-    window_end_est: datetime,
+    expiration: datetime,
 ) -> Optional[float]:
     """
-    Mean CFB spot (``price`` column) for ticks with ``start < timestamp <= end`` (EST wall strings).
+    Kalshi settlement spot: ``avg_60s`` on the exact quarter-hour close tick.
+
+    ``expiration`` may be EST-aware (trade_manager) or any tz-aware/naive datetime;
+    naive is treated as America/New_York. Lookup uses the UTC second prefix of that
+    instant against ring ``timestamp`` (ISO-8601 UTC with ``Z``).
     """
     table = _table_for_symbol(symbol)
-    if not table or window_end_est is None or window_start_est is None:
+    if not table or expiration is None:
         return None
     if not ring_pg_enabled():
         return None
-    start_s = _est_wall_str(window_start_est)
-    end_s = _est_wall_str(window_end_est)
-    if start_s > end_s:
-        return None
+
+    if expiration.tzinfo is None:
+        exp = expiration.replace(tzinfo=_EST)
+    else:
+        exp = expiration
+    # Floor to the contract second (expirations are :00/:15/:30/:45).
+    exp_utc = exp.astimezone(_UTC).replace(microsecond=0)
+    prefix = exp_utc.strftime("%Y-%m-%dT%H:%M:%S")
+
     try:
         from backend.core.config.database import get_system_postgresql_connection
     except Exception:
@@ -101,19 +143,26 @@ def avg_cfb_spot_in_est_window(
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                SELECT AVG(price::numeric), COUNT(*)::bigint
+                SELECT avg_60s::numeric
                 FROM live_data.{table}
-                WHERE timestamp > %s
-                  AND timestamp <= %s
+                WHERE timestamp LIKE %s
+                  AND avg_60s IS NOT NULL
+                ORDER BY timestamp ASC
+                LIMIT 1
                 """,
-                (start_s, end_s),
+                (prefix + "%",),
             )
             row = cur.fetchone()
-        if not row or int(row[1] or 0) < 1 or row[0] is None:
+        if not row or row[0] is None:
             return None
         return float(row[0])
     except Exception as e:
-        logger.debug("ring avg in window failed %s [%s,%s]: %s", symbol, start_s, end_s, e)
+        logger.debug(
+            "ring avg_60s at quarter close failed %s prefix=%s: %s",
+            symbol,
+            prefix,
+            e,
+        )
         return None
     finally:
         if conn is not None:
@@ -121,24 +170,6 @@ def avg_cfb_spot_in_est_window(
                 conn.close()
             except Exception:
                 pass
-
-
-def avg_cfb_spot_60s_before_expiration(
-    symbol: str,
-    expiration_est: datetime,
-    *,
-    window_sec: Optional[int] = None,
-) -> Optional[float]:
-    """Average CFB spot ticks in (expiry - window_sec, expiry] (default 60s)."""
-    if expiration_est is None:
-        return None
-    if expiration_est.tzinfo is None:
-        exp = expiration_est.replace(tzinfo=_EST)
-    else:
-        exp = expiration_est.astimezone(_EST)
-    sec = int(window_sec if window_sec is not None else expiration_symbol_close_window_sec())
-    start = exp - timedelta(seconds=sec)
-    return avg_cfb_spot_in_est_window(symbol, start, exp)
 
 
 def _get_executor() -> ThreadPoolExecutor:
@@ -164,24 +195,73 @@ def shutdown_ring_executor() -> None:
 atexit.register(shutdown_ring_executor)
 
 
-def enqueue_ring_tick(symbol: str, timestamp: str, price: float) -> None:
-    """Fire-and-forget PG write; never raises to caller."""
+def decimal_from_cfb_value(raw: Any) -> Optional[Decimal]:
+    """
+    Preserve CFB API decimal specificity (string → Decimal).
+
+    Avoids ``float()`` so Postgres NUMERIC receives the exact digit string.
+    """
+    if raw is None:
+        return None
+    if isinstance(raw, Decimal):
+        return raw
+    if isinstance(raw, bool):
+        return None
+    if isinstance(raw, int):
+        return Decimal(raw)
+    if isinstance(raw, float):
+        # Last resort if a caller already floated; prefer string inputs.
+        return Decimal(str(raw))
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        return Decimal(s)
+    except (InvalidOperation, ValueError):
+        return None
+
+
+def avg_value_from_cfb_obj(obj: Any) -> Optional[Decimal]:
+    """Extract ``.value`` from Kalshi windowed-average metadata as Decimal."""
+    if not isinstance(obj, dict):
+        return None
+    return decimal_from_cfb_value(obj.get("value"))
+
+
+def enqueue_ring_tick(
+    symbol: str,
+    timestamp: str,
+    price: Union[Decimal, str, int, float],
+    *,
+    avg_60s: Optional[Union[Decimal, str, int, float]] = None,
+    last_60s_windowed_average_15min: Optional[Union[Decimal, str, int, float]] = None,
+) -> None:
+    """Fire-and-forget PG write; ``timestamp`` must be ISO-8601 UTC (``…Z``). Never raises."""
     if not ring_pg_enabled():
         return
     sym = str(symbol or "").strip().upper()
     if sym not in _TRACKED or not timestamp or price is None:
         return
-    try:
-        px = float(price)
-    except (TypeError, ValueError):
+    px = decimal_from_cfb_value(price)
+    if px is None:
         return
+    avg60 = decimal_from_cfb_value(avg_60s)
+    avg15 = decimal_from_cfb_value(last_60s_windowed_average_15min)
     try:
-        _get_executor().submit(_write_ring_tick_sync, sym, timestamp, px)
+        _get_executor().submit(
+            _write_ring_tick_sync, sym, timestamp, px, avg60, avg15
+        )
     except Exception as e:
         logger.debug("ring PG enqueue failed %s: %s", sym, e)
 
 
-def _write_ring_tick_sync(symbol: str, timestamp: str, price: float) -> None:
+def _write_ring_tick_sync(
+    symbol: str,
+    timestamp: str,
+    price: Decimal,
+    avg_60s: Optional[Decimal] = None,
+    last_60s_windowed_average_15min: Optional[Decimal] = None,
+) -> None:
     table = _table_for_symbol(symbol)
     if not table:
         return
@@ -196,15 +276,21 @@ def _write_ring_tick_sync(symbol: str, timestamp: str, price: float) -> None:
         conn = get_system_postgresql_connection()
         if conn is None:
             return
-        cutoff = _cutoff_timestamp_est(retention_minutes())
+        cutoff = _cutoff_timestamp_utc(retention_minutes())
         with conn.cursor() as cur:
             cur.execute(
                 f"""
-                INSERT INTO live_data.{table} (timestamp, price)
-                VALUES (%s, %s)
-                ON CONFLICT (timestamp) DO UPDATE SET price = EXCLUDED.price
+                INSERT INTO live_data.{table} (
+                    timestamp, price, avg_60s, last_60s_windowed_average_15min
+                )
+                VALUES (%s, %s, %s, %s)
+                ON CONFLICT (timestamp) DO UPDATE SET
+                    price = EXCLUDED.price,
+                    avg_60s = EXCLUDED.avg_60s,
+                    last_60s_windowed_average_15min =
+                        EXCLUDED.last_60s_windowed_average_15min
                 """,
-                (timestamp, price),
+                (timestamp, price, avg_60s, last_60s_windowed_average_15min),
             )
             cur.execute(
                 f"DELETE FROM live_data.{table} WHERE timestamp < %s",
@@ -227,6 +313,7 @@ def _write_ring_tick_sync(symbol: str, timestamp: str, price: float) -> None:
 
 
 def _load_ring_rows(symbol: str) -> List[Tuple[str, float]]:
+    """Load ring rows as (EST wall timestamp, price) for in-memory buffer hydrate."""
     table = _table_for_symbol(symbol)
     if not table:
         return []
@@ -240,7 +327,7 @@ def _load_ring_rows(symbol: str) -> List[Tuple[str, float]]:
         conn = get_system_postgresql_connection()
         if conn is None:
             return []
-        cutoff = _cutoff_timestamp_est(retention_minutes())
+        cutoff = _cutoff_timestamp_utc(retention_minutes())
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -252,7 +339,12 @@ def _load_ring_rows(symbol: str) -> List[Tuple[str, float]]:
                 (cutoff,),
             )
             rows = cur.fetchall()
-        return [(str(r[0]), float(r[1])) for r in rows if r and r[0] is not None]
+        out: List[Tuple[str, float]] = []
+        for r in rows:
+            if not r or r[0] is None or r[1] is None:
+                continue
+            out.append((utc_wall_to_est_wall(str(r[0])), float(r[1])))
+        return out
     except Exception as e:
         logger.warning("ring PG load failed %s: %s", symbol, e)
         return []
@@ -267,7 +359,7 @@ def _load_ring_rows(symbol: str) -> List[Tuple[str, float]]:
 def hydrate_startup_buffers(symbols: List[str]) -> None:
     """
     Populate symbol_tick_buffer and replay CFB momentum deque from ring tables.
-    Called once before the WebSocket loop.
+    Called once before the WebSocket loop. Ring UTC timestamps are converted to EST.
     """
     from backend.core.cfbenchmarks_tick_metrics import replay_cfb_momentum_from_price_rows
     from backend.core.symbol_tick_buffer import append_tick

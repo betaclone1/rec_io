@@ -21,6 +21,28 @@ Use the same OAuth credentials as the gdrive MCP (`.cursor/gcp-oauth.keys.json`,
 
 Add scopes in GCP OAuth consent: `drive`, `documents`, `spreadsheets` (and re-run auth) so Docs and Sheets scripts work.
 
+## Upload cycle packages (backtesting_data → Drive)
+
+Default Drive target (``eric@rec-io.com``): ``DATA / HISTORICAL_DATA / BACKTESTING_DATA``  
+Folder ID: ``1Jlhz57hSXMYe8Yr_GtIJsaXY0GAW6L1v`` (override with ``GDRIVE_BACKTESTING_DATA_FOLDER_ID``).
+
+Mirrors local layout under that folder (e.g. ``KXBTC15M/2026/2026_07_JUL/*.tar.xz``). Creates missing subfolders. Skips uploads when a same-name file already has the same size.
+
+The hourly supervisor program ``cycle_packager`` calls this after each successful local package when credentials resolve (``CYCLE_GDRIVE_UPLOAD=1``; legacy ``BTC15M_CYCLE_GDRIVE_UPLOAD``). Disable with ``CYCLE_GDRIVE_UPLOAD=0``.
+
+```bash
+# Preview
+node scripts/gdrive/upload-backtesting-data.js --dry-run
+
+# Upload all local .tar.xz packages
+node scripts/gdrive/upload-backtesting-data.js
+
+# Upload specific files only
+node scripts/gdrive/upload-backtesting-data.js --file path/to/TICKER.tar.xz
+```
+
+Auth must be ``eric@rec-io.com`` (same ``.cursor/gdrive-server-credentials.json`` as other scripts).
+
 ## create-doc.js — Docs and plain text
 
 From repo root. **Default: when the user asks for a "doc" or "document" on Drive, create a Google Doc** (do not use `--text-file`). Use `--text-file` only when they explicitly want a plain text file.

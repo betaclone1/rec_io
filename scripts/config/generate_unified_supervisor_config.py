@@ -9,7 +9,7 @@ import sys
 import os
 import re
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
 # Add project root to Python path (script lives in scripts/config/)
 current_dir = Path(__file__).parent
@@ -488,6 +488,15 @@ class SupervisorConfigGenerator:
                 "autostart": True,
             }
         )
+        services.append(
+            {
+                "name": "cycle_packager",
+                "script": "cycle_packager.py",
+                "port": 0,
+                "environment": self._cycle_packager_environment(env_global),
+                "autostart": True,
+            }
+        )
         # db_writer_agent removed: script not in tree; hot path uses Redis live_state + optional spool.
 
         pr = Path(project_root)
@@ -697,6 +706,53 @@ environment={env_vars}
 """
         
         return config_content
+
+    def _cycle_packager_environment(self, env_global: str) -> str:
+        """Packager-only Drive upload env (path refs only — never embed token JSON)."""
+        root = Path(self.config.project_root)
+        secrets_client = root / "backend" / "data" / "secrets" / "gdrive_oauth_client.json"
+        secrets_token = root / "backend" / "data" / "secrets" / "gdrive_oauth_token.json"
+        cursor_client = root / ".cursor" / "gcp-oauth.keys.json"
+        cursor_token = root / ".cursor" / "gdrive-server-credentials.json"
+
+        client = secrets_client if secrets_client.is_file() else cursor_client
+        token = secrets_token if secrets_token.is_file() else cursor_token
+        extras: List[str] = []
+
+        # Ensure ``node`` (googleapis upload script) is on PATH — supervisord PATH is venv-only.
+        path_match = None
+        for part in env_global.split(","):
+            if part.startswith("PATH="):
+                path_match = part
+                break
+        if path_match:
+            raw = path_match.split("=", 1)[1].strip().strip('"')
+            extras.append(
+                f'PATH="{raw}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"'
+            )
+
+        if client.is_file() and token.is_file():
+            extras.extend(
+                [
+                    f'GDRIVE_OAUTH_PATH="{client}"',
+                    f'GDRIVE_CREDENTIALS_PATH="{token}"',
+                    'GDRIVE_BACKTESTING_DATA_FOLDER_ID="1Jlhz57hSXMYe8Yr_GtIJsaXY0GAW6L1v"',
+                    'CYCLE_GDRIVE_UPLOAD="1"',
+                    'BTC15M_CYCLE_GDRIVE_UPLOAD="1"',
+                ]
+            )
+        else:
+            extras.append('CYCLE_GDRIVE_UPLOAD="0"')
+            extras.append('BTC15M_CYCLE_GDRIVE_UPLOAD="0"')
+
+        # Prefer later PATH= (supervisord uses last duplicate? Actually comma-separated unique keys -
+        # duplicate PATH may be a problem). Strip original PATH from env_global if we re-add it.
+        if path_match:
+            parts = [p for p in env_global.split(",") if not p.startswith("PATH=")]
+            base = ",".join(parts)
+        else:
+            base = env_global
+        return base + "," + ",".join(extras)
     
     def _create_environment_variables(
         self,
