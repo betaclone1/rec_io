@@ -159,6 +159,102 @@ def _normalize_side(side_val: object) -> Optional[str]:
     return None
 
 
+def project_taker_buy_from_levels(
+    yes_levels: Dict[Any, Any],
+    no_levels: Dict[Any, Any],
+    side: str,
+    position: int,
+    *,
+    limit_price: Optional[float] = None,
+) -> dict[str, Any]:
+    """
+    Walk complementary asks built from opposite-side bids (same geometry as paper IOC / TM).
+
+    ``limit_price`` set → IOC-style: only take levels with ask <= limit.
+    ``limit_price`` None → market-style full depth up to ``position``.
+
+    Returns: ok, reason, filled, initial_proj_price, initial_proj_fees, available_contracts.
+    """
+    import math
+
+    result: dict[str, Any] = {
+        "ok": False,
+        "reason": "projection_failed",
+        "filled": 0,
+        "initial_proj_price": None,
+        "initial_proj_fees": None,
+        "available_contracts": None,
+    }
+    side_n = _normalize_side(side)
+    if not side_n or not position or int(position) <= 0:
+        result["reason"] = "missing_projection_inputs"
+        return result
+
+    src_bids = no_levels if side_n == "yes" else yes_levels
+    asks: list[tuple[float, float]] = []
+    for px, qty in (src_bids or {}).items():
+        try:
+            bid_px = float(px)
+            sz = float(qty)
+        except (TypeError, ValueError):
+            continue
+        ask_px = 1.0 - bid_px
+        if sz <= 0 or ask_px <= 0 or ask_px >= 1:
+            continue
+        asks.append((ask_px, sz))
+    asks.sort(key=lambda x: x[0])
+
+    lim: Optional[float] = None
+    if limit_price is not None:
+        try:
+            lim = float(limit_price)
+        except (TypeError, ValueError):
+            result["reason"] = "bad_limit_price"
+            return result
+        if lim <= 0 or lim >= 1:
+            result["reason"] = "bad_limit_price"
+            return result
+
+    if lim is None:
+        available = sum(q for _, q in asks)
+    else:
+        available = sum(q for px, q in asks if px <= lim + 1e-12)
+
+    remaining = float(position)
+    filled = 0.0
+    notional = 0.0
+    for px, qty in asks:
+        if remaining <= 0:
+            break
+        if lim is not None and px > lim + 1e-12:
+            continue
+        take = min(remaining, qty)
+        if take <= 0:
+            continue
+        notional += px * take
+        filled += take
+        remaining -= take
+
+    result["available_contracts"] = round(available, 2)
+    result["filled"] = int(round(filled))
+    if filled <= 0:
+        result["reason"] = "no_fill_at_limit" if lim is not None else "no_resting_volume"
+        return result
+
+    avg_price = notional / filled
+    # Same taker fee formula as trade_manager.estimate_kalshi_taker_fee
+    raw_fee = 0.07 * filled * avg_price * (1.0 - avg_price)
+    result["initial_proj_price"] = round(avg_price, 8)
+    result["initial_proj_fees"] = round(math.ceil(raw_fee * 100) / 100, 2)
+    if lim is not None:
+        result["ok"] = True
+        result["reason"] = "ok"
+    else:
+        result["ok"] = filled >= float(position)
+        result["reason"] = "ok" if result["ok"] else "insufficient_resting_volume"
+    return result
+
+
 def project_taker_fill_price(
     market_ticker: str,
     side: str,
@@ -186,44 +282,13 @@ def project_taker_fill_price(
         return result
 
     yes_levels, no_levels = _levels_from_snapshot(snap)
-    src_bids = no_levels if side_n == "yes" else yes_levels
-
-    asks: list[tuple[float, float]] = []
-    for px, qty in src_bids.items():
-        try:
-            bid_px = float(px)
-            sz = float(qty)
-        except (TypeError, ValueError):
-            continue
-        ask_px = 1.0 - bid_px
-        if sz <= 0 or ask_px <= 0 or ask_px >= 1:
-            continue
-        asks.append((ask_px, sz))
-    asks.sort(key=lambda x: x[0])
-
-    available = sum(q for _, q in asks)
-    remaining = float(position)
-    filled = 0.0
-    notional = 0.0
-    for px, qty in asks:
-        if remaining <= 0:
-            break
-        take = min(remaining, qty)
-        if take <= 0:
-            continue
-        notional += px * take
-        filled += take
-        remaining -= take
-
-    result["available_contracts"] = round(available, 2)
-    if filled <= 0:
-        result["reason"] = "no_resting_volume"
-        return result
-
-    avg_price = notional / filled
-    result["initial_proj_price"] = round(avg_price, 8)
-    result["ok"] = filled >= float(position)
-    result["reason"] = "ok" if result["ok"] else "insufficient_resting_volume"
+    proj = project_taker_buy_from_levels(
+        yes_levels, no_levels, side_n, int(position), limit_price=None
+    )
+    result["available_contracts"] = proj.get("available_contracts")
+    result["initial_proj_price"] = proj.get("initial_proj_price")
+    result["ok"] = bool(proj.get("ok"))
+    result["reason"] = proj.get("reason") or "projection_failed"
     return result
 
 

@@ -108,14 +108,19 @@ def utc_wall_to_est_wall(ts_utc: str) -> str:
 def avg_60s_at_quarter_close(
     symbol: str,
     expiration: datetime,
+    *,
+    wait_seconds: float = 0.0,
+    poll_interval: float = 0.25,
 ) -> Optional[float]:
     """
-    Kalshi settlement spot: ``avg_60s`` on the exact quarter-hour close tick.
+    CFB ``avg_60s`` on the exact contract close second (``:00`` / ``:15`` / ``:30`` / ``:45``).
 
-    ``expiration`` may be EST-aware (trade_manager) or any tz-aware/naive datetime;
-    naive is treated as America/New_York. Lookup uses the UTC second prefix of that
-    instant against ring ``timestamp`` (ISO-8601 UTC with ``Z``).
+    That tick is always written into the ring; the expiry cron often fires at the
+    same second, so callers may pass ``wait_seconds`` to poll until it appears.
+    No substitute tick — only the exact close second.
     """
+    import time
+
     table = _table_for_symbol(symbol)
     if not table or expiration is None:
         return None
@@ -126,7 +131,6 @@ def avg_60s_at_quarter_close(
         exp = expiration.replace(tzinfo=_EST)
     else:
         exp = expiration
-    # Floor to the contract second (expirations are :00/:15/:30/:45).
     exp_utc = exp.astimezone(_UTC).replace(microsecond=0)
     prefix = exp_utc.strftime("%Y-%m-%dT%H:%M:%S")
 
@@ -135,41 +139,48 @@ def avg_60s_at_quarter_close(
     except Exception:
         return None
 
-    conn = None
-    try:
-        conn = get_system_postgresql_connection()
-        if conn is None:
-            return None
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                SELECT avg_60s::numeric
-                FROM live_data.{table}
-                WHERE timestamp LIKE %s
-                  AND avg_60s IS NOT NULL
-                ORDER BY timestamp ASC
-                LIMIT 1
-                """,
-                (prefix + "%",),
+    deadline = time.monotonic() + max(0.0, float(wait_seconds or 0.0))
+    interval = max(0.05, float(poll_interval or 0.25))
+
+    while True:
+        conn = None
+        try:
+            conn = get_system_postgresql_connection()
+            if conn is None:
+                return None
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT avg_60s::numeric
+                    FROM live_data.{table}
+                    WHERE timestamp LIKE %s
+                      AND avg_60s IS NOT NULL
+                    ORDER BY timestamp ASC
+                    LIMIT 1
+                    """,
+                    (prefix + "%",),
+                )
+                row = cur.fetchone()
+            if row and row[0] is not None:
+                return float(row[0])
+        except Exception as e:
+            logger.debug(
+                "ring avg_60s at quarter close failed %s prefix=%s: %s",
+                symbol,
+                prefix,
+                e,
             )
-            row = cur.fetchone()
-        if not row or row[0] is None:
             return None
-        return float(row[0])
-    except Exception as e:
-        logger.debug(
-            "ring avg_60s at quarter close failed %s prefix=%s: %s",
-            symbol,
-            prefix,
-            e,
-        )
-        return None
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+        finally:
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+
+        if time.monotonic() >= deadline:
+            return None
+        time.sleep(interval)
 
 
 def _get_executor() -> ThreadPoolExecutor:

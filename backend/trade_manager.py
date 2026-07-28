@@ -1291,11 +1291,9 @@ def _symbol_close_live_spot(symbol: Optional[str]) -> Optional[float]:
 
 def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime) -> Optional[float]:
     """
-    Expiration settlement spot: Kalshi CFB ``avg_60s`` on the exact quarter-hour close tick
-    (``:00`` / ``:15`` / ``:30`` / ``:45``) from ``live_data.live_price_ring_90m_*``.
-
-    Used for expired 15m and hourly trades. Early closes still use ``_symbol_close_live_spot``.
-    Returns NULL if that tick / ``avg_60s`` is not in the ring yet (no substitute spot).
+    Expiration ``symbol_close``: CFB ring ``avg_60s`` on the exact contract close
+    second (``:00`` / ``:15`` / ``:30`` / ``:45``). Waits briefly for that tick
+    (expiry cron races the writer). No other price source.
     """
     if not symbol or expiration_est is None:
         return None
@@ -1303,7 +1301,15 @@ def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime
     try:
         from backend.core.live_price_ring_90m import avg_60s_at_quarter_close
 
-        avg_px = avg_60s_at_quarter_close(sym_u, expiration_est)
+        wait_s = 5.0
+        raw_wait = os.getenv("TM_SYMBOL_CLOSE_WAIT_SEC", "").strip()
+        if raw_wait:
+            try:
+                wait_s = max(0.0, float(raw_wait))
+            except (TypeError, ValueError):
+                pass
+
+        avg_px = avg_60s_at_quarter_close(sym_u, expiration_est, wait_seconds=wait_s)
         if avg_px is not None:
             out = normalize_trade_spot_price(symbol, avg_px)
             if out is not None:
@@ -1313,8 +1319,8 @@ def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime
                 )
                 return float(out)
         log(
-            f"ℹ️ symbol_close for {sym_u} expiration: ring avg_60s tick not available yet "
-            f"(exp={expiration_est})"
+            f"⚠️ symbol_close for {sym_u} expiration: close-second avg_60s not in ring "
+            f"after {wait_s:.1f}s wait (exp={expiration_est})"
         )
     except Exception as e:
         log(f"⚠️ cfb ring expiration avg_60s for {symbol}: {e}")
@@ -1471,7 +1477,11 @@ def _apply_win_loss_confirmed_for_trade_ids(cursor, trade_ids) -> None:
 
 
 def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: str, symbol: str) -> None:
-    """Repair missing ``symbol_close`` for an expired paper row; close when ``market_result`` exists."""
+    """Promote expired paper → closed when venue ``market_result`` is present.
+
+    Does not write ``symbol_close``. Expiry sweep sets that from ring avg_60s at
+    the contract close tick only (or leaves NULL).
+    """
     pg_conn_paper = None
     try:
         pg_conn_paper = get_postgresql_connection()
@@ -1482,7 +1492,7 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
         with pg_conn_paper.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT symbol_close, contract, date, market_result
+                SELECT market_result
                 FROM {_tm_trades_table()}
                 WHERE id = %s AND status = 'expired'
                   AND paper_trade IS TRUE
@@ -1494,21 +1504,7 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
         if not trade_data:
             return
 
-        symbol_close, contract, trade_date, market_result = trade_data
-
-        if symbol_close is None and contract and trade_date and symbol:
-            exp_est = _contract_expiration_est(trade_date, contract, now_est)
-            symbol_close = _symbol_close_for_expiration(symbol, exp_est)
-            if symbol_close is not None:
-                log_debug(
-                    f"📝 Repaired symbol_close for expired paper {trade_id} from CFB ring avg_60s close tick"
-                )
-                with pg_conn_paper.cursor() as cursor:
-                    cursor.execute(
-                        f"UPDATE {_tm_trades_table()} SET symbol_close = %s WHERE id = %s AND status = 'expired'",
-                        (symbol_close, trade_id),
-                    )
-                    pg_conn_paper.commit()
+        market_result = trade_data[0]
 
         if market_result is None:
             # Paper trades need the same immediate per-ticker backfill path as live
@@ -1544,7 +1540,7 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
 
 
 def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
-    """Finalize paper rows left ``expired`` with NULL ``symbol_close`` (e.g. after a failed price lookup)."""
+    """Finalize paper rows left ``expired`` once ``market_result`` can close them."""
     pg = get_postgresql_connection()
     if not pg:
         return
@@ -1555,7 +1551,6 @@ def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
                 SELECT id, ticker, symbol FROM {_tm_trades_table()}
                 WHERE paper_trade IS TRUE
                   AND status = 'expired'
-                  AND symbol_close IS NULL
                 LIMIT 100
                 """
             )
@@ -1570,71 +1565,9 @@ def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
         return
     if not rows:
         return
-    log(f"📝 Settling {len(rows)} stuck expired paper trade(s) missing symbol_close")
+    log(f"📝 Settling {len(rows)} stuck expired paper trade(s)")
     for tid, tkr, sym in rows:
         _settle_one_expired_paper_trade(now_est, tid, tkr, sym)
-
-
-def _repair_missing_symbol_close_recent(now_est: datetime) -> None:
-    """Backfill ``symbol_close`` on recent closed/expired rows (hot-path PG gap failures)."""
-    pg = get_postgresql_connection()
-    if not pg:
-        return
-    try:
-        window_start = (now_est - timedelta(hours=6)).date()
-        with pg.cursor() as c:
-            c.execute(
-                f"""
-                SELECT id, symbol, contract, date, status
-                FROM {_tm_trades_table()}
-                WHERE symbol_close IS NULL
-                  AND symbol IS NOT NULL
-                  AND status IN ('closed', 'expired')
-                  AND date IS NOT NULL
-                  AND (trim(both from date::text))::date >= %s::date
-                ORDER BY id DESC
-                LIMIT 50
-                """,
-                (window_start,),
-            )
-            rows = c.fetchall()
-        if not rows:
-            pg.close()
-            return
-        repaired = 0
-        with pg.cursor() as c:
-            for trade_id, symbol, contract, trade_date, _status in rows:
-                exp_est = _contract_expiration_est(trade_date, contract, now_est)
-                if str(_status or "").strip().lower() == "expired":
-                    px = _symbol_close_for_expiration(symbol, exp_est)
-                else:
-                    px = _symbol_close_live_spot(symbol)
-                if px is None:
-                    px = _resolve_symbol_close_for_finalize(
-                        int(trade_id), symbol, as_of_est=exp_est
-                    )
-                if px is None:
-                    continue
-                c.execute(
-                    f"""
-                    UPDATE {_tm_trades_table()}
-                    SET symbol_close = %s
-                    WHERE id = %s AND symbol_close IS NULL
-                    """,
-                    (px, trade_id),
-                )
-                if c.rowcount:
-                    repaired += 1
-            pg.commit()
-        pg.close()
-        if repaired:
-            log(f"ℹ️ Repaired symbol_close on {repaired} recent closed/expired trade(s)")
-    except Exception as e:
-        log(f"⚠️ symbol_close recent repair failed: {e}")
-        try:
-            pg.close()
-        except Exception:
-            pass
 
 
 def _tm_symbol_open_from_live_state(symbol: str):
@@ -7652,9 +7585,8 @@ def check_expired_trades():
         # Early-closed trades: fill symbol_expiration once contract end has passed (same 1m avg @ expiration tick).
         _backfill_symbol_expiration_past_due_closed(sweep_start_est)
 
-        # Paper trades can be stuck ``expired`` if symbol_close failed during sweep (e.g. text vs timestamp bug).
+        # Paper trades can be stuck ``expired`` until market_result arrives.
         _settle_stuck_expired_paper_trades(sweep_start_est)
-        _repair_missing_symbol_close_recent(sweep_start_est)
 
         # Live/paper tenant trades run BEFORE simulated settlement. Sim can take many minutes locally;
         # using a stale sweep-start clock for expiry filtering skipped 15m rows (prod has fewer sim rows).
