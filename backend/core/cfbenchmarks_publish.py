@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 from typing import Any, Dict, Literal, Optional
 
 from backend.core.cfbenchmarks_feed_cache import publish_tick
@@ -194,6 +195,8 @@ def publish_envelope_outputs(
                             "metrics ring PG enqueue skipped %s: %s", symbol, e
                         )
                 # Per-ticker 15m cycle packages (historical_data hot tables).
+                # Off the WS asyncio thread: ensure_live_cycle_hot can do sync DDL
+                # and was stalling pings → reconnect → late close ticks.
                 try:
                     from backend.core.cycle_hot_tables import (
                         enabled_cycle_symbols,
@@ -201,18 +204,44 @@ def publish_envelope_outputs(
                     )
 
                     if symbol in enabled_cycle_symbols():
-                        enqueue_cycle_price_metrics(
-                            symbol=symbol,
-                            timestamp_utc=ring_ts,
-                            price=ring_price,
-                            avg_60s=avg_value_from_cfb_obj(
-                                envelope.get("avg_60s_data")
-                            ),
-                            last_60s_windowed_average_15min=avg_value_from_cfb_obj(
-                                envelope.get("last_60s_windowed_average_15min")
-                            ),
-                            metrics=tick_row if isinstance(tick_row, dict) else None,
+                        _a60 = avg_value_from_cfb_obj(envelope.get("avg_60s_data"))
+                        _a15 = avg_value_from_cfb_obj(
+                            envelope.get("last_60s_windowed_average_15min")
                         )
+                        _met = tick_row if isinstance(tick_row, dict) else None
+                        _sym = symbol
+                        _ts = ring_ts
+                        _px = ring_price
+
+                        def _cycle_fanout(
+                            sym=_sym,
+                            ts=_ts,
+                            px=_px,
+                            a60=_a60,
+                            a15=_a15,
+                            met=_met,
+                        ):
+                            try:
+                                enqueue_cycle_price_metrics(
+                                    symbol=sym,
+                                    timestamp_utc=ts,
+                                    price=px,
+                                    avg_60s=a60,
+                                    last_60s_windowed_average_15min=a15,
+                                    metrics=met,
+                                )
+                            except Exception as exc:
+                                logger.warning(
+                                    "15m cycle ring enqueue skipped %s: %s",
+                                    sym,
+                                    exc,
+                                )
+
+                        threading.Thread(
+                            target=_cycle_fanout,
+                            daemon=True,
+                            name=f"cfb-cycle-{symbol}",
+                        ).start()
                 except Exception as e:
                     logger.warning(
                         "15m cycle ring enqueue skipped %s: %s", symbol, e

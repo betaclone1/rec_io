@@ -284,9 +284,20 @@ class CfBenchmarksWatchdog:
             },
         )
         seq = self.tick_seq_by_index.get(iid, 0)
-        if seq == 1 or seq % 60 == 0:
+        is_close_tick = False
+        try:
+            from backend.core.live_price_ring_90m import (
+                is_quarter_close_ring_timestamp,
+                ring_timestamp_utc_from_source_ms,
+            )
+
+            rts = ring_timestamp_utc_from_source_ms(envelope.get("source_ts_ms"))
+            is_close_tick = bool(rts and is_quarter_close_ring_timestamp(rts))
+        except Exception:
+            is_close_tick = False
+        if is_close_tick or seq == 1 or seq % 60 == 0:
             logger.info(
-                "tick %s seq=%s price=%s delta_1m=%s momentum=%s lag_kalshi_ms=%s window_15m=%s",
+                "tick %s seq=%s price=%s delta_1m=%s momentum=%s lag_kalshi_ms=%s window_15m=%s%s",
                 iid,
                 seq,
                 envelope.get("price"),
@@ -296,6 +307,7 @@ class CfBenchmarksWatchdog:
                 "yes"
                 if envelope.get("last_60s_windowed_average_15min")
                 else "no",
+                " close_tick" if is_close_tick else "",
             )
 
     async def _feed_health_loop(self, ws) -> None:
@@ -371,7 +383,8 @@ class CfBenchmarksWatchdog:
                     WS_URL,
                     additional_headers=headers,
                     ping_interval=20,
-                    ping_timeout=20,
+                    # Close ticks + sync ring write must not trip ping death.
+                    ping_timeout=60,
                     close_timeout=10,
                 ) as ws:
                     last_error = await self._run_connected_session(ws)

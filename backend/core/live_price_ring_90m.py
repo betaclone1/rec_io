@@ -79,6 +79,14 @@ def ring_timestamp_utc_from_source_ms(source_ts_ms: Any) -> Optional[str]:
     return _utc_wall_str(datetime.fromtimestamp(ms / 1000.0, tz=_UTC))
 
 
+def is_quarter_close_ring_timestamp(timestamp: str) -> bool:
+    """True for exact ``:00`` / ``:15`` / ``:30`` / ``:45`` UTC seconds (settlement ticks)."""
+    dt = _parse_ring_timestamp_utc(timestamp)
+    if dt is None:
+        return False
+    return dt.second == 0 and dt.microsecond == 0 and (dt.minute % 15) == 0
+
+
 def _parse_ring_timestamp_utc(ts: str) -> Optional[datetime]:
     s = str(ts or "").strip()
     if not s:
@@ -247,7 +255,13 @@ def enqueue_ring_tick(
     avg_60s: Optional[Union[Decimal, str, int, float]] = None,
     last_60s_windowed_average_15min: Optional[Union[Decimal, str, int, float]] = None,
 ) -> None:
-    """Fire-and-forget PG write; ``timestamp`` must be ISO-8601 UTC (``…Z``). Never raises."""
+    """
+    PG write; ``timestamp`` must be ISO-8601 UTC (``…Z``). Never raises.
+
+    Quarter-close ticks (``:00``/``:15``/``:30``/``:45``) write **synchronously** so
+    ``trade_manager`` can read settlement ``avg_60s`` immediately. All other ticks
+    stay fire-and-forget on the thread pool.
+    """
     if not ring_pg_enabled():
         return
     sym = str(symbol or "").strip().upper()
@@ -259,9 +273,19 @@ def enqueue_ring_tick(
     avg60 = decimal_from_cfb_value(avg_60s)
     avg15 = decimal_from_cfb_value(last_60s_windowed_average_15min)
     try:
-        _get_executor().submit(
-            _write_ring_tick_sync, sym, timestamp, px, avg60, avg15
-        )
+        if is_quarter_close_ring_timestamp(timestamp):
+            # Settlement tick: must land in PG before expiry cron looks it up.
+            _write_ring_tick_sync(sym, timestamp, px, avg60, avg15, prune=False)
+            logger.info(
+                "ring PG sync close tick %s ts=%s avg_60s=%s",
+                sym,
+                timestamp,
+                avg60,
+            )
+        else:
+            _get_executor().submit(
+                _write_ring_tick_sync, sym, timestamp, px, avg60, avg15, True
+            )
     except Exception as e:
         logger.debug("ring PG enqueue failed %s: %s", sym, e)
 
@@ -272,6 +296,7 @@ def _write_ring_tick_sync(
     price: Decimal,
     avg_60s: Optional[Decimal] = None,
     last_60s_windowed_average_15min: Optional[Decimal] = None,
+    prune: bool = True,
 ) -> None:
     table = _table_for_symbol(symbol)
     if not table:
@@ -287,7 +312,6 @@ def _write_ring_tick_sync(
         conn = get_system_postgresql_connection()
         if conn is None:
             return
-        cutoff = _cutoff_timestamp_utc(retention_minutes())
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -303,10 +327,12 @@ def _write_ring_tick_sync(
                 """,
                 (timestamp, price, avg_60s, last_60s_windowed_average_15min),
             )
-            cur.execute(
-                f"DELETE FROM live_data.{table} WHERE timestamp < %s",
-                (cutoff,),
-            )
+            if prune:
+                cutoff = _cutoff_timestamp_utc(retention_minutes())
+                cur.execute(
+                    f"DELETE FROM live_data.{table} WHERE timestamp < %s",
+                    (cutoff,),
+                )
         conn.commit()
     except Exception as e:
         if conn is not None:
