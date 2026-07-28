@@ -2327,8 +2327,15 @@ def _paper_ledger_on_open(buy_price: float, position, open_fee_dollars: float) -
     """
     Mimic live Kalshi balance feed: ``portfolio_value`` from OPEN paper trades in DB;
     cash = total equity minus that; total equity decreases by open fees only (premium is neutral).
+
+    Only when global trading mode is PAPER. In LIVE mode, ``paper_trade`` rows are
+    testing overlays and must not touch ``account_balance_paper_*``.
     """
     try:
+        from backend.trading_mode import is_paper_trading
+
+        if not is_paper_trading():
+            return
         from backend.balance_snapshot import paper_open_cost_and_fee_cents, sync_paper_balance_feed_after_open
 
         _cost_cents, fee_cents = paper_open_cost_and_fee_cents(
@@ -2340,7 +2347,12 @@ def _paper_ledger_on_open(buy_price: float, position, open_fee_dollars: float) -
 
 
 def _paper_ledger_on_close(buy_price: float, position, pnl_dollars: float) -> None:
+    """Paper balance feed on close — global PAPER mode only (see ``_paper_ledger_on_open``)."""
     try:
+        from backend.trading_mode import is_paper_trading
+
+        if not is_paper_trading():
+            return
         from backend.balance_snapshot import sync_paper_balance_feed_after_close
 
         pnl_cents = int(round(float(pnl_dollars) * 100.0))
@@ -6319,36 +6331,41 @@ async def add_trade(request: Request):
             projected_buy_price = None
             projected_open_fee = None
 
+        # Paper collateral / buying-power cap applies only in global PAPER mode.
+        # In LIVE mode, paper_trade tickets are testing overlays and ignore paper balances.
         try:
-            from backend.paper_collateral import paper_open_passes_collateral_cap
+            from backend.trading_mode import is_paper_trading
 
-            _bp_g = float(projected_buy_price if projected_buy_price is not None else data["buy_price"])
-            _pos_g = int(data["position"])
-            _fee_g = (
-                float(projected_open_fee)
-                if projected_open_fee is not None
-                else estimate_kalshi_taker_fee(_pos_g, _bp_g)
-            )
-            _ok_cap, _cap_reason = paper_open_passes_collateral_cap(
-                ticker=data.get("ticker"),
-                side=data.get("side"),
-                buy_price=_bp_g,
-                position=_pos_g,
-                open_fee_dollars=_fee_g,
-            )
-            if not _ok_cap:
-                log(f"PAPER TRADE SKIPPED (buying power / collateral): {_cap_reason}")
-                log_event(
-                    data.get("ticket_id", "UNKNOWN"),
-                    f"MANAGER: PAPER — SKIPPED insufficient buying power: {_cap_reason}",
+            if is_paper_trading():
+                from backend.paper_collateral import paper_open_passes_collateral_cap
+
+                _bp_g = float(projected_buy_price if projected_buy_price is not None else data["buy_price"])
+                _pos_g = int(data["position"])
+                _fee_g = (
+                    float(projected_open_fee)
+                    if projected_open_fee is not None
+                    else estimate_kalshi_taker_fee(_pos_g, _bp_g)
                 )
-                raise HTTPException(
-                    status_code=status.HTTP_400_BAD_REQUEST,
-                    detail={
-                        "error": "insufficient_paper_buying_power",
-                        "message": _cap_reason,
-                    },
+                _ok_cap, _cap_reason = paper_open_passes_collateral_cap(
+                    ticker=data.get("ticker"),
+                    side=data.get("side"),
+                    buy_price=_bp_g,
+                    position=_pos_g,
+                    open_fee_dollars=_fee_g,
                 )
+                if not _ok_cap:
+                    log(f"PAPER TRADE SKIPPED (buying power / collateral): {_cap_reason}")
+                    log_event(
+                        data.get("ticket_id", "UNKNOWN"),
+                        f"MANAGER: PAPER — SKIPPED insufficient buying power: {_cap_reason}",
+                    )
+                    raise HTTPException(
+                        status_code=status.HTTP_400_BAD_REQUEST,
+                        detail={
+                            "error": "insufficient_paper_buying_power",
+                            "message": _cap_reason,
+                        },
+                    )
         except HTTPException:
             raise
         except Exception as e:

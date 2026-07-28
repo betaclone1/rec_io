@@ -1731,10 +1731,17 @@ def sync_paper_balance_feed_after_open(open_fee_cents: int) -> bool:
     Read + insert run in **one transaction** with an advisory lock. Live Kalshi sync must never
     write to paper tables (see ``account_balance_table_for_user(..., force_live=True)`` in
     ``kalshi_account_sync_ws``); otherwise REST balance polls would overwrite simulated history.
+
+    No-op unless global trading mode is PAPER. In LIVE mode, ``paper_trade`` rows must not
+    update ``account_balance_paper_*``.
     """
+    from backend.trading_mode import is_paper_trading, paper_account_balance_fqn, paper_subaccounts_fqn
+
+    if not is_paper_trading():
+        return False
+
     from backend.core.config.database import get_postgresql_connection
     from backend.core.time_eastern import now_est
-    from backend.trading_mode import paper_account_balance_fqn, paper_subaccounts_fqn
 
     slot = resolved_tenant_user_no_for_app()
     ab_sch, ab_tbl = paper_account_balance_fqn(slot).split(".", 1)
@@ -1786,10 +1793,16 @@ def sync_paper_balance_feed_after_close(pnl_cents: int, buy_price: float, positi
     Algebra: ``T_close = T_open + pnl + F_open`` with ``T_open = S - F_open`` gives ``T_close = S + pnl``.
 
     Same single-transaction read+write as open; baseline is latest paper row by ``id`` like open.
+
+    No-op unless global trading mode is PAPER.
     """
+    from backend.trading_mode import is_paper_trading, paper_account_balance_fqn, paper_subaccounts_fqn
+
+    if not is_paper_trading():
+        return False
+
     from backend.core.config.database import get_postgresql_connection
     from backend.core.time_eastern import now_est
-    from backend.trading_mode import paper_account_balance_fqn, paper_subaccounts_fqn
 
     slot = resolved_tenant_user_no_for_app()
     ab_sch, ab_tbl = paper_account_balance_fqn(slot).split(".", 1)

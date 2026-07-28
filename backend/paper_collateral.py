@@ -136,9 +136,16 @@ def paper_open_passes_collateral_cap(
     ``positions_new <= portfolio_equity - open_fee`` (all in cents), where ``positions``
     is netted FIFO collateral across open paper rows plus this hypothetical open.
 
+    Only meaningful in **global PAPER** trading mode. In LIVE mode, callers must not
+    invoke this (paper tickets are testing overlays and ignore paper balances).
+
     Set ``REC_SKIP_PAPER_COLLATERAL_CAP=1`` only for local recovery when open-premium vs
     portfolio snapshot is temporarily inconsistent (every paper open would otherwise 400).
     """
+    from backend.trading_mode import is_paper_trading
+
+    if not is_paper_trading():
+        return True, ""
     if _truthy_env("REC_SKIP_PAPER_COLLATERAL_CAP"):
         _LOG.warning(
             "REC_SKIP_PAPER_COLLATERAL_CAP: bypassing paper collateral cap (dev/recovery only)"
