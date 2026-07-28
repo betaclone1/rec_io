@@ -1361,6 +1361,89 @@ def _apply_symbol_expiration_for_contract_session(cursor, symbol: str, trade_dat
     return cursor.rowcount
 
 
+def _trade_ids_pending_wlc_for_contract_session(cursor, symbol: str, contract: str, trade_date) -> list:
+    c = str(contract).strip()
+    variants = _contract_session_date_variants(trade_date)
+    if not c or not variants or not symbol:
+        return []
+    sym_key = str(symbol).strip().upper()
+    ph = ",".join(["%s"] * len(variants))
+    cursor.execute(
+        f"""
+        SELECT id FROM {_tm_trades_table()}
+        WHERE upper(trim(both from coalesce(symbol, ''))) = %s
+          AND trim(both from coalesce(contract, '')) = %s
+          AND date::text IN ({ph})
+          AND status = 'closed'
+          AND win_loss IS NOT NULL
+          AND win_loss_confirmed IS NULL
+        """,
+        (sym_key, c, *variants),
+    )
+    return [r[0] for r in cursor.fetchall()]
+
+
+def _backfill_symbol_expiration_past_due_closed(now_est: datetime) -> None:
+    """For each distinct ``date`` + ``contract`` in the window (past expiry), align symbol_expiration across all rows."""
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        window_start = (now_est - timedelta(days=7)).date()
+        window_end = now_est.date()
+        with pg.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT DISTINCT symbol, date, contract
+                FROM {_tm_trades_table()}
+                WHERE symbol IS NOT NULL
+                  AND contract IS NOT NULL
+                  AND date IS NOT NULL
+                  AND trim(both from date::text) <> ''
+                  AND (trim(both from date::text))::date >= %s::date
+                  AND (trim(both from date::text))::date <= %s::date
+                """,
+                (window_start, window_end),
+            )
+            markets = cur.fetchall()
+        sessions_touched: list = []
+        total_rows = 0
+        for symbol, trade_date, contract in markets:
+            exp_est = _contract_expiration_est(trade_date, contract, now_est)
+            if now_est < exp_est:
+                continue
+            with pg.cursor() as cur:
+                n = _apply_symbol_expiration_for_contract_session(cur, symbol, trade_date, contract)
+            if n:
+                total_rows += n
+                sessions_touched.append((str(symbol).strip(), str(contract).strip(), trade_date))
+        with pg.cursor() as cur:
+            ids = []
+            seen_sess = set()
+            for sym_k, ckey, td in sessions_touched:
+                sk = (sym_k.upper(), ckey, str(td))
+                if sk in seen_sess:
+                    continue
+                seen_sess.add(sk)
+                ids.extend(_trade_ids_pending_wlc_for_contract_session(cur, sym_k, ckey, td))
+            _apply_win_loss_confirmed_for_trade_ids(cur, ids)
+        pg.commit()
+        if total_rows:
+            log_debug(
+                f"[15-MIN CHECK] symbol_expiration contract-session alignment: {total_rows} row(s), "
+                f"{len(seen_sess)} session(s)"
+            )
+    except Exception as e:
+        log(f"⚠️ symbol_expiration past-due backfill failed: {e}")
+        try:
+            pg.rollback()
+        except Exception:
+            pass
+    finally:
+        pg.close()
+
+
+
 def _apply_win_loss_confirmed_for_trade_ids(cursor, trade_ids) -> None:
     """Recompute win_loss_confirmed from venue ``market_result`` when present."""
     if not trade_ids:
@@ -1466,6 +1549,101 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
                 pg_conn_paper.close()
             except Exception:
                 pass
+
+
+def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
+    """Finalize paper rows left ``expired`` with NULL ``symbol_close`` (e.g. after a failed price lookup)."""
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        with pg.cursor() as c:
+            c.execute(
+                f"""
+                SELECT id, ticker, symbol FROM {_tm_trades_table()}
+                WHERE paper_trade IS TRUE
+                  AND status = 'expired'
+                  AND symbol_close IS NULL
+                LIMIT 100
+                """
+            )
+            rows = c.fetchall()
+        pg.close()
+    except Exception as e:
+        log(f"⚠️ stuck expired paper scan: {e}")
+        try:
+            pg.close()
+        except Exception:
+            pass
+        return
+    if not rows:
+        return
+    log(f"📝 Settling {len(rows)} stuck expired paper trade(s) missing symbol_close")
+    for tid, tkr, sym in rows:
+        _settle_one_expired_paper_trade(now_est, tid, tkr, sym)
+
+
+def _repair_missing_symbol_close_recent(now_est: datetime) -> None:
+    """Backfill ``symbol_close`` on recent closed/expired rows (hot-path PG gap failures)."""
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        window_start = (now_est - timedelta(hours=6)).date()
+        with pg.cursor() as c:
+            c.execute(
+                f"""
+                SELECT id, symbol, contract, date, status
+                FROM {_tm_trades_table()}
+                WHERE symbol_close IS NULL
+                  AND symbol IS NOT NULL
+                  AND status IN ('closed', 'expired')
+                  AND date IS NOT NULL
+                  AND (trim(both from date::text))::date >= %s::date
+                ORDER BY id DESC
+                LIMIT 50
+                """,
+                (window_start,),
+            )
+            rows = c.fetchall()
+        if not rows:
+            pg.close()
+            return
+        repaired = 0
+        with pg.cursor() as c:
+            for trade_id, symbol, contract, trade_date, _status in rows:
+                exp_est = _contract_expiration_est(trade_date, contract, now_est)
+                if str(_status or "").strip().lower() == "expired":
+                    px = _symbol_close_for_expiration(symbol, exp_est)
+                else:
+                    px = _symbol_close_live_spot(symbol)
+                if px is None:
+                    px = _resolve_symbol_close_for_finalize(
+                        int(trade_id), symbol, as_of_est=exp_est
+                    )
+                if px is None:
+                    continue
+                c.execute(
+                    f"""
+                    UPDATE {_tm_trades_table()}
+                    SET symbol_close = %s
+                    WHERE id = %s AND symbol_close IS NULL
+                    """,
+                    (px, trade_id),
+                )
+                if c.rowcount:
+                    repaired += 1
+            pg.commit()
+        pg.close()
+        if repaired:
+            log(f"ℹ️ Repaired symbol_close on {repaired} recent closed/expired trade(s)")
+    except Exception as e:
+        log(f"⚠️ symbol_close recent repair failed: {e}")
+        try:
+            pg.close()
+        except Exception:
+            pass
+
 
 
 def _tm_symbol_open_from_live_state(symbol: str):
@@ -7496,6 +7674,13 @@ def check_expired_trades():
 
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
+
+        # Early-closed trades: fill symbol_expiration once contract end has passed (same 1m avg @ expiration tick).
+        _backfill_symbol_expiration_past_due_closed(sweep_start_est)
+
+        # Paper trades can be stuck ``expired`` if symbol_close failed during sweep (e.g. text vs timestamp bug).
+        _settle_stuck_expired_paper_trades(sweep_start_est)
+        _repair_missing_symbol_close_recent(sweep_start_est)
 
         # Live/paper tenant trades run BEFORE simulated settlement. Sim can take many minutes locally;
         # using a stale sweep-start clock for expiry filtering skipped 15m rows (prod has fewer sim rows).

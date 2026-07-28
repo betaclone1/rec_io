@@ -60,6 +60,23 @@ Other gaps (inherent, not bugs): **1m candle** close prices/volume vs **live** s
 
 **Ticker → contract interval (``backtest_market_simulator``):** tickers containing ``15M`` (e.g. ``KXBTC15M-...``) are treated as **15m** (``ttc_15m`` + 15m-style probability); otherwise **hourly** (``ttc_hourly`` + hourly probability), e.g. ``KXBTCD-...``. Override with ``--market 15m`` / ``--market hourly`` if needed.
 
+### 2.3 Cycle packages: backtests **and** live-workflow diagnostics
+
+Sealed cycle packages (`backend/util/cycle_replay/`, `scripts/backtest/cycle_replay_parity.py`) are valuable beyond hypothetical PnL. A package is a ground-truth recording of what the market/ladder looked like second-by-second; comparing **theoretical first gate-pass** to **live `trades_*` entry/exit times** is a primary way to catch live pipeline problems.
+
+**When replay shows an entry (or earlier entry) that live missed or took late:**
+
+1. **Investigate** — feed lag (e.g. CFB/spot), strike-ladder freshness, AES unified-pool cadence, silent gate skips, cooldowns, monitor inactive windows, IOC/fill path — not “replay clock wrong” by default.
+2. **Note** the finding (trade id, ticker, Δ entry/exit seconds, root cause class).
+3. **Decide:**
+   - **Remediate live** if the gap is a fixable defect (stale ladder, missed wake, feed reconnect, scan starvation, missing skip telemetry, etc.).
+   - **Accept as pipeline reality** if the delay is inherent rec → API → back latency that we will not close further.
+4. Only after (3): if we accept the reality, **optionally** add **explicit simulated lag** (or entry-time lock) into replay so strategy economics reflect what live can actually achieve — never as a silent fudge that hides a live bug.
+
+Entry/exit timestamps in parity output are first-class. Large `|entry Δ|` is a diagnostic signal; price Δ is often its consequence. Do not pad replay latency until the live miss has been classified.
+
+**Worked example (2026-07-28, trade 31309 / 15m HTC):** package first flicker at 10:20:36 during/after CFB BRTI lag+reconnect; continuous gate window from ~10:20:56; live AES trigger 10:21:08. Classified as feed/ladder freshness (+ secondary unified-AES cadence), not “ignore the flag.”
+
 ---
 
 ## 3. Time-to-contract (TTC) — units (critical)
@@ -252,6 +269,8 @@ Loaded in **`get_auto_entry_settings()`** (representative query on `users.monito
 | `scripts/backtest/price_estimator.py` | Hypothetical fill pricing from peer trades (see §5.3). |
 | `backend/util/auto_entry_htc_gates.py` | **Backtest-only** mirror of Hourly HTC strike gates (see §2.1); not imported by production. |
 | `scripts/backtest/helpers/htc_aes_replay.py` | Helpers for replaying AES-style strike order + 15m TTC (see §2.1). |
+| `backend/util/cycle_replay/` | Sealed cycle-package replay (strategy adapters + paper fills). |
+| `scripts/backtest/cycle_replay_parity.py` | Side-by-side replay vs live `trades_*` (times first; see §2.3). |
 | **`docs/BACKTESTING.md`** | **This document — initiative source of truth.** |
 | **`docs/BACKTEST_PRICE_ESTIMATOR.md`** | **Peer pricing methodology, holdout protocol, pipeline notes.** |
 
@@ -279,3 +298,4 @@ When adding a new **supervisor-driven** dimension:
 | 2026-04-15 | §5.5–§5.6 + README: strike archive tick replay; **setting grid sweep** (`htc_archive_setting_sweep.py`, `htc_setting_grid_sweep.py`); window bounds on `build_tick_backtest_from_strike_archive`. |
 | 2026-04-16 | §5.6: **compounding** bankroll across markets (default); **`--persist-trades`** → `backtest.grid_sweep_trades`; `grid_sweep_trades.py`, `fetch_monitor_trade_meta`. |
 | 2026-03-21 | §2.1 + file map + contributing: AES changes must be reflected in backtest scripts; documented `auto_entry_htc_gates` / `htc_aes_replay`. |
+| 2026-07-28 | §2.3: cycle packages as live-workflow diagnostics; investigate replay-vs-live entry Δ before any simulated lag. |

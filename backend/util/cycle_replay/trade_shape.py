@@ -55,13 +55,21 @@ def trade_row_from_position(
         "market_result": market_result,
         "win_loss": None,
         "close_method": None,
+        "entry_time": _iso_z(e.timestamp),
         "entry_time_utc": _iso_z(e.timestamp),
+        "closed_at": None,
         "closed_at_utc": None,
     }
 
     if x is not None:
         close_method = x.close_method or x.reason
-        status = x.status or ("closed" if close_method in ("expired", "stop_loss_floor") else "open")
+        status = x.status or (
+            "closed"
+            if close_method
+            in ("expired", "stop_loss_floor", "auto_stop_loss_floor")
+            else "open"
+        )
+        closed = _iso_z(x.timestamp)
         row.update(
             {
                 "status": status,
@@ -69,7 +77,8 @@ def trade_row_from_position(
                 "market_result": x.market_result if x.market_result is not None else market_result,
                 "win_loss": x.win_loss,
                 "close_method": close_method,
-                "closed_at_utc": _iso_z(x.timestamp),
+                "closed_at": closed,
+                "closed_at_utc": closed,
             }
         )
     return row

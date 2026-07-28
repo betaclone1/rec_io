@@ -1,11 +1,16 @@
 from __future__ import annotations
 
 from backend.util.cycle_replay.strategies.expiration_scalp import ExpirationScalpAdapter
+from backend.util.cycle_replay.strategies.htc_15m import Htc15mAdapter
 
 STRATEGY_ADAPTERS = {
     "Expiration Scalp": ExpirationScalpAdapter,
     "expiration_scalp": ExpirationScalpAdapter,
     "expiration-scalp": ExpirationScalpAdapter,
+    "15m HTC": Htc15mAdapter,
+    "15m_htc": Htc15mAdapter,
+    "Hourly HTC": Htc15mAdapter,
+    "hourly_htc": Htc15mAdapter,
 }
 
 

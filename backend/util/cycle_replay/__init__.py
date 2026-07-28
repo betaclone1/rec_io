@@ -1,4 +1,9 @@
-"""Strategy-agnostic cycle-package replay (parity-first)."""
+"""Strategy-agnostic cycle-package replay (parity-first + live diagnostics).
+
+Replay-vs-live entry/exit gaps are investigation inputs for the live stack
+(feed, ladder, AES cadence). Do not add silent lag padding; see
+``docs/BACKTESTING.md`` §2.3.
+"""
 
 from __future__ import annotations
 

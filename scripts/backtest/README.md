@@ -100,6 +100,11 @@ Example: hypothetical position 1500, optimize TTC window (minutes) for March:
 | `helpers/htc_setting_grid_sweep.py` | Cartesian monitor overrides × many archive markets; used by **`htc_archive_setting_sweep.py`** |
 | `helpers/grid_sweep_trades.py` | INSERT into **`backtest.grid_sweep_trades`** when **`--persist-trades`** |
 | `htc_archive_setting_sweep.py` | CLI: grid sweep over a window (§5.6) |
+| `cycle_replay_parity.py` | Sealed cycle-package replay vs live `trades_*` (entry/exit times first) |
+
+## Cycle packages → live diagnostics
+
+Packages under `backend/util/cycle_replay/` are not only for strategy economics. When replay enters earlier (or at all) and live did not, treat that as a **live-workflow investigation** first: classify remediate vs accept pipeline reality; only then consider explicit simulated lag in replay. See **`docs/BACKTESTING.md` §2.3**.
 
 **Important:** backtest TTC grids use **minutes**; `monitor_list.min_time` / `max_time` and `get_current_ttc()` use **seconds**. See `docs/BACKTESTING.md` §3.
 
