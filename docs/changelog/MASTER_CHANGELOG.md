@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-29 — Release v3.9.1: CFB live path off Postgres / cycle capture
+
+**Summary**
+- **Release: v3.9.1**
+- **System-critical:** `cfbenchmarks_price_watchdog` WebSocket loop no longer opens Postgres, prunes, or spawns a thread per tick. Backtesting ring writes go through `backend/core/live_ring_pg_writer.py` (one background thread, one long-lived connection, batched upserts, timed prune). Cycle fanout uses one persistent worker queue instead of per-tick threads.
+- **Settlement:** Quarter-close `avg_60s` is no longer a synchronous write on the WS loop; `trade_manager` still polls briefly and the repair pass covers late landings. Rings may lag; live `live_state` must not.
+- **Docs:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` population notes for price/metrics rings updated. No schema migrations.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart CFB price watchdog (required for hot-path fix):  
+  `supervisorctl restart cfbenchmarks_price_watchdog`
+- [ ] Verify: `supervisorctl status cfbenchmarks_price_watchdog` RUNNING; process has `live_ring_pg` / `cfb_cycle_fanout` threads; ticks show low `lag_kalshi_ms` without reconnect storms; no `ring PG writer dropped` / `cycle fanout queue full` floods.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.1`
+
+---
+
 ## 2026-07-27 — Release v3.9.0: Cycle packages (BTC+ETH), CFB rings, Drive warehouse
 
 **Summary**

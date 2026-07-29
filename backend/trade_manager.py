@@ -1293,8 +1293,9 @@ def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime
     """
     Expiration ``symbol_close``: CFB ring ``avg_60s`` on the exact contract close second.
 
-    Close ticks are written synchronously into the ring by the CFB watchdog; wait briefly
-    only for the cron-vs-write race (not for feed health).
+    The CFB watchdog hands close ticks to ``live_ring_pg_writer``, which lands them in
+    milliseconds; wait briefly only for the cron-vs-write race (not for feed health).
+    A close tick that arrives later is picked up by the symbol_close repair pass.
     """
     if not symbol or expiration_est is None:
         return None
@@ -1306,7 +1307,7 @@ def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime
         if exp.tzinfo is None:
             exp = exp.replace(tzinfo=EST_ZONE)
         age_s = (datetime.now(exp.tzinfo) - exp).total_seconds()
-        # Sync close-tick writes land in ms; 2s covers cron skew only.
+        # Off-loop writer lands close ticks in ms; 2s covers cron skew only.
         wait_s = 2.0 if 0.0 <= age_s <= 30.0 else 0.0
 
         avg_px = avg_60s_at_quarter_close(sym_u, expiration_est, wait_seconds=wait_s)

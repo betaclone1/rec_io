@@ -8639,7 +8639,7 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`)
 
-**Population:** `backend/core/live_price_ring_90m.py` async writes from `cfbenchmarks_price_watchdog` (~1 Hz while connected). Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only (UTC→EST conversion for in-memory buffers). Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. CFB averages via `20260725_1300_live_price_ring_cfb_avgs`. UTC timestamp semantics + truncate cutover: `20260725_1035_live_price_ring_utc_timestamps`; ISO `Z` suffix: `20260725_1045_live_price_ring_iso_z`. Full API decimal width: `20260725_1350_live_price_ring_full_precision` (`NUMERIC(20,8)` for `price` / `avg_60s` / `last_60s_windowed_average_15min` on all symbols).
+**Population:** `backend/core/live_price_ring_90m.py` hands rows to `backend/core/live_ring_pg_writer.py` (one background thread, one long-lived connection, batched upserts, prune on a timer) from `cfbenchmarks_price_watchdog` (~1 Hz while connected). The WS loop never opens a connection or waits on a commit. Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only (UTC→EST conversion for in-memory buffers). Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. CFB averages via `20260725_1300_live_price_ring_cfb_avgs`. UTC timestamp semantics + truncate cutover: `20260725_1035_live_price_ring_utc_timestamps`; ISO `Z` suffix: `20260725_1045_live_price_ring_iso_z`. Full API decimal width: `20260725_1350_live_price_ring_full_precision` (`NUMERIC(20,8)` for `price` / `avg_60s` / `last_60s_windowed_average_15min` on all symbols).
 
 #### Columns
 
@@ -8662,7 +8662,7 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ### Table: `live_data.live_metrics_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`)
 
-**Population:** `backend/core/live_metrics_ring_90m.py` async fire-and-forget writes from `cfbenchmarks_price_watchdog` after live_state publish. Same ISO-8601 UTC `timestamp` as `live_price_ring_90m_*` (join key). Stores only profile-tied percentiles that cannot be reconstructed from the price series after analytics profiles change. Backtesting sidecar only — not consumed by the live pipeline. Migration `20260725_1421_live_metrics_ring_90m`. Rolling ~90 minutes (`CFBENCHMARKS_RING_PG_RETENTION_MIN`).
+**Population:** `backend/core/live_metrics_ring_90m.py` via the shared `live_ring_pg_writer` background thread, from `cfbenchmarks_price_watchdog` after live_state publish (never on the WS loop). Same ISO-8601 UTC `timestamp` as `live_price_ring_90m_*` (join key). Stores only profile-tied percentiles that cannot be reconstructed from the price series after analytics profiles change. Backtesting sidecar only — not consumed by the live pipeline. Migration `20260725_1421_live_metrics_ring_90m`. Rolling ~90 minutes (`CFBENCHMARKS_RING_PG_RETENTION_MIN`).
 
 #### Columns
 

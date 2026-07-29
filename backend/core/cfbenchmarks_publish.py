@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import os
+import queue
 import threading
 from typing import Any, Dict, Literal, Optional
 
@@ -22,6 +23,12 @@ logger = logging.getLogger("cfbenchmarks_price_watchdog")
 
 PublishMode = Literal["experiment", "shadow", "live_state"]
 _VALID_MODES = frozenset({"experiment", "shadow", "live_state"})
+
+_CYCLE_QUEUE_MAX = 20_000
+_cycle_q: Optional["queue.Queue[Dict[str, Any]]"] = None
+_cycle_thread: Optional[threading.Thread] = None
+_cycle_lock = threading.Lock()
+_cycle_dropped = 0
 
 
 def publish_mode() -> PublishMode:
@@ -112,6 +119,55 @@ def publish_pg_tick(
     insert_tick(symbol, timestamp, float(price), ws_received_mono=ingest_mono)
 
 
+def _cycle_fanout_queue() -> "queue.Queue[Dict[str, Any]]":
+    global _cycle_q, _cycle_thread
+    with _cycle_lock:
+        if _cycle_q is None:
+            _cycle_q = queue.Queue(maxsize=_CYCLE_QUEUE_MAX)
+        if _cycle_thread is None or not _cycle_thread.is_alive():
+            _cycle_thread = threading.Thread(
+                target=_cycle_fanout_loop,
+                name="cfb_cycle_fanout",
+                daemon=True,
+            )
+            _cycle_thread.start()
+        return _cycle_q
+
+
+def _cycle_fanout_loop() -> None:
+    q = _cycle_q
+    if q is None:
+        return
+    while True:
+        job = q.get()
+        try:
+            from backend.core.cycle_hot_tables import enqueue_cycle_price_metrics
+
+            enqueue_cycle_price_metrics(**job)
+        except Exception as e:
+            logger.warning(
+                "15m cycle ring fanout failed %s: %s", job.get("symbol"), e
+            )
+
+
+def _submit_cycle_fanout(**job: Any) -> None:
+    """
+    Hand cycle capture work to one persistent worker.
+
+    ``enqueue_cycle_price_metrics`` reads live_state and can run DDL, so it must
+    never execute on the WS asyncio thread; a thread per tick was also churn.
+    """
+    global _cycle_dropped
+    try:
+        _cycle_fanout_queue().put_nowait(job)
+    except queue.Full:
+        _cycle_dropped += 1
+        if _cycle_dropped % 100 == 1:
+            logger.warning(
+                "15m cycle fanout queue full; dropped %s ticks", _cycle_dropped
+            )
+
+
 def publish_envelope_outputs(
     envelope: Dict[str, Any],
     *,
@@ -195,53 +251,24 @@ def publish_envelope_outputs(
                             "metrics ring PG enqueue skipped %s: %s", symbol, e
                         )
                 # Per-ticker 15m cycle packages (historical_data hot tables).
-                # Off the WS asyncio thread: ensure_live_cycle_hot can do sync DDL
-                # and was stalling pings → reconnect → late close ticks.
+                # Off the WS asyncio thread: ensure_live_cycle_hot reads live_state
+                # and can do sync DDL, which stalled pings → reconnect.
                 try:
-                    from backend.core.cycle_hot_tables import (
-                        enabled_cycle_symbols,
-                        enqueue_cycle_price_metrics,
-                    )
+                    from backend.core.cycle_hot_tables import enabled_cycle_symbols
 
                     if symbol in enabled_cycle_symbols():
-                        _a60 = avg_value_from_cfb_obj(envelope.get("avg_60s_data"))
-                        _a15 = avg_value_from_cfb_obj(
-                            envelope.get("last_60s_windowed_average_15min")
+                        _submit_cycle_fanout(
+                            symbol=symbol,
+                            timestamp_utc=ring_ts,
+                            price=ring_price,
+                            avg_60s=avg_value_from_cfb_obj(
+                                envelope.get("avg_60s_data")
+                            ),
+                            last_60s_windowed_average_15min=avg_value_from_cfb_obj(
+                                envelope.get("last_60s_windowed_average_15min")
+                            ),
+                            metrics=tick_row if isinstance(tick_row, dict) else None,
                         )
-                        _met = tick_row if isinstance(tick_row, dict) else None
-                        _sym = symbol
-                        _ts = ring_ts
-                        _px = ring_price
-
-                        def _cycle_fanout(
-                            sym=_sym,
-                            ts=_ts,
-                            px=_px,
-                            a60=_a60,
-                            a15=_a15,
-                            met=_met,
-                        ):
-                            try:
-                                enqueue_cycle_price_metrics(
-                                    symbol=sym,
-                                    timestamp_utc=ts,
-                                    price=px,
-                                    avg_60s=a60,
-                                    last_60s_windowed_average_15min=a15,
-                                    metrics=met,
-                                )
-                            except Exception as exc:
-                                logger.warning(
-                                    "15m cycle ring enqueue skipped %s: %s",
-                                    sym,
-                                    exc,
-                                )
-
-                        threading.Thread(
-                            target=_cycle_fanout,
-                            daemon=True,
-                            name=f"cfb-cycle-{symbol}",
-                        ).start()
                 except Exception as e:
                     logger.warning(
                         "15m cycle ring enqueue skipped %s: %s", symbol, e

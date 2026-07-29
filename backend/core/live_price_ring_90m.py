@@ -1,7 +1,8 @@
 """
 Rolling 90-minute PG price ring for CFB watchdog startup hydration.
 
-Writes are async (ThreadPoolExecutor) and must not block WS / live_state hot path.
+Writes are handed to ``live_ring_pg_writer`` (single background thread, batched)
+and must never touch PG on the WS / live_state hot path.
 Reads run once at process startup to populate symbol_tick_buffer (+ CFB momentum replay).
 
 Ring ``timestamp`` values are ISO-8601 UTC with a ``Z`` suffix
@@ -11,15 +12,14 @@ Hot-path / in-memory buffers remain EST.
 
 from __future__ import annotations
 
-import atexit
 import logging
 import os
-import threading
-from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal, InvalidOperation
 from typing import Any, Dict, List, Optional, Tuple, Union
 from zoneinfo import ZoneInfo
+
+from backend.core.live_ring_pg_writer import submit_upsert
 
 logger = logging.getLogger("cfbenchmarks_price_watchdog")
 
@@ -33,9 +33,6 @@ _TABLE_BY_SYMBOL: Dict[str, str] = {
     "XRP": "live_price_ring_90m_xrp",
     "DOGE": "live_price_ring_90m_doge",
 }
-
-_executor: Optional[ThreadPoolExecutor] = None
-_executor_lock = threading.Lock()
 
 
 def ring_pg_enabled() -> bool:
@@ -191,29 +188,6 @@ def avg_60s_at_quarter_close(
         time.sleep(interval)
 
 
-def _get_executor() -> ThreadPoolExecutor:
-    global _executor
-    with _executor_lock:
-        if _executor is None:
-            workers = max(1, min(4, int(os.getenv("CFBENCHMARKS_RING_PG_WORKERS", "2"))))
-            _executor = ThreadPoolExecutor(
-                max_workers=workers,
-                thread_name_prefix="cfb_ring_pg",
-            )
-    return _executor
-
-
-def shutdown_ring_executor() -> None:
-    global _executor
-    with _executor_lock:
-        if _executor is not None:
-            _executor.shutdown(wait=False, cancel_futures=True)
-            _executor = None
-
-
-atexit.register(shutdown_ring_executor)
-
-
 def decimal_from_cfb_value(raw: Any) -> Optional[Decimal]:
     """
     Preserve CFB API decimal specificity (string → Decimal).
@@ -256,97 +230,28 @@ def enqueue_ring_tick(
     last_60s_windowed_average_15min: Optional[Union[Decimal, str, int, float]] = None,
 ) -> None:
     """
-    PG write; ``timestamp`` must be ISO-8601 UTC (``…Z``). Never raises.
-
-    Quarter-close ticks (``:00``/``:15``/``:30``/``:45``) write **synchronously** so
-    ``trade_manager`` can read settlement ``avg_60s`` immediately. All other ticks
-    stay fire-and-forget on the thread pool.
+    Hand one ring row to the off-loop writer. ``timestamp`` must be ISO-8601 UTC
+    (``…Z``). Touches no database and never blocks the caller.
     """
     if not ring_pg_enabled():
         return
     sym = str(symbol or "").strip().upper()
-    if sym not in _TRACKED or not timestamp or price is None:
+    table = _table_for_symbol(sym)
+    if not table or not timestamp or price is None:
         return
     px = decimal_from_cfb_value(price)
     if px is None:
         return
-    avg60 = decimal_from_cfb_value(avg_60s)
-    avg15 = decimal_from_cfb_value(last_60s_windowed_average_15min)
-    try:
-        if is_quarter_close_ring_timestamp(timestamp):
-            # Settlement tick: must land in PG before expiry cron looks it up.
-            _write_ring_tick_sync(sym, timestamp, px, avg60, avg15, prune=False)
-            logger.info(
-                "ring PG sync close tick %s ts=%s avg_60s=%s",
-                sym,
-                timestamp,
-                avg60,
-            )
-        else:
-            _get_executor().submit(
-                _write_ring_tick_sync, sym, timestamp, px, avg60, avg15, True
-            )
-    except Exception as e:
-        logger.debug("ring PG enqueue failed %s: %s", sym, e)
-
-
-def _write_ring_tick_sync(
-    symbol: str,
-    timestamp: str,
-    price: Decimal,
-    avg_60s: Optional[Decimal] = None,
-    last_60s_windowed_average_15min: Optional[Decimal] = None,
-    prune: bool = True,
-) -> None:
-    table = _table_for_symbol(symbol)
-    if not table:
-        return
-    try:
-        from backend.core.config.database import get_system_postgresql_connection
-    except Exception as e:
-        logger.debug("ring PG import failed: %s", e)
-        return
-
-    conn = None
-    try:
-        conn = get_system_postgresql_connection()
-        if conn is None:
-            return
-        with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                INSERT INTO live_data.{table} (
-                    timestamp, price, avg_60s, last_60s_windowed_average_15min
-                )
-                VALUES (%s, %s, %s, %s)
-                ON CONFLICT (timestamp) DO UPDATE SET
-                    price = EXCLUDED.price,
-                    avg_60s = EXCLUDED.avg_60s,
-                    last_60s_windowed_average_15min =
-                        EXCLUDED.last_60s_windowed_average_15min
-                """,
-                (timestamp, price, avg_60s, last_60s_windowed_average_15min),
-            )
-            if prune:
-                cutoff = _cutoff_timestamp_utc(retention_minutes())
-                cur.execute(
-                    f"DELETE FROM live_data.{table} WHERE timestamp < %s",
-                    (cutoff,),
-                )
-        conn.commit()
-    except Exception as e:
-        if conn is not None:
-            try:
-                conn.rollback()
-            except Exception:
-                pass
-        logger.debug("ring PG write failed %s: %s", symbol, e)
-    finally:
-        if conn is not None:
-            try:
-                conn.close()
-            except Exception:
-                pass
+    submit_upsert(
+        table,
+        ("timestamp", "price", "avg_60s", "last_60s_windowed_average_15min"),
+        (
+            timestamp,
+            px,
+            decimal_from_cfb_value(avg_60s),
+            decimal_from_cfb_value(last_60s_windowed_average_15min),
+        ),
+    )
 
 
 def _load_ring_rows(symbol: str) -> List[Tuple[str, float]]:
