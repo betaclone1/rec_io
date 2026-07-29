@@ -15,12 +15,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - No schema migrations.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart CFB price watchdog (required — loads new tick-buffer code):  
+- [x] Restart CFB price watchdog (required — loads new tick-buffer code):  
   `supervisorctl restart cfbenchmarks_price_watchdog`
-- [ ] Verify: `supervisorctl status cfbenchmarks_price_watchdog` RUNNING; `lag_kalshi_ms` stays low (no climb after restart); no reconnect storms.
-- [ ] Record release in DB:  
+- [x] Verify: `supervisorctl status cfbenchmarks_price_watchdog` RUNNING; `lag_kalshi_ms` stays low (no climb after restart); no reconnect storms.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.2`
 
 ---
