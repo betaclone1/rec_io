@@ -8,6 +8,10 @@ Reads run once at process startup to populate symbol_tick_buffer (+ CFB momentum
 Ring ``timestamp`` values are ISO-8601 UTC with a ``Z`` suffix
 (``YYYY-MM-DDTHH:MM:SS.mmmZ``), derived from CFB ``data.time`` (unix ms).
 Hot-path / in-memory buffers remain EST.
+
+``trade_manager`` reads ``avg_60s`` from here for ``symbol_close``: the exact
+quarter-hour tick at expiration (``avg_60s_at_quarter_close``) and the tick as of
+the close instant for early closes (``avg_60s_as_of``).
 """
 
 from __future__ import annotations
@@ -186,6 +190,68 @@ def avg_60s_at_quarter_close(
         if time.monotonic() >= deadline:
             return None
         time.sleep(interval)
+
+
+def avg_60s_as_of(
+    symbol: str,
+    when: datetime,
+    *,
+    max_lookback_seconds: float = 15.0,
+) -> Optional[float]:
+    """
+    CFB ``avg_60s`` sampled as of ``when``: newest ring tick at or before that
+    instant, no older than ``max_lookback_seconds``.
+
+    Early (pre-expiration) closes land on arbitrary seconds, so there is no exact
+    settlement tick to demand as there is at ``:00`` / ``:15`` / ``:30`` / ``:45``.
+    An empty window returns None so callers leave ``symbol_close`` NULL for the
+    repair pass — never a spot substitute.
+    """
+    table = _table_for_symbol(symbol)
+    if not table or when is None:
+        return None
+    if not ring_pg_enabled():
+        return None
+
+    at = when.replace(tzinfo=_EST) if when.tzinfo is None else when
+    newest = _utc_wall_str(at)
+    oldest = _utc_wall_str(at - timedelta(seconds=max(0.0, float(max_lookback_seconds))))
+
+    try:
+        from backend.core.config.database import get_system_postgresql_connection
+    except Exception:
+        return None
+
+    conn = None
+    try:
+        conn = get_system_postgresql_connection()
+        if conn is None:
+            return None
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT avg_60s::numeric
+                FROM live_data.{table}
+                WHERE timestamp <= %s
+                  AND timestamp >= %s
+                  AND avg_60s IS NOT NULL
+                ORDER BY timestamp DESC
+                LIMIT 1
+                """,
+                (newest, oldest),
+            )
+            row = cur.fetchone()
+        if row and row[0] is not None:
+            return float(row[0])
+    except Exception as e:
+        logger.debug("ring avg_60s as-of failed %s at=%s: %s", symbol, newest, e)
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+    return None
 
 
 def decimal_from_cfb_value(raw: Any) -> Optional[Decimal]:

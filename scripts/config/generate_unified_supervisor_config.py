@@ -407,6 +407,15 @@ class SupervisorConfigGenerator:
             rec_single_user_mode="1",
             rec_default_user_schema=default_schema,
         )
+        cycle_capture_enabled = (
+            self.config.get("features.cycle_backtesting_capture") is not False
+        )
+        if not cycle_capture_enabled:
+            env_global += (
+                ',CYCLE_HOT_PG="0"'
+                ',BTC15M_CYCLE_HOT_PG="0"'
+                ',TESTING_BTC15M_ORDERBOOK_CYCLE_PG="0"'
+            )
 
         services = []
         services.append(
@@ -494,7 +503,7 @@ class SupervisorConfigGenerator:
                 "script": "cycle_packager.py",
                 "port": 0,
                 "environment": self._cycle_packager_environment(env_global),
-                "autostart": True,
+                "autostart": cycle_capture_enabled,
             }
         )
         # db_writer_agent removed: script not in tree; hot path uses Redis live_state + optional spool.
@@ -731,7 +740,15 @@ environment={env_vars}
                 f'PATH="{raw}:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin"'
             )
 
-        if client.is_file() and token.is_file():
+        upload_override = self.config.get("features.cycle_gdrive_upload")
+        if upload_override is False:
+            extras.extend(
+                [
+                    'CYCLE_GDRIVE_UPLOAD="0"',
+                    'BTC15M_CYCLE_GDRIVE_UPLOAD="0"',
+                ]
+            )
+        elif client.is_file() and token.is_file():
             extras.extend(
                 [
                     f'GDRIVE_OAUTH_PATH="{client}"',

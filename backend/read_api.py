@@ -66,6 +66,10 @@ from backend.core.strike_pipeline_health import (
     strike_pipeline_health_strict_mode_enabled,
 )
 from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_list_query
+from backend.core.trade_history_detail import (
+    fetch_kalshi_trade_context,
+    load_trade_detail_record,
+)
 from backend.core.tenant_strategy_list import load_strategy_picker_for_slot
 from backend.trading_mode import (
     account_balance_table_for_user,
@@ -263,6 +267,42 @@ async def get_trades_hot_marks() -> Dict[str, Any]:
         "marks": export_hot_marks_for_trade_log(slot),
         "source": "redis_active_trades",
         "enabled": True,
+    }
+
+
+@app.get("/api/trades/{trade_id}/detail")
+async def get_trade_history_detail(
+    trade_id: int,
+    response: Response,
+) -> Dict[str, Any]:
+    """Tenant trade row plus request-time Kalshi market and symbol-price data."""
+    _api_no_store_headers(response)
+    slot = resolved_tenant_user_no_for_app()
+    conn = get_postgresql_connection()
+    if not conn:
+        raise HTTPException(
+            status_code=503,
+            detail="Trade detail temporarily unavailable (database busy or error)",
+        )
+    try:
+        with conn.cursor() as cursor:
+            trade = load_trade_detail_record(cursor, slot=slot, trade_id=trade_id)
+    finally:
+        conn.close()
+    if trade is None:
+        raise HTTPException(status_code=404, detail="Trade not found")
+
+    ticker = str(trade.get("ticker") or "").strip()
+    if not ticker:
+        raise HTTPException(status_code=422, detail="Trade has no Kalshi ticker")
+    try:
+        kalshi = await asyncio.to_thread(fetch_kalshi_trade_context, ticker)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "trade": trade,
+        "kalshi": kalshi,
+        "artifacts_persisted": False,
     }
 
 

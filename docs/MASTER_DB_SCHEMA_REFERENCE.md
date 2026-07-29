@@ -8647,7 +8647,7 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 |-------------|-----------|----------|---------|-------------|
 | `timestamp` | `text` | NO | - | CFB `data.time` as ISO-8601 UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` |
 | `price` | `numeric(20,8)` | NO | - | Index print (`cfbenchmarks_value` `data.value`) at full API decimal specificity |
-| `avg_60s` | `numeric(20,8)` | YES | - | Kalshi `avg_60s_data.value` at full API specificity; expected every tick. At exact `:00`/`:15`/`:30`/`:45` this is the settlement `symbol_close` used by `trade_manager` |
+| `avg_60s` | `numeric(20,8)` | YES | - | Kalshi `avg_60s_data.value` at full API specificity; expected every tick. Source for **all** `trade_manager` `symbol_close` writes: the exact `:00`/`:15`/`:30`/`:45` tick at expiration, and the tick as of the close instant for early closes |
 | `last_60s_windowed_average_15min` | `numeric(20,8)` | YES | - | Kalshi settlement-minute average at full API specificity; only in final minute before `:00`/`:15`/`:30`/`:45`; NULL otherwise |
 
 #### Constraints
@@ -10838,11 +10838,11 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `initial_proj_price` | `numeric(10,8)` | YES | - | Projected open **average fill price** from trade-ticket-time orderbook sweep simulation (REST orderbook bids flipped to asks by side). |
 | `initial_proj_fees` | `numeric(10,4)` | YES | - | Projected open taker fees from the same orderbook projection (`estimate_kalshi_taker_fee(position, initial_proj_price)`). |
 | `sell_price` | `numeric(12,6)` | YES | - | Stored at 6dp in DB for execution precision; UI may display rounded/truncated values. |
-| `closed_at` | `text` | YES | - | |
+| `closed_at` | `text` | YES | - | Close clock in US Eastern. Early closes record execution/finalization time. Trades held through expiration record the exact contract boundary (`HH:00:00`, `HH:15:00`, `HH:30:00`, or `HH:45:00`), not the later sweep/settlement processing time. |
 | `fees` | `real(24)` | YES | - | |
 | `pnl` | `numeric(12,6)` | YES | - | Dollars net of fees; stored at **6dp** to align with price/fee precision from the API. Trade history UIs use 2dp; dashboard monitor tiles show **nearest dollar**. Migration `20260503_1500_trades_pnl_numeric_6dp`. |
 | `symbol_open` | `numeric(18,5)` | YES | - | Spot at open. **5dp** for SOL/XRP; 2dp for BTC/ETH (`trade_manager.normalize_trade_spot_price`). Migration `20260324_1000_trades_symbol_spot_numeric_precision`. |
-| `symbol_close` | `numeric(18,5)` | YES | - | Spot at close; same rules as `symbol_open`. |
+| `symbol_close` | `numeric(18,5)` | YES | - | Underlying at close from CFB ring `avg_60s` (never raw spot); same precision rules as `symbol_open`. At expiration: the exact `:00`/`:15`/`:30`/`:45` tick. Early close: newest ring tick at or before the close instant (`live_price_ring_90m.avg_60s_as_of`). NULL until present in the ring — repair pass samples at `closed_at`. |
 | `symbol_expiration` | `numeric(18,5)` | YES | - | Spot at **contract cycle end** (`one_minute_avg` at expiration sweep). Same normalization as `symbol_close`. Written for **paper and live** rows when the ticker’s cycle is processed; for early closes, may be backfilled from `symbol_close` or historical price logs. Migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`. **Not** on `trades_simulated_0001`. |
 | `win_loss_confirmed` | `boolean` | YES | - | If nullable: not yet computable. When set: `TRUE` if recorded `win_loss` (W/L) matches hypothetical W/L from `strike`+`side` vs `symbol_expiration` (hold-to-expiration); `FALSE` if they differ. **Paper and live** on `trades_0001`. Draws (`D`) and missing `win_loss` stay null. Migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`. |
 | `market_result` | `text` | YES | - | Normalized `yes` / `no` from Kalshi **`market_lifecycle_v2`** (`market_watchdog_ws` on `determined` / `settled`). Distinct from `market` (cadence). Mismatch vs recorded `win_loss` on closed trades may set `win_loss_confirmed = FALSE`. Live **close/finalization** still uses settlement polling in `trade_manager`. Column added `20260402_1400_trades_market_result_from_outcome_check`; comment updated `20260403_1000_trades_drop_outcome_checked_at`. **`trades_0001` only.** |

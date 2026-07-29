@@ -323,8 +323,8 @@ def normalize_trade_spot_price(symbol: Optional[str], value):
     return d.quantize(step, rounding=ROUND_HALF_UP)
 
 
-def _symbol_close_from_close_request(symbol: Optional[str], raw) -> Optional[float]:
-    """Coerce ATS/close-request symbol_close into a DB-safe spot price, or None."""
+def _normalized_symbol_close(symbol: Optional[str], raw) -> Optional[float]:
+    """Coerce a stored ``symbol_close`` into a DB-safe price, or None."""
     if raw is None:
         return None
     try:
@@ -346,7 +346,7 @@ def _resolve_symbol_close_for_finalize(
     ticket_id: Optional[str] = None,
     as_of_est: Optional[datetime] = None,
 ) -> Optional[float]:
-    """Prefer symbol_close on the trade row (set at close start), else live_state spot."""
+    """Prefer symbol_close on the trade row (set at close start), else ring avg_60s."""
     existing = None
     pg_conn = get_postgresql_connection()
     if pg_conn:
@@ -358,7 +358,7 @@ def _resolve_symbol_close_for_finalize(
                 )
                 row = cursor.fetchone()
             if row and row[0] is not None:
-                existing = _symbol_close_from_close_request(symbol, row[0])
+                existing = _normalized_symbol_close(symbol, row[0])
         except Exception as e:
             log(f"⚠️ symbol_close read for trade {trade_id}: {e}")
         finally:
@@ -369,7 +369,9 @@ def _resolve_symbol_close_for_finalize(
     if existing is not None:
         return existing
 
-    symbol_close = _symbol_close_live_spot(symbol)
+    symbol_close = _symbol_close_for_early_close(
+        symbol, as_of_est or datetime.now(EST_ZONE)
+    )
     if symbol_close is not None:
         return symbol_close
 
@@ -1248,6 +1250,15 @@ def _contract_expiration_est(trade_date, contract, fallback_now_est):
     return expiration_est
 
 
+def _expiration_closed_at(expiration_est: datetime) -> str:
+    """Canonical ``closed_at`` clock for a trade held through expiration."""
+    if expiration_est.tzinfo is None:
+        expiration_est = expiration_est.replace(tzinfo=EST_ZONE)
+    else:
+        expiration_est = expiration_est.astimezone(EST_ZONE)
+    return expiration_est.replace(microsecond=0).strftime("%H:%M:%S")
+
+
 def _trade_eligible_for_quarter_hour_expiry(trade_market: Optional[str]) -> bool:
     """True if this row is processed at :15/:30/:45 (not only at :00).
 
@@ -1273,20 +1284,55 @@ def _filter_trades_past_contract_expiration(trades, now_est):
     return past
 
 
-def _symbol_close_live_spot(symbol: Optional[str]) -> Optional[float]:
-    """Latest CFB spot from Redis ``live_state`` (manual/auto close paths)."""
-    if not symbol:
-        return None
-    try:
-        from backend.core.tradeflow_live_reads import symbol_spot_price
+def _symbol_close_for_early_close(symbol: Optional[str], when_est: datetime) -> Optional[float]:
+    """
+    Early-close ``symbol_close``: CFB ring ``avg_60s`` as of the close instant.
 
-        spot = symbol_spot_price(str(symbol).strip().upper())
-        if spot is None:
-            return None
-        out = normalize_trade_spot_price(symbol, spot)
-        return float(out) if out is not None else None
-    except Exception:
+    Pre-expiration closes happen on arbitrary seconds, so this takes the newest ring
+    tick at or before the close rather than a quarter-hour settlement tick. No spot
+    substitute — a miss leaves the field NULL for the symbol_close repair pass.
+    """
+    if not symbol or when_est is None:
         return None
+    sym_u = str(symbol).strip().upper()
+    try:
+        from backend.core.live_price_ring_90m import avg_60s_as_of
+
+        avg_px = avg_60s_as_of(sym_u, when_est)
+        if avg_px is None:
+            log(
+                f"⚠️ symbol_close for {sym_u} early close: no ring avg_60s at or "
+                f"before {when_est}"
+            )
+            return None
+        out = normalize_trade_spot_price(symbol, avg_px)
+        if out is None:
+            return None
+        log(f"ℹ️ symbol_close for {sym_u} early close: cfb ring avg_60s={float(out)}")
+        return float(out)
+    except Exception as e:
+        log(f"⚠️ cfb ring early-close avg_60s for {symbol}: {e}")
+        return None
+
+
+def _closed_at_est(trade_date, closed_at) -> Optional[datetime]:
+    """EST close instant from a row's session ``date`` plus ``closed_at``."""
+    if not closed_at:
+        return None
+    s = str(closed_at).strip()
+    if not s:
+        return None
+    for fmt in ("%H:%M:%S", "%H:%M:%S.%f", "%H:%M"):
+        try:
+            clock = datetime.strptime(s, fmt).time()
+        except ValueError:
+            continue
+        base = _normalize_trade_date(trade_date)
+        if base is None:
+            return None
+        return datetime.combine(base.date(), clock, tzinfo=EST_ZONE)
+    # Some rows store a full ISO timestamp instead of a clock time.
+    return _normalize_trade_date(s)
 
 
 def _symbol_close_for_expiration(symbol: Optional[str], expiration_est: datetime) -> Optional[float]:
@@ -1594,7 +1640,7 @@ def _repair_missing_symbol_close_recent(now_est: datetime) -> None:
         with pg.cursor() as c:
             c.execute(
                 f"""
-                SELECT id, symbol, contract, date, status
+                SELECT id, symbol, contract, date, status, closed_at
                 FROM {_tm_trades_table()}
                 WHERE symbol_close IS NULL
                   AND symbol IS NOT NULL
@@ -1612,15 +1658,17 @@ def _repair_missing_symbol_close_recent(now_est: datetime) -> None:
             return
         repaired = 0
         with pg.cursor() as c:
-            for trade_id, symbol, contract, trade_date, _status in rows:
-                exp_est = _contract_expiration_est(trade_date, contract, now_est)
+            for trade_id, symbol, contract, trade_date, _status, closed_at in rows:
                 if str(_status or "").strip().lower() == "expired":
+                    exp_est = _contract_expiration_est(trade_date, contract, now_est)
                     px = _symbol_close_for_expiration(symbol, exp_est)
                 else:
-                    px = _symbol_close_live_spot(symbol)
-                if px is None:
-                    px = _resolve_symbol_close_for_finalize(
-                        int(trade_id), symbol, as_of_est=exp_est
+                    # Early close: sample the ring at the recorded close, not now.
+                    close_est = _closed_at_est(trade_date, closed_at)
+                    px = (
+                        _symbol_close_for_early_close(symbol, close_est)
+                        if close_est is not None
+                        else None
                     )
                 if px is None:
                     continue
@@ -6060,16 +6108,13 @@ async def add_trade(request: Request):
                         except Exception as e:
                             log(f"⚠️ Failed to get symbol for paper trade close: {e}")
 
-                    symbol_close = _symbol_close_from_close_request(
-                        symbol, data.get("symbol_close"),
+                    # Early close: ring avg_60s at the close instant, not the raw spot
+                    # tick the requester snapshotted.
+                    symbol_close = _symbol_close_for_early_close(
+                        symbol, datetime.now(EST_ZONE)
                     )
-                    if symbol_close is None and symbol:
-                        now_est_close = datetime.now(ZoneInfo("America/New_York"))
-                        symbol_close = _symbol_close_live_spot(symbol)
-                        if symbol_close is not None:
-                            log(f"📝 PAPER TRADE: Retrieved live_state spot for close: {symbol_close}")
-                        else:
-                            log(f"📝 PAPER TRADE: No fresh live_state spot for {symbol}; symbol_close left unset")
+                    if symbol_close is None:
+                        log(f"📝 PAPER TRADE: no ring avg_60s for {symbol} close; symbol_close left unset")
                     
                     # Mark as closing first
                     try:
@@ -6182,6 +6227,12 @@ async def add_trade(request: Request):
                         log(f"❌ Error finalizing paper trade {trade_id}: {e}")
                         log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSE ERROR: {e}")
                 else:
+                    # Early close: ring avg_60s at the close instant, not the raw spot
+                    # tick the requester snapshotted.
+                    symbol_close = _symbol_close_for_early_close(
+                        trade_symbol, datetime.now(EST_ZONE)
+                    )
+
                     # LIVE TRADE: Send to executor as normal
                     # IMMEDIATELY send to executor with trade_id
                     try:
@@ -6196,9 +6247,7 @@ async def add_trade(request: Request):
                             "order_type": "market",
                             "time_in_force": "immediate_or_cancel",
                             "buy_price": data.get("buy_price"),
-                            "symbol_close": _symbol_close_from_close_request(
-                                trade_symbol, data.get("symbol_close"),
-                            ),
+                            "symbol_close": symbol_close,
                             "intent": "close",
                             "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
                         }
@@ -6207,9 +6256,6 @@ async def add_trade(request: Request):
                         log(f"CLOSE EXECUTOR ERROR: {e}")
                 
                     # Update database status
-                    symbol_close = _symbol_close_from_close_request(
-                        trade_symbol, data.get("symbol_close"),
-                    )
                     sell_price = data.get("buy_price")
                     close_method = data.get("close_method", "manual")
                     
@@ -7338,7 +7384,7 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
             cursor.execute(
                 f"""
                 SELECT status, market_result, side, buy_price, position, fees, bankroll, mtb_base_value,
-                       symbol_close, high_price, low_price, closed_at, ticker, paper_trade
+                       symbol_close, high_price, low_price, closed_at, ticker, paper_trade, contract, date
                 FROM {_tm_trades_table()}
                 WHERE id = %s
                 """,
@@ -7371,6 +7417,8 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         closed_at,
         ticker,
         paper_trade,
+        contract,
+        trade_date,
     ) = row
 
     if status != "expired":
@@ -7407,8 +7455,9 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         if buy_value > 0 and pnl is not None:
             roi_pct = round((pnl / buy_value) * 100.0, 5)
 
-    now_est = datetime.now(ZoneInfo("America/New_York"))
-    use_closed_at = closed_at if closed_at else now_est.strftime("%H:%M:%S")
+    now_est = datetime.now(EST_ZONE)
+    expiration_est = _contract_expiration_est(trade_date, contract, now_est)
+    use_closed_at = _expiration_closed_at(expiration_est)
 
     update_trade_status_with_ret_pct(
         trade_id=trade_id,
@@ -7510,7 +7559,6 @@ def check_expired_simulated_trades():
         if not active:
             return
         now_est = datetime.now(ZoneInfo("America/New_York"))
-        closed_at = now_est.strftime("%H:%M:%S")
         symbol_prices = {}
         cycles_closed = set()  # (monitor, date, weekly_cycle) for cycle_win_loss update
         for row in active:
@@ -7521,6 +7569,7 @@ def check_expired_simulated_trades():
     # 15m sweep would mark trades before wall-clock expiry — e.g. closing 8:00pm hourly rows at 7:45.
             if now_est < expiration_est:
                 continue
+            closed_at = _expiration_closed_at(expiration_est)
             cache_key = (symbol, expiration_est.replace(tzinfo=None))
             if cache_key not in symbol_prices:
                 symbol_prices[cache_key] = _symbol_close_for_expiration(
@@ -7686,7 +7735,6 @@ def check_expired_trades():
         # Live/paper tenant trades run BEFORE simulated settlement. Sim can take many minutes locally;
         # using a stale sweep-start clock for expiry filtering skipped 15m rows (prod has fewer sim rows).
         now_est = datetime.now(ZoneInfo("America/New_York"))
-        closed_at = now_est.strftime("%H:%M:%S")
 
         pg_conn = get_postgresql_connection()
         if pg_conn:
@@ -7753,6 +7801,7 @@ def check_expired_trades():
                             expiration_est = _contract_expiration_est(trade_date, contract, now_est)
                             if now_est < expiration_est:
                                 continue
+                            closed_at = _expiration_closed_at(expiration_est)
                             cache_key = (symbol, expiration_est.replace(tzinfo=None))
                             symbol_close = expiration_price_cache.get(cache_key)
 

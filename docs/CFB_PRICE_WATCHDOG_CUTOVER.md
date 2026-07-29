@@ -136,9 +136,18 @@ Implementation: `backend/core/cfbenchmarks_feed_health.py`, wired in `cfbenchmar
 
 ---
 
-## Expiration `symbol_close` (trade_manager)
+## `symbol_close` (trade_manager)
 
-On contract expiry, ``trade_manager`` sets ``symbol_close`` to CFB ring ``avg_60s`` on the **exact quarter-hour close tick** (`:00` / `:15` / `:30` / `:45`) for that symbol. Ring timestamps are **UTC**. Applies to expired 15m and hourly trades. Early (pre-expiration) closes still use live_state spot. If the close tick / ``avg_60s`` is not in the ring yet, ``symbol_close`` stays NULL until repair/retry (no live_state substitute for expiration).
+``symbol_close`` always comes from CFB ring ``avg_60s`` — never raw spot. Ring timestamps are **UTC**.
+
+- **At expiration:** the **exact quarter-hour close tick** (`:00` / `:15` / `:30` / `:45`) via ``avg_60s_at_quarter_close``. Applies to expired 15m and hourly trades.
+- **Early (pre-expiration) close:** the newest tick **at or before the close instant** via ``avg_60s_as_of`` (default 15s lookback), since manual/auto closes land on arbitrary seconds. The raw spot that the frontend or ATS sends on the close request is ignored for this field.
+
+If the needed ``avg_60s`` is not in the ring, ``symbol_close`` stays NULL until the repair pass retries — no spot substitute on either path. The repair pass samples the ring at the row's recorded ``closed_at`` (not at repair time).
+
+For a trade held through expiration, ``closed_at`` is the exact contract boundary
+(``HH:00:00``, ``HH:15:00``, ``HH:30:00``, or ``HH:45:00``), not the wall-clock
+time when the expiration sweep or later venue-result finalization happened.
 
 ---
 
