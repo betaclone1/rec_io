@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-29 — Release v3.9.2: CFB tick-buffer windowed scans (stop creeping lag)
+
+**Summary**
+- **Release: v3.9.2**
+- **Hot path:** `backend/core/symbol_tick_buffer.py` no longer does O(n) full-deque scans on every metric lookup. Window reads walk newest→oldest and stop at the cutoff; `append_tick` trims ticks older than 3 hours; `minute_candles` buckets by integer minute (no per-tick `strftime`). Metric CPU stays flat with uptime instead of climbing (~+55 ms/hour previously).
+- **Tests:** `tests/unit/test_symbol_tick_buffer_windows.py` pins windowed behavior and retention.
+- No schema migrations.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart CFB price watchdog (required — loads new tick-buffer code):  
+  `supervisorctl restart cfbenchmarks_price_watchdog`
+- [ ] Verify: `supervisorctl status cfbenchmarks_price_watchdog` RUNNING; `lag_kalshi_ms` stays low (no climb after restart); no reconnect storms.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.2`
+
+---
+
 ## 2026-07-29 — Release v3.9.1: CFB live path off Postgres / cycle capture
 
 **Summary**

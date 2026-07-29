@@ -2,19 +2,26 @@
 In-process tick ring buffer for crypto symbol watchdog hot path.
 
 Avoids per-tick PostgreSQL reads when LIVE_STATE_USE_TICK_BUFFER=1.
+
+Every read is bounded by its own time window: ticks are ordered oldest→newest, so
+scans walk backwards from the newest entry and stop at the cutoff. Per-tick metric
+cost must not grow with process uptime — the hot path runs ~13 of these lookups
+per tick per symbol.
 """
 
 from __future__ import annotations
 
 import threading
 from collections import defaultdict, deque
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Deque, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 _EST = ZoneInfo("America/New_York")
 _MAX_TICKS = 50_000
 _MAX_MOMENTUM = 120
+# Longest consumer window is the 120-minute volatility candle lookback.
+_RETENTION_SEC = 3 * 3600
 
 _lock = threading.Lock()
 _ticks: Dict[str, Deque[Tuple[float, float]]] = defaultdict(
@@ -47,7 +54,11 @@ def append_tick(symbol: str, timestamp: str, price: float) -> None:
     sym = symbol.upper()
     epoch = _parse_ts(timestamp)
     with _lock:
-        _ticks[sym].append((epoch, float(price)))
+        q = _ticks[sym]
+        q.append((epoch, float(price)))
+        cutoff = q[-1][0] - _RETENTION_SEC
+        while q and q[0][0] < cutoff:
+            q.popleft()
 
 
 def record_momentum(symbol: str, momentum: Optional[float]) -> None:
@@ -68,9 +79,16 @@ def latest_price(symbol: str) -> Optional[float]:
 
 
 def _ticks_in_window(sym: str, seconds: float) -> List[Tuple[float, float]]:
+    """Ticks newer than ``seconds`` ago, oldest first."""
     cutoff = datetime.now(_EST).timestamp() - seconds
+    out: List[Tuple[float, float]] = []
     with _lock:
-        return [(e, p) for e, p in _ticks.get(sym, ()) if e >= cutoff]
+        for epoch, price in reversed(_ticks.get(sym, ())):
+            if epoch < cutoff:
+                break
+            out.append((epoch, price))
+    out.reverse()
+    return out
 
 
 def avg_price_last_minute(symbol: str, fallback: float) -> float:
@@ -81,20 +99,21 @@ def avg_price_last_minute(symbol: str, fallback: float) -> float:
 
 
 def price_at_offset_minutes(symbol: str, minutes_ago: int) -> Optional[float]:
+    """Price of the tick closest to ``minutes_ago``."""
     sym = symbol.upper()
     target = datetime.now(_EST).timestamp() - minutes_ago * 60
+    best_price: Optional[float] = None
+    best_dist = float("inf")
     with _lock:
-        q = _ticks.get(sym)
-        if not q:
-            return None
-        best: Optional[Tuple[float, float]] = None
-        best_dist = float("inf")
-        for epoch, price in q:
+        # Ticks are time-ordered, so distance to target is unimodal walking back
+        # from the newest entry: stop as soon as it starts growing again.
+        for epoch, price in reversed(_ticks.get(sym, ())):
             dist = abs(epoch - target)
-            if dist < best_dist:
-                best_dist = dist
-                best = (epoch, price)
-        return best[1] if best else None
+            if dist > best_dist:
+                break
+            best_dist = dist
+            best_price = price
+    return best_price
 
 
 def high_low_open_window(symbol: str, minutes_ago: int) -> Tuple[Optional[float], Optional[float], Optional[float]]:
@@ -115,21 +134,21 @@ def momentum_tail(symbol: str, count: int) -> List[float]:
 
 
 def minute_candles(symbol: str, lookback_minutes: int) -> List[dict]:
+    """1-minute OHLC candles over the lookback window, oldest first."""
     sym = symbol.upper()
-    cutoff = datetime.now(_EST) - timedelta(minutes=lookback_minutes)
-    cutoff_epoch = cutoff.timestamp()
-    buckets: Dict[str, List[float]] = {}
+    cutoff_epoch = datetime.now(_EST).timestamp() - lookback_minutes * 60
+    # Integer minute index instead of a formatted key: strftime per tick dominated
+    # this function. Minute boundaries are timezone-independent.
+    buckets: Dict[int, List[float]] = {}
     with _lock:
-        for epoch, price in _ticks.get(sym, ()):
+        for epoch, price in reversed(_ticks.get(sym, ())):
             if epoch < cutoff_epoch:
-                continue
-            minute_key = datetime.fromtimestamp(epoch, _EST).strftime("%Y-%m-%dT%H:%M")
-            buckets.setdefault(minute_key, []).append(price)
+                break
+            buckets.setdefault(int(epoch // 60), []).append(price)
     candles: List[dict] = []
-    for key in sorted(buckets.keys()):
+    for key in sorted(buckets):
         prices = buckets[key]
-        if not prices:
-            continue
+        prices.reverse()  # collected newest-first
         candles.append(
             {
                 "open": prices[0],
