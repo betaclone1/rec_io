@@ -15,12 +15,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Docs:** `docs/MASTER_DB_SCHEMA_REFERENCE.md` population notes for price/metrics rings updated. No schema migrations.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart CFB price watchdog (required for hot-path fix):  
+- [x] Restart CFB price watchdog (required for hot-path fix):  
   `supervisorctl restart cfbenchmarks_price_watchdog`
-- [ ] Verify: `supervisorctl status cfbenchmarks_price_watchdog` RUNNING; process has `live_ring_pg` / `cfb_cycle_fanout` threads; ticks show low `lag_kalshi_ms` without reconnect storms; no `ring PG writer dropped` / `cycle fanout queue full` floods.
-- [ ] Record release in DB:  
+- [x] Verify: `supervisorctl status cfbenchmarks_price_watchdog` RUNNING; process has `live_ring_pg` / `cfb_cycle_fanout` threads; ticks show low `lag_kalshi_ms` without reconnect storms; no `ring PG writer dropped` / `cycle fanout queue full` floods.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.1`
 
 ---
