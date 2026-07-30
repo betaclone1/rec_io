@@ -982,14 +982,46 @@
       font-size: 13px;
       overflow-wrap: anywhere;
     }
+    /* Field grid runs smaller than the summary row and chart-head stats, which share these classes. */
+    .th-trade-detail-grid .th-trade-detail-field-label {
+      font-size: 8px;
+    }
+    .th-trade-detail-grid .th-trade-detail-field-value {
+      font-size: 10.4px;
+    }
     .th-trade-detail-chart-head {
       display: flex;
       align-items: center;
       gap: 28px;
       margin-bottom: 12px;
     }
+    .th-trade-detail-chart-head-main {
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      min-width: 0;
+      flex: 1;
+    }
     .th-trade-detail-chart-head h3 {
       margin: 0;
+    }
+    .th-trade-detail-chart-type-toggle {
+      display: flex;
+      align-items: flex-end;
+      align-self: flex-end;
+      gap: 8px;
+      margin: 0 5px 0 auto;
+      flex-shrink: 0;
+      font-size: 12px;
+      color: white;
+      user-select: none;
+      cursor: pointer;
+    }
+    .th-trade-detail-chart-type-toggle img {
+      width: 17px;
+      height: 17px;
+      display: block;
+      transition: opacity 0.2s;
     }
     .th-trade-detail-chart-stats {
       display: flex;
@@ -1515,19 +1547,45 @@
       <div id="th-trade-detail-body" class="th-trade-detail-body" hidden>
         <section class="th-trade-detail-section">
           <div class="th-trade-detail-chart-head">
-            <h3 id="th-trade-detail-chart-title">Symbol price</h3>
-            <div class="th-trade-detail-chart-stats">
-              <div>
-                <span class="th-trade-detail-field-label">Floor</span>
-                <span id="th-trade-detail-floor-value" class="th-trade-detail-chart-stat-value">—</span>
+            <div class="th-trade-detail-chart-head-main">
+              <h3 id="th-trade-detail-chart-title">Symbol price</h3>
+              <div class="th-trade-detail-chart-stats">
+                <div>
+                  <span class="th-trade-detail-field-label">Floor</span>
+                  <span id="th-trade-detail-floor-value" class="th-trade-detail-chart-stat-value">—</span>
+                </div>
+                <div>
+                  <span class="th-trade-detail-field-label">Final</span>
+                  <span
+                    id="th-trade-detail-final-value"
+                    class="th-trade-detail-chart-stat-value th-trade-detail-chart-stat-value--final"
+                  >—</span>
+                </div>
               </div>
-              <div>
-                <span class="th-trade-detail-field-label">Final</span>
-                <span
-                  id="th-trade-detail-final-value"
-                  class="th-trade-detail-chart-stat-value th-trade-detail-chart-stat-value--final"
-                >—</span>
-              </div>
+            </div>
+            <div
+              id="th-trade-detail-chart-type-toggle"
+              class="th-trade-detail-chart-type-toggle"
+              role="button"
+              tabindex="0"
+              aria-label="Switch between candlestick and line chart"
+            >
+              <img
+                id="th-trade-detail-candles-icon"
+                src="/images/icons/candlesticks.png"
+                alt="Candlesticks"
+                title="Candlesticks"
+                draggable="false"
+                style="opacity: 0.2;"
+              />
+              <img
+                id="th-trade-detail-line-icon"
+                src="/images/icons/line_chart.png"
+                alt="Line"
+                title="Line"
+                draggable="false"
+                style="opacity: 1;"
+              />
             </div>
           </div>
           <div class="th-trade-detail-chart-wrap">
@@ -3607,6 +3665,8 @@
     let _thTradeDetailChart = null;
     let _thTradeDetailChartHoverFrame = null;
     let _thTradeDetailChartDrag = null;
+    /** Matches dashboard allocation toggle: 'line' (default) or 'candles'. */
+    let _thTradeDetailChartType = 'line';
 
     const _thTradeDetailTimeFmt = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
@@ -3685,20 +3745,21 @@
       return markers;
     }
 
+    function tradeHistoryDetailLiveDetails(kalshi, key) {
+      const root = kalshi && kalshi[key];
+      return root && root.details ? root.details : null;
+    }
+
     function tradeHistoryDetailChartPoints(kalshi) {
+      const currentDetails = tradeHistoryDetailLiveDetails(kalshi, 'live_data');
+      const followingDetails = tradeHistoryDetailLiveDetails(kalshi, 'following_live_data');
       const current =
-        kalshi &&
-        kalshi.live_data &&
-        kalshi.live_data.details &&
-        Array.isArray(kalshi.live_data.details.timeseries)
-          ? kalshi.live_data.details.timeseries
+        currentDetails && Array.isArray(currentDetails.timeseries)
+          ? currentDetails.timeseries
           : [];
       const following =
-        kalshi &&
-        kalshi.following_live_data &&
-        kalshi.following_live_data.details &&
-        Array.isArray(kalshi.following_live_data.details.timeseries)
-          ? kalshi.following_live_data.details.timeseries
+        followingDetails && Array.isArray(followingDetails.timeseries)
+          ? followingDetails.timeseries
           : [];
       const currentClose = Date.parse((kalshi.market || {}).close_time);
       const followingClose = Date.parse(kalshi.following_cycle_close_time);
@@ -3719,6 +3780,55 @@
       return Array.from(byTimestamp.values()).sort((left, right) => left.t - right.t);
     }
 
+    /** Prefer Kalshi's 1M buckets; fall back to the first available interval. */
+    function tradeHistoryDetailCandleSeries(details) {
+      const candles = details && details.candlesticks;
+      if (!candles || typeof candles !== 'object') return [];
+      if (Array.isArray(candles['1M'])) return candles['1M'];
+      for (const key of Object.keys(candles)) {
+        if (Array.isArray(candles[key])) return candles[key];
+      }
+      return [];
+    }
+
+    function tradeHistoryDetailNormalizeCandle(raw) {
+      const t = Number(raw && raw.open_ts_ms);
+      const open = Number(raw && raw.open);
+      const high = Number(raw && raw.high);
+      const low = Number(raw && raw.low);
+      const close = Number(raw && raw.close);
+      if (
+        !Number.isFinite(t) ||
+        !Number.isFinite(open) ||
+        !Number.isFinite(high) ||
+        !Number.isFinite(low) ||
+        !Number.isFinite(close)
+      ) {
+        return null;
+      }
+      return { t, open, high, low, close };
+    }
+
+    function tradeHistoryDetailChartCandles(kalshi) {
+      const currentDetails = tradeHistoryDetailLiveDetails(kalshi, 'live_data');
+      const followingDetails = tradeHistoryDetailLiveDetails(kalshi, 'following_live_data');
+      const followingClose = Date.parse(kalshi.following_cycle_close_time);
+      const byTimestamp = new Map();
+      tradeHistoryDetailCandleSeries(currentDetails).forEach((raw) => {
+        const candle = tradeHistoryDetailNormalizeCandle(raw);
+        if (candle) byTimestamp.set(candle.t, candle);
+      });
+      // Buckets are keyed by minute, and the bucket straddling the cycle close only exists in the
+      // following event. Keep the current cycle authoritative and fill in whatever minutes it lacks.
+      tradeHistoryDetailCandleSeries(followingDetails).forEach((raw) => {
+        const candle = tradeHistoryDetailNormalizeCandle(raw);
+        if (!candle || byTimestamp.has(candle.t)) return;
+        if (Number.isFinite(followingClose) && candle.t > followingClose) return;
+        byTimestamp.set(candle.t, candle);
+      });
+      return Array.from(byTimestamp.values()).sort((left, right) => left.t - right.t);
+    }
+
     /** Market open→close is the cycle; fall back to the last 15 minutes of timeseries. */
     function tradeHistoryDetailCycleWindow(market, dataTMin, dataTMax) {
       const open = Date.parse((market || {}).open_time);
@@ -3733,23 +3843,39 @@
       return { tMin: dataTMax - span, tMax: dataTMax };
     }
 
-    function tradeHistoryDetailYRangeForView(points, viewTMin, viewTMax, floorStrike) {
+    function tradeHistoryDetailYRangeForView(points, candles, viewTMin, viewTMax, floorStrike, chartType) {
       let vMin = Infinity;
       let vMax = -Infinity;
-      const start = tradeHistoryDetailNearestPointIndex(points, viewTMin);
-      const end = tradeHistoryDetailNearestPointIndex(points, viewTMax);
-      const from = Math.max(0, Math.min(start, end) - 1);
-      const to = Math.min(points.length - 1, Math.max(start, end) + 1);
-      for (let i = from; i <= to; i++) {
-        const point = points[i];
-        if (point.t < viewTMin || point.t > viewTMax) continue;
-        if (point.v < vMin) vMin = point.v;
-        if (point.v > vMax) vMax = point.v;
+      const useCandles = chartType === 'candles';
+      if (!useCandles) {
+        const start = tradeHistoryDetailNearestPointIndex(points, viewTMin);
+        const end = tradeHistoryDetailNearestPointIndex(points, viewTMax);
+        const from = Math.max(0, Math.min(start, end) - 1);
+        const to = Math.min(points.length - 1, Math.max(start, end) + 1);
+        for (let i = from; i <= to; i++) {
+          const point = points[i];
+          if (point.t < viewTMin || point.t > viewTMax) continue;
+          if (point.v < vMin) vMin = point.v;
+          if (point.v > vMax) vMax = point.v;
+        }
+      } else {
+        const candleMs = 60 * 1000;
+        (candles || []).forEach((candle) => {
+          const candleEnd = candle.t + candleMs;
+          if (candleEnd < viewTMin || candle.t > viewTMax) return;
+          if (candle.low < vMin) vMin = candle.low;
+          if (candle.high > vMax) vMax = candle.high;
+        });
       }
       if (!Number.isFinite(vMin) || !Number.isFinite(vMax)) {
-        const mid = points[tradeHistoryDetailNearestPointIndex(points, (viewTMin + viewTMax) / 2)];
-        vMin = mid.v;
-        vMax = mid.v;
+        if (points.length) {
+          const mid = points[tradeHistoryDetailNearestPointIndex(points, (viewTMin + viewTMax) / 2)];
+          vMin = mid.v;
+          vMax = mid.v;
+        } else {
+          vMin = 0;
+          vMax = 1;
+        }
       }
       if (Number.isFinite(floorStrike)) {
         vMin = Math.min(vMin, floorStrike);
@@ -3781,7 +3907,14 @@
       state.viewTMax = tMax;
       state.tMin = tMin;
       state.tMax = tMax;
-      const yRange = tradeHistoryDetailYRangeForView(state.points, tMin, tMax, state.floorStrike);
+      const yRange = tradeHistoryDetailYRangeForView(
+        state.points,
+        state.candles,
+        tMin,
+        tMax,
+        state.floorStrike,
+        _thTradeDetailChartType
+      );
       state.vMin = yRange.vMin;
       state.vMax = yRange.vMax;
       state.xFor = (t) =>
@@ -3789,6 +3922,25 @@
       state.yFor = (v) =>
         state.pad.top +
         (1 - ((v - state.vMin) / Math.max(1, state.vMax - state.vMin))) * state.plotHeight;
+    }
+
+    function tradeHistoryDetailSyncChartTypeIcons() {
+      const candlesIcon = document.getElementById('th-trade-detail-candles-icon');
+      const lineIcon = document.getElementById('th-trade-detail-line-icon');
+      if (!candlesIcon || !lineIcon) return;
+      const isLine = _thTradeDetailChartType === 'line';
+      candlesIcon.style.opacity = isLine ? '0.2' : '1';
+      lineIcon.style.opacity = isLine ? '1' : '0.2';
+    }
+
+    function tradeHistoryDetailToggleChartType() {
+      _thTradeDetailChartType = _thTradeDetailChartType === 'line' ? 'candles' : 'line';
+      tradeHistoryDetailSyncChartTypeIcons();
+      const state = _thTradeDetailChart;
+      if (state && Number.isFinite(state.viewTMin) && Number.isFinite(state.viewTMax)) {
+        tradeHistoryDetailApplyView(state, state.viewTMin, state.viewTMax);
+      }
+      tradeHistoryRenderTradeDetailChart();
     }
 
     function tradeHistoryDetailChartZoom(state, cssX, factor) {
@@ -3811,6 +3963,7 @@
       if (!payload) return null;
       const kalshi = payload.kalshi || {};
       const points = tradeHistoryDetailChartPoints(kalshi);
+      const candles = tradeHistoryDetailChartCandles(kalshi);
       const cssWidth = Math.max(320, canvas.clientWidth || 900);
       const cssHeight = Math.max(220, canvas.clientHeight || 330);
       const dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -3819,6 +3972,7 @@
       const prev = _thTradeDetailChart;
       const state = {
         points,
+        candles,
         cssWidth,
         cssHeight,
         dpr,
@@ -3950,6 +4104,39 @@
       ctx.restore();
     }
 
+    function tradeHistoryDrawTradeDetailCandles(ctx, state) {
+      const candles = state.candles || [];
+      if (!candles.length) return;
+      const { tMin, tMax, xFor, yFor } = state;
+      const candleMs = 60 * 1000;
+      const slotPx = xFor(tMin + candleMs) - xFor(tMin);
+      // Leave a gap between slots so a wick is never swallowed by a neighbouring body.
+      const widthPx = Math.max(1, Math.min(9, slotPx * 0.5));
+      candles.forEach((candle) => {
+        const candleEnd = candle.t + candleMs;
+        if (candleEnd < tMin || candle.t > tMax) return;
+        const x = Math.round(xFor(candle.t + candleMs / 2)) + 0.5;
+        const yHigh = yFor(candle.high);
+        const yLow = yFor(candle.low);
+        const yOpen = yFor(candle.open);
+        const yClose = yFor(candle.close);
+        const up = candle.close >= candle.open;
+        const bodyTop = Math.min(yOpen, yClose);
+        const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
+        ctx.save();
+        ctx.fillStyle = up ? 'rgba(72, 187, 120, 0.7)' : 'rgba(229, 72, 72, 0.7)';
+        ctx.fillRect(x - widthPx / 2, bodyTop, widthPx, bodyHeight);
+        // Wick last, at full opacity: the body can never overdraw it.
+        ctx.strokeStyle = up ? '#48bb78' : '#e54848';
+        ctx.lineWidth = 1;
+        ctx.beginPath();
+        ctx.moveTo(x, yHigh);
+        ctx.lineTo(x, yLow);
+        ctx.stroke();
+        ctx.restore();
+      });
+    }
+
     function tradeHistoryRenderTradeDetailChart() {
       const state = _thTradeDetailChart;
       const canvas = document.getElementById('th-trade-detail-chart');
@@ -3998,13 +4185,16 @@
         state.points.length - 1,
         tradeHistoryDetailNearestPointIndex(state.points, tMax) + 1
       );
+      const showCandles = _thTradeDetailChartType === 'candles';
       const linePath = new Path2D();
-      for (let i = startIdx; i <= endIdx; i++) {
-        const point = state.points[i];
-        const x = xFor(point.t);
-        const y = yFor(point.v);
-        if (i === startIdx) linePath.moveTo(x, y);
-        else linePath.lineTo(x, y);
+      if (!showCandles) {
+        for (let i = startIdx; i <= endIdx; i++) {
+          const point = state.points[i];
+          const x = xFor(point.t);
+          const y = yFor(point.v);
+          if (i === startIdx) linePath.moveTo(x, y);
+          else linePath.lineTo(x, y);
+        }
       }
 
       ctx.save();
@@ -4012,21 +4202,33 @@
       ctx.rect(pad.left, pad.top, state.plotWidth, state.plotHeight);
       ctx.clip();
 
-      // Glow layers under the crisp line (same effect as the dashboard charts).
-      ctx.save();
-      ctx.strokeStyle = '#60a5fa';
-      ctx.lineWidth = 1.5;
-      ctx.lineCap = 'round';
-      ctx.lineJoin = 'round';
-      ctx.shadowColor = 'rgba(96, 165, 250, 0.35)';
-      for (let layer = 3; layer >= 1; layer--) {
-        ctx.shadowBlur = layer * 5;
+      if (showCandles) {
+        if ((state.candles || []).length) {
+          tradeHistoryDrawTradeDetailCandles(ctx, state);
+        } else {
+          ctx.fillStyle = '#94a3b8';
+          ctx.font = '12px sans-serif';
+          ctx.textAlign = 'left';
+          ctx.textBaseline = 'top';
+          ctx.fillText('No Kalshi candlestick data returned.', pad.left + 12, pad.top + 12);
+        }
+      } else {
+        // Glow layers under the crisp line (same effect as the dashboard charts).
+        ctx.save();
+        ctx.strokeStyle = '#60a5fa';
+        ctx.lineWidth = 1.5;
+        ctx.lineCap = 'round';
+        ctx.lineJoin = 'round';
+        ctx.shadowColor = 'rgba(96, 165, 250, 0.35)';
+        for (let layer = 3; layer >= 1; layer--) {
+          ctx.shadowBlur = layer * 5;
+          ctx.stroke(linePath);
+        }
+        ctx.restore();
+        ctx.strokeStyle = '#60a5fa';
+        ctx.lineWidth = 1.25;
         ctx.stroke(linePath);
       }
-      ctx.restore();
-      ctx.strokeStyle = '#60a5fa';
-      ctx.lineWidth = 1.25;
-      ctx.stroke(linePath);
 
       // Cycle open / expiration markers (60% opacity dashed verticals).
       [state.cycleOpenMs, state.cycleCloseMs].forEach((boundaryMs) => {
@@ -4045,6 +4247,9 @@
 
       if (floorStrike !== null) {
         const y = yFor(floorStrike);
+        // Snap to a device half-pixel: an unaligned 1px stroke smears over 3 device rows and reads
+        // far heavier than the 2 device pixels it should occupy.
+        const lineY = (Math.round(y * state.dpr) + 0.5) / state.dpr;
         const label = `${tradeHistoryDetailPriceText(state.symbol, floorStrike)} floor`;
         ctx.save();
         ctx.font = '12px sans-serif';
@@ -4053,12 +4258,12 @@
         const centerX = pad.left + state.plotWidth / 2;
         const halfGap = ctx.measureText(label).width / 2 + 8;
         ctx.strokeStyle = '#fbbf24';
-        ctx.lineWidth = 1;
+        ctx.lineWidth = 1 / state.dpr;
         ctx.beginPath();
-        ctx.moveTo(pad.left, y);
-        ctx.lineTo(centerX - halfGap, y);
-        ctx.moveTo(centerX + halfGap, y);
-        ctx.lineTo(cssWidth - pad.right, y);
+        ctx.moveTo(pad.left, lineY);
+        ctx.lineTo(centerX - halfGap, lineY);
+        ctx.moveTo(centerX + halfGap, lineY);
+        ctx.lineTo(cssWidth - pad.right, lineY);
         ctx.stroke();
         ctx.fillStyle = '#fbbf24';
         ctx.fillText(label, centerX, y);
@@ -4131,6 +4336,7 @@
       const payload = _thTradeDetailPayload;
       const canvas = document.getElementById('th-trade-detail-chart');
       if (!payload || !canvas) return;
+      tradeHistoryDetailSyncChartTypeIcons();
       _thTradeDetailChart = tradeHistoryBuildTradeDetailChart(canvas);
       tradeHistoryRenderTradeDetailChart();
       tradeHistoryUpdateTradeDetailChartTitle();
@@ -4272,6 +4478,17 @@
         if (event.target.closest && event.target.closest('[data-th-trade-detail-close]')) {
           tradeHistoryCloseTradeDetail();
         }
+        if (event.target.closest && event.target.closest('#th-trade-detail-chart-type-toggle')) {
+          tradeHistoryDetailToggleChartType();
+        }
+      });
+      modal.addEventListener('keydown', (event) => {
+        if (event.key !== 'Enter' && event.key !== ' ') return;
+        if (!(event.target.closest && event.target.closest('#th-trade-detail-chart-type-toggle'))) {
+          return;
+        }
+        event.preventDefault();
+        tradeHistoryDetailToggleChartType();
       });
       document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && !modal.hidden) tradeHistoryCloseTradeDetail();
