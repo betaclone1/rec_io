@@ -3557,6 +3557,35 @@
       return numberText === '—' ? '—' : `$${numberText}`;
     }
 
+    /** Hourly BTC/ETH (e.g. KXBTCD) — not 15M series. */
+    function tradeHistoryDetailIsHourlyBtcEth(trade) {
+      const sym = String((trade && trade.symbol) || '').trim().toUpperCase();
+      if (sym !== 'BTC' && sym !== 'ETH') return false;
+      const ticker = String((trade && trade.ticker) || '').trim().toUpperCase();
+      return Boolean(ticker) && !ticker.includes('15M');
+    }
+
+    /**
+     * Floor strike for chart/head display. Hourly BTC/ETH rounds up to the nearest dollar
+     * (Kalshi floor can sit a few cents under the dollar strike).
+     */
+    function tradeHistoryDetailFloorStrikeValue(trade, market) {
+      const raw = Number((market || {}).floor_strike);
+      if (!Number.isFinite(raw)) return null;
+      return tradeHistoryDetailIsHourlyBtcEth(trade) ? Math.ceil(raw) : raw;
+    }
+
+    function tradeHistoryDetailFloorText(trade, floorValue) {
+      if (!Number.isFinite(floorValue)) return '—';
+      if (tradeHistoryDetailIsHourlyBtcEth(trade)) {
+        return `$${floorValue.toLocaleString('en-US', {
+          minimumFractionDigits: 0,
+          maximumFractionDigits: 0,
+        })}`;
+      }
+      return tradeHistoryDetailPriceText((trade && trade.symbol) || '', floorValue);
+    }
+
     /**
      * "<symbol> price at <expiration time>" from the Kalshi market close (the moment the market
      * settles). Kalshi's `expiration_time` is the far-out latest expiration, not this cycle's end.
@@ -3994,13 +4023,14 @@
         dpr,
         hoverIndex: prev && Number.isInteger(prev.hoverIndex) ? prev.hoverIndex : -1,
         symbol: (payload.trade || {}).symbol || '',
+        trade: payload.trade || {},
       };
       if (points.length < 2) return state;
 
       const pad = { left: 70, right: 18, top: 18, bottom: 34 };
       const dataTMin = points[0].t;
       const dataTMax = points[points.length - 1].t;
-      const floorStrike = Number((kalshi.market || {}).floor_strike);
+      const floorStrike = tradeHistoryDetailFloorStrikeValue(payload.trade || {}, kalshi.market);
       Object.assign(state, {
         pad,
         plotWidth: cssWidth - pad.left - pad.right,
@@ -4266,7 +4296,7 @@
         // Snap to a device half-pixel: an unaligned 1px stroke smears over 3 device rows and reads
         // far heavier than the 2 device pixels it should occupy.
         const lineY = (Math.round(y * state.dpr) + 0.5) / state.dpr;
-        const label = `${tradeHistoryDetailPriceText(state.symbol, floorStrike)} floor`;
+        const label = `${tradeHistoryDetailFloorText(state.trade, floorStrike)} floor`;
         ctx.save();
         ctx.font = '12px sans-serif';
         ctx.textAlign = 'center';
@@ -4387,16 +4417,14 @@
       ]);
       const floorValue = document.getElementById('th-trade-detail-floor-value');
       if (floorValue) {
-        floorValue.textContent = tradeHistoryDetailPriceText(
-          trade.symbol,
-          (kalshi.market || {}).floor_strike
-        );
+        const floor = tradeHistoryDetailFloorStrikeValue(trade, kalshi.market);
+        floorValue.textContent = tradeHistoryDetailFloorText(trade, floor);
       }
       const finalValue = document.getElementById('th-trade-detail-final-value');
       if (finalValue) {
         const finalTick = tradeHistoryDetailFinalTickValue(kalshi);
         finalValue.textContent = tradeHistoryDetailPriceText(trade.symbol, finalTick);
-        const floor = Number((kalshi.market || {}).floor_strike);
+        const floor = tradeHistoryDetailFloorStrikeValue(trade, kalshi.market);
         if (Number.isFinite(floor) && floor !== 0 && Number.isFinite(finalTick)) {
           const pct = ((finalTick - floor) / floor) * 100;
           const diff = document.createElement('span');
