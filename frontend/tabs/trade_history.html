@@ -3746,6 +3746,11 @@
       const markers = [];
       const entryMs = tradeHistoryEtWallClockToEpochMs(trade.date, trade.time);
       if (Number.isFinite(entryMs)) markers.push({ ms: entryMs, up: isYes });
+      const closeMethod = String(trade.close_method || trade.closeMethod || '')
+        .trim()
+        .toLowerCase();
+      // Held-to-expiration closes have no discretionary exit; skip the closing arrow.
+      if (closeMethod === 'expired') return markers;
       let exitMs = tradeHistoryEtWallClockToEpochMs(trade.date, trade.closed_at);
       // `closed_at` is a clock time on (or just past) the trade date, so it can roll over midnight.
       if (Number.isFinite(exitMs) && Number.isFinite(entryMs) && exitMs < entryMs) {
