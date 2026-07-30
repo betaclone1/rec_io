@@ -3593,18 +3593,28 @@
       };
       const pnl = Number(trade.pnl);
       const ret = Number(trade.ret_pct);
+      const buy = Number(trade.buy_price);
+      const sell = Number(trade.sell_price);
       const wlBucket = tradeHistoryWinLossBucket(trade);
       const items = [
         ['Time', tradeHistoryDetailDisplayValue(trade.time), ''],
         ['Closed', tradeHistoryDetailClosedText(trade), ''],
         ['Side', tradeHistoryDetailDisplayValue(trade.side), ''],
+        ['Buy', Number.isFinite(buy) ? buy.toFixed(2) : '—', ''],
+        ['Sell', Number.isFinite(sell) ? sell.toFixed(2) : '—', ''],
         ['Position', tradeHistoryDetailDisplayValue(trade.position), ''],
         [
           'W/L',
           wlBucket === 'w' ? 'W' : (wlBucket === 'l' ? 'L' : tradeHistoryDetailDisplayValue(trade.win_loss)),
           wlBucket === 'w' ? '#28a745' : (wlBucket === 'l' ? '#dc3545' : ''),
         ],
-        ['PnL', Number.isFinite(pnl) ? `$${pnl.toFixed(2)}` : '—', signColor(pnl)],
+        [
+          'PnL',
+          Number.isFinite(pnl)
+            ? `$${pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+            : '—',
+          signColor(pnl),
+        ],
         ['Return %', Number.isFinite(ret) ? `${ret.toFixed(2)}%` : '—', signColor(ret)],
       ];
       const frag = document.createDocumentFragment();
@@ -3829,14 +3839,15 @@
       return Array.from(byTimestamp.values()).sort((left, right) => left.t - right.t);
     }
 
-    /** Market open→close is the cycle; fall back to the last 15 minutes of timeseries. */
+    /** Market open→close plus a 5-minute buffer on each side; fall back to the last 15 minutes. */
     function tradeHistoryDetailCycleWindow(market, dataTMin, dataTMax) {
       const open = Date.parse((market || {}).open_time);
       const close = Date.parse((market || {}).close_time);
+      const bufferMs = 5 * 60 * 1000;
       if (Number.isFinite(open) && Number.isFinite(close) && close > open) {
         return {
-          tMin: Math.max(dataTMin, open),
-          tMax: Math.min(dataTMax, close),
+          tMin: Math.max(dataTMin, open - bufferMs),
+          tMax: Math.min(dataTMax, close + bufferMs),
         };
       }
       const span = Math.min(15 * 60 * 1000, Math.max(1, dataTMax - dataTMin));
@@ -4361,8 +4372,6 @@
         ['Ticker', trade.ticker],
         ['Contract', trade.contract],
         ['Strike', trade.strike],
-        ['Buy', trade.buy_price],
-        ['Sell', trade.sell_price],
         ['Fees', trade.fees],
         ['Market result', trade.market_result],
         ['Symbol open', trade.symbol_open],
