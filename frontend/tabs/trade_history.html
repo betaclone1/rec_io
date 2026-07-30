@@ -4281,23 +4281,24 @@
         ctx.restore();
       }
 
-      // Entry/exit arrows point at the spot price: apex on the line, body away from it.
+      // Entry/exit arrows point at the spot price: apex stands off the line, body away from it.
+      const markerHeight = 16.25;
+      const markerHalfWidth = 6.25;
+      const markerGap = 4;
       (state.markers || []).forEach((marker) => {
         if (marker.t < tMin || marker.t > tMax) return;
         const x = xFor(marker.t);
         const y = yFor(marker.v);
-        const baseY = marker.up ? y + 13 : y - 13;
+        const apexY = marker.up ? y + markerGap : y - markerGap;
+        const baseY = marker.up ? apexY + markerHeight : apexY - markerHeight;
+        const arrow = new Path2D();
+        arrow.moveTo(x, apexY);
+        arrow.lineTo(x - markerHalfWidth, baseY);
+        arrow.lineTo(x + markerHalfWidth, baseY);
+        arrow.closePath();
         ctx.save();
         ctx.fillStyle = marker.up ? '#48bb78' : '#e54848';
-        ctx.strokeStyle = 'rgba(8, 14, 22, 0.85)';
-        ctx.lineWidth = 1;
-        ctx.beginPath();
-        ctx.moveTo(x, y);
-        ctx.lineTo(x - 5, baseY);
-        ctx.lineTo(x + 5, baseY);
-        ctx.closePath();
-        ctx.fill();
-        ctx.stroke();
+        ctx.fill(arrow);
         ctx.restore();
       });
       ctx.restore();
