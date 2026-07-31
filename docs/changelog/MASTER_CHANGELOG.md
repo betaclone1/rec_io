@@ -16,23 +16,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Plans: `.cursor/plans/multi_order_id_storage_2dbc04bd.plan.md`
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260731_0025_trades_order_ids_open_close_arrays.up.sql`,  
   `scripts/migrations/20260731_0025_trades_order_ids_open_close_arrays.down.sql`
-- [ ] Apply migration **before any service restart** (additive columns + scalar backfill only):  
+- [x] Apply migration **before any service restart** (additive columns + scalar backfill only):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260731_0025_trades_order_ids_open_close_arrays`
-- [ ] Confirm migration applied on prod:  
+- [x] Confirm migration applied on prod:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list | grep 20260731_0025_trades_order_ids_open_close_arrays`  
   and columns exist:  
   `psql "$DATABASE_URL" -c "SELECT column_name FROM information_schema.columns WHERE table_schema = 'users_0001' AND table_name = 'trades_0001' AND column_name IN ('order_ids_open','order_ids_close') ORDER BY 1;"`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services that load the new code (**only after migration confirmed**):  
-  `supervisorctl restart trade_manager read_api`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; `supervisorctl status trade_manager read_api` RUNNING; no `UndefinedColumn` / `order_ids_open` errors in trade_manager logs after restart.
-- [ ] Record release in DB:  
+- [x] Restart services that load the new code (**only after migration confirmed**):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart trade_manager_0001 read_api`  
+  (Hotfix: `c5b4f51` escaped `{{}}` defaults in `init_trades_db` f-string that caused a SyntaxError on first restart.)
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; `supervisorctl … status trade_manager_0001 read_api` RUNNING; no `UndefinedColumn` / `order_ids_open` errors in trade_manager logs after restart.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.4`
 
 ---
