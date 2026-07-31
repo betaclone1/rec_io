@@ -9,6 +9,8 @@ from backend.core.trade_history_detail import (
     fetch_kalshi_market,
     fetch_kalshi_trade_context,
     following_event_ticker,
+    load_trade_detail_fills,
+    load_trade_detail_orders,
 )
 
 
@@ -30,6 +32,183 @@ def queued_get(
         return responses.pop(0)
 
     return _get
+
+
+class FakeFillsCursor:
+    def __init__(self, rows: List[tuple]):
+        self.rows = rows
+        self.executed: List[tuple] = []
+
+    def execute(self, query: str, params: tuple) -> None:
+        self.executed.append((query, params))
+
+    def fetchall(self) -> List[tuple]:
+        return self.rows
+
+
+def test_trade_detail_fills_match_open_and_close_orders() -> None:
+    cursor = FakeFillsCursor(
+        [
+            (
+                "fill-open",
+                "order-open",
+                "2026-07-30T17:20:56.401533Z",
+                2,
+                "buy",
+                "yes",
+                "0.7800",
+                "0.2200",
+                "bid",
+            ),
+            (
+                "fill-close",
+                "order-close",
+                "2026-07-30T17:22:10.698619Z",
+                1,
+                "buy",
+                "no",
+                "0.7000",
+                "0.3000",
+                "bid",
+            ),
+        ]
+    )
+
+    fills = load_trade_detail_fills(
+        cursor,
+        slot="0001",
+        order_id_open="order-open",
+        order_id_close="order-close",
+    )
+
+    assert "FROM users.fills_0001" in cursor.executed[0][0]
+    assert cursor.executed[0][1] == (["order-open", "order-close"],)
+    assert fills == [
+        {
+            "fill_id": "fill-open",
+            "order_id": "order-open",
+            "phase": "open",
+            "created_time": "2026-07-30T17:20:56.401533Z",
+            "count": "2",
+            "action": "buy",
+            "outcome_side": "yes",
+            "price": "0.7800",
+            "orderbook_side": "bid",
+        },
+        {
+            "fill_id": "fill-close",
+            "order_id": "order-close",
+            "phase": "close",
+            "created_time": "2026-07-30T17:22:10.698619Z",
+            "count": "1",
+            "action": "buy",
+            "outcome_side": "no",
+            "price": "0.3000",
+            "orderbook_side": "bid",
+        },
+    ]
+
+
+def test_trade_detail_fills_skip_query_without_order_ids() -> None:
+    cursor = FakeFillsCursor([])
+
+    assert (
+        load_trade_detail_fills(
+            cursor,
+            slot="0001",
+            order_id_open=None,
+            order_id_close="",
+        )
+        == []
+    )
+    assert cursor.executed == []
+
+
+def test_trade_detail_orders_match_open_and_close_orders() -> None:
+    cursor = FakeFillsCursor(
+        [
+            (
+                "order-open",
+                "2026-07-30T17:20:56.401533Z",
+                "executed",
+                "yes",
+                "bid",
+                "0.7800",
+                2,
+                2,
+                "0.120000",
+                1,
+            ),
+            (
+                "order-close",
+                "2026-07-30T17:22:10.698619Z",
+                "executed",
+                "no",
+                "ask",
+                "0.3000",
+                2,
+                1,
+                "0.060000",
+                2,
+            ),
+        ]
+    )
+
+    orders = load_trade_detail_orders(
+        cursor,
+        slot="0001",
+        order_id_open="order-open",
+        order_id_close="order-close",
+    )
+
+    query, params = cursor.executed[0]
+    assert "FROM users.orders_0001" in query
+    assert "taker_fees_dollars" in query
+    assert "maker_fees_dollars" in query
+    assert params == (["order-open", "order-close"],)
+    assert orders == [
+        {
+            "order_id": "order-open",
+            "phase": "open",
+            "created_time": "2026-07-30T17:20:56.401533Z",
+            "status": "executed",
+            "outcome_side": "yes",
+            "orderbook_side": "bid",
+            "price": "0.7800",
+            "initial_count": "2",
+            "fill_count": "2",
+            "total_fees": "0.120000",
+            "subaccount": 1,
+        },
+        {
+            "order_id": "order-close",
+            "phase": "close",
+            "created_time": "2026-07-30T17:22:10.698619Z",
+            "status": "executed",
+            "outcome_side": "no",
+            "orderbook_side": "ask",
+            "price": "0.3000",
+            "initial_count": "2",
+            "fill_count": "1",
+            "total_fees": "0.060000",
+            "subaccount": 2,
+        },
+    ]
+
+
+def test_trade_detail_orders_skip_query_without_order_ids() -> None:
+    cursor = FakeFillsCursor([])
+
+    assert (
+        load_trade_detail_orders(
+            cursor,
+            slot="0001",
+            order_id_open=None,
+            order_id_close="",
+        )
+        == []
+    )
+    assert cursor.executed == []
 
 
 def test_market_uses_current_endpoint_when_present() -> None:

@@ -910,6 +910,10 @@
       font-size: 18px;
       color: #fff;
     }
+    .th-trade-detail-title-paper {
+      color: #fbbf24;
+      font-weight: 700;
+    }
     .th-trade-detail-close {
       width: 32px;
       height: 32px;
@@ -951,16 +955,160 @@
       grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
       gap: 10px 18px;
     }
+    .th-trade-detail-fills-wrap {
+      overflow-x: auto;
+    }
+    .th-trade-detail-record-tabs {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 8px;
+    }
+    .th-trade-detail-record-tab {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: #fff;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      opacity: 0.3;
+      transition: opacity 0.2s;
+    }
+    .th-trade-detail-record-tab:hover,
+    .th-trade-detail-record-tab.active {
+      opacity: 1;
+    }
+    .th-trade-detail-record-panel[hidden] {
+      display: none;
+    }
+    .th-trade-detail-fills-table {
+      width: 100%;
+      border-collapse: collapse;
+      table-layout: fixed;
+      color: #f8fafc;
+      font-size: 12px;
+    }
+    .th-trade-detail-fills-table th,
+    .th-trade-detail-fills-table td {
+      padding: 7px 10px;
+      text-align: center;
+    }
+    .th-trade-detail-fills-table th {
+      color: #8fa0b7;
+      font-size: 9px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    .th-trade-detail-fills-table tbody td {
+      border-top: 1px solid #374151;
+    }
+    .th-trade-detail-fill-side {
+      font-weight: 600;
+    }
+    .th-trade-detail-fill-phase {
+      margin-right: 6px;
+      color: #8fa0b7;
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+    .th-trade-detail-fill-group-toggle {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      color: inherit;
+      font: inherit;
+      cursor: pointer;
+    }
+    .th-trade-detail-fill-group-toggle:hover {
+      color: #93c5fd;
+    }
+    .th-trade-detail-fill-group-count {
+      color: #8fa0b7;
+      font-weight: 600;
+    }
+    .th-trade-detail-fill-group-icon {
+      display: inline-flex;
+      width: 12px;
+      justify-content: center;
+      color: #8fa0b7;
+      font-weight: 700;
+    }
+    .th-trade-detail-fill-group-summary {
+      cursor: pointer;
+    }
+    .th-trade-detail-fill-group-child td {
+      color: #cbd5e1;
+      background: rgba(15, 23, 42, 0.35);
+    }
+    .th-trade-detail-fill-group-child[hidden] {
+      display: none;
+    }
+    .th-trade-detail-fills-empty {
+      color: #8fa0b7;
+      font-style: italic;
+    }
+    .th-trade-detail-orders-table {
+      min-width: 960px;
+    }
+    .th-trade-detail-summary-row {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      gap: 10px 24px;
+    }
     .th-trade-detail-summary {
       display: flex;
       flex-wrap: wrap;
       gap: 10px 32px;
-      margin-bottom: 14px;
-      padding-bottom: 12px;
-      border-bottom: 1px solid #374151;
+      flex: 1 1 auto;
+      min-width: 0;
     }
     .th-trade-detail-summary > div {
       text-align: center;
+    }
+    .th-trade-detail-fields-toggle {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 4px 8px;
+      border: none;
+      border-radius: 4px;
+      background: transparent;
+      color: #b8c0cc;
+      cursor: pointer;
+      font-size: 12px;
+      font-weight: 600;
+      line-height: 1;
+      white-space: nowrap;
+      transition: color 0.15s ease, background-color 0.15s ease;
+    }
+    .th-trade-detail-fields-toggle:hover {
+      color: #fff;
+      background-color: rgba(255, 255, 255, 0.08);
+    }
+    .th-trade-detail-fields-toggle-icon {
+      display: inline-flex;
+      width: 14px;
+      justify-content: center;
+      font-size: 14px;
+      font-weight: 600;
+    }
+    .th-trade-detail-fields-expandable[hidden] {
+      display: none !important;
+    }
+    /* Rule belongs to the details block, so it only appears while details are expanded. */
+    .th-trade-detail-fields-expandable {
+      margin-top: 12px;
+      padding-top: 14px;
+      border-top: 1px solid #374151;
     }
     .th-trade-detail-summary-value {
       display: block;
@@ -1015,13 +1163,24 @@
       font-size: 12px;
       color: white;
       user-select: none;
-      cursor: pointer;
     }
-    .th-trade-detail-chart-type-toggle img {
+    .th-trade-detail-chart-layer-btn {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: transparent;
+      cursor: pointer;
+      line-height: 0;
+    }
+    .th-trade-detail-chart-layer-btn img {
       width: 17px;
       height: 17px;
       display: block;
+      opacity: 0.2;
       transition: opacity 0.2s;
+    }
+    .th-trade-detail-chart-layer-btn[aria-pressed="true"] img {
+      opacity: 1;
     }
     .th-trade-detail-chart-stats {
       display: flex;
@@ -1566,26 +1725,41 @@
             <div
               id="th-trade-detail-chart-type-toggle"
               class="th-trade-detail-chart-type-toggle"
-              role="button"
-              tabindex="0"
-              aria-label="Switch between candlestick and line chart"
+              role="group"
+              aria-label="Chart layers"
             >
-              <img
-                id="th-trade-detail-candles-icon"
-                src="/images/icons/candlesticks.png"
-                alt="Candlesticks"
+              <button
+                type="button"
+                id="th-trade-detail-candles-btn"
+                class="th-trade-detail-chart-layer-btn"
+                data-th-chart-layer="candles"
+                aria-pressed="false"
                 title="Candlesticks"
-                draggable="false"
-                style="opacity: 0.2;"
-              />
-              <img
-                id="th-trade-detail-line-icon"
-                src="/images/icons/line_chart.png"
-                alt="Line"
+                aria-label="Toggle candlestick layer"
+              >
+                <img
+                  id="th-trade-detail-candles-icon"
+                  src="/images/icons/candlesticks.png"
+                  alt=""
+                  draggable="false"
+                />
+              </button>
+              <button
+                type="button"
+                id="th-trade-detail-line-btn"
+                class="th-trade-detail-chart-layer-btn"
+                data-th-chart-layer="line"
+                aria-pressed="true"
                 title="Line"
-                draggable="false"
-                style="opacity: 1;"
-              />
+                aria-label="Toggle line layer"
+              >
+                <img
+                  id="th-trade-detail-line-icon"
+                  src="/images/icons/line_chart.png"
+                  alt=""
+                  draggable="false"
+                />
+              </button>
             </div>
           </div>
           <div class="th-trade-detail-chart-wrap">
@@ -1594,8 +1768,99 @@
           <div id="th-trade-detail-live-error" class="th-trade-detail-source-error" hidden></div>
         </section>
         <section class="th-trade-detail-section">
-          <div id="th-trade-detail-trade-summary" class="th-trade-detail-summary"></div>
-          <div id="th-trade-detail-trade-grid" class="th-trade-detail-grid"></div>
+          <div class="th-trade-detail-summary-row">
+            <div id="th-trade-detail-trade-summary" class="th-trade-detail-summary"></div>
+            <button
+              type="button"
+              id="th-trade-detail-fields-toggle"
+              class="th-trade-detail-fields-toggle"
+              title="Collapse or expand trade details"
+              aria-expanded="false"
+              aria-controls="th-trade-detail-fields-expandable"
+            >
+              <span>Details</span>
+              <span id="th-trade-detail-fields-toggle-icon" class="th-trade-detail-fields-toggle-icon" aria-hidden="true">+</span>
+            </button>
+          </div>
+          <div id="th-trade-detail-fields-expandable" class="th-trade-detail-fields-expandable" hidden>
+            <div id="th-trade-detail-trade-grid" class="th-trade-detail-grid"></div>
+          </div>
+        </section>
+        <section id="th-trade-detail-fills-section" class="th-trade-detail-section">
+          <div class="th-trade-detail-record-tabs" role="tablist" aria-label="Execution records">
+            <button
+              type="button"
+              id="th-trade-detail-fills-tab"
+              class="th-trade-detail-record-tab active"
+              role="tab"
+              aria-selected="true"
+              aria-controls="th-trade-detail-fills-panel"
+              data-th-record-tab="fills"
+            >Fills</button>
+            <button
+              type="button"
+              id="th-trade-detail-orders-tab"
+              class="th-trade-detail-record-tab"
+              role="tab"
+              aria-selected="false"
+              aria-controls="th-trade-detail-orders-panel"
+              data-th-record-tab="orders"
+            >Orders</button>
+          </div>
+          <div
+            id="th-trade-detail-fills-panel"
+            class="th-trade-detail-record-panel"
+            role="tabpanel"
+            aria-labelledby="th-trade-detail-fills-tab"
+          >
+            <div class="th-trade-detail-fills-wrap">
+              <table class="th-trade-detail-fills-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Count</th>
+                    <th>Side</th>
+                    <th>Price</th>
+                  </tr>
+                </thead>
+                <tbody id="th-trade-detail-fills-body">
+                  <tr>
+                    <td colspan="4" class="th-trade-detail-fills-empty">No fills found for this trade.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <div
+            id="th-trade-detail-orders-panel"
+            class="th-trade-detail-record-panel"
+            role="tabpanel"
+            aria-labelledby="th-trade-detail-orders-tab"
+            hidden
+          >
+            <div class="th-trade-detail-fills-wrap">
+              <table class="th-trade-detail-fills-table th-trade-detail-orders-table">
+                <thead>
+                  <tr>
+                    <th>Time</th>
+                    <th>Status</th>
+                    <th>Side</th>
+                    <th>Orderbook</th>
+                    <th>Price</th>
+                    <th>Initial Count</th>
+                    <th>Fill Count</th>
+                    <th>Total Fees</th>
+                    <th>Subaccount</th>
+                  </tr>
+                </thead>
+                <tbody id="th-trade-detail-orders-body">
+                  <tr>
+                    <td colspan="9" class="th-trade-detail-fills-empty">No orders found for this trade.</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
         </section>
       </div>
     </section>
@@ -3663,6 +3928,284 @@
       host.replaceChildren(frag);
     }
 
+    function tradeHistoryDetailFormatFillCount(count) {
+      return Number.isFinite(count)
+        ? count.toLocaleString('en-US', { maximumFractionDigits: 2 })
+        : '—';
+    }
+
+    function tradeHistoryDetailFormatFillPrice(price) {
+      return Number.isFinite(price) ? price.toFixed(4) : '—';
+    }
+
+    function tradeHistoryDetailFormatFillTime(createdTime) {
+      const createdMs = Date.parse(createdTime || '');
+      return Number.isFinite(createdMs)
+        ? `${_thTradeDetailTimeFmt.format(new Date(createdMs))} ET`
+        : '—';
+    }
+
+    function tradeHistoryDetailFillSide(fill) {
+      return fill && fill.outcome_side
+        ? String(fill.outcome_side).trim().toUpperCase()
+        : '';
+    }
+
+    function tradeHistoryDetailAppendFillSideCell(row, fill) {
+      const cell = document.createElement('td');
+      cell.className = 'th-trade-detail-fill-side';
+      const phase = document.createElement('span');
+      phase.className = 'th-trade-detail-fill-phase';
+      phase.textContent = fill.phase || '';
+      cell.appendChild(phase);
+      cell.append(document.createTextNode(tradeHistoryDetailFillSide(fill) || '—'));
+      row.appendChild(cell);
+    }
+
+    function tradeHistoryDetailAppendFillCells(row, fill, { timeNode } = {}) {
+      const count = Number(fill.count);
+      const price = Number(fill.price);
+      const timeCell = document.createElement('td');
+      if (timeNode) {
+        timeCell.appendChild(timeNode);
+      } else {
+        timeCell.textContent = tradeHistoryDetailFormatFillTime(fill.created_time);
+      }
+      row.appendChild(timeCell);
+
+      const countCell = document.createElement('td');
+      countCell.textContent = tradeHistoryDetailFormatFillCount(count);
+      row.appendChild(countCell);
+
+      tradeHistoryDetailAppendFillSideCell(row, fill);
+
+      const priceCell = document.createElement('td');
+      priceCell.textContent = tradeHistoryDetailFormatFillPrice(price);
+      row.appendChild(priceCell);
+    }
+
+    /** Same Kalshi created_time means one simultaneous block; collapse to one summary row. */
+    function tradeHistoryDetailGroupFillsByTime(fills) {
+      const groups = [];
+      const indexByTime = new Map();
+      (Array.isArray(fills) ? fills : []).forEach((fill) => {
+        const key = String(fill && fill.created_time != null ? fill.created_time : '');
+        let group = indexByTime.get(key);
+        if (!group) {
+          group = { created_time: fill.created_time, fills: [] };
+          indexByTime.set(key, group);
+          groups.push(group);
+        }
+        group.fills.push(fill);
+      });
+      return groups;
+    }
+
+    function tradeHistoryDetailFillGroupTotals(fills) {
+      let totalCount = 0;
+      let weighted = 0;
+      let weight = 0;
+      fills.forEach((fill) => {
+        const count = Number(fill.count);
+        const price = Number(fill.price);
+        if (Number.isFinite(count)) totalCount += count;
+        if (Number.isFinite(count) && Number.isFinite(price) && count > 0) {
+          weighted += count * price;
+          weight += count;
+        }
+      });
+      return {
+        totalCount,
+        averagePrice: weight > 0 ? weighted / weight : NaN,
+      };
+    }
+
+    function tradeHistoryDetailSetFillGroupExpanded(groupId, expanded) {
+      const body = document.getElementById('th-trade-detail-fills-body');
+      if (!body) return;
+      const summary = body.querySelector(
+        `tr.th-trade-detail-fill-group-summary[data-fill-group="${groupId}"]`
+      );
+      if (!summary) return;
+      const open = Boolean(expanded);
+      summary.setAttribute('aria-expanded', open.toString());
+      const icon = summary.querySelector('.th-trade-detail-fill-group-icon');
+      if (icon) icon.textContent = open ? '-' : '+';
+      body.querySelectorAll(
+        `tr.th-trade-detail-fill-group-child[data-fill-group="${groupId}"]`
+      ).forEach((row) => {
+        row.hidden = !open;
+      });
+    }
+
+    function tradeHistoryDetailToggleFillGroup(groupId) {
+      const body = document.getElementById('th-trade-detail-fills-body');
+      if (!body) return;
+      const summary = body.querySelector(
+        `tr.th-trade-detail-fill-group-summary[data-fill-group="${groupId}"]`
+      );
+      if (!summary) return;
+      const open = summary.getAttribute('aria-expanded') === 'true';
+      tradeHistoryDetailSetFillGroupExpanded(groupId, !open);
+    }
+
+    function tradeHistoryDetailSetFills(fills) {
+      const body = document.getElementById('th-trade-detail-fills-body');
+      if (!body) return;
+      const groups = tradeHistoryDetailGroupFillsByTime(fills);
+      if (!groups.length) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 4;
+        cell.className = 'th-trade-detail-fills-empty';
+        cell.textContent = 'No fills found for this trade.';
+        row.appendChild(cell);
+        body.replaceChildren(row);
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+      groups.forEach((group, groupIndex) => {
+        if (group.fills.length === 1) {
+          const row = document.createElement('tr');
+          tradeHistoryDetailAppendFillCells(row, group.fills[0]);
+          frag.appendChild(row);
+          return;
+        }
+
+        const groupId = String(groupIndex);
+        const totals = tradeHistoryDetailFillGroupTotals(group.fills);
+        const summary = document.createElement('tr');
+        summary.className = 'th-trade-detail-fill-group-summary';
+        summary.dataset.fillGroup = groupId;
+        summary.setAttribute('aria-expanded', 'false');
+        summary.tabIndex = 0;
+        summary.setAttribute('role', 'button');
+
+        const timeNode = document.createElement('button');
+        timeNode.type = 'button';
+        timeNode.className = 'th-trade-detail-fill-group-toggle';
+        timeNode.dataset.fillGroupToggle = groupId;
+        const icon = document.createElement('span');
+        icon.className = 'th-trade-detail-fill-group-icon';
+        icon.setAttribute('aria-hidden', 'true');
+        icon.textContent = '+';
+        const timeLabel = document.createElement('span');
+        timeLabel.textContent = tradeHistoryDetailFormatFillTime(group.created_time);
+        const countLabel = document.createElement('span');
+        countLabel.className = 'th-trade-detail-fill-group-count';
+        countLabel.textContent = `(${group.fills.length})`;
+        timeNode.append(icon, timeLabel, countLabel);
+
+        const countCell = document.createElement('td');
+        countCell.textContent = tradeHistoryDetailFormatFillCount(totals.totalCount);
+        const priceCell = document.createElement('td');
+        priceCell.textContent = tradeHistoryDetailFormatFillPrice(totals.averagePrice);
+
+        const timeCell = document.createElement('td');
+        timeCell.appendChild(timeNode);
+        summary.appendChild(timeCell);
+        summary.appendChild(countCell);
+        tradeHistoryDetailAppendFillSideCell(summary, group.fills[0]);
+        summary.appendChild(priceCell);
+        frag.appendChild(summary);
+
+        group.fills.forEach((fill) => {
+          const child = document.createElement('tr');
+          child.className = 'th-trade-detail-fill-group-child';
+          child.dataset.fillGroup = groupId;
+          child.hidden = true;
+          tradeHistoryDetailAppendFillCells(child, fill);
+          frag.appendChild(child);
+        });
+      });
+      body.replaceChildren(frag);
+    }
+
+    function tradeHistoryDetailSetOrders(orders) {
+      const body = document.getElementById('th-trade-detail-orders-body');
+      if (!body) return;
+      const rows = Array.isArray(orders) ? orders : [];
+      if (!rows.length) {
+        const row = document.createElement('tr');
+        const cell = document.createElement('td');
+        cell.colSpan = 9;
+        cell.className = 'th-trade-detail-fills-empty';
+        cell.textContent = 'No orders found for this trade.';
+        row.appendChild(cell);
+        body.replaceChildren(row);
+        return;
+      }
+
+      const frag = document.createDocumentFragment();
+      rows.forEach((order) => {
+        const optionalNumber = (value) =>
+          value === null || value === undefined || value === '' ? NaN : Number(value);
+        const price = optionalNumber(order.price);
+        const initialCount = optionalNumber(order.initial_count);
+        const fillCount = optionalNumber(order.fill_count);
+        const totalFees = optionalNumber(order.total_fees);
+        const values = [
+          tradeHistoryDetailFormatFillTime(order.created_time),
+          order.status ? String(order.status).trim().toUpperCase() : '—',
+          order.outcome_side ? String(order.outcome_side).trim().toUpperCase() : '—',
+          order.orderbook_side ? String(order.orderbook_side).trim().toUpperCase() : '—',
+          tradeHistoryDetailFormatFillPrice(price),
+          tradeHistoryDetailFormatFillCount(initialCount),
+          tradeHistoryDetailFormatFillCount(fillCount),
+          Number.isFinite(totalFees)
+            ? totalFees.toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: 6,
+              })
+            : '—',
+          order.subaccount != null && order.subaccount !== ''
+            ? String(order.subaccount)
+            : '—',
+        ];
+        const row = document.createElement('tr');
+        values.forEach((value, index) => {
+          const cell = document.createElement('td');
+          if (index === 2) cell.className = 'th-trade-detail-fill-side';
+          cell.textContent = value;
+          row.appendChild(cell);
+        });
+        frag.appendChild(row);
+      });
+      body.replaceChildren(frag);
+    }
+
+    function tradeHistoryDetailSetRecordTab(tabName) {
+      const activeTab = tabName === 'orders' ? 'orders' : 'fills';
+      document.querySelectorAll('[data-th-record-tab]').forEach((tab) => {
+        const active = tab.getAttribute('data-th-record-tab') === activeTab;
+        tab.classList.toggle('active', active);
+        tab.setAttribute('aria-selected', active.toString());
+      });
+      const fillsPanel = document.getElementById('th-trade-detail-fills-panel');
+      const ordersPanel = document.getElementById('th-trade-detail-orders-panel');
+      if (fillsPanel) fillsPanel.hidden = activeTab !== 'fills';
+      if (ordersPanel) ordersPanel.hidden = activeTab !== 'orders';
+    }
+
+    /** Match results/analysis panel: “-” when open, “+” when collapsed. Default is collapsed. */
+    function tradeHistoryDetailSetFieldsExpanded(expanded) {
+      const expandable = document.getElementById('th-trade-detail-fields-expandable');
+      const btn = document.getElementById('th-trade-detail-fields-toggle');
+      const icon = document.getElementById('th-trade-detail-fields-toggle-icon');
+      if (!expandable || !btn || !icon) return;
+      const open = Boolean(expanded);
+      expandable.hidden = !open;
+      icon.textContent = open ? '-' : '+';
+      btn.setAttribute('aria-expanded', open.toString());
+    }
+
+    function tradeHistoryDetailToggleFieldsPanel() {
+      const expandable = document.getElementById('th-trade-detail-fields-expandable');
+      if (!expandable) return;
+      tradeHistoryDetailSetFieldsExpanded(expandable.hidden);
+    }
+
     function tradeHistoryDetailErrorText(error, fallback) {
       if (!error || typeof error !== 'object') return fallback;
       const message = error.message || fallback;
@@ -3690,6 +4233,12 @@
       document.getElementById('th-trade-detail-body')?.setAttribute('hidden', '');
       document.getElementById('th-trade-detail-trade-summary')?.replaceChildren();
       document.getElementById('th-trade-detail-trade-grid')?.replaceChildren();
+      tradeHistoryDetailSetFieldsExpanded(false);
+      tradeHistoryDetailSetFills([]);
+      tradeHistoryDetailSetOrders([]);
+      tradeHistoryDetailSetRecordTab('fills');
+      const fillsSection = document.getElementById('th-trade-detail-fills-section');
+      if (fillsSection) fillsSection.hidden = false;
       const floorValue = document.getElementById('th-trade-detail-floor-value');
       if (floorValue) floorValue.textContent = '—';
       const finalValue = document.getElementById('th-trade-detail-final-value');
@@ -3704,8 +4253,9 @@
     let _thTradeDetailChart = null;
     let _thTradeDetailChartHoverFrame = null;
     let _thTradeDetailChartDrag = null;
-    /** Matches dashboard allocation toggle: 'line' (default) or 'candles'. */
-    let _thTradeDetailChartType = 'line';
+    /** Independent chart layers; both may be on and drawn overlaid (line on top). */
+    let _thTradeDetailShowLine = true;
+    let _thTradeDetailShowCandles = false;
 
     const _thTradeDetailTimeFmt = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
@@ -3766,6 +4316,15 @@
       return naive - offsetAt(naive - offsetAt(naive));
     }
 
+    /** Marker caption: contracts at the fill price that opened or closed the position. */
+    function tradeHistoryDetailMarkerLabel(trade, priceKey) {
+      const price = Number(trade[priceKey]);
+      const position = trade.position;
+      if (!Number.isFinite(price)) return '';
+      if (position === null || position === undefined || position === '') return '';
+      return `${position} @ ${price.toFixed(2)}`;
+    }
+
     /** Yes opens with a green up arrow, No with a red down arrow; the close is the opposite arrow. */
     function tradeHistoryDetailTradeMarkers(trade) {
       const side = (trade && trade.side != null ? String(trade.side) : '').trim().toUpperCase();
@@ -3774,7 +4333,13 @@
       if (!isYes && !isNo) return [];
       const markers = [];
       const entryMs = tradeHistoryEtWallClockToEpochMs(trade.date, trade.time);
-      if (Number.isFinite(entryMs)) markers.push({ ms: entryMs, up: isYes });
+      if (Number.isFinite(entryMs)) {
+        markers.push({
+          ms: entryMs,
+          up: isYes,
+          label: tradeHistoryDetailMarkerLabel(trade, 'buy_price'),
+        });
+      }
       const closeMethod = String(trade.close_method || trade.closeMethod || '')
         .trim()
         .toLowerCase();
@@ -3785,7 +4350,13 @@
       if (Number.isFinite(exitMs) && Number.isFinite(entryMs) && exitMs < entryMs) {
         exitMs += 86400000;
       }
-      if (Number.isFinite(exitMs)) markers.push({ ms: exitMs, up: !isYes });
+      if (Number.isFinite(exitMs)) {
+        markers.push({
+          ms: exitMs,
+          up: !isYes,
+          label: tradeHistoryDetailMarkerLabel(trade, 'sell_price'),
+        });
+      }
       return markers;
     }
 
@@ -3888,11 +4459,17 @@
       return { tMin: dataTMax - span, tMax: dataTMax };
     }
 
-    function tradeHistoryDetailYRangeForView(points, candles, viewTMin, viewTMax, floorStrike, chartType) {
+    function tradeHistoryDetailYRangeForView(
+      points,
+      candles,
+      viewTMin,
+      viewTMax,
+      floorStrike,
+      { showLine = true, showCandles = false } = {}
+    ) {
       let vMin = Infinity;
       let vMax = -Infinity;
-      const useCandles = chartType === 'candles';
-      if (!useCandles) {
+      if (showLine) {
         const start = tradeHistoryDetailNearestPointIndex(points, viewTMin);
         const end = tradeHistoryDetailNearestPointIndex(points, viewTMax);
         const from = Math.max(0, Math.min(start, end) - 1);
@@ -3903,7 +4480,8 @@
           if (point.v < vMin) vMin = point.v;
           if (point.v > vMax) vMax = point.v;
         }
-      } else {
+      }
+      if (showCandles) {
         const candleMs = 60 * 1000;
         (candles || []).forEach((candle) => {
           const candleEnd = candle.t + candleMs;
@@ -3958,7 +4536,10 @@
         tMin,
         tMax,
         state.floorStrike,
-        _thTradeDetailChartType
+        {
+          showLine: _thTradeDetailShowLine,
+          showCandles: _thTradeDetailShowCandles,
+        }
       );
       state.vMin = yRange.vMin;
       state.vMax = yRange.vMax;
@@ -3970,16 +4551,22 @@
     }
 
     function tradeHistoryDetailSyncChartTypeIcons() {
-      const candlesIcon = document.getElementById('th-trade-detail-candles-icon');
-      const lineIcon = document.getElementById('th-trade-detail-line-icon');
-      if (!candlesIcon || !lineIcon) return;
-      const isLine = _thTradeDetailChartType === 'line';
-      candlesIcon.style.opacity = isLine ? '0.2' : '1';
-      lineIcon.style.opacity = isLine ? '1' : '0.2';
+      const candlesBtn = document.getElementById('th-trade-detail-candles-btn');
+      const lineBtn = document.getElementById('th-trade-detail-line-btn');
+      if (candlesBtn) candlesBtn.setAttribute('aria-pressed', _thTradeDetailShowCandles.toString());
+      if (lineBtn) lineBtn.setAttribute('aria-pressed', _thTradeDetailShowLine.toString());
     }
 
-    function tradeHistoryDetailToggleChartType() {
-      _thTradeDetailChartType = _thTradeDetailChartType === 'line' ? 'candles' : 'line';
+    function tradeHistoryDetailToggleChartLayer(layer) {
+      if (layer === 'candles') {
+        if (_thTradeDetailShowCandles && !_thTradeDetailShowLine) return;
+        _thTradeDetailShowCandles = !_thTradeDetailShowCandles;
+      } else if (layer === 'line') {
+        if (_thTradeDetailShowLine && !_thTradeDetailShowCandles) return;
+        _thTradeDetailShowLine = !_thTradeDetailShowLine;
+      } else {
+        return;
+      }
       tradeHistoryDetailSyncChartTypeIcons();
       const state = _thTradeDetailChart;
       if (state && Number.isFinite(state.viewTMin) && Number.isFinite(state.viewTMax)) {
@@ -4068,7 +4655,7 @@
           }
           const clamped = Math.min(dataTMax, Math.max(dataTMin, marker.ms));
           const point = points[tradeHistoryDetailNearestPointIndex(points, clamped)];
-          return point ? { up: marker.up, t: point.t, v: point.v } : null;
+          return point ? { up: marker.up, label: marker.label, t: point.t, v: point.v } : null;
         })
         .filter(Boolean);
       return state;
@@ -4169,11 +4756,12 @@
         const up = candle.close >= candle.open;
         const bodyTop = Math.min(yOpen, yClose);
         const bodyHeight = Math.max(1, Math.abs(yClose - yOpen));
+        const color = up ? '#48bb78' : '#e54848';
         ctx.save();
-        ctx.fillStyle = up ? 'rgba(72, 187, 120, 0.7)' : 'rgba(229, 72, 72, 0.7)';
+        ctx.fillStyle = color;
         ctx.fillRect(x - widthPx / 2, bodyTop, widthPx, bodyHeight);
-        // Wick last, at full opacity: the body can never overdraw it.
-        ctx.strokeStyle = up ? '#48bb78' : '#e54848';
+        // Wick last so the body can never overdraw it.
+        ctx.strokeStyle = color;
         ctx.lineWidth = 1;
         ctx.beginPath();
         ctx.moveTo(x, yHigh);
@@ -4231,9 +4819,10 @@
         state.points.length - 1,
         tradeHistoryDetailNearestPointIndex(state.points, tMax) + 1
       );
-      const showCandles = _thTradeDetailChartType === 'candles';
+      const showCandles = _thTradeDetailShowCandles;
+      const showLine = _thTradeDetailShowLine;
       const linePath = new Path2D();
-      if (!showCandles) {
+      if (showLine) {
         for (let i = startIdx; i <= endIdx; i++) {
           const point = state.points[i];
           const x = xFor(point.t);
@@ -4248,17 +4837,19 @@
       ctx.rect(pad.left, pad.top, state.plotWidth, state.plotHeight);
       ctx.clip();
 
+      // Candles under the line when both layers are on.
       if (showCandles) {
         if ((state.candles || []).length) {
           tradeHistoryDrawTradeDetailCandles(ctx, state);
-        } else {
+        } else if (!showLine) {
           ctx.fillStyle = '#94a3b8';
           ctx.font = '12px sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
           ctx.fillText('No Kalshi candlestick data returned.', pad.left + 12, pad.top + 12);
         }
-      } else {
+      }
+      if (showLine) {
         // Glow layers under the crisp line (same effect as the dashboard charts).
         ctx.save();
         ctx.strokeStyle = '#60a5fa';
@@ -4332,8 +4923,31 @@
         arrow.lineTo(x + markerHalfWidth, baseY);
         arrow.closePath();
         ctx.save();
-        ctx.fillStyle = marker.up ? '#48bb78' : '#e54848';
+        const markerColor = marker.up ? '#48bb78' : '#e54848';
+        ctx.fillStyle = markerColor;
         ctx.fill(arrow);
+        if (marker.label) {
+          // Caption rides on the far side of the arrow so it never covers the spot line.
+          ctx.font = '11px sans-serif';
+          const boxWidth = ctx.measureText(marker.label).width + 10;
+          const boxHeight = 16;
+          const boxX = Math.min(
+            Math.max(x - boxWidth / 2, pad.left + 2),
+            pad.left + state.plotWidth - boxWidth - 2
+          );
+          const boxY = marker.up ? baseY + markerGap : baseY - markerGap - boxHeight;
+          ctx.fillStyle = 'rgba(17, 25, 35, 0.94)';
+          ctx.strokeStyle = markerColor;
+          ctx.lineWidth = 1;
+          ctx.beginPath();
+          ctx.rect(boxX, boxY, boxWidth, boxHeight);
+          ctx.fill();
+          ctx.stroke();
+          ctx.fillStyle = markerColor;
+          ctx.textAlign = 'center';
+          ctx.textBaseline = 'middle';
+          ctx.fillText(marker.label, boxX + boxWidth / 2, boxY + boxHeight / 2);
+        }
         ctx.restore();
       });
       ctx.restore();
@@ -4389,9 +5003,21 @@
       tradeHistoryUpdateTradeDetailChartTitle();
     }
 
+    function tradeHistoryDetailIsPaperTrade(trade) {
+      const paperTrade = trade && trade.paper_trade;
+      return (
+        paperTrade === true
+        || paperTrade === 1
+        || paperTrade === 'true'
+        || paperTrade === '1'
+        || paperTrade === 'True'
+      );
+    }
+
     function tradeHistoryRenderTradeDetail(payload) {
       const trade = payload.trade || {};
       const kalshi = payload.kalshi || {};
+      const isPaper = tradeHistoryDetailIsPaperTrade(trade);
       const titleParts = [`Trade ${tradeHistoryDetailDisplayValue(trade.id)}`];
       const monitorId = tradeHistoryDetailMonitorId(trade.monitor);
       if (monitorId) titleParts.push(`Monitor ${monitorId}`);
@@ -4399,8 +5025,29 @@
       if (strategy) titleParts.push(strategy);
       const expirationLabel = tradeHistoryDetailExpirationLabel(trade, kalshi.market);
       if (expirationLabel) titleParts.push(expirationLabel);
-      document.getElementById('th-trade-detail-title').textContent = titleParts.join(' - ');
+      const titleEl = document.getElementById('th-trade-detail-title');
+      if (titleEl) {
+        titleEl.replaceChildren();
+        titleEl.append(document.createTextNode(titleParts.join(' - ')));
+        if (isPaper) {
+          const paperTag = document.createElement('span');
+          paperTag.className = 'th-trade-detail-title-paper';
+          paperTag.textContent = ' - PAPER';
+          titleEl.appendChild(paperTag);
+        }
+      }
       tradeHistoryDetailSetSummary(trade);
+      tradeHistoryDetailSetFieldsExpanded(false);
+      tradeHistoryDetailSetRecordTab('fills');
+      const fillsSection = document.getElementById('th-trade-detail-fills-section');
+      if (fillsSection) fillsSection.hidden = isPaper;
+      if (isPaper) {
+        tradeHistoryDetailSetFills([]);
+        tradeHistoryDetailSetOrders([]);
+      } else {
+        tradeHistoryDetailSetFills(payload.fills);
+        tradeHistoryDetailSetOrders(payload.orders);
+      }
       tradeHistoryDetailSetFields('th-trade-detail-trade-grid', [
         ['Status', trade.status],
         ['Date', trade.date],
@@ -4414,6 +5061,13 @@
         ['Symbol close', trade.symbol_close],
         ['Symbol expiration', trade.symbol_expiration],
         ['Close method', trade.close_method],
+        ['Initial count', trade.initial_count],
+        ['Initial price', trade.initial_price],
+        ['Initial projected price', trade.initial_proj_price],
+        ['Slippage', trade.slippage],
+        ['Order type', trade.order_type],
+        ['Loss prevention state', trade.loss_prevention_state],
+        ['Subaccount', trade.subaccount],
       ]);
       const floorValue = document.getElementById('th-trade-detail-floor-value');
       if (floorValue) {
@@ -4521,17 +5175,48 @@
         if (event.target.closest && event.target.closest('[data-th-trade-detail-close]')) {
           tradeHistoryCloseTradeDetail();
         }
-        if (event.target.closest && event.target.closest('#th-trade-detail-chart-type-toggle')) {
-          tradeHistoryDetailToggleChartType();
+        if (event.target.closest && event.target.closest('#th-trade-detail-fields-toggle')) {
+          tradeHistoryDetailToggleFieldsPanel();
+        }
+        const recordTab = event.target.closest
+          && event.target.closest('[data-th-record-tab]');
+        if (recordTab) {
+          tradeHistoryDetailSetRecordTab(recordTab.getAttribute('data-th-record-tab'));
+        }
+        const fillGroupToggle = event.target.closest && (
+          event.target.closest('[data-fill-group-toggle]')
+          || event.target.closest('tr.th-trade-detail-fill-group-summary')
+        );
+        if (fillGroupToggle) {
+          const groupId = fillGroupToggle.getAttribute('data-fill-group-toggle')
+            || fillGroupToggle.getAttribute('data-fill-group');
+          if (groupId != null) tradeHistoryDetailToggleFillGroup(groupId);
+        }
+        const chartLayerBtn = event.target.closest
+          && event.target.closest('[data-th-chart-layer]');
+        if (chartLayerBtn) {
+          tradeHistoryDetailToggleChartLayer(chartLayerBtn.getAttribute('data-th-chart-layer'));
         }
       });
       modal.addEventListener('keydown', (event) => {
         if (event.key !== 'Enter' && event.key !== ' ') return;
-        if (!(event.target.closest && event.target.closest('#th-trade-detail-chart-type-toggle'))) {
+        if (event.target.closest && event.target.closest('#th-trade-detail-fields-toggle')) {
+          event.preventDefault();
+          tradeHistoryDetailToggleFieldsPanel();
           return;
         }
+        const fillGroupRow = event.target.closest
+          && event.target.closest('tr.th-trade-detail-fill-group-summary');
+        if (fillGroupRow) {
+          event.preventDefault();
+          tradeHistoryDetailToggleFillGroup(fillGroupRow.getAttribute('data-fill-group'));
+          return;
+        }
+        const chartLayerBtn = event.target.closest
+          && event.target.closest('[data-th-chart-layer]');
+        if (!chartLayerBtn) return;
         event.preventDefault();
-        tradeHistoryDetailToggleChartType();
+        tradeHistoryDetailToggleChartLayer(chartLayerBtn.getAttribute('data-th-chart-layer'));
       });
       document.addEventListener('keydown', (event) => {
         if (event.key === 'Escape' && !modal.hidden) tradeHistoryCloseTradeDetail();

@@ -68,6 +68,8 @@ from backend.core.strike_pipeline_health import (
 from backend.core.trades_list_query import TRADES_PAGE_SIZE_MAX, execute_trades_list_query
 from backend.core.trade_history_detail import (
     fetch_kalshi_trade_context,
+    load_trade_detail_fills,
+    load_trade_detail_orders,
     load_trade_detail_record,
 )
 from backend.core.tenant_strategy_list import load_strategy_picker_for_slot
@@ -287,6 +289,27 @@ async def get_trade_history_detail(
     try:
         with conn.cursor() as cursor:
             trade = load_trade_detail_record(cursor, slot=slot, trade_id=trade_id)
+            is_paper = bool(trade and trade.get("paper_trade"))
+            fills = (
+                load_trade_detail_fills(
+                    cursor,
+                    slot=slot,
+                    order_id_open=trade.get("order_id_open"),
+                    order_id_close=trade.get("order_id_close"),
+                )
+                if trade is not None and not is_paper
+                else []
+            )
+            orders = (
+                load_trade_detail_orders(
+                    cursor,
+                    slot=slot,
+                    order_id_open=trade.get("order_id_open"),
+                    order_id_close=trade.get("order_id_close"),
+                )
+                if trade is not None and not is_paper
+                else []
+            )
     finally:
         conn.close()
     if trade is None:
@@ -301,6 +324,8 @@ async def get_trade_history_detail(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return {
         "trade": trade,
+        "fills": fills,
+        "orders": orders,
         "kalshi": kalshi,
         "artifacts_persisted": False,
     }

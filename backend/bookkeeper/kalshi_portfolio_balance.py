@@ -255,3 +255,33 @@ def fetch_subaccount_balances_cents_map(user_no: str) -> dict[int, int] | None:
         except (TypeError, ValueError):
             continue
     return out if out else None
+
+
+def fetch_subaccount_transferable_cents(user_no: str, subaccount_number: int) -> int | None:
+    """
+    Largest whole-cent amount Kalshi will move out of ``subaccount_number``.
+
+    Kalshi reports balances with sub-cent precision (``"3487.4972"``). Rounding that to
+    348750c and transferring it is rejected with ``insufficient_balance``, so truncate:
+    348749c is the real maximum. ``None`` if credentials/API fail or the subaccount is
+    absent — callers must fail rather than guess.
+    """
+    from decimal import Decimal, InvalidOperation
+
+    try:
+        resp = kalshi_prod_request(user_no, "GET", "/portfolio/subaccounts/balances")
+        resp.raise_for_status()
+        raw = resp.json()
+    except Exception:
+        return None
+
+    for row in (raw or {}).get("subaccount_balances") or []:
+        if not isinstance(row, dict):
+            continue
+        try:
+            if int(row.get("subaccount_number")) != int(subaccount_number):
+                continue
+            return int(Decimal(str(row.get("balance")).strip()) * 100)
+        except (TypeError, ValueError, InvalidOperation):
+            return None
+    return None

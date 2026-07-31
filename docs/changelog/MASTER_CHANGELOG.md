@@ -6,6 +6,34 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-30 — Release v3.9.3: Trade detail fills/orders + archive column parity
+
+**Summary**
+- **Release: v3.9.3**
+- **Trade history detail:** Desktop modal adds fills (grouped by identical timestamps) and an Orders tab (same Bankroll/Portfolio/PNL tab style), paper-trade title badge with no fills/orders panel, independent candles+line chart layers, and more expanded detail fields (`initial_*`, slippage, order type, LP state, subaccount).
+- **API:** `GET /api/trades/{id}/detail` returns `fills` and `orders` from tenant `fills_*` / `orders_*` via `order_id_open` / `order_id_close` (skipped for paper).
+- **DB (additive only):** Migration `20260730_1415_archive_trades_union_parity_subaccount_min_gates` adds nullable `subaccount`, `min_fill_price`, `min_slippage` to every `archive.trades_archive_{live|paper}_NNNN` table. **No UPDATE/DELETE/TRUNCATE and no rewriting of existing row values** — only `ADD COLUMN IF NOT EXISTS`.
+- **Transfers:** Live subaccount transfers use Kalshi’s truncating transferable-balance read so sub-cent balances are not over-requested.
+- Plans: ad-hoc trade-history detail work (no dedicated plan file); schema ref note updated for archive parity.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260730_1415_archive_trades_union_parity_subaccount_min_gates.up.sql`,  
+  `scripts/migrations/20260730_1415_archive_trades_union_parity_subaccount_min_gates.down.sql`
+- [ ] Apply migration (**schema-only ADD COLUMN; must not modify or delete existing row data**):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260730_1415_archive_trades_union_parity_subaccount_min_gates`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services that load the new code:  
+  `supervisorctl restart read_api main_app`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; `supervisorctl status read_api main_app` RUNNING; spot-check trade history detail fills/orders tabs on a live trade.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.3`
+
+---
+
 ## 2026-07-29 — Release v3.9.2: CFB tick-buffer windowed scans (stop creeping lag)
 
 **Summary**

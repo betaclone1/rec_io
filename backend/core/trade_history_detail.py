@@ -34,6 +34,15 @@ _TICKER_COLUMNS = tuple(
             *TRADES_LIST_HTTP_COLUMNS,
             "market_result",
             "symbol_expiration",
+            "order_id_open",
+            "order_id_close",
+            "initial_count",
+            "initial_price",
+            "initial_proj_price",
+            "slippage",
+            "order_type",
+            "loss_prevention_state",
+            "subaccount",
         )
     )
 )
@@ -79,6 +88,135 @@ def load_trade_detail_record(cursor: Any, *, slot: str, trade_id: int) -> Option
         return None
     columns = [desc[0] for desc in cursor.description]
     return trades_dicts_from_rows([row], columns)[0]
+
+
+def load_trade_detail_fills(
+    cursor: Any,
+    *,
+    slot: str,
+    order_id_open: Any,
+    order_id_close: Any,
+) -> list[Dict[str, Any]]:
+    """Return exact fill rows for a trade's opening and closing Kalshi orders."""
+    if not re.fullmatch(r"\d{4}", str(slot or "")):
+        raise ValueError(f"Invalid tenant slot: {slot}")
+
+    open_id = str(order_id_open or "").strip()
+    close_id = str(order_id_close or "").strip()
+    order_ids = list(dict.fromkeys(value for value in (open_id, close_id) if value))
+    if not order_ids:
+        return []
+
+    cursor.execute(
+        f"""
+        SELECT
+            trade_id,
+            order_id,
+            created_time,
+            count_fp,
+            action,
+            outcome_side,
+            yes_price_dollars,
+            no_price_dollars,
+            orderbook_side
+        FROM users.fills_{slot}
+        WHERE order_id = ANY(%s)
+        ORDER BY created_time ASC, id ASC
+        """,
+        (order_ids,),
+    )
+
+    fills: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        outcome_side = str(row[5] or "").strip().lower()
+        price = row[6] if outcome_side == "yes" else row[7] if outcome_side == "no" else None
+        fills.append(
+            {
+                "fill_id": row[0],
+                "order_id": row[1],
+                "phase": "open" if row[1] == open_id else "close",
+                "created_time": row[2],
+                "count": str(row[3]) if row[3] is not None else None,
+                "action": row[4],
+                "outcome_side": outcome_side or None,
+                "price": str(price) if price is not None else None,
+                "orderbook_side": row[8],
+            }
+        )
+    return fills
+
+
+def load_trade_detail_orders(
+    cursor: Any,
+    *,
+    slot: str,
+    order_id_open: Any,
+    order_id_close: Any,
+) -> list[Dict[str, Any]]:
+    """Return the opening and closing orders associated with one tenant trade."""
+    if not re.fullmatch(r"\d{4}", str(slot or "")):
+        raise ValueError(f"Invalid tenant slot: {slot}")
+
+    open_id = str(order_id_open or "").strip()
+    close_id = str(order_id_close or "").strip()
+    order_ids = list(dict.fromkeys(value for value in (open_id, close_id) if value))
+    if not order_ids:
+        return []
+
+    cursor.execute(
+        f"""
+        SELECT
+            order_id,
+            created_time,
+            status,
+            outcome_side,
+            orderbook_side,
+            CASE
+                WHEN LOWER(TRIM(outcome_side)) = 'yes'
+                    THEN NULLIF(TRIM(yes_price_dollars), '')::numeric
+                WHEN LOWER(TRIM(outcome_side)) = 'no'
+                     AND NULLIF(TRIM(no_price_dollars), '') IS NOT NULL
+                    THEN NULLIF(TRIM(no_price_dollars), '')::numeric
+                WHEN LOWER(TRIM(outcome_side)) = 'no'
+                     AND NULLIF(TRIM(yes_price_dollars), '') IS NOT NULL
+                    THEN 1 - NULLIF(TRIM(yes_price_dollars), '')::numeric
+                ELSE NULL
+            END AS price,
+            initial_count_fp,
+            fill_count_fp,
+            CASE
+                WHEN NULLIF(TRIM(taker_fees_dollars), '') IS NOT NULL
+                     AND NULLIF(TRIM(maker_fees_dollars), '') IS NOT NULL
+                    THEN NULLIF(TRIM(taker_fees_dollars), '')::numeric
+                       + NULLIF(TRIM(maker_fees_dollars), '')::numeric
+                ELSE NULL
+            END AS total_fees,
+            subaccount
+        FROM users.orders_{slot}
+        WHERE order_id = ANY(%s)
+        ORDER BY created_time ASC, id ASC
+        """,
+        (order_ids,),
+    )
+
+    orders: list[Dict[str, Any]] = []
+    for row in cursor.fetchall():
+        orders.append(
+            {
+                "order_id": row[0],
+                "phase": "open" if row[0] == open_id else "close",
+                "created_time": row[1],
+                "status": row[2],
+                "outcome_side": row[3],
+                "orderbook_side": row[4],
+                "price": str(row[5]) if row[5] is not None else None,
+                "initial_count": str(row[6]) if row[6] is not None else None,
+                "fill_count": str(row[7]) if row[7] is not None else None,
+                "total_fees": str(row[8]) if row[8] is not None else None,
+                "subaccount": row[9],
+            }
+        )
+    return orders
 
 
 def _request_json(

@@ -37,40 +37,18 @@ def _latest_account_cash_cents(cursor, account_balance_table: str) -> int | None
     return int(row[0])
 
 
-def _cash_balance_cents_live(user_no: str) -> int | None:
-    """Kalshi subaccount #0 (CASH wallet cash), not total portfolio."""
-    from backend.bookkeeper.kalshi_portfolio_balance import (
-        fetch_portfolio_balance_detail,
-        fetch_subaccount_balances_cents_map,
-    )
-
-    balances = fetch_subaccount_balances_cents_map(user_no)
-    if balances is not None and 0 in balances:
-        return int(balances[0])
-    detail = fetch_portfolio_balance_detail(user_no)
-    if detail is not None:
-        return int(detail["balance_cents"])
-    return None
-
-
-def _from_transfer_balance_cents(
+def _paper_transfer_balance_cents(
     cursor,
     *,
-    user_no: str,
     from_name: str,
-    paper: bool,
     subaccounts_ident,
     account_balance_table: str,
 ) -> tuple[int | None, str | None]:
+    """Paper-mode source balance. Live mode reads Kalshi instead."""
     if from_name in _CASH_NAMES:
-        if paper:
-            cash = _latest_account_cash_cents(cursor, account_balance_table)
-            if cash is None:
-                return None, "Unable to read CASH balance"
-            return cash, None
-        cash = _cash_balance_cents_live(user_no)
+        cash = _latest_account_cash_cents(cursor, account_balance_table)
         if cash is None:
-            return None, "Unable to read CASH (Kalshi #0) balance"
+            return None, "Unable to read CASH balance"
         return cash, None
     cursor.execute(
         sql.SQL("SELECT balance FROM {} WHERE subaccount = %s").format(subaccounts_ident),
@@ -346,20 +324,18 @@ async def initiate_transfer(request: Request):
 
         conn = get_postgresql_connection()
         from_num = to_num = None
+        from_balance = None
         try:
             with conn.cursor() as cursor:
-                from_balance, bal_err = _from_transfer_balance_cents(
-                    cursor,
-                    user_no=slot,
-                    from_name=from_name,
-                    paper=paper,
-                    subaccounts_ident=sa_ident,
-                    account_balance_table=ab_fqn,
-                )
-                if bal_err:
-                    return {"ok": False, "error": bal_err}
-                if from_balance < amount_cents:
-                    return {"ok": False, "error": f"insufficient balance in {from_name}"}
+                if paper:
+                    from_balance, bal_err = _paper_transfer_balance_cents(
+                        cursor,
+                        from_name=from_name,
+                        subaccounts_ident=sa_ident,
+                        account_balance_table=ab_fqn,
+                    )
+                    if bal_err:
+                        return {"ok": False, "error": bal_err}
                 if not _subaccount_row_exists(cursor, sa_ident, to_name):
                     return {"ok": False, "error": f"subaccount not found: {to_name}"}
                 if not paper:
@@ -371,6 +347,31 @@ async def initiate_transfer(request: Request):
                         return {"ok": False, "error": f"subaccount not found: {to_name}"}
         finally:
             conn.close()
+
+        if not paper:
+            # Kalshi is the only authority on what is transferable right now, and it
+            # holds sub-cent amounts the polled copy cannot represent.
+            from backend.bookkeeper.kalshi_portfolio_balance import (
+                fetch_subaccount_transferable_cents,
+            )
+
+            from_balance = fetch_subaccount_transferable_cents(slot, from_num)
+            if from_balance is None:
+                return {
+                    "ok": False,
+                    "error": f"Unable to read Kalshi balance for {from_name} (#{from_num})",
+                }
+        if from_balance <= 0:
+            return {"ok": False, "error": f"no balance available in {from_name}"}
+        if amount_cents > from_balance:
+            _log.info(
+                "initiate-transfer %s → %s: requested %sc exceeds available %sc; sending full balance",
+                from_name,
+                to_name,
+                amount_cents,
+                from_balance,
+            )
+            amount_cents = int(from_balance)
 
         if not paper:
             from backend.bookkeeper.kalshi_subaccount_transfer import (
