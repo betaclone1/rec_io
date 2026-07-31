@@ -195,6 +195,9 @@ def normalize_type_for_compare(t):
         return 'STRING'
     if t == 'DATE':
         return 'STRING'
+    # Array types: doc often uses ARRAY; database.py uses TEXT[] / INTEGER[] etc.
+    if t == 'ARRAY' or t.endswith('[]'):
+        return 'ARRAY'
     # Reference doc often uses TEXT for temporal columns; treat as compatible with DATE/TIME/TIMESTAMP
     # String-like: TEXT and VARCHAR(n) are compatible
     if t == 'TEXT' or t.startswith('VARCHAR') or t.startswith('CHARACTER VARYING') or t.startswith('CHAR('):

@@ -13,6 +13,7 @@ from backend.core.kalshi_event_market_fetch import (
     event_ticker_from_market_ticker,
     kalshi_trade_api_base,
 )
+from backend.core.trade_order_ids import trade_associated_order_ids
 from backend.core.trades_list_query import (
     TRADES_LIST_HTTP_COLUMNS,
     trades_dicts_from_rows,
@@ -36,6 +37,8 @@ _TICKER_COLUMNS = tuple(
             "symbol_expiration",
             "order_id_open",
             "order_id_close",
+            "order_ids_open",
+            "order_ids_close",
             "initial_count",
             "initial_price",
             "initial_proj_price",
@@ -90,20 +93,40 @@ def load_trade_detail_record(cursor: Any, *, slot: str, trade_id: int) -> Option
     return trades_dicts_from_rows([row], columns)[0]
 
 
+def _phase_for_order_id(
+    order_id: Any,
+    *,
+    open_ids: list[str],
+    close_ids: list[str],
+) -> Optional[str]:
+    oid = str(order_id or "").strip()
+    if oid and oid in open_ids:
+        return "open"
+    if oid and oid in close_ids:
+        return "close"
+    return None
+
+
 def load_trade_detail_fills(
     cursor: Any,
     *,
     slot: str,
-    order_id_open: Any,
-    order_id_close: Any,
+    trade: Optional[Dict[str, Any]] = None,
+    order_id_open: Any = None,
+    order_id_close: Any = None,
 ) -> list[Dict[str, Any]]:
-    """Return exact fill rows for a trade's opening and closing Kalshi orders."""
+    """Return exact fill rows for every Kalshi order id associated with a trade."""
     if not re.fullmatch(r"\d{4}", str(slot or "")):
         raise ValueError(f"Invalid tenant slot: {slot}")
 
-    open_id = str(order_id_open or "").strip()
-    close_id = str(order_id_close or "").strip()
-    order_ids = list(dict.fromkeys(value for value in (open_id, close_id) if value))
+    source = trade if trade is not None else {
+        "order_id_open": order_id_open,
+        "order_id_close": order_id_close,
+    }
+    resolved = trade_associated_order_ids(source)
+    open_ids = resolved["open"]
+    close_ids = resolved["close"]
+    order_ids = resolved["all"]
     if not order_ids:
         return []
 
@@ -134,7 +157,7 @@ def load_trade_detail_fills(
             {
                 "fill_id": row[0],
                 "order_id": row[1],
-                "phase": "open" if row[1] == open_id else "close",
+                "phase": _phase_for_order_id(row[1], open_ids=open_ids, close_ids=close_ids),
                 "created_time": row[2],
                 "count": str(row[3]) if row[3] is not None else None,
                 "action": row[4],
@@ -150,16 +173,22 @@ def load_trade_detail_orders(
     cursor: Any,
     *,
     slot: str,
-    order_id_open: Any,
-    order_id_close: Any,
+    trade: Optional[Dict[str, Any]] = None,
+    order_id_open: Any = None,
+    order_id_close: Any = None,
 ) -> list[Dict[str, Any]]:
-    """Return the opening and closing orders associated with one tenant trade."""
+    """Return every opening/closing order associated with one tenant trade."""
     if not re.fullmatch(r"\d{4}", str(slot or "")):
         raise ValueError(f"Invalid tenant slot: {slot}")
 
-    open_id = str(order_id_open or "").strip()
-    close_id = str(order_id_close or "").strip()
-    order_ids = list(dict.fromkeys(value for value in (open_id, close_id) if value))
+    source = trade if trade is not None else {
+        "order_id_open": order_id_open,
+        "order_id_close": order_id_close,
+    }
+    resolved = trade_associated_order_ids(source)
+    open_ids = resolved["open"]
+    close_ids = resolved["close"]
+    order_ids = resolved["all"]
     if not order_ids:
         return []
 
@@ -204,7 +233,7 @@ def load_trade_detail_orders(
         orders.append(
             {
                 "order_id": row[0],
-                "phase": "open" if row[0] == open_id else "close",
+                "phase": _phase_for_order_id(row[0], open_ids=open_ids, close_ids=close_ids),
                 "created_time": row[1],
                 "status": row[2],
                 "outcome_side": row[3],

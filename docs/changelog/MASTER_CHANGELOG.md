@@ -6,6 +6,37 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-30 — Release v3.9.4: Multi-leg order IDs on trades (zero-fill no wipe)
+
+**Summary**
+- **Release: v3.9.4**
+- **Order-id durability:** Keep scalar `order_id_open` / `order_id_close` as the active confirm wake pointer. Add append-only `order_ids_open` / `order_ids_close` (`TEXT[]`) for filled legs only. Failed IOC top-ups no longer set `order_id_open` to NULL or leave the zero-fill attempt as the durable pointer — scalar reverts to the last filled id; zero-fill ids are never appended.
+- **Trade detail:** Fills/Orders loaders resolve all associated order ids via shared `trade_associated_order_ids` (arrays with scalar fallback).
+- **DB:** Migration `20260731_0025_trades_order_ids_open_close_arrays` adds the two arrays on tenant `trades_*` / `trades_simulated_*` and matching `archive.trades_archive_{live|paper}_*` tables; backfills from scalars when present. **Must apply before restarting `trade_manager`** so confirm UPDATEs that write the new columns cannot hit `UndefinedColumn`.
+- Plans: `.cursor/plans/multi_order_id_storage_2dbc04bd.plan.md`
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260731_0025_trades_order_ids_open_close_arrays.up.sql`,  
+  `scripts/migrations/20260731_0025_trades_order_ids_open_close_arrays.down.sql`
+- [ ] Apply migration **before any service restart** (additive columns + scalar backfill only):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260731_0025_trades_order_ids_open_close_arrays`
+- [ ] Confirm migration applied on prod:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list | grep 20260731_0025_trades_order_ids_open_close_arrays`  
+  and columns exist:  
+  `psql "$DATABASE_URL" -c "SELECT column_name FROM information_schema.columns WHERE table_schema = 'users_0001' AND table_name = 'trades_0001' AND column_name IN ('order_ids_open','order_ids_close') ORDER BY 1;"`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services that load the new code (**only after migration confirmed**):  
+  `supervisorctl restart trade_manager read_api`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; `supervisorctl status trade_manager read_api` RUNNING; no `UndefinedColumn` / `order_ids_open` errors in trade_manager logs after restart.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.4`
+
+---
+
 ## 2026-07-30 — Release v3.9.3: Trade detail fills/orders + archive column parity
 
 **Summary**

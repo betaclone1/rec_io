@@ -35,6 +35,7 @@ from backend.util.paths import get_project_root, get_trade_history_dir, get_logs
 from backend.util.trade_log_archivist import union_trades_with_archives_select
 from backend.util.paths import get_accounts_data_dir
 from backend.core.config.database import get_postgresql_connection
+from backend.core.trade_order_ids import sql_append_order_id_if_absent
 from backend.core.tenant_context import effective_tenant_context_for_sql_rewrite
 from backend.core.tenant_legacy_sql import (
     legacy_users_monitor_list,
@@ -928,7 +929,6 @@ def _apply_paper_ioc_partial_topup(
                         buy_price = %s,
                         fees = %s,
                         diff = %s,
-                        order_id_open = NULL,
                         {_sql_slippage_from_buy_price_params()}
                     WHERE id = %s
                     """,
@@ -3657,6 +3657,8 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             tr_ic_chk > 0 and tr_pos_f_pending + 1e-9 < float(tr_ic_chk)
                         )
                         if prior_leg_filled_some:
+                            # Failed top-up: revert scalar to last filled open id. Never NULL
+                            # scalars/arrays and never append the zero-fill attempt id.
                             try:
                                 pg_conn_rev = get_postgresql_connection()
                                 if pg_conn_rev:
@@ -3664,7 +3666,11 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                         cur_rev.execute(
                                             f"""
                                             UPDATE {_tm_trades_table()}
-                                            SET order_id_open = NULL
+                                            SET order_id_open = CASE
+                                                WHEN cardinality(COALESCE(order_ids_open, '{{}}'::text[])) > 0
+                                                THEN order_ids_open[cardinality(order_ids_open)]
+                                                ELSE order_id_open
+                                            END
                                             WHERE id = %s
                                             """,
                                             (id,),
@@ -3674,13 +3680,13 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             except Exception as e_rev:
                                 log_event(
                                     ticket_id,
-                                    f"MANAGER: IOC top-up zero-fill clear order_id_open failed: {e_rev}",
+                                    f"MANAGER: IOC top-up zero-fill revert order_id_open failed: {e_rev}",
                                 )
                             update_trade_status(id, "partial")
                             log_event(
                                 ticket_id,
                                 f"MANAGER: IOC top-up leg zero fill — keeping trade partial "
-                                f"(pos={tr_pos_f_pending}); prior leg already on exchange",
+                                f"(pos={tr_pos_f_pending}); prior filled order_id_open restored",
                             )
                             notify_strike_table_trade_change(id, "partial")
                             break
@@ -3800,6 +3806,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             pg_conn_update = get_postgresql_connection()
                             if pg_conn_update:
                                 with pg_conn_update.cursor() as cursor:
+                                    append_sql = sql_append_order_id_if_absent("order_ids_open")
                                     cursor.execute(
                                         f"""
                                         UPDATE {_tm_trades_table()}
@@ -3808,7 +3815,9 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                             {_sql_slippage_from_buy_price_params()},
                                             fees = %s,
                                             diff = %s,
-                                            symbol_open = COALESCE(%s, symbol_open)
+                                            symbol_open = COALESCE(%s, symbol_open),
+                                            {append_sql},
+                                            order_id_open = %s
                                         WHERE id = %s
                                         """,
                                         (
@@ -3819,6 +3828,9 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                             total_fees_dollars,
                                             diff_formatted,
                                             symbol_open,
+                                            stored_order_id_open,
+                                            stored_order_id_open,
+                                            stored_order_id_open,
                                             id,
                                         ),
                                     )
@@ -3979,16 +3991,34 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                                 pg_conn_update = get_postgresql_connection()
                                 if pg_conn_update:
                                     with pg_conn_update.cursor() as cursor:
-                                        cursor.execute(f"""
+                                        append_sql = sql_append_order_id_if_absent("order_ids_open")
+                                        cursor.execute(
+                                            f"""
                                             UPDATE {_tm_trades_table()}
                                             SET position = %s,
                                                 buy_price = %s,
                                                 {_sql_slippage_from_buy_price_params()},
                                                 fees = %s,
                                                 diff = %s,
-                                                symbol_open = %s
+                                                symbol_open = %s,
+                                                {append_sql},
+                                                order_id_open = %s
                                             WHERE id = %s
-                                        """, (position_for_db, buy_price, buy_price, buy_price, total_fees_dollars, diff_formatted, symbol_open, id))
+                                            """,
+                                            (
+                                                position_for_db,
+                                                buy_price,
+                                                buy_price,
+                                                buy_price,
+                                                total_fees_dollars,
+                                                diff_formatted,
+                                                symbol_open,
+                                                stored_order_id_open,
+                                                stored_order_id_open,
+                                                stored_order_id_open,
+                                                id,
+                                            ),
+                                        )
                                     
                                         if cursor.rowcount > 0:
                                             log_debug(f"💾 Trade additional fields updated in PostgreSQL tenant trades from ORDERS data")
@@ -4228,6 +4258,32 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                     log(f"⚠️ FAILSAFE: Triggered ATS restart for monitor {monitor_identifier}")
                         
                             # Update trade status to closed with all calculated values including ret_pct, ret_pct_base, roi_pct, and high/low prices
+                            try:
+                                pg_conn_oids = get_postgresql_connection()
+                                if pg_conn_oids and stored_order_id_close:
+                                    with pg_conn_oids.cursor() as cur_oids:
+                                        append_sql = sql_append_order_id_if_absent("order_ids_close")
+                                        cur_oids.execute(
+                                            f"""
+                                            UPDATE {_tm_trades_table()}
+                                            SET {append_sql},
+                                                order_id_close = %s
+                                            WHERE id = %s
+                                            """,
+                                            (
+                                                stored_order_id_close,
+                                                stored_order_id_close,
+                                                stored_order_id_close,
+                                                id,
+                                            ),
+                                        )
+                                    pg_conn_oids.commit()
+                                    pg_conn_oids.close()
+                            except Exception as e_oids:
+                                log_event(
+                                    ticket_id,
+                                    f"MANAGER: close order_ids_close append failed: {e_oids}",
+                                )
                             update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
                         
                             log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
@@ -5036,6 +5092,8 @@ def init_trades_db():
                     close_method TEXT,
                     order_id_open TEXT,
                     order_id_close TEXT,
+                    order_ids_open TEXT[] NOT NULL DEFAULT '{}',
+                    order_ids_close TEXT[] NOT NULL DEFAULT '{}',
                     high_price DECIMAL(10,4),
                     low_price DECIMAL(10,4),
                     loss_prevention BOOLEAN DEFAULT FALSE,

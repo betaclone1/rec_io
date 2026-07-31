@@ -294,8 +294,7 @@ async def get_trade_history_detail(
                 load_trade_detail_fills(
                     cursor,
                     slot=slot,
-                    order_id_open=trade.get("order_id_open"),
-                    order_id_close=trade.get("order_id_close"),
+                    trade=trade,
                 )
                 if trade is not None and not is_paper
                 else []
@@ -304,8 +303,7 @@ async def get_trade_history_detail(
                 load_trade_detail_orders(
                     cursor,
                     slot=slot,
-                    order_id_open=trade.get("order_id_open"),
-                    order_id_close=trade.get("order_id_close"),
+                    trade=trade,
                 )
                 if trade is not None and not is_paper
                 else []

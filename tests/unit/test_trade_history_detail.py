@@ -124,6 +124,50 @@ def test_trade_detail_fills_skip_query_without_order_ids() -> None:
     assert cursor.executed == []
 
 
+def test_trade_detail_fills_use_order_ids_open_array() -> None:
+    cursor = FakeFillsCursor(
+        [
+            (
+                "fill-a",
+                "open-a",
+                "2026-07-30T17:20:56.401533Z",
+                1,
+                "buy",
+                "yes",
+                "0.5000",
+                "0.5000",
+                "bid",
+            ),
+            (
+                "fill-b",
+                "open-b",
+                "2026-07-30T17:21:10.000000Z",
+                2,
+                "buy",
+                "yes",
+                "0.5100",
+                "0.4900",
+                "bid",
+            ),
+        ]
+    )
+
+    fills = load_trade_detail_fills(
+        cursor,
+        slot="0001",
+        trade={
+            "order_id_open": "open-b",
+            "order_id_close": None,
+            "order_ids_open": ["open-a", "open-b"],
+            "order_ids_close": [],
+        },
+    )
+
+    assert cursor.executed[0][1] == (["open-a", "open-b"],)
+    assert [row["order_id"] for row in fills] == ["open-a", "open-b"]
+    assert all(row["phase"] == "open" for row in fills)
+
+
 def test_trade_detail_orders_match_open_and_close_orders() -> None:
     cursor = FakeFillsCursor(
         [
