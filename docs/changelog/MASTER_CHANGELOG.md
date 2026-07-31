@@ -17,19 +17,19 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Plans: ad-hoc trade-history detail work (no dedicated plan file); schema ref note updated for archive parity.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260730_1415_archive_trades_union_parity_subaccount_min_gates.up.sql`,  
   `scripts/migrations/20260730_1415_archive_trades_union_parity_subaccount_min_gates.down.sql`
-- [ ] Apply migration (**schema-only ADD COLUMN; must not modify or delete existing row data**):  
+- [x] Apply migration (**schema-only ADD COLUMN; must not modify or delete existing row data**):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260730_1415_archive_trades_union_parity_subaccount_min_gates`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services that load the new code:  
+- [x] Restart services that load the new code:  
   `supervisorctl restart read_api main_app`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; `supervisorctl status read_api main_app` RUNNING; spot-check trade history detail fills/orders tabs on a live trade.
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; `supervisorctl status read_api main_app` RUNNING; spot-check trade history detail fills/orders tabs on a live trade.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.3`
 
 ---
