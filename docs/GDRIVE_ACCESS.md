@@ -22,7 +22,7 @@
 
 Credentials and auth: same as in `.cursor/archive/pm/GOOGLE_DRIVE_MCP_SETUP.md`. Write operations (create Doc, delete, create spreadsheet): `scripts/gdrive/create-doc.js`, `create-account-history-sheet.js`, auth via `create-doc.js auth`.
 
-**Production:** Use **`eric@rec-io.com`** OAuth JSON under `backend/data/secrets/` (`gdrive_oauth_client.json`, `gdrive_oauth_token.json`), not laptop `.cursor/` paths. See `backend/data/secrets/README.md`. Cycle upload target folder ID: `GDRIVE_BACKTESTING_DATA_FOLDER_ID` (default `DATA/HISTORICAL_DATA/BACKTESTING_DATA`).
+**Production:** Use **`eric@rec-io.com`** OAuth JSON under `backend/data/secrets/` (`gdrive_oauth_client.json`, `gdrive_oauth_token.json`), not laptop `.cursor/` paths. See `backend/data/secrets/README.md`. Cycle upload target folder ID: `GDRIVE_BACKTESTING_DATA_FOLDER_ID` (default `DATA/HISTORICAL_DATA/BACKTESTING_DATA`). Nightly DB dumps go to `DATA/DB_BACKUPS` via `scripts/gdrive/upload-db-backup.js` (`GDRIVE_DB_BACKUPS_FOLDER_ID`, default `1yvZm4itVZGmDXlIu7qBeIFKbCTiITO3o`).
 
 ## MCP status
 

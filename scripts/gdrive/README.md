@@ -21,6 +21,23 @@ Use the same OAuth credentials as the gdrive MCP (`.cursor/gcp-oauth.keys.json`,
 
 Add scopes in GCP OAuth consent: `drive`, `documents`, `spreadsheets` (and re-run auth) so Docs and Sheets scripts work.
 
+## Upload DB backups (Postgres dump → Drive)
+
+Default Drive target (``eric@rec-io.com``): ``DATA / DB_BACKUPS``  
+Folder ID: ``1yvZm4itVZGmDXlIu7qBeIFKbCTiITO3o`` (override with ``GDRIVE_DB_BACKUPS_FOLDER_ID``).
+
+Create a local dump, then upload and prune to 14 files:
+
+```bash
+./scripts/backup/create_compressed_db_backup.sh
+# last line of output is the .sql.gz path
+node scripts/gdrive/upload-db-backup.js --file backup/db_backups/rec_io_db_backup_….sql.gz
+# prune only / dry-run
+node scripts/gdrive/upload-db-backup.js --prune-only --dry-run
+```
+
+Nightly cron runs this after the DO droplet snapshot — see ``docs/PRODUCTION_HOST.md``.
+
 ## Upload cycle packages (backtesting_data → Drive)
 
 Default Drive target (``eric@rec-io.com``): ``DATA / HISTORICAL_DATA / BACKTESTING_DATA``  

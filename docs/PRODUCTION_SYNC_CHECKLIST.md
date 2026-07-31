@@ -74,6 +74,8 @@ cd /opt/rec_io_server
 
 **Nightly bookkeeper cron (first deploy only):** After the release that adds `scripts/cron/bookkeeper_kalshi_reconcile.sh`, install the production crontab entry once so Kalshi vs QuickBooks reconcile runs daily at 12:30 AM Eastern. Full steps: [PRODUCTION_HOST.md — Cron: bookkeeper Kalshi reconcile](PRODUCTION_HOST.md#cron-bookkeeper-kalshi-reconcile).
 
+**Nightly redundant backup cron (first deploy only):** After the release that adds `scripts/cron/do_auto_backup_snapshot.sh` (DO snapshot + DB → Drive), put `DIGITALOCEAN_API_TOKEN` in production `.env`, ensure Drive OAuth secrets + `scripts/gdrive` npm deps + `pg_dump` are present, then install the crontab entry for 1:00 AM Eastern. Full steps: [PRODUCTION_HOST.md — Cron: nightly redundant backups](PRODUCTION_HOST.md#cron-nightly-redundant-backups-do-snapshot--db--google-drive).
+
 ---
 
 ## 3. Common “nightmare” cases

@@ -79,6 +79,60 @@ BOOKKEEPER_FORCE=1 REC_USER_NO=0001 /opt/rec_io_server/scripts/cron/bookkeeper_k
 ```
 
 **Logs:** append-only **`/opt/rec_io_server/logs/bookkeeper_kalshi_reconcile.log`**. Silent no-ops from the hourly gate are not logged.
+
+## Cron: nightly redundant backups (DO snapshot + DB → Google Drive)
+
+**What it does:** Once per day at **1:00 AM Eastern**:
+
+1. **Droplet snapshot** — creates `auto_backup_YYYY-MM-DD_HHMM` for prod droplet **562337636** (`DO_PROD_DROPLET_ID`), waits for completion, prunes oldest `auto_backup_*` until **5** remain. Deploy / other named snapshots are never pruned (`scripts/do/auto_backup_snapshot.py`).
+2. **Postgres dump → Drive** — full compressed dump (`scripts/backup/create_compressed_db_backup.sh`, same idea as System UI → Backup Database), uploads to Google Drive **`DATA/DB_BACKUPS`** (`scripts/gdrive/upload-db-backup.js`, folder id `1yvZm4itVZGmDXlIu7qBeIFKbCTiITO3o`), then deletes the oldest `rec_io_db_backup_*` Drive files until **14** remain. Local dump is removed after a successful upload unless `DB_BACKUP_KEEP_LOCAL=1`.
+
+Schedule with **cron** only (not Supervisor). Wrapper: `scripts/cron/do_auto_backup_snapshot.sh`.
+
+**When to install:** After the deploy that includes these scripts is on production.
+
+**Prerequisites on the server**
+
+- Project at **`/opt/rec_io_server`**.
+- **`DIGITALOCEAN_API_TOKEN`** in `/opt/rec_io_server/.env` (same token used locally for `scripts/do/snapshot_prod.sh`).
+- **`DB_*`** in `.env` and **`pg_dump`** on PATH.
+- Google Drive OAuth as **`eric@rec-io.com`**: `backend/data/secrets/gdrive_oauth_client.json` + `gdrive_oauth_token.json` (see `backend/data/secrets/README.md`). Same credentials as cycle package upload.
+- **Node** on PATH and `npm install` under `scripts/gdrive/` (needs `googleapis`).
+- Python via **`venv/bin/python`** for the DO step (`doctl` is **not** required).
+
+**Verify before enabling cron**
+
+```bash
+cd /opt/rec_io_server
+chmod +x scripts/cron/do_auto_backup_snapshot.sh scripts/backup/create_compressed_db_backup.sh
+# Drive prune dry-run only (skips DO create + DB dump):
+AUTO_BACKUP_FORCE=1 AUTO_BACKUP_DRY_RUN=1 AUTO_BACKUP_SKIP_DO=1 \
+  ./scripts/cron/do_auto_backup_snapshot.sh
+tail -40 logs/do_auto_backup_snapshot.log
+```
+
+Full catch-up run (DO snapshot + DB dump + Drive upload + prune):
+
+```bash
+AUTO_BACKUP_FORCE=1 /opt/rec_io_server/scripts/cron/do_auto_backup_snapshot.sh
+```
+
+DB-only catch-up (skip droplet snapshot):
+
+```bash
+AUTO_BACKUP_FORCE=1 AUTO_BACKUP_SKIP_DO=1 /opt/rec_io_server/scripts/cron/do_auto_backup_snapshot.sh
+```
+
+**Install crontab (1:00 AM US Eastern wall clock)**
+
+Same Linux user as the bookkeeper cron (often **`root`**). Production OS is UTC; do **not** rely on `CRON_TZ`. Hourly `:00` schedule; the wrapper exits unless Eastern wall clock is exactly `01:00` (one hour after bookkeeper `00:30` ET):
+
+```cron
+0 * * * * /opt/rec_io_server/scripts/cron/do_auto_backup_snapshot.sh
+```
+
+**Logs:** append-only **`/opt/rec_io_server/logs/do_auto_backup_snapshot.log`**. Silent no-ops from the hourly gate are not logged.
+
 ---
 
 ## Notes
