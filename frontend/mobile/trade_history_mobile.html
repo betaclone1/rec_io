@@ -3309,6 +3309,52 @@
             return null;
         }
 
+        // Chart zoom/pan state
+        let _thmChartDrag = null;
+        let _thmChartPinch = null;
+
+        function thmTradeDetailApplyView(state, viewTMin, viewTMax) {
+            const dataSpan = Math.max(1, state.dataTMax - state.dataTMin);
+            const minSpan = Math.min(15 * 1000, dataSpan);
+            let span = Math.max(minSpan, Math.min(dataSpan, viewTMax - viewTMin));
+            let tMin = viewTMin;
+            let tMax = tMin + span;
+            if (tMin < state.dataTMin) {
+                tMin = state.dataTMin;
+                tMax = tMin + span;
+            }
+            if (tMax > state.dataTMax) {
+                tMax = state.dataTMax;
+                tMin = Math.max(state.dataTMin, tMax - span);
+            }
+            state.viewTMin = tMin;
+            state.viewTMax = tMax;
+            state.tMin = tMin;
+            state.tMax = tMax;
+            const yRange = thmTradeDetailYRangeForView(state.points, tMin, tMax, state.floorStrike);
+            state.vMin = yRange.vMin;
+            state.vMax = yRange.vMax;
+            state.xFor = (t) =>
+                state.pad.left + ((t - tMin) / Math.max(1, tMax - tMin)) * state.plotWidth;
+            state.yFor = (v) =>
+                state.pad.top +
+                (1 - ((v - state.vMin) / Math.max(1, state.vMax - state.vMin))) * state.plotHeight;
+        }
+
+        function thmTradeDetailChartZoom(state, cssX, factor) {
+            const span = state.tMax - state.tMin;
+            const ratio = Math.min(1, Math.max(0, (cssX - state.pad.left) / Math.max(1, state.plotWidth)));
+            const anchorT = state.tMin + ratio * span;
+            const newSpan = span * factor;
+            thmTradeDetailApplyView(state, anchorT - ratio * newSpan, anchorT - ratio * newSpan + newSpan);
+        }
+
+        function thmTradeDetailChartPan(state, deltaCssX) {
+            const span = state.tMax - state.tMin;
+            const deltaT = (-deltaCssX / Math.max(1, state.plotWidth)) * span;
+            thmTradeDetailApplyView(state, state.tMin + deltaT, state.tMax + deltaT);
+        }
+
         function thmBuildTradeDetailChart(canvas) {
             const payload = _thmTradeDetailPayload;
             if (!payload) return null;
@@ -3319,6 +3365,7 @@
             const dpr = Math.max(1, window.devicePixelRatio || 1);
             canvas.width = Math.round(cssWidth * dpr);
             canvas.height = Math.round(cssHeight * dpr);
+            const prev = _thmTradeDetailChart;
             const state = {
                 points,
                 cssWidth,
@@ -3348,19 +3395,19 @@
             state.cycleOpenMs = Number.isFinite(cycleOpenMs) ? cycleOpenMs : null;
             state.cycleCloseMs = Number.isFinite(cycleCloseMs) ? cycleCloseMs : null;
 
-            // Apply cycle view
-            const tMin = cycle.tMin;
-            const tMax = cycle.tMax;
-            state.tMin = tMin;
-            state.tMax = tMax;
-            const yRange = thmTradeDetailYRangeForView(points, tMin, tMax, state.floorStrike);
-            state.vMin = yRange.vMin;
-            state.vMax = yRange.vMax;
-            state.xFor = (t) =>
-                state.pad.left + ((t - tMin) / Math.max(1, tMax - tMin)) * state.plotWidth;
-            state.yFor = (v) =>
-                state.pad.top +
-                (1 - ((v - state.vMin) / Math.max(1, state.vMax - state.vMin))) * state.plotHeight;
+            // Preserve view if same data range, otherwise use cycle window
+            const keepView =
+                prev &&
+                prev.dataTMin === dataTMin &&
+                prev.dataTMax === dataTMax &&
+                Number.isFinite(prev.viewTMin) &&
+                Number.isFinite(prev.viewTMax) &&
+                prev.viewTMax > prev.viewTMin;
+            thmTradeDetailApplyView(
+                state,
+                keepView ? prev.viewTMin : cycle.tMin,
+                keepView ? prev.viewTMax : cycle.tMax
+            );
 
             // Trade markers
             const edgeToleranceMs = 15000;
@@ -3604,11 +3651,20 @@
         }
 
         // Collapsed fill group functions
+        // Normalize timestamp to seconds precision for grouping (ignore sub-second differences)
+        function thmNormalizeFillTimeForGrouping(createdTime) {
+            if (createdTime == null) return '';
+            const raw = String(createdTime);
+            // If ISO format with fractional seconds (e.g. "2026-08-01T15:30:45.123456Z"), truncate to seconds
+            const match = raw.match(/^(\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2})/);
+            return match ? match[1] : raw;
+        }
+
         function thmTradeDetailGroupFillsByTime(fills) {
             const groups = [];
             const indexByTime = new Map();
             (Array.isArray(fills) ? fills : []).forEach((fill) => {
-                const key = String(fill && fill.created_time != null ? fill.created_time : '');
+                const key = thmNormalizeFillTimeForGrouping(fill && fill.created_time);
                 let group = indexByTime.get(key);
                 if (!group) {
                     group = { created_time: fill.created_time, fills: [] };
@@ -4156,6 +4212,86 @@
                     thmCloseTradeDetail();
                 }
             });
+
+            // Chart touch gestures for zoom/pan
+            const chartCanvas = document.getElementById('thm-trade-detail-chart');
+            if (chartCanvas) {
+                // Pan with single finger drag
+                chartCanvas.addEventListener('touchstart', (event) => {
+                    const state = _thmTradeDetailChart;
+                    if (!state || !state.points || state.points.length < 2) return;
+                    if (event.touches.length === 1) {
+                        const touch = event.touches[0];
+                        const rect = chartCanvas.getBoundingClientRect();
+                        _thmChartDrag = { startX: touch.clientX - rect.left, lastX: touch.clientX - rect.left };
+                        _thmChartPinch = null;
+                    } else if (event.touches.length === 2) {
+                        // Pinch zoom
+                        const t0 = event.touches[0];
+                        const t1 = event.touches[1];
+                        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+                        const rect = chartCanvas.getBoundingClientRect();
+                        const centerX = ((t0.clientX + t1.clientX) / 2) - rect.left;
+                        _thmChartPinch = { startDist: dist, lastDist: dist, centerX };
+                        _thmChartDrag = null;
+                    }
+                }, { passive: true });
+
+                chartCanvas.addEventListener('touchmove', (event) => {
+                    const state = _thmTradeDetailChart;
+                    if (!state || !state.points || state.points.length < 2) return;
+                    const rect = chartCanvas.getBoundingClientRect();
+
+                    if (_thmChartDrag && event.touches.length === 1) {
+                        const touch = event.touches[0];
+                        const cssX = touch.clientX - rect.left;
+                        const delta = cssX - _thmChartDrag.lastX;
+                        if (Math.abs(delta) > 2) {
+                            thmTradeDetailChartPan(state, delta);
+                            _thmChartDrag.lastX = cssX;
+                            thmRenderTradeDetailChart();
+                        }
+                    } else if (_thmChartPinch && event.touches.length === 2) {
+                        const t0 = event.touches[0];
+                        const t1 = event.touches[1];
+                        const dist = Math.hypot(t1.clientX - t0.clientX, t1.clientY - t0.clientY);
+                        const ratio = _thmChartPinch.lastDist / Math.max(1, dist);
+                        if (Math.abs(ratio - 1) > 0.02) {
+                            thmTradeDetailChartZoom(state, _thmChartPinch.centerX, ratio);
+                            _thmChartPinch.lastDist = dist;
+                            thmRenderTradeDetailChart();
+                        }
+                    }
+                }, { passive: true });
+
+                chartCanvas.addEventListener('touchend', () => {
+                    _thmChartDrag = null;
+                    _thmChartPinch = null;
+                }, { passive: true });
+
+                chartCanvas.addEventListener('touchcancel', () => {
+                    _thmChartDrag = null;
+                    _thmChartPinch = null;
+                }, { passive: true });
+
+                // Double-tap to reset zoom
+                let lastTapTime = 0;
+                chartCanvas.addEventListener('touchend', (event) => {
+                    if (event.touches.length > 0) return;
+                    const now = Date.now();
+                    if (now - lastTapTime < 300) {
+                        // Double tap - reset to full view
+                        const state = _thmTradeDetailChart;
+                        if (state && state.points && state.points.length >= 2) {
+                            const kalshi = (_thmTradeDetailPayload || {}).kalshi || {};
+                            const cycle = thmTradeDetailCycleWindow(kalshi.market, state.dataTMin, state.dataTMax);
+                            thmTradeDetailApplyView(state, cycle.tMin, cycle.tMax);
+                            thmRenderTradeDetailChart();
+                        }
+                    }
+                    lastTapTime = now;
+                }, { passive: true });
+            }
         }
         // ========== End Mobile Trade Detail View Functions ==========
 
@@ -5696,8 +5832,11 @@
 
                     if (preferences.sort_key) {
                         currentSort.key = preferences.sort_key;
+                        // Default to descending for 'id' if sort_asc not specified
                         currentSort.asc =
-                            preferences.sort_asc !== undefined ? !!preferences.sort_asc : true;
+                            preferences.sort_asc !== undefined
+                                ? !!preferences.sort_asc
+                                : (preferences.sort_key === 'id' ? false : true);
                     }
 
                     const analysisIntervalSelect = document.getElementById('analysis-time-interval');
