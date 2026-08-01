@@ -5832,11 +5832,14 @@
 
                     if (preferences.sort_key) {
                         currentSort.key = preferences.sort_key;
-                        // Default to descending for 'id' if sort_asc not specified
-                        currentSort.asc =
-                            preferences.sort_asc !== undefined
-                                ? !!preferences.sort_asc
-                                : (preferences.sort_key === 'id' ? false : true);
+                        // 'id' column: always descending (most recent first) - ignore saved sort_asc
+                        // Other columns: use saved preference or default to ascending
+                        if (preferences.sort_key === 'id') {
+                            currentSort.asc = false;
+                        } else {
+                            currentSort.asc =
+                                preferences.sort_asc !== undefined ? !!preferences.sort_asc : true;
+                        }
                     }
 
                     const analysisIntervalSelect = document.getElementById('analysis-time-interval');
