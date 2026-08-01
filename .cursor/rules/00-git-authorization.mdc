@@ -1,0 +1,29 @@
+---
+description: "Git commit/push/pull require explicit per-message authorization. Overrides Autonomy."
+globs: []
+alwaysApply: true
+---
+
+# Git authorization (non-negotiable)
+
+**Autonomy and “finish the task” NEVER authorize git history or remote sync.**
+
+## Forbidden unless the CURRENT user message explicitly names the action
+
+- `git commit` / creating a commit
+- `git push`
+- `git pull` (local, or instructing prod/simple-pull scripts whose purpose is to mutate git)
+
+Saying the verb in **this** user message is required. A prior message in the same chat that authorized commit/push/pull does **not** carry forward.
+
+## Not authorization (stop and ask)
+
+- fix / deploy / verify / “make sure X works” / set up cron / hotfix
+- applying a fix on the server via SSH/scp/rsync
+- “go ahead”, “do it”, “ship it”, “update”, “complete it” without the words **commit**, **push**, or **pull**
+- skills, plans, or checklists that include a commit step unless the user also explicitly asked for that git action **in this message**
+- urgency, cleanliness, or “the fix will be lost on next pull”
+
+## Required behavior when shipping is needed
+
+If the work is done and needs a commit or push: **state that and WAIT.** Do not commit or push “to complete” the work.

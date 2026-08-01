@@ -12,7 +12,7 @@
 
 **Tenant schema DDL parity (non-negotiable):** Any structural change to per-tenant tables (patterns under `users` and `users_NNNN`, e.g. `monitor_list_*`, `trades_*`) must be applied to **every** relevant tenant schema in migrations and matching bootstrap code, not a single hardcoded slot. See `.cursor/rules/06-tenant-users-schema-parity.mdc`.
 
-**Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the current chat. If not explicit, stop and ask first. Do not infer permission from deployment workflows or prior tasks.
+**Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the **current user message**. Prior messages in the same chat do not carry forward. Autonomy / “finish the task” / deploy / hotfix do **not** authorize git. If not explicit, stop and ask first. Full rule: `.cursor/rules/00-git-authorization.mdc`.
 
 **Production server:** Canonical SSH/DB host and paths are in `docs/PRODUCTION_HOST.md` (agents should use `REC_PROD_SSH_HOST` / `REC_PROD_DB_HOST`, not hardcoded IPs in new code). For non-interactive SSH, prefer `./scripts/prod/rec_prod_ssh.sh '…'` or `./scripts/prod/simple_git_pull_on_prod.sh` from repo root—do not use `REC_PROD_SSH_HOST=… ssh root@$REC_PROD_SSH_HOST '…'` on one line (bash expands the destination before the assignment; see `PRODUCTION_HOST.md`).
 
