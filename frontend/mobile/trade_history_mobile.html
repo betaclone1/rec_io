@@ -971,6 +971,117 @@
         .thm-trade-detail-record-panel[hidden] {
             display: none;
         }
+
+        /* Chart section for mobile detail */
+        .thm-trade-detail-chart-head {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+            margin-bottom: 8px;
+        }
+        .thm-trade-detail-chart-head-main {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+        .thm-trade-detail-chart-title {
+            margin: 0;
+            font-size: 12px;
+            font-weight: 600;
+            color: #f8fafc;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+        .thm-trade-detail-chart-stats {
+            display: flex;
+            gap: 12px;
+            flex-shrink: 0;
+        }
+        .thm-trade-detail-chart-stats > div {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+        .thm-trade-detail-chart-stat-value {
+            font-size: 12px;
+            font-weight: 600;
+            color: #f8fafc;
+        }
+        .thm-trade-detail-chart-stat-value--final {
+            color: #60a5fa;
+        }
+        .thm-trade-detail-chart-stat-diff {
+            margin-left: 4px;
+            font-size: 10px;
+            font-weight: 500;
+            color: #8fa0b7;
+        }
+        .thm-trade-detail-chart-wrap {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16 / 9;
+            min-height: 180px;
+            max-height: 240px;
+            background: #111923;
+            border-radius: 4px;
+            overflow: hidden;
+        }
+        .thm-trade-detail-chart-wrap canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+        .thm-trade-detail-source-error {
+            margin-top: 6px;
+            padding: 6px 8px;
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            border-radius: 4px;
+            color: #fca5a5;
+            font-size: 11px;
+        }
+
+        /* Collapsed fill groups */
+        .thm-trade-detail-fill-group-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 5px;
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            color: inherit;
+            font: inherit;
+            cursor: pointer;
+        }
+        .thm-trade-detail-fill-group-toggle:hover {
+            color: #93c5fd;
+        }
+        .thm-trade-detail-fill-group-count {
+            color: #8fa0b7;
+            font-weight: 600;
+        }
+        .thm-trade-detail-fill-group-icon {
+            display: inline-flex;
+            width: 10px;
+            justify-content: center;
+            color: #8fa0b7;
+            font-weight: 700;
+        }
+        .thm-trade-detail-fill-group-summary {
+            cursor: pointer;
+        }
+        .thm-trade-detail-fill-group-child td {
+            color: #cbd5e1;
+            background: rgba(15, 23, 42, 0.35);
+        }
+        .thm-trade-detail-fill-group-child[hidden] {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -1283,6 +1394,32 @@
         </header>
         <div id="thm-trade-detail-status" class="thm-trade-detail-status">Loading trade detail…</div>
         <div id="thm-trade-detail-body" class="thm-trade-detail-body" hidden>
+            <!-- Chart section -->
+            <section class="thm-trade-detail-section">
+                <div class="thm-trade-detail-chart-head">
+                    <div class="thm-trade-detail-chart-head-main">
+                        <h3 id="thm-trade-detail-chart-title" class="thm-trade-detail-chart-title">Symbol price</h3>
+                        <div class="thm-trade-detail-chart-stats">
+                            <div>
+                                <span class="thm-trade-detail-field-label">Floor</span>
+                                <span id="thm-trade-detail-floor-value" class="thm-trade-detail-chart-stat-value">—</span>
+                            </div>
+                            <div>
+                                <span class="thm-trade-detail-field-label">Final</span>
+                                <span
+                                    id="thm-trade-detail-final-value"
+                                    class="thm-trade-detail-chart-stat-value thm-trade-detail-chart-stat-value--final"
+                                >—</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+                <div class="thm-trade-detail-chart-wrap">
+                    <canvas id="thm-trade-detail-chart" aria-label="Symbol price timeseries"></canvas>
+                </div>
+                <div id="thm-trade-detail-live-error" class="thm-trade-detail-source-error" hidden></div>
+            </section>
+
             <!-- Summary section -->
             <section class="thm-trade-detail-section">
                 <div id="thm-trade-detail-summary" class="thm-trade-detail-summary"></div>
@@ -2918,6 +3055,7 @@
         let _thmTradeDetailAbortController = null;
         let _thmTradeDetailPayload = null;
         let _thmTradeDetailListenersBound = false;
+        let _thmTradeDetailChart = null;
 
         const _thmTradeDetailTimeFmt = new Intl.DateTimeFormat('en-US', {
             timeZone: 'America/New_York',
@@ -2925,6 +3063,631 @@
             minute: '2-digit',
             second: '2-digit',
         });
+
+        const _thmTradeDetailDayFmt = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            month: 'short',
+            day: 'numeric',
+        });
+
+        const _thmTradeDetailTitleTimeFmt = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            hour: 'numeric',
+            minute: '2-digit',
+        });
+
+        const _thmTradeDetailEtPartsFmt = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            year: 'numeric',
+            month: 'numeric',
+            day: 'numeric',
+            hour: 'numeric',
+            minute: 'numeric',
+            second: 'numeric',
+            hourCycle: 'h23',
+        });
+
+        // Chart helper functions (adapted from desktop)
+        function thmTradeDetailPriceFractionDigits(symbol) {
+            const sym = (symbol || '').toString().trim().toUpperCase();
+            return sym === 'BTC' || sym === 'ETH' ? 2 : 8;
+        }
+
+        function thmTradeDetailPriceNumberText(symbol, rawValue) {
+            if (rawValue === null || rawValue === undefined || rawValue === '') return '—';
+            const value = Number(rawValue);
+            if (!Number.isFinite(value)) return '—';
+            const digits = thmTradeDetailPriceFractionDigits(symbol);
+            return value.toLocaleString('en-US', {
+                minimumFractionDigits: 2,
+                maximumFractionDigits: digits,
+            });
+        }
+
+        function thmTradeDetailPriceText(symbol, rawValue) {
+            const numberText = thmTradeDetailPriceNumberText(symbol, rawValue);
+            return numberText === '—' ? '—' : `$${numberText}`;
+        }
+
+        function thmTradeDetailIsHourlyBtcEth(trade) {
+            const sym = String((trade && trade.symbol) || '').trim().toUpperCase();
+            if (sym !== 'BTC' && sym !== 'ETH') return false;
+            const ticker = String((trade && trade.ticker) || '').trim().toUpperCase();
+            return Boolean(ticker) && !ticker.includes('15M');
+        }
+
+        function thmTradeDetailFloorStrikeValue(trade, market) {
+            const raw = Number((market || {}).floor_strike);
+            if (!Number.isFinite(raw)) return null;
+            return thmTradeDetailIsHourlyBtcEth(trade) ? Math.ceil(raw) : raw;
+        }
+
+        function thmTradeDetailFloorText(trade, floorValue) {
+            if (!Number.isFinite(floorValue)) return '—';
+            if (thmTradeDetailIsHourlyBtcEth(trade)) {
+                return `$${floorValue.toLocaleString('en-US', {
+                    minimumFractionDigits: 0,
+                    maximumFractionDigits: 0,
+                })}`;
+            }
+            return thmTradeDetailPriceText((trade && trade.symbol) || '', floorValue);
+        }
+
+        function thmTradeDetailLiveDetails(kalshi, key) {
+            const root = kalshi && kalshi[key];
+            return root && root.details ? root.details : null;
+        }
+
+        function thmTradeDetailChartPoints(kalshi) {
+            const currentDetails = thmTradeDetailLiveDetails(kalshi, 'live_data');
+            const followingDetails = thmTradeDetailLiveDetails(kalshi, 'following_live_data');
+            const current =
+                currentDetails && Array.isArray(currentDetails.timeseries)
+                    ? currentDetails.timeseries
+                    : [];
+            const following =
+                followingDetails && Array.isArray(followingDetails.timeseries)
+                    ? followingDetails.timeseries
+                    : [];
+            const currentClose = Date.parse((kalshi.market || {}).close_time);
+            const followingClose = Date.parse(kalshi.following_cycle_close_time);
+            const byTimestamp = new Map();
+            current.forEach((point) => {
+                const t = Number(point && point.t);
+                const v = Number(point && point.v);
+                if (Number.isFinite(t) && Number.isFinite(v)) byTimestamp.set(t, { t, v });
+            });
+            following.forEach((point) => {
+                const t = Number(point && point.t);
+                const v = Number(point && point.v);
+                if (!Number.isFinite(t) || !Number.isFinite(v)) return;
+                if (Number.isFinite(currentClose) && t <= currentClose) return;
+                if (Number.isFinite(followingClose) && t > followingClose) return;
+                byTimestamp.set(t, { t, v });
+            });
+            return Array.from(byTimestamp.values()).sort((left, right) => left.t - right.t);
+        }
+
+        function thmTradeDetailCycleWindow(market, dataTMin, dataTMax) {
+            const open = Date.parse((market || {}).open_time);
+            const close = Date.parse((market || {}).close_time);
+            const bufferMs = 5 * 60 * 1000;
+            if (Number.isFinite(open) && Number.isFinite(close) && close > open) {
+                return {
+                    tMin: Math.max(dataTMin, open - bufferMs),
+                    tMax: Math.min(dataTMax, close + bufferMs),
+                };
+            }
+            const span = Math.min(15 * 60 * 1000, Math.max(1, dataTMax - dataTMin));
+            return { tMin: dataTMax - span, tMax: dataTMax };
+        }
+
+        function thmTradeDetailNearestPointIndex(points, targetT) {
+            let lo = 0;
+            let hi = points.length - 1;
+            while (lo < hi) {
+                const mid = (lo + hi) >> 1;
+                if (points[mid].t < targetT) lo = mid + 1;
+                else hi = mid;
+            }
+            const prev = lo > 0 ? lo - 1 : 0;
+            return Math.abs(points[prev].t - targetT) <= Math.abs(points[lo].t - targetT) ? prev : lo;
+        }
+
+        function thmTradeDetailYRangeForView(points, viewTMin, viewTMax, floorStrike) {
+            let vMin = Infinity;
+            let vMax = -Infinity;
+            const start = thmTradeDetailNearestPointIndex(points, viewTMin);
+            const end = thmTradeDetailNearestPointIndex(points, viewTMax);
+            const from = Math.max(0, Math.min(start, end) - 1);
+            const to = Math.min(points.length - 1, Math.max(start, end) + 1);
+            for (let i = from; i <= to; i++) {
+                const point = points[i];
+                if (point.t < viewTMin || point.t > viewTMax) continue;
+                if (point.v < vMin) vMin = point.v;
+                if (point.v > vMax) vMax = point.v;
+            }
+            if (!Number.isFinite(vMin) || !Number.isFinite(vMax)) {
+                if (points.length) {
+                    const mid = points[thmTradeDetailNearestPointIndex(points, (viewTMin + viewTMax) / 2)];
+                    vMin = mid.v;
+                    vMax = mid.v;
+                } else {
+                    vMin = 0;
+                    vMax = 1;
+                }
+            }
+            if (Number.isFinite(floorStrike)) {
+                vMin = Math.min(vMin, floorStrike);
+                vMax = Math.max(vMax, floorStrike);
+            }
+            if (vMin === vMax) {
+                vMin -= 1;
+                vMax += 1;
+            }
+            const vPad = Math.max(1, (vMax - vMin) * 0.08);
+            return { vMin: vMin - vPad, vMax: vMax + vPad };
+        }
+
+        function thmTradeDetailEtWallClockToEpochMs(dateText, timeText) {
+            const date = dateText == null ? '' : String(dateText).trim();
+            const time = timeText == null ? '' : String(timeText).trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(date) || !/^\d{1,2}:\d{2}(:\d{2})?$/.test(time)) return NaN;
+            const naive = Date.parse(`${date}T${time.length === 5 ? `${time}:00` : time}Z`);
+            if (!Number.isFinite(naive)) return NaN;
+            const offsetAt = (ms) => {
+                const parts = {};
+                _thmTradeDetailEtPartsFmt.formatToParts(new Date(ms)).forEach((part) => {
+                    if (part.type !== 'literal') parts[part.type] = part.value;
+                });
+                const hour = parts.hour === '24' ? 0 : Number(parts.hour);
+                const asUtc = Date.UTC(
+                    Number(parts.year),
+                    Number(parts.month) - 1,
+                    Number(parts.day),
+                    hour,
+                    Number(parts.minute),
+                    Number(parts.second)
+                );
+                return asUtc - ms;
+            };
+            return naive - offsetAt(naive - offsetAt(naive));
+        }
+
+        function thmTradeDetailMarkerLabel(trade, priceKey) {
+            const price = Number(trade[priceKey]);
+            const position = trade.position;
+            if (!Number.isFinite(price)) return '';
+            if (position === null || position === undefined || position === '') return '';
+            return `${position} @ ${price.toFixed(2)}`;
+        }
+
+        function thmTradeDetailTradeMarkers(trade) {
+            const side = (trade && trade.side != null ? String(trade.side) : '').trim().toUpperCase();
+            const isYes = side === 'Y' || side === 'YES';
+            const isNo = side === 'N' || side === 'NO';
+            if (!isYes && !isNo) return [];
+            const markers = [];
+            const entryMs = thmTradeDetailEtWallClockToEpochMs(trade.date, trade.time);
+            if (Number.isFinite(entryMs)) {
+                markers.push({
+                    ms: entryMs,
+                    up: isYes,
+                    label: thmTradeDetailMarkerLabel(trade, 'buy_price'),
+                });
+            }
+            const closeMethod = String(trade.close_method || trade.closeMethod || '')
+                .trim()
+                .toLowerCase();
+            if (closeMethod === 'expired') return markers;
+            let exitMs = thmTradeDetailEtWallClockToEpochMs(trade.date, trade.closed_at);
+            if (Number.isFinite(exitMs) && Number.isFinite(entryMs) && exitMs < entryMs) {
+                exitMs += 86400000;
+            }
+            if (Number.isFinite(exitMs)) {
+                markers.push({
+                    ms: exitMs,
+                    up: !isYes,
+                    label: thmTradeDetailMarkerLabel(trade, 'sell_price'),
+                });
+            }
+            return markers;
+        }
+
+        function thmTradeDetailFinalTickValue(kalshi) {
+            const series =
+                kalshi &&
+                kalshi.live_data &&
+                kalshi.live_data.details &&
+                Array.isArray(kalshi.live_data.details.timeseries)
+                    ? kalshi.live_data.details.timeseries
+                    : [];
+            for (let i = series.length - 1; i >= 0; i--) {
+                const tick = series[i];
+                if (tick && Number.isFinite(Number(tick.v))) return Number(tick.v);
+            }
+            return null;
+        }
+
+        function thmBuildTradeDetailChart(canvas) {
+            const payload = _thmTradeDetailPayload;
+            if (!payload) return null;
+            const kalshi = payload.kalshi || {};
+            const points = thmTradeDetailChartPoints(kalshi);
+            const cssWidth = Math.max(280, canvas.clientWidth || 320);
+            const cssHeight = Math.max(160, canvas.clientHeight || 200);
+            const dpr = Math.max(1, window.devicePixelRatio || 1);
+            canvas.width = Math.round(cssWidth * dpr);
+            canvas.height = Math.round(cssHeight * dpr);
+            const state = {
+                points,
+                cssWidth,
+                cssHeight,
+                dpr,
+                symbol: (payload.trade || {}).symbol || '',
+                trade: payload.trade || {},
+            };
+            if (points.length < 2) return state;
+
+            const pad = { left: 55, right: 12, top: 12, bottom: 28 };
+            const dataTMin = points[0].t;
+            const dataTMax = points[points.length - 1].t;
+            const floorStrike = thmTradeDetailFloorStrikeValue(payload.trade || {}, kalshi.market);
+            Object.assign(state, {
+                pad,
+                plotWidth: cssWidth - pad.left - pad.right,
+                plotHeight: cssHeight - pad.top - pad.bottom,
+                dataTMin,
+                dataTMax,
+                floorStrike: Number.isFinite(floorStrike) ? floorStrike : null,
+            });
+
+            const cycle = thmTradeDetailCycleWindow(kalshi.market, dataTMin, dataTMax);
+            const cycleOpenMs = Date.parse((kalshi.market || {}).open_time);
+            const cycleCloseMs = Date.parse((kalshi.market || {}).close_time);
+            state.cycleOpenMs = Number.isFinite(cycleOpenMs) ? cycleOpenMs : null;
+            state.cycleCloseMs = Number.isFinite(cycleCloseMs) ? cycleCloseMs : null;
+
+            // Apply cycle view
+            const tMin = cycle.tMin;
+            const tMax = cycle.tMax;
+            state.tMin = tMin;
+            state.tMax = tMax;
+            const yRange = thmTradeDetailYRangeForView(points, tMin, tMax, state.floorStrike);
+            state.vMin = yRange.vMin;
+            state.vMax = yRange.vMax;
+            state.xFor = (t) =>
+                state.pad.left + ((t - tMin) / Math.max(1, tMax - tMin)) * state.plotWidth;
+            state.yFor = (v) =>
+                state.pad.top +
+                (1 - ((v - state.vMin) / Math.max(1, state.vMax - state.vMin))) * state.plotHeight;
+
+            // Trade markers
+            const edgeToleranceMs = 15000;
+            state.markers = thmTradeDetailTradeMarkers(payload.trade || {})
+                .map((marker) => {
+                    if (marker.ms < dataTMin - edgeToleranceMs || marker.ms > dataTMax + edgeToleranceMs) {
+                        return null;
+                    }
+                    const clamped = Math.min(dataTMax, Math.max(dataTMin, marker.ms));
+                    const point = points[thmTradeDetailNearestPointIndex(points, clamped)];
+                    return point ? { up: marker.up, label: marker.label, t: point.t, v: point.v } : null;
+                })
+                .filter(Boolean);
+            return state;
+        }
+
+        function thmRenderTradeDetailChart() {
+            const state = _thmTradeDetailChart;
+            const canvas = document.getElementById('thm-trade-detail-chart');
+            if (!state || !canvas) return;
+            const ctx = canvas.getContext('2d');
+            if (!ctx) return;
+            const { cssWidth, cssHeight } = state;
+            ctx.setTransform(state.dpr, 0, 0, state.dpr, 0, 0);
+            ctx.clearRect(0, 0, cssWidth, cssHeight);
+            ctx.fillStyle = '#111923';
+            ctx.fillRect(0, 0, cssWidth, cssHeight);
+            if (state.points.length < 2) {
+                ctx.fillStyle = '#94a3b8';
+                ctx.font = '11px sans-serif';
+                ctx.fillText('No Kalshi timeseries data.', 12, 24);
+                return;
+            }
+
+            const { pad, vMin, vMax, tMin, tMax, xFor, yFor, floorStrike } = state;
+            ctx.font = '10px sans-serif';
+            ctx.lineWidth = 1;
+            for (let i = 0; i <= 4; i++) {
+                const value = vMin + ((vMax - vMin) * i / 4);
+                const y = yFor(value);
+                ctx.strokeStyle = '#334155';
+                ctx.beginPath();
+                ctx.moveTo(pad.left, y);
+                ctx.lineTo(cssWidth - pad.right, y);
+                ctx.stroke();
+                ctx.fillStyle = '#94a3b8';
+                ctx.textAlign = 'right';
+                ctx.textBaseline = 'middle';
+                ctx.fillText(thmTradeDetailPriceNumberText(state.symbol, value), pad.left - 6, y);
+            }
+
+            for (let i = 0; i <= 2; i++) {
+                const t = tMin + ((tMax - tMin) * i / 2);
+                ctx.fillStyle = '#94a3b8';
+                ctx.textAlign = i === 0 ? 'left' : (i === 2 ? 'right' : 'center');
+                ctx.textBaseline = 'top';
+                ctx.fillText(_thmTradeDetailTimeFmt.format(new Date(t)), xFor(t), cssHeight - pad.bottom + 8);
+            }
+
+            const startIdx = Math.max(0, thmTradeDetailNearestPointIndex(state.points, tMin) - 1);
+            const endIdx = Math.min(
+                state.points.length - 1,
+                thmTradeDetailNearestPointIndex(state.points, tMax) + 1
+            );
+            const linePath = new Path2D();
+            for (let i = startIdx; i <= endIdx; i++) {
+                const point = state.points[i];
+                const x = xFor(point.t);
+                const y = yFor(point.v);
+                if (i === startIdx) linePath.moveTo(x, y);
+                else linePath.lineTo(x, y);
+            }
+
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(pad.left, pad.top, state.plotWidth, state.plotHeight);
+            ctx.clip();
+
+            // Glow layers under the crisp line
+            ctx.save();
+            ctx.strokeStyle = '#60a5fa';
+            ctx.lineWidth = 1.5;
+            ctx.lineCap = 'round';
+            ctx.lineJoin = 'round';
+            ctx.shadowColor = 'rgba(96, 165, 250, 0.35)';
+            for (let layer = 3; layer >= 1; layer--) {
+                ctx.shadowBlur = layer * 4;
+                ctx.stroke(linePath);
+            }
+            ctx.restore();
+            ctx.strokeStyle = '#60a5fa';
+            ctx.lineWidth = 1.25;
+            ctx.stroke(linePath);
+
+            // Cycle open/expiration markers
+            [state.cycleOpenMs, state.cycleCloseMs].forEach((boundaryMs) => {
+                if (!Number.isFinite(boundaryMs) || boundaryMs < tMin || boundaryMs > tMax) return;
+                const x = xFor(boundaryMs);
+                ctx.save();
+                ctx.strokeStyle = 'rgba(226, 232, 240, 0.6)';
+                ctx.lineWidth = 1;
+                ctx.setLineDash([4, 3]);
+                ctx.beginPath();
+                ctx.moveTo(x, pad.top);
+                ctx.lineTo(x, pad.top + state.plotHeight);
+                ctx.stroke();
+                ctx.restore();
+            });
+
+            // Floor strike line
+            if (floorStrike !== null) {
+                const y = yFor(floorStrike);
+                const lineY = (Math.round(y * state.dpr) + 0.5) / state.dpr;
+                const label = `${thmTradeDetailFloorText(state.trade, floorStrike)} floor`;
+                ctx.save();
+                ctx.font = '10px sans-serif';
+                ctx.textAlign = 'center';
+                ctx.textBaseline = 'middle';
+                const centerX = pad.left + state.plotWidth / 2;
+                const halfGap = ctx.measureText(label).width / 2 + 6;
+                ctx.strokeStyle = '#fbbf24';
+                ctx.lineWidth = 1 / state.dpr;
+                ctx.beginPath();
+                ctx.moveTo(pad.left, lineY);
+                ctx.lineTo(centerX - halfGap, lineY);
+                ctx.moveTo(centerX + halfGap, lineY);
+                ctx.lineTo(cssWidth - pad.right, lineY);
+                ctx.stroke();
+                ctx.fillStyle = '#fbbf24';
+                ctx.fillText(label, centerX, y);
+                ctx.restore();
+            }
+
+            // Entry/exit arrows
+            const markerHeight = 14;
+            const markerHalfWidth = 5;
+            const markerGap = 3;
+            (state.markers || []).forEach((marker) => {
+                if (marker.t < tMin || marker.t > tMax) return;
+                const x = xFor(marker.t);
+                const y = yFor(marker.v);
+                const apexY = marker.up ? y + markerGap : y - markerGap;
+                const baseY = marker.up ? apexY + markerHeight : apexY - markerHeight;
+                const arrow = new Path2D();
+                arrow.moveTo(x, apexY);
+                arrow.lineTo(x - markerHalfWidth, baseY);
+                arrow.lineTo(x + markerHalfWidth, baseY);
+                arrow.closePath();
+                ctx.save();
+                const markerColor = marker.up ? '#48bb78' : '#e54848';
+                ctx.fillStyle = markerColor;
+                ctx.fill(arrow);
+                if (marker.label) {
+                    ctx.font = '10px sans-serif';
+                    const boxWidth = ctx.measureText(marker.label).width + 8;
+                    const boxHeight = 14;
+                    const boxX = Math.min(
+                        Math.max(x - boxWidth / 2, pad.left + 2),
+                        pad.left + state.plotWidth - boxWidth - 2
+                    );
+                    const boxY = marker.up ? baseY + markerGap : baseY - markerGap - boxHeight;
+                    ctx.fillStyle = 'rgba(17, 25, 35, 0.94)';
+                    ctx.strokeStyle = markerColor;
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.rect(boxX, boxY, boxWidth, boxHeight);
+                    ctx.fill();
+                    ctx.stroke();
+                    ctx.fillStyle = markerColor;
+                    ctx.textAlign = 'center';
+                    ctx.textBaseline = 'middle';
+                    ctx.fillText(marker.label, boxX + boxWidth / 2, boxY + boxHeight / 2);
+                }
+                ctx.restore();
+            });
+            ctx.restore();
+        }
+
+        function thmUpdateTradeDetailChartTitle() {
+            const payload = _thmTradeDetailPayload;
+            const state = _thmTradeDetailChart;
+            const title = document.getElementById('thm-trade-detail-chart-title');
+            if (!payload || !state || !title) return;
+            const symbol = (payload.trade || {}).symbol || (payload.kalshi || {}).market_ticker || 'Symbol';
+            if (
+                state.points.length < 2 ||
+                !Number.isFinite(state.dataTMin) ||
+                !Number.isFinite(state.dataTMax)
+            ) {
+                title.textContent = `${symbol} price`;
+                return;
+            }
+            const startDate = new Date(state.dataTMin);
+            const endDate = new Date(state.dataTMax);
+            title.textContent =
+                `${symbol} · ${_thmTradeDetailDayFmt.format(startDate)} ` +
+                `${_thmTradeDetailTitleTimeFmt.format(startDate)} – ${_thmTradeDetailTitleTimeFmt.format(endDate)} ET`;
+        }
+
+        function thmUpdateTradeDetailChartStats(trade, kalshi) {
+            const floorValue = document.getElementById('thm-trade-detail-floor-value');
+            if (floorValue) {
+                const floor = thmTradeDetailFloorStrikeValue(trade, kalshi.market);
+                floorValue.textContent = thmTradeDetailFloorText(trade, floor);
+            }
+            const finalValue = document.getElementById('thm-trade-detail-final-value');
+            if (finalValue) {
+                const finalTick = thmTradeDetailFinalTickValue(kalshi);
+                finalValue.textContent = thmTradeDetailPriceText(trade.symbol, finalTick);
+                const floor = thmTradeDetailFloorStrikeValue(trade, kalshi.market);
+                if (Number.isFinite(floor) && floor !== 0 && Number.isFinite(finalTick)) {
+                    const pct = ((finalTick - floor) / floor) * 100;
+                    const diff = document.createElement('span');
+                    diff.className = 'thm-trade-detail-chart-stat-diff';
+                    diff.textContent = `(${pct > 0 ? '+' : ''}${pct.toFixed(3)}%)`;
+                    finalValue.appendChild(diff);
+                }
+            }
+        }
+
+        function thmTradeDetailErrorText(error, fallback) {
+            if (!error) return fallback;
+            if (typeof error === 'string') return error;
+            if (error.message) return error.message;
+            return fallback;
+        }
+
+        function thmUpdateTradeDetailSourceError(kalshi) {
+            const sourceError = document.getElementById('thm-trade-detail-live-error');
+            if (!sourceError) return;
+            const messages = [];
+            if (kalshi.live_data_error) {
+                messages.push(thmTradeDetailErrorText(kalshi.live_data_error, 'Kalshi live data unavailable.'));
+            }
+            if (messages.length) {
+                sourceError.textContent = messages.join(' ');
+                sourceError.hidden = false;
+            } else {
+                sourceError.hidden = true;
+            }
+        }
+
+        // Collapsed fill group functions
+        function thmTradeDetailGroupFillsByTime(fills) {
+            const groups = [];
+            const indexByTime = new Map();
+            (Array.isArray(fills) ? fills : []).forEach((fill) => {
+                const key = String(fill && fill.created_time != null ? fill.created_time : '');
+                let group = indexByTime.get(key);
+                if (!group) {
+                    group = { created_time: fill.created_time, fills: [] };
+                    indexByTime.set(key, group);
+                    groups.push(group);
+                }
+                group.fills.push(fill);
+            });
+            return groups;
+        }
+
+        function thmTradeDetailFillGroupTotals(fills) {
+            let totalCount = 0;
+            let weightedSum = 0;
+            let sideYes = 0;
+            let sideNo = 0;
+            fills.forEach((fill) => {
+                const count = Number(fill.count);
+                const price = Number(fill.price);
+                if (Number.isFinite(count)) totalCount += count;
+                if (Number.isFinite(count) && Number.isFinite(price)) weightedSum += count * price;
+                const outcome = fill.outcome_side ? String(fill.outcome_side).toUpperCase() : '';
+                if (outcome === 'YES' || outcome === 'Y') sideYes++;
+                else if (outcome === 'NO' || outcome === 'N') sideNo++;
+            });
+            const averagePrice = totalCount > 0 ? weightedSum / totalCount : NaN;
+            const side = sideYes > sideNo ? 'YES' : (sideNo > 0 ? 'NO' : '');
+            return { totalCount, averagePrice, side };
+        }
+
+        function thmTradeDetailSetFillGroupExpanded(groupId, expanded) {
+            const body = document.getElementById('thm-trade-detail-fills-body');
+            if (!body) return;
+            const summary = body.querySelector(
+                `tr.thm-trade-detail-fill-group-summary[data-fill-group="${groupId}"]`
+            );
+            if (!summary) return;
+            const open = Boolean(expanded);
+            summary.setAttribute('aria-expanded', open.toString());
+            const icon = summary.querySelector('.thm-trade-detail-fill-group-icon');
+            if (icon) icon.textContent = open ? '-' : '+';
+            body.querySelectorAll(
+                `tr.thm-trade-detail-fill-group-child[data-fill-group="${groupId}"]`
+            ).forEach((row) => {
+                row.hidden = !open;
+            });
+        }
+
+        function thmTradeDetailToggleFillGroup(groupId) {
+            const body = document.getElementById('thm-trade-detail-fills-body');
+            if (!body) return;
+            const summary = body.querySelector(
+                `tr.thm-trade-detail-fill-group-summary[data-fill-group="${groupId}"]`
+            );
+            if (!summary) return;
+            const open = summary.getAttribute('aria-expanded') === 'true';
+            thmTradeDetailSetFillGroupExpanded(groupId, !open);
+        }
+
+        function thmTradeDetailAppendFillCells(row, fill) {
+            const count = Number(fill.count);
+            const price = Number(fill.price);
+            const timeCell = document.createElement('td');
+            timeCell.textContent = thmTradeDetailFormatFillTime(fill.created_time);
+            row.appendChild(timeCell);
+            const countCell = document.createElement('td');
+            countCell.textContent = thmTradeDetailFormatFillCount(count);
+            row.appendChild(countCell);
+            const sideCell = document.createElement('td');
+            const phase = document.createElement('span');
+            phase.className = 'thm-trade-detail-fill-phase';
+            phase.textContent = fill.phase || '';
+            sideCell.appendChild(phase);
+            sideCell.append(document.createTextNode(thmTradeDetailFillSide(fill) || '—'));
+            row.appendChild(sideCell);
+            const priceCell = document.createElement('td');
+            priceCell.textContent = thmTradeDetailFormatFillPrice(price);
+            row.appendChild(priceCell);
+        }
 
         function thmTradeDetailDisplayValue(value) {
             if (value === null || value === undefined || value === '') return '—';
@@ -3087,32 +3850,72 @@
         function thmTradeDetailSetFills(fills) {
             const tbody = document.getElementById('thm-trade-detail-fills-body');
             if (!tbody) return;
-            if (!Array.isArray(fills) || fills.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="thm-trade-detail-fills-empty">No fills found.</td></tr>';
+            const groups = thmTradeDetailGroupFillsByTime(fills);
+            if (!groups.length) {
+                const row = document.createElement('tr');
+                const cell = document.createElement('td');
+                cell.colSpan = 4;
+                cell.className = 'thm-trade-detail-fills-empty';
+                cell.textContent = 'No fills found.';
+                row.appendChild(cell);
+                tbody.replaceChildren(row);
                 return;
             }
             const frag = document.createDocumentFragment();
-            fills.forEach((fill) => {
-                const count = Number(fill.count);
-                const price = Number(fill.price);
-                const tr = document.createElement('tr');
-                const timeCell = document.createElement('td');
-                timeCell.textContent = thmTradeDetailFormatFillTime(fill.created_time);
-                tr.appendChild(timeCell);
+            groups.forEach((group, idx) => {
+                const groupId = String(idx);
+                // Single-fill groups render inline; multi-fill groups collapse
+                if (group.fills.length === 1) {
+                    const row = document.createElement('tr');
+                    thmTradeDetailAppendFillCells(row, group.fills[0]);
+                    frag.appendChild(row);
+                    return;
+                }
+                // Collapsed group summary row
+                const totals = thmTradeDetailFillGroupTotals(group.fills);
+                const summary = document.createElement('tr');
+                summary.className = 'thm-trade-detail-fill-group-summary';
+                summary.dataset.fillGroup = groupId;
+                summary.setAttribute('aria-expanded', 'false');
+                summary.tabIndex = 0;
+                summary.setAttribute('role', 'button');
+
+                const timeNode = document.createElement('button');
+                timeNode.type = 'button';
+                timeNode.className = 'thm-trade-detail-fill-group-toggle';
+                timeNode.dataset.fillGroupToggle = groupId;
+                const icon = document.createElement('span');
+                icon.className = 'thm-trade-detail-fill-group-icon';
+                icon.setAttribute('aria-hidden', 'true');
+                icon.textContent = '+';
+                const timeLabel = document.createElement('span');
+                timeLabel.textContent = thmTradeDetailFormatFillTime(group.created_time);
+                const countLabel = document.createElement('span');
+                countLabel.className = 'thm-trade-detail-fill-group-count';
+                countLabel.textContent = `(${group.fills.length})`;
+                timeNode.append(icon, timeLabel, countLabel);
+
                 const countCell = document.createElement('td');
-                countCell.textContent = thmTradeDetailFormatFillCount(count);
-                tr.appendChild(countCell);
-                const sideCell = document.createElement('td');
-                const phase = document.createElement('span');
-                phase.className = 'thm-trade-detail-fill-phase';
-                phase.textContent = fill.phase || '';
-                sideCell.appendChild(phase);
-                sideCell.append(document.createTextNode(thmTradeDetailFillSide(fill) || '—'));
-                tr.appendChild(sideCell);
+                countCell.textContent = thmTradeDetailFormatFillCount(totals.totalCount);
                 const priceCell = document.createElement('td');
-                priceCell.textContent = thmTradeDetailFormatFillPrice(price);
-                tr.appendChild(priceCell);
-                frag.appendChild(tr);
+                priceCell.textContent = thmTradeDetailFormatFillPrice(totals.averagePrice);
+
+                const timeCell = document.createElement('td');
+                timeCell.appendChild(timeNode);
+                const sideCell = document.createElement('td');
+                sideCell.textContent = totals.side || '—';
+                summary.append(timeCell, countCell, sideCell, priceCell);
+                frag.appendChild(summary);
+
+                // Child rows (hidden by default)
+                group.fills.forEach((fill) => {
+                    const child = document.createElement('tr');
+                    child.className = 'thm-trade-detail-fill-group-child';
+                    child.dataset.fillGroup = groupId;
+                    child.hidden = true;
+                    thmTradeDetailAppendFillCells(child, fill);
+                    frag.appendChild(child);
+                });
             });
             tbody.replaceChildren(frag);
         }
@@ -3153,6 +3956,7 @@
                 _thmTradeDetailAbortController = null;
             }
             _thmTradeDetailPayload = null;
+            _thmTradeDetailChart = null;
             const modal = document.getElementById('thm-trade-detail-modal');
             if (modal) {
                 modal.hidden = true;
@@ -3167,6 +3971,15 @@
             thmTradeDetailSetRecordTab('fills');
             const fillsSection = document.getElementById('thm-trade-detail-fills-section');
             if (fillsSection) fillsSection.hidden = false;
+            // Reset chart stats
+            const floorValue = document.getElementById('thm-trade-detail-floor-value');
+            if (floorValue) floorValue.textContent = '—';
+            const finalValue = document.getElementById('thm-trade-detail-final-value');
+            if (finalValue) finalValue.textContent = '—';
+            const chartTitle = document.getElementById('thm-trade-detail-chart-title');
+            if (chartTitle) chartTitle.textContent = 'Symbol price';
+            const liveError = document.getElementById('thm-trade-detail-live-error');
+            if (liveError) liveError.hidden = true;
         }
 
         function thmRenderTradeDetail(payload) {
@@ -3228,6 +4041,17 @@
             const body = document.getElementById('thm-trade-detail-body');
             if (body) body.hidden = false;
             _thmTradeDetailPayload = payload;
+
+            // Build and render the chart
+            const kalshi = payload.kalshi || {};
+            const canvas = document.getElementById('thm-trade-detail-chart');
+            if (canvas) {
+                _thmTradeDetailChart = thmBuildTradeDetailChart(canvas);
+                thmRenderTradeDetailChart();
+                thmUpdateTradeDetailChartTitle();
+                thmUpdateTradeDetailChartStats(trade, kalshi);
+                thmUpdateTradeDetailSourceError(kalshi);
+            }
         }
 
         async function thmOpenTradeDetail(tradeId) {
@@ -3296,11 +4120,33 @@
                 toggle.addEventListener('click', thmTradeDetailToggleFieldsPanel);
             }
 
-            // Record tabs (fills/orders)
+            // Record tabs (fills/orders) and fill group toggles
             modal.addEventListener('click', (event) => {
                 const recordTab = event.target.closest && event.target.closest('[data-thm-record-tab]');
                 if (recordTab) {
                     thmTradeDetailSetRecordTab(recordTab.getAttribute('data-thm-record-tab'));
+                    return;
+                }
+                // Fill group toggle
+                const fillGroupToggle = event.target.closest && (
+                    event.target.closest('[data-fill-group-toggle]')
+                    || event.target.closest('tr.thm-trade-detail-fill-group-summary')
+                );
+                if (fillGroupToggle) {
+                    const groupId = fillGroupToggle.getAttribute('data-fill-group-toggle')
+                        || fillGroupToggle.getAttribute('data-fill-group');
+                    if (groupId != null) thmTradeDetailToggleFillGroup(groupId);
+                }
+            });
+
+            // Keyboard navigation for fill groups
+            modal.addEventListener('keydown', (event) => {
+                if (event.key !== 'Enter' && event.key !== ' ') return;
+                const fillGroupRow = event.target.closest
+                    && event.target.closest('tr.thm-trade-detail-fill-group-summary');
+                if (fillGroupRow) {
+                    event.preventDefault();
+                    thmTradeDetailToggleFillGroup(fillGroupRow.getAttribute('data-fill-group'));
                 }
             });
 
