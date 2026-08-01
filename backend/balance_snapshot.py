@@ -341,11 +341,14 @@ def compute_bankroll_current_ratchet_from_mtb(
     *,
     drawdown_halt_on: bool,
     drawdown_pct: Any,
+    prev_portfolio: Optional[int] = None,
 ) -> Tuple[int, bool]:
     """
     Same sticky bankroll / drawdown step-down rules as the non-transfer branch of
     ``apply_balance_snapshot`` (when automatic internal transfer did not fire).
     Returns (bankroll_current, bankroll_stepped_down).
+
+    ``prev_portfolio``: prior row portfolio for multi-tick drawdown halt confirmation.
     """
     try:
         _dd_ratio = float((100.0 - float(drawdown_pct)) / 100.0)
@@ -365,8 +368,19 @@ def compute_bankroll_current_ratchet_from_mtb(
         and master_bankroll_balance <= drawdown_threshold
     ):
         if prev_bankroll > drawdown_threshold:
-            bankroll_stepped_down = True
-        return master_bankroll_balance, bankroll_stepped_down
+            if _drawdown_crossing_confirmed(prev_portfolio, drawdown_threshold):
+                bankroll_stepped_down = True
+                return master_bankroll_balance, bankroll_stepped_down
+            _LOG.info(
+                "drawdown_crossing_pending_confirm master=%s prev_bankroll=%s "
+                "prev_portfolio=%s threshold=%s",
+                master_bankroll_balance,
+                prev_bankroll,
+                prev_portfolio,
+                drawdown_threshold,
+            )
+            return prev_bankroll, False
+        return master_bankroll_balance, False
     return prev_bankroll, False
 
 
@@ -415,11 +429,13 @@ def append_account_balance_after_withdrawal_cycle(
     drawdown_halt_on, drawdown_pct = get_drawdown_trading_controls(
         cursor, user_number=user_no or resolved_tenant_user_no_for_app()
     )
+    prev_portfolio = int(portfolio_v) if portfolio_v is not None else None
     bankroll_current, bankroll_stepped_down = compute_bankroll_current_ratchet_from_mtb(
         int(mtb_balance),
         int(prev_bankroll) if prev_bankroll is not None else None,
         drawdown_halt_on=drawdown_halt_on,
         drawdown_pct=drawdown_pct,
+        prev_portfolio=prev_portfolio,
     )
 
     bal_i = _balance_cents_int(balance_amount)
@@ -868,6 +884,7 @@ def apply_balance_snapshot(
         sql.SQL("SELECT portfolio, bankroll_current FROM {} ORDER BY id DESC LIMIT 1").format(ab_ident),
     )
     prev_result = cursor.fetchone()
+    prev_portfolio = int(prev_result[0]) if prev_result and prev_result[0] is not None else None
     prev_bankroll = prev_result[1] if prev_result else None
 
     user_no = parse_user_number_from_account_balance_table(account_balance_table)
@@ -932,7 +949,18 @@ def apply_balance_snapshot(
         ):
             drawdown_threshold = int(round(int(prev_bankroll) * _dd_ratio))
             if bankroll_current <= drawdown_threshold and int(prev_bankroll) > drawdown_threshold:
-                bankroll_stepped_down = True
+                if _drawdown_crossing_confirmed(prev_portfolio, drawdown_threshold):
+                    bankroll_stepped_down = True
+                else:
+                    _LOG.info(
+                        "drawdown_crossing_pending_confirm table=%s master=%s prev_bankroll=%s "
+                        "prev_portfolio=%s threshold=%s",
+                        account_balance_table,
+                        bankroll_current,
+                        prev_bankroll,
+                        prev_portfolio,
+                        drawdown_threshold,
+                    )
     elif skip_bankroll_ratchet and not is_paper and not is_subaccount_balance:
         bankroll_current = (
             int(prev_bankroll) if prev_bankroll is not None else int(master_bankroll_balance)
@@ -942,21 +970,13 @@ def apply_balance_snapshot(
         if paper_bankroll_force_match and is_paper:
             bankroll_current = master_bankroll_balance
         else:
-            drawdown_threshold = (int(round(prev_bankroll * _dd_ratio)) if prev_bankroll else None)
-            if prev_bankroll is None:
-                bankroll_current = master_bankroll_balance
-            elif master_bankroll_balance > prev_bankroll:
-                bankroll_current = master_bankroll_balance
-            elif (
-                drawdown_halt_on
-                and drawdown_threshold is not None
-                and master_bankroll_balance <= drawdown_threshold
-            ):
-                bankroll_current = master_bankroll_balance
-                if prev_bankroll > drawdown_threshold:
-                    bankroll_stepped_down = True
-            else:
-                bankroll_current = prev_bankroll
+            bankroll_current, bankroll_stepped_down = compute_bankroll_current_ratchet_from_mtb(
+                int(master_bankroll_balance),
+                int(prev_bankroll) if prev_bankroll is not None else None,
+                drawdown_halt_on=drawdown_halt_on,
+                drawdown_pct=drawdown_pct,
+                prev_portfolio=prev_portfolio,
+            )
     else:
         bankroll_current = prev_bankroll if prev_bankroll is not None else portfolio_value
 
@@ -1190,6 +1210,45 @@ def _balance_glitch_repoll_delays_sec() -> List[float]:
     return out if out else [2.0, 3.0, 5.0]
 
 
+def _understatement_min_drop_ratio() -> float:
+    try:
+        return min(0.95, max(0.05, float(os.environ.get("REC_BALANCE_UNDERSTATEMENT_MIN_DROP_RATIO", "0.25"))))
+    except (TypeError, ValueError):
+        return 0.25
+
+
+def _understatement_min_drop_cents() -> int:
+    try:
+        return max(0, int(os.environ.get("REC_BALANCE_UNDERSTATEMENT_MIN_DROP_CENTS", "10000")))
+    except (TypeError, ValueError):
+        return 10000
+
+
+def _drawdown_halt_confirm_ticks() -> int:
+    """Consecutive below-threshold portfolio observations required before emergency halt."""
+    try:
+        return max(1, int(os.environ.get("REC_DRAWDOWN_HALT_CONFIRM_TICKS", "2")))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _drawdown_crossing_confirmed(
+    prev_portfolio: Optional[int],
+    drawdown_threshold: int,
+) -> bool:
+    """
+    True when a bankroll drawdown crossing should fire the emergency halt.
+
+    confirm_ticks<=1 → immediate. Otherwise require the previous written portfolio
+    already at/below the threshold (second consecutive crash-sized reading).
+    """
+    if _drawdown_halt_confirm_ticks() <= 1:
+        return True
+    if prev_portfolio is None:
+        return False
+    return int(prev_portfolio) <= int(drawdown_threshold)
+
+
 def detect_settlement_balance_glitch(
     prev_row: dict,
     cash_cents: int,
@@ -1233,6 +1292,47 @@ def detect_settlement_balance_glitch(
         return False, ""
 
     return True, "pv_stale_with_cash_jump"
+
+
+def detect_settlement_portfolio_understatement(
+    prev_row: dict,
+    cash_cents: int,
+    pv_cents: int,
+) -> Tuple[bool, str]:
+    """
+    Return (is_glitch, reason) when Kalshi equity likely understates mid-settlement:
+    buys already debited from cash, marks cleared, settlement credits not yet applied
+    (large one-tick portfolio drop). Skip+repoll; if the drop persists across retries, write it.
+    """
+    if not prev_row:
+        return False, ""
+
+    prev_cash = int(prev_row.get("balance") or 0)
+    prev_pv = int(prev_row.get("portfolio_value") or 0)
+    prev_portfolio = int(prev_row.get("portfolio") or (prev_cash + prev_pv))
+    if prev_portfolio <= 0:
+        return False, ""
+
+    new_portfolio = int(cash_cents) + int(pv_cents)
+    drop = prev_portfolio - new_portfolio
+    if drop < _understatement_min_drop_cents():
+        return False, ""
+    if drop / float(prev_portfolio) < _understatement_min_drop_ratio():
+        return False, ""
+
+    return True, "portfolio_understatement_drop"
+
+
+def detect_mtb_balance_glitch(
+    prev_row: dict,
+    cash_cents: int,
+    pv_cents: int,
+) -> Tuple[bool, str]:
+    """Overstatement or understatement settlement race on MTB balance poll."""
+    is_glitch, reason = detect_settlement_balance_glitch(prev_row, cash_cents, pv_cents)
+    if is_glitch:
+        return True, reason
+    return detect_settlement_portfolio_understatement(prev_row, cash_cents, pv_cents)
 
 
 def _write_polled_subaccount_balances(
@@ -1311,8 +1411,10 @@ def poll_live_account_balances(
     When automatic MTB rake fires, posts Kalshi transfer #1→#0 and repolls once (full refresh).
     The post-rake write sets ``bankroll_current`` (MTB sab + hero) to the new MTB ``base_value``.
 
-    On suspected settlement double-count (cash up, stale portfolio_value), skips the DB write,
-    logs WARNING, and repolls with REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff.
+    On suspected settlement races (cash up + stale PV, or large one-tick portfolio
+    understatement), skips the DB write, logs WARNING, and repolls with
+    REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff. Overstatement that persists keeps the
+    last good row; understatement that persists is written (API consistently low).
 
     ``skip_automatic_mtb_rake``: set after manual CASH→MTB funding (base_value already raised).
     """
@@ -1391,7 +1493,7 @@ def poll_live_account_balances(
             prev_mtb = _latest_subaccount_balance_row(cursor, mtb_fqn)
             if prev_mtb:
                 d1 = details_by_number[1]
-                glitch_detected, glitch_reason = detect_settlement_balance_glitch(
+                glitch_detected, glitch_reason = detect_mtb_balance_glitch(
                     prev_mtb,
                     int(d1["balance_cents"]),
                     int(d1["portfolio_value_cents"]),
@@ -1407,11 +1509,13 @@ def poll_live_account_balances(
             prev_portfolio = int(prev_mtb.get("portfolio") or (prev_cash + prev_pv))
             api_cash = int(d1["balance_cents"])
             api_pv = int(d1["portfolio_value_cents"])
+            api_portfolio = api_cash + api_pv
             cash_delta = api_cash - prev_cash
+            portfolio_delta = api_portfolio - prev_portfolio
             _LOG.warning(
                 "balance_settlement_glitch_skipped user=%s subaccount=1 attempt=%s/%s "
                 "prev_cash=%s prev_pv=%s prev_portfolio=%s "
-                "api_cash=%s api_pv=%s api_portfolio=%s cash_delta=%s reason=%s",
+                "api_cash=%s api_pv=%s api_portfolio=%s cash_delta=%s portfolio_delta=%s reason=%s",
                 slot,
                 attempt,
                 max_attempts,
@@ -1420,21 +1524,35 @@ def poll_live_account_balances(
                 prev_portfolio,
                 api_cash,
                 api_pv,
-                api_cash + api_pv,
+                api_portfolio,
                 cash_delta,
+                portfolio_delta,
                 glitch_reason,
             )
             if attempt > len(repoll_delays):
-                _LOG.error(
-                    "balance glitch persists after %s repolls; keeping last good DB row (user=%s)",
-                    len(repoll_delays),
-                    slot,
-                )
-                return False, False
-            time.sleep(repoll_delays[attempt - 1])
-            continue
+                if glitch_reason == "portfolio_understatement_drop":
+                    _LOG.error(
+                        "balance understatement persists after %s repolls; writing confirmed "
+                        "low portfolio (user=%s api_portfolio=%s)",
+                        len(repoll_delays),
+                        slot,
+                        api_portfolio,
+                    )
+                    # Fall through to write — API consistently reports the drop.
+                else:
+                    _LOG.error(
+                        "balance glitch persists after %s repolls; keeping last good DB row (user=%s)",
+                        len(repoll_delays),
+                        slot,
+                    )
+                    return False, False
+            else:
+                time.sleep(repoll_delays[attempt - 1])
+                continue
 
-        if attempt > 1:
+        if attempt > 1 and not (
+            glitch_detected and glitch_reason == "portfolio_understatement_drop"
+        ):
             _LOG.info(
                 "balance_settlement_glitch_cleared user=%s attempt=%s delay_sec=%s",
                 slot,

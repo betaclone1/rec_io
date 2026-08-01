@@ -64,13 +64,23 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 **Automatic MTB rake (live):** When MTB `realized_pnl_pct` ≥ `target_pnl__pct` and `automatic_transfers` is on, `poll_live_account_balances` calls `POST /portfolio/subaccounts/transfer` **#1 → #0** for `transfer_amt × base_value` cents, updates MTB `base_value` in DB, then **repolls all subaccounts** (no throttle). Paper mode simulates the same destination (**CASH**) in `subaccounts_update` without Kalshi.
 
-**Settlement balance glitch guard (live):** Kalshi `GET /portfolio/balance?subaccount=1` can briefly return settlement cash in `balance` while `portfolio_value` still includes the settled position (~2–10s). [`poll_live_account_balances`](../backend/balance_snapshot.py) detects this pattern on **MTB (subaccount 1)** only when cash jumps and **PV is flat or up** (stale marks); a PV decrease is treated as a valid settlement/write. On match it **skips the DB write**, logs `balance_settlement_glitch_skipped` (WARNING), sleeps per `REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC` (default `2,3,5`), and repolls until clean (`balance_settlement_glitch_cleared` INFO) or retries exhaust (ERROR, last good row kept). Disabled when `REC_BALANCE_GLITCH_GUARD=0`, on automatic MTB rake repoll, or when `sync_balance` saw new external deposit events that cycle (`deposit_cycle`).
+**Settlement balance glitch guard (live):** Kalshi `GET /portfolio/balance?subaccount=1` can race around settlement in two ways:
+
+1. **Overstatement:** settlement cash in `balance` while `portfolio_value` still includes the settled mark (cash up, PV flat/up).
+2. **Understatement:** buys already debited and marks cleared before settlement credits land (large one-tick portfolio drop; e.g. ~50% false drawdown).
+
+[`poll_live_account_balances`](../backend/balance_snapshot.py) detects both on **MTB (subaccount 1)**. On match it **skips the DB write**, logs `balance_settlement_glitch_skipped` (WARNING), sleeps per `REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC` (default `2,3,5`), and repolls until clean (`balance_settlement_glitch_cleared` INFO). If retries exhaust: **overstatement** keeps the last good row; **understatement** writes the confirmed low reading (API consistently low). Disabled when `REC_BALANCE_GLITCH_GUARD=0`, on automatic MTB rake repoll, or when `sync_balance` saw new external deposit events that cycle (`deposit_cycle`).
+
+**Drawdown halt confirmation:** Emergency halt (`bankroll_stepped_down`) requires `REC_DRAWDOWN_HALT_CONFIRM_TICKS` consecutive crash-sized readings (default `2`): the previous written portfolio must already be at/below the drawdown threshold before the crossing fires. First observation keeps sticky `bankroll_current` and does not halt.
 
 | Env | Default | Purpose |
 |-----|---------|---------|
 | `REC_BALANCE_GLITCH_GUARD` | `1` | `0` / `false` disables settlement glitch skip+repoll |
-| `REC_BALANCE_GLITCH_MIN_CASH_DELTA_CENTS` | `1000` | Minimum cash increase ($10) before glitch heuristic runs |
+| `REC_BALANCE_GLITCH_MIN_CASH_DELTA_CENTS` | `1000` | Minimum cash increase ($10) before overstatement heuristic runs |
 | `REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC` | `2,3,5` | Comma-separated sleeps between repoll attempts after a skipped write |
+| `REC_BALANCE_UNDERSTATEMENT_MIN_DROP_RATIO` | `0.25` | Min fraction of prior portfolio dropped in one tick to treat as understatement |
+| `REC_BALANCE_UNDERSTATEMENT_MIN_DROP_CENTS` | `10000` | Min absolute portfolio drop ($100) for understatement heuristic |
+| `REC_DRAWDOWN_HALT_CONFIRM_TICKS` | `2` | Consecutive below-threshold portfolio observations before emergency halt (`1` = immediate) |
 
 **Note:** `limit=50` on fills/orders/settlements means long-tail completeness depends on **full reconciliation** (`ACCOUNT_SYNC_FULL_RECONCILE_SEC`, default 900s) and periodic quick syncs.
 

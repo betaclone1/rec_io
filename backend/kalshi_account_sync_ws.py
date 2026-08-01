@@ -1239,6 +1239,7 @@ def _force_latest_balance_deposit_bankroll(
         int(pre_deposit_bankroll_current),
         drawdown_halt_on=drawdown_halt_on,
         drawdown_pct=drawdown_pct,
+        prev_portfolio=int(portfolio_value) if portfolio_value is not None else None,
     )
     ab_ident = sql_ident_qualified_table(account_balance_table)
     cursor.execute(

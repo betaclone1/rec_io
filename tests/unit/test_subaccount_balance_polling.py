@@ -5,7 +5,10 @@ from unittest.mock import MagicMock, patch
 from backend.balance_snapshot import (
     aggregate_account_balance_from_subaccounts,
     apply_balance_snapshot,
+    compute_bankroll_current_ratchet_from_mtb,
+    detect_mtb_balance_glitch,
     detect_settlement_balance_glitch,
+    detect_settlement_portfolio_understatement,
     poll_live_account_balances,
 )
 
@@ -71,6 +74,168 @@ def test_detect_settlement_balance_glitch_not_cheap_winner_small_pv_drop():
     is_glitch, reason = detect_settlement_balance_glitch(prev, 597010, 486)
     assert is_glitch is False
     assert reason == ""
+
+
+def test_detect_understatement_tonight_190723_pattern():
+    """Jul 31: mid-settlement cash understated + PV cleared (~50% portfolio drop)."""
+    prev = _mtb_prev_row(758245, 322257, 1080502)
+    is_glitch, reason = detect_settlement_portfolio_understatement(prev, 539721, 0)
+    assert is_glitch is True
+    assert reason == "portfolio_understatement_drop"
+    combined, combined_reason = detect_mtb_balance_glitch(prev, 539721, 0)
+    assert combined is True
+    assert combined_reason == "portfolio_understatement_drop"
+
+
+def test_detect_understatement_jul30_pattern():
+    prev = _mtb_prev_row(456817, 311952, 768769)
+    is_glitch, reason = detect_settlement_portfolio_understatement(prev, 255583, 267927)
+    assert is_glitch is True
+    assert reason == "portfolio_understatement_drop"
+
+
+def test_detect_understatement_not_small_mark_move():
+    prev = _mtb_prev_row(1074582, 0, 1074582)
+    is_glitch, _ = detect_settlement_portfolio_understatement(prev, 1074582, 0)
+    assert is_glitch is False
+    is_glitch, _ = detect_settlement_portfolio_understatement(prev, 967124, 0)
+    assert is_glitch is False
+
+
+def test_ratchet_first_crossing_keeps_sticky_no_halt():
+    bankroll, stepped = compute_bankroll_current_ratchet_from_mtb(
+        539721,
+        1104122,
+        drawdown_halt_on=True,
+        drawdown_pct=50,
+        prev_portfolio=1080502,
+    )
+    assert bankroll == 1104122
+    assert stepped is False
+
+
+def test_ratchet_second_crossing_steps_and_halts():
+    bankroll, stepped = compute_bankroll_current_ratchet_from_mtb(
+        539721,
+        1104122,
+        drawdown_halt_on=True,
+        drawdown_pct=50,
+        prev_portfolio=539721,
+    )
+    assert bankroll == 539721
+    assert stepped is True
+
+
+def test_ratchet_confirm_ticks_1_halts_immediately(monkeypatch):
+    monkeypatch.setenv("REC_DRAWDOWN_HALT_CONFIRM_TICKS", "1")
+    bankroll, stepped = compute_bankroll_current_ratchet_from_mtb(
+        539721,
+        1104122,
+        drawdown_halt_on=True,
+        drawdown_pct=50,
+        prev_portfolio=1080502,
+    )
+    assert bankroll == 539721
+    assert stepped is True
+
+
+def test_poll_live_account_balances_skips_understatement_then_writes_recovered(monkeypatch):
+    prev = _mtb_prev_row(758245, 322257, 1080502)
+    mtb_fetch_sequence = [
+        {"balance_cents": 539721, "portfolio_value_cents": 0, "total_portfolio_cents": 539721},
+        {"balance_cents": 1091721, "portfolio_value_cents": 0, "total_portfolio_cents": 1091721},
+    ]
+    mtb_fetch_calls = {"n": 0}
+
+    def fake_fetch(slot, *, subaccount=None):
+        if subaccount == 0:
+            return {"balance_cents": 10000, "portfolio_value_cents": 0, "total_portfolio_cents": 10000}
+        if subaccount == 1:
+            idx = min(mtb_fetch_calls["n"], len(mtb_fetch_sequence) - 1)
+            mtb_fetch_calls["n"] += 1
+            return dict(mtb_fetch_sequence[idx])
+        return None
+
+    apply_calls = []
+
+    monkeypatch.setattr(
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
+        lambda slot: {0: 10000, 1: 758245},
+    )
+    monkeypatch.setattr(
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
+        fake_fetch,
+    )
+    monkeypatch.setattr("backend.kalshi_account_sync_ws._sync_subaccounts_from_kalshi_poll", lambda *a, **k: None)
+    monkeypatch.setattr("backend.balance_snapshot.refresh_mtb_realized_pnl_from_balance", lambda *a, **k: None)
+    monkeypatch.setattr("backend.balance_snapshot.maybe_execute_live_automatic_mtb_rake", lambda *a, **k: False)
+    monkeypatch.setattr("backend.balance_snapshot._subaccount_numbers_from_subaccounts_table", lambda *a, **k: [0, 1])
+    monkeypatch.setattr("backend.balance_snapshot.ensure_subaccount_balance_table", lambda *a, **k: None)
+    monkeypatch.setattr("backend.balance_snapshot._latest_subaccount_balance_row", lambda *a, **k: dict(prev))
+    monkeypatch.setattr(
+        "backend.balance_snapshot.apply_balance_snapshot",
+        lambda *a, **k: apply_calls.append(k) or (True, False),
+    )
+    monkeypatch.setattr(
+        "backend.balance_snapshot.aggregate_account_balance_from_subaccounts",
+        lambda *a, **k: (True, False),
+    )
+    monkeypatch.setattr("backend.balance_snapshot._balance_glitch_repoll_delays_sec", lambda: [0.0])
+    monkeypatch.setattr("backend.balance_snapshot.time.sleep", lambda _s: None)
+
+    cur = MagicMock()
+    inserted, _ = poll_live_account_balances(cur, "0001", throttle=False)
+    assert inserted is True
+    assert mtb_fetch_calls["n"] == 2
+    mtb_writes = [c for c in apply_calls if "subaccount_balance_0001_1" in c.get("account_balance_table", "")]
+    assert mtb_writes
+    assert mtb_writes[-1]["portfolio_value"] == 1091721
+
+
+def test_poll_live_account_balances_understatement_exhausted_still_writes(monkeypatch):
+    prev = _mtb_prev_row(758245, 322257, 1080502)
+    low = {"balance_cents": 539721, "portfolio_value_cents": 0, "total_portfolio_cents": 539721}
+
+    def fake_fetch(slot, *, subaccount=None):
+        if subaccount == 0:
+            return {"balance_cents": 10000, "portfolio_value_cents": 0, "total_portfolio_cents": 10000}
+        if subaccount == 1:
+            return dict(low)
+        return None
+
+    apply_calls = []
+
+    monkeypatch.setattr(
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
+        lambda slot: {0: 10000, 1: 758245},
+    )
+    monkeypatch.setattr(
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
+        fake_fetch,
+    )
+    monkeypatch.setattr("backend.kalshi_account_sync_ws._sync_subaccounts_from_kalshi_poll", lambda *a, **k: None)
+    monkeypatch.setattr("backend.balance_snapshot.refresh_mtb_realized_pnl_from_balance", lambda *a, **k: None)
+    monkeypatch.setattr("backend.balance_snapshot.maybe_execute_live_automatic_mtb_rake", lambda *a, **k: False)
+    monkeypatch.setattr("backend.balance_snapshot._subaccount_numbers_from_subaccounts_table", lambda *a, **k: [0, 1])
+    monkeypatch.setattr("backend.balance_snapshot.ensure_subaccount_balance_table", lambda *a, **k: None)
+    monkeypatch.setattr("backend.balance_snapshot._latest_subaccount_balance_row", lambda *a, **k: dict(prev))
+    monkeypatch.setattr(
+        "backend.balance_snapshot.apply_balance_snapshot",
+        lambda *a, **k: apply_calls.append(k) or (True, False),
+    )
+    monkeypatch.setattr(
+        "backend.balance_snapshot.aggregate_account_balance_from_subaccounts",
+        lambda *a, **k: (True, False),
+    )
+    monkeypatch.setattr("backend.balance_snapshot._balance_glitch_repoll_delays_sec", lambda: [0.0, 0.0, 0.0])
+    monkeypatch.setattr("backend.balance_snapshot.time.sleep", lambda _s: None)
+
+    cur = MagicMock()
+    inserted, _ = poll_live_account_balances(cur, "0001", throttle=False)
+    assert inserted is True
+    mtb_writes = [c for c in apply_calls if "subaccount_balance_0001_1" in c.get("account_balance_table", "")]
+    assert mtb_writes
+    assert mtb_writes[-1]["portfolio_value"] == 539721
 
 
 def test_poll_live_account_balances_skips_glitch_then_writes_clean(monkeypatch):
