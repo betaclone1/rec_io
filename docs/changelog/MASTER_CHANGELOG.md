@@ -16,13 +16,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Docs: `docs/PORTFOLIO_ACCOUNT_SYNC.md`. No migrations.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart account sync (loads `balance_snapshot` glitch/halt logic):  
+- [x] Restart account sync (loads `balance_snapshot` glitch/halt logic):  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart kalshi_account_sync_0001`
   (Restart other `kalshi_account_sync_*` tenants if present and active.)
-- [ ] Verify: `supervisorctl … status kalshi_account_sync_0001` RUNNING; `curl -sSf http://127.0.0.1:3000/health`; no import/SyntaxError in `logs/kalshi_account_sync_0001.err.log` after restart.
-- [ ] Record release in DB:  
+- [x] Verify: `supervisorctl … status kalshi_account_sync_0001` RUNNING; `curl -sSf http://127.0.0.1:3000/health`; no import/SyntaxError in `logs/kalshi_account_sync_0001.err.log` after restart.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.5`
 
 ---
