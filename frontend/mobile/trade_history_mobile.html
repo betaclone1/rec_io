@@ -740,6 +740,237 @@
                 padding: 4px 6px;
             }
         }
+
+        /* ========== Mobile Trade Detail View ========== */
+        .thm-trade-detail-modal[hidden] {
+            display: none;
+        }
+        .thm-trade-detail-modal {
+            position: fixed;
+            inset: 0;
+            z-index: 15000;
+            display: flex;
+            flex-direction: column;
+            background: #101018;
+            overflow: hidden;
+        }
+        .thm-trade-detail-header {
+            position: sticky;
+            top: 0;
+            z-index: 1;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            padding: 12px 14px;
+            background: #1f2937;
+            border-bottom: 1px solid #4a5568;
+            flex-shrink: 0;
+        }
+        .thm-trade-detail-title {
+            margin: 0;
+            font-size: 15px;
+            font-weight: 600;
+            color: #fff;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+            flex: 1;
+        }
+        .thm-trade-detail-title-paper {
+            color: #fbbf24;
+            font-weight: 700;
+        }
+        .thm-trade-detail-close {
+            width: 36px;
+            height: 36px;
+            border: 1px solid #596579;
+            border-radius: 6px;
+            color: #e2e8f0;
+            background: #2a3441;
+            cursor: pointer;
+            font-size: 22px;
+            line-height: 1;
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .thm-trade-detail-close:active {
+            background: #374151;
+        }
+        .thm-trade-detail-body {
+            flex: 1;
+            overflow-y: auto;
+            padding: 14px;
+            -webkit-overflow-scrolling: touch;
+        }
+        .thm-trade-detail-status {
+            padding: 24px 14px;
+            color: #a0aec0;
+            text-align: center;
+            font-size: 14px;
+        }
+        .thm-trade-detail-status.thm-trade-detail-error {
+            color: #fca5a5;
+        }
+        .thm-trade-detail-section {
+            margin-bottom: 14px;
+            padding: 12px;
+            background: #1f2633;
+            border: 1px solid #374151;
+            border-radius: 8px;
+        }
+        .thm-trade-detail-section:last-child {
+            margin-bottom: 0;
+        }
+        .thm-trade-detail-section h3 {
+            margin: 0 0 10px;
+            font-size: 13px;
+            font-weight: 600;
+            color: #fff;
+        }
+
+        /* Summary grid - vertical stacked for mobile */
+        .thm-trade-detail-summary {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 10px;
+        }
+        .thm-trade-detail-summary-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            text-align: center;
+        }
+        .thm-trade-detail-summary-label {
+            font-size: 10px;
+            color: #8fa0b7;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-bottom: 2px;
+        }
+        .thm-trade-detail-summary-value {
+            font-size: 15px;
+            font-weight: 600;
+            color: #f8fafc;
+        }
+
+        /* Field grid - two column for mobile */
+        .thm-trade-detail-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 8px 14px;
+        }
+        .thm-trade-detail-field {
+            display: flex;
+            flex-direction: column;
+        }
+        .thm-trade-detail-field-label {
+            font-size: 10px;
+            color: #8fa0b7;
+            text-transform: uppercase;
+            letter-spacing: 0.03em;
+            margin-bottom: 1px;
+        }
+        .thm-trade-detail-field-value {
+            font-size: 13px;
+            color: #e2e8f0;
+            word-break: break-word;
+        }
+
+        /* Details toggle */
+        .thm-trade-detail-toggle {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            padding: 8px 0;
+            cursor: pointer;
+            border: none;
+            background: transparent;
+            width: 100%;
+            color: #e2e8f0;
+            font-size: 13px;
+            font-weight: 600;
+        }
+        .thm-trade-detail-toggle-icon {
+            font-size: 14px;
+            transition: transform 0.2s;
+        }
+        .thm-trade-detail-toggle[aria-expanded="true"] .thm-trade-detail-toggle-icon {
+            transform: rotate(180deg);
+        }
+        .thm-trade-detail-expandable[hidden] {
+            display: none;
+        }
+
+        /* Fills table for mobile */
+        .thm-trade-detail-fills-wrap {
+            overflow-x: auto;
+            -webkit-overflow-scrolling: touch;
+        }
+        .thm-trade-detail-fills-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 11px;
+            color: #f8fafc;
+        }
+        .thm-trade-detail-fills-table th,
+        .thm-trade-detail-fills-table td {
+            padding: 8px 10px;
+            text-align: center;
+            border-bottom: 1px solid #374151;
+        }
+        .thm-trade-detail-fills-table th {
+            color: #8fa0b7;
+            font-size: 9px;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            background: #1f2633;
+            position: sticky;
+            top: 0;
+        }
+        .thm-trade-detail-fills-empty {
+            color: #718096;
+            font-style: italic;
+        }
+        .thm-trade-detail-fill-phase {
+            margin-right: 4px;
+            color: #8fa0b7;
+            font-size: 8px;
+            text-transform: uppercase;
+        }
+
+        /* Record tabs */
+        .thm-trade-detail-record-tabs {
+            display: flex;
+            align-items: center;
+            gap: 16px;
+            margin-bottom: 10px;
+            border-bottom: 1px solid #374151;
+            padding-bottom: 8px;
+        }
+        .thm-trade-detail-record-tab {
+            margin: 0;
+            padding: 0;
+            border: 0;
+            background: transparent;
+            color: #fff;
+            cursor: pointer;
+            font-size: 13px;
+            font-weight: 600;
+            opacity: 0.4;
+            transition: opacity 0.2s;
+        }
+        .thm-trade-detail-record-tab:hover,
+        .thm-trade-detail-record-tab.active {
+            opacity: 1;
+        }
+        .thm-trade-detail-record-panel[hidden] {
+            display: none;
+        }
     </style>
 </head>
 <body>
@@ -1036,6 +1267,113 @@
                     <tr><td colspan="23">Loading...</td></tr>
                 </tbody>
             </table>
+        </div>
+    </div>
+
+    <!-- Mobile Trade Detail View Modal -->
+    <div id="thm-trade-detail-modal" class="thm-trade-detail-modal" hidden aria-hidden="true">
+        <header class="thm-trade-detail-header">
+            <h2 id="thm-trade-detail-title" class="thm-trade-detail-title">Trade detail</h2>
+            <button
+                id="thm-trade-detail-close"
+                class="thm-trade-detail-close"
+                type="button"
+                aria-label="Close trade detail"
+            >&times;</button>
+        </header>
+        <div id="thm-trade-detail-status" class="thm-trade-detail-status">Loading trade detail…</div>
+        <div id="thm-trade-detail-body" class="thm-trade-detail-body" hidden>
+            <!-- Summary section -->
+            <section class="thm-trade-detail-section">
+                <div id="thm-trade-detail-summary" class="thm-trade-detail-summary"></div>
+            </section>
+
+            <!-- Expandable details -->
+            <section class="thm-trade-detail-section">
+                <button
+                    type="button"
+                    id="thm-trade-detail-toggle"
+                    class="thm-trade-detail-toggle"
+                    aria-expanded="false"
+                    aria-controls="thm-trade-detail-expandable"
+                >
+                    <span>Trade Details</span>
+                    <span class="thm-trade-detail-toggle-icon">▼</span>
+                </button>
+                <div id="thm-trade-detail-expandable" class="thm-trade-detail-expandable" hidden>
+                    <div id="thm-trade-detail-grid" class="thm-trade-detail-grid"></div>
+                </div>
+            </section>
+
+            <!-- Fills / Orders section -->
+            <section id="thm-trade-detail-fills-section" class="thm-trade-detail-section">
+                <div class="thm-trade-detail-record-tabs" role="tablist" aria-label="Execution records">
+                    <button
+                        type="button"
+                        id="thm-trade-detail-fills-tab"
+                        class="thm-trade-detail-record-tab active"
+                        role="tab"
+                        aria-selected="true"
+                        aria-controls="thm-trade-detail-fills-panel"
+                        data-thm-record-tab="fills"
+                    >Fills</button>
+                    <button
+                        type="button"
+                        id="thm-trade-detail-orders-tab"
+                        class="thm-trade-detail-record-tab"
+                        role="tab"
+                        aria-selected="false"
+                        aria-controls="thm-trade-detail-orders-panel"
+                        data-thm-record-tab="orders"
+                    >Orders</button>
+                </div>
+                <div
+                    id="thm-trade-detail-fills-panel"
+                    class="thm-trade-detail-record-panel"
+                    role="tabpanel"
+                    aria-labelledby="thm-trade-detail-fills-tab"
+                >
+                    <div class="thm-trade-detail-fills-wrap">
+                        <table class="thm-trade-detail-fills-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Count</th>
+                                    <th>Side</th>
+                                    <th>Price</th>
+                                </tr>
+                            </thead>
+                            <tbody id="thm-trade-detail-fills-body">
+                                <tr><td colspan="4" class="thm-trade-detail-fills-empty">No fills found.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+                <div
+                    id="thm-trade-detail-orders-panel"
+                    class="thm-trade-detail-record-panel"
+                    role="tabpanel"
+                    aria-labelledby="thm-trade-detail-orders-tab"
+                    hidden
+                >
+                    <div class="thm-trade-detail-fills-wrap">
+                        <table class="thm-trade-detail-fills-table">
+                            <thead>
+                                <tr>
+                                    <th>Time</th>
+                                    <th>Side</th>
+                                    <th>Price</th>
+                                    <th>Initial</th>
+                                    <th>Filled</th>
+                                </tr>
+                            </thead>
+                            <tbody id="thm-trade-detail-orders-body">
+                                <tr><td colspan="5" class="thm-trade-detail-fills-empty">No orders found.</td></tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+            </section>
         </div>
     </div>
 
@@ -2582,6 +2920,405 @@
             }
             return raw;
         }
+
+        // ========== Mobile Trade Detail View Functions ==========
+        let _thmTradeDetailAbortController = null;
+        let _thmTradeDetailPayload = null;
+        let _thmTradeDetailListenersBound = false;
+
+        const _thmTradeDetailTimeFmt = new Intl.DateTimeFormat('en-US', {
+            timeZone: 'America/New_York',
+            hour: 'numeric',
+            minute: '2-digit',
+            second: '2-digit',
+        });
+
+        function thmTradeDetailDisplayValue(value) {
+            if (value === null || value === undefined || value === '') return '—';
+            if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+            if (typeof value === 'object') {
+                try { return JSON.stringify(value); }
+                catch (_e) { return String(value); }
+            }
+            return String(value);
+        }
+
+        function thmTradeDetailMonitorId(monitor) {
+            const raw = monitor == null ? '' : String(monitor).trim();
+            if (!raw) return '';
+            const tail = raw.split('_').pop();
+            return /^[0-9]+$/.test(tail) ? tail : raw;
+        }
+
+        function thmTradeDetailIsPaperTrade(trade) {
+            const pt = trade && trade.paper_trade;
+            return pt === true || pt === 1 || pt === 'true' || pt === '1' || pt === 'True';
+        }
+
+        function thmTradeDetailClosedText(trade) {
+            const raw = trade && trade.closed_at != null ? String(trade.closed_at).trim() : '';
+            if (!raw) return '—';
+            const parts = raw.split(/\s+/).filter(Boolean);
+            const tradeDate = trade.date != null ? String(trade.date).trim() : '';
+            if (parts.length === 2 && tradeDate && parts[0] === tradeDate) return parts[1];
+            return raw;
+        }
+
+        function thmTradeDetailFormatFillTime(createdTime) {
+            const createdMs = Date.parse(createdTime || '');
+            return Number.isFinite(createdMs)
+                ? `${_thmTradeDetailTimeFmt.format(new Date(createdMs))} ET`
+                : '—';
+        }
+
+        function thmTradeDetailFormatFillCount(count) {
+            return Number.isFinite(count)
+                ? count.toLocaleString('en-US', { maximumFractionDigits: 2 })
+                : '—';
+        }
+
+        function thmTradeDetailFormatFillPrice(price) {
+            return Number.isFinite(price) ? price.toFixed(4) : '—';
+        }
+
+        function thmTradeDetailFillSide(fill) {
+            return fill && fill.outcome_side
+                ? String(fill.outcome_side).trim().toUpperCase()
+                : '';
+        }
+
+        function thmTradeDetailSetSummary(trade) {
+            const host = document.getElementById('thm-trade-detail-summary');
+            if (!host) return;
+
+            const signColor = (value) => {
+                if (!Number.isFinite(value) || value === 0) return '';
+                return value > 0 ? '#28a745' : '#dc3545';
+            };
+
+            const pnl = Number(trade.pnl);
+            const ret = Number(trade.ret_pct);
+            const buy = Number(trade.buy_price);
+            const sell = Number(trade.sell_price);
+            const wlBucket = thmWinLossBucket(trade);
+
+            const items = [
+                ['Time', thmTradeDetailDisplayValue(trade.time), ''],
+                ['Closed', thmTradeDetailClosedText(trade), ''],
+                ['Side', thmTradeDetailDisplayValue(trade.side), ''],
+                ['Buy', Number.isFinite(buy) ? buy.toFixed(2) : '—', ''],
+                ['Sell', Number.isFinite(sell) ? sell.toFixed(2) : '—', ''],
+                ['Position', thmTradeDetailDisplayValue(trade.position), ''],
+                [
+                    'W/L',
+                    wlBucket === 'w' ? 'W' : (wlBucket === 'l' ? 'L' : thmTradeDetailDisplayValue(trade.win_loss)),
+                    wlBucket === 'w' ? '#28a745' : (wlBucket === 'l' ? '#dc3545' : ''),
+                ],
+                [
+                    'PnL',
+                    Number.isFinite(pnl)
+                        ? `$${pnl.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`
+                        : '—',
+                    signColor(pnl),
+                ],
+                ['Ret %', Number.isFinite(ret) ? `${ret.toFixed(2)}%` : '—', signColor(ret)],
+            ];
+
+            const frag = document.createDocumentFragment();
+            items.forEach(([label, text, color]) => {
+                const item = document.createElement('div');
+                item.className = 'thm-trade-detail-summary-item';
+                const labelEl = document.createElement('span');
+                labelEl.className = 'thm-trade-detail-summary-label';
+                labelEl.textContent = label;
+                const valueEl = document.createElement('span');
+                valueEl.className = 'thm-trade-detail-summary-value';
+                valueEl.textContent = text;
+                if (color) valueEl.style.color = color;
+                item.appendChild(labelEl);
+                item.appendChild(valueEl);
+                frag.appendChild(item);
+            });
+            host.replaceChildren(frag);
+        }
+
+        function thmTradeDetailSetFields(fields) {
+            const host = document.getElementById('thm-trade-detail-grid');
+            if (!host) return;
+            const frag = document.createDocumentFragment();
+            fields.forEach(([label, value]) => {
+                const field = document.createElement('div');
+                field.className = 'thm-trade-detail-field';
+                const labelEl = document.createElement('span');
+                labelEl.className = 'thm-trade-detail-field-label';
+                labelEl.textContent = label;
+                const valueEl = document.createElement('span');
+                valueEl.className = 'thm-trade-detail-field-value';
+                valueEl.textContent = thmTradeDetailDisplayValue(value);
+                field.appendChild(labelEl);
+                field.appendChild(valueEl);
+                frag.appendChild(field);
+            });
+            host.replaceChildren(frag);
+        }
+
+        function thmTradeDetailSetFieldsExpanded(expanded) {
+            const toggle = document.getElementById('thm-trade-detail-toggle');
+            const expandable = document.getElementById('thm-trade-detail-expandable');
+            if (!toggle || !expandable) return;
+            expandable.hidden = !expanded;
+            toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+        }
+
+        function thmTradeDetailToggleFieldsPanel() {
+            const expandable = document.getElementById('thm-trade-detail-expandable');
+            if (!expandable) return;
+            thmTradeDetailSetFieldsExpanded(expandable.hidden);
+        }
+
+        function thmTradeDetailSetRecordTab(tabName) {
+            const fillsTab = document.getElementById('thm-trade-detail-fills-tab');
+            const ordersTab = document.getElementById('thm-trade-detail-orders-tab');
+            const fillsPanel = document.getElementById('thm-trade-detail-fills-panel');
+            const ordersPanel = document.getElementById('thm-trade-detail-orders-panel');
+            if (!fillsTab || !ordersTab || !fillsPanel || !ordersPanel) return;
+            const isFills = tabName === 'fills';
+            fillsTab.classList.toggle('active', isFills);
+            ordersTab.classList.toggle('active', !isFills);
+            fillsTab.setAttribute('aria-selected', isFills ? 'true' : 'false');
+            ordersTab.setAttribute('aria-selected', !isFills ? 'true' : 'false');
+            fillsPanel.hidden = !isFills;
+            ordersPanel.hidden = isFills;
+        }
+
+        function thmTradeDetailSetFills(fills) {
+            const tbody = document.getElementById('thm-trade-detail-fills-body');
+            if (!tbody) return;
+            if (!Array.isArray(fills) || fills.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="thm-trade-detail-fills-empty">No fills found.</td></tr>';
+                return;
+            }
+            const frag = document.createDocumentFragment();
+            fills.forEach((fill) => {
+                const count = Number(fill.count);
+                const price = Number(fill.price);
+                const tr = document.createElement('tr');
+                const timeCell = document.createElement('td');
+                timeCell.textContent = thmTradeDetailFormatFillTime(fill.created_time);
+                tr.appendChild(timeCell);
+                const countCell = document.createElement('td');
+                countCell.textContent = thmTradeDetailFormatFillCount(count);
+                tr.appendChild(countCell);
+                const sideCell = document.createElement('td');
+                const phase = document.createElement('span');
+                phase.className = 'thm-trade-detail-fill-phase';
+                phase.textContent = fill.phase || '';
+                sideCell.appendChild(phase);
+                sideCell.append(document.createTextNode(thmTradeDetailFillSide(fill) || '—'));
+                tr.appendChild(sideCell);
+                const priceCell = document.createElement('td');
+                priceCell.textContent = thmTradeDetailFormatFillPrice(price);
+                tr.appendChild(priceCell);
+                frag.appendChild(tr);
+            });
+            tbody.replaceChildren(frag);
+        }
+
+        function thmTradeDetailSetOrders(orders) {
+            const tbody = document.getElementById('thm-trade-detail-orders-body');
+            if (!tbody) return;
+            if (!Array.isArray(orders) || orders.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="5" class="thm-trade-detail-fills-empty">No orders found.</td></tr>';
+                return;
+            }
+            const frag = document.createDocumentFragment();
+            orders.forEach((order) => {
+                const price = Number(order.avg_price || order.price);
+                const initialCount = Number(order.remaining_count) + Number(order.filled_count || 0);
+                const fillCount = Number(order.filled_count);
+                const tr = document.createElement('tr');
+                const cells = [
+                    thmTradeDetailFormatFillTime(order.created_time),
+                    order.side ? String(order.side).toUpperCase() : '—',
+                    thmTradeDetailFormatFillPrice(price),
+                    thmTradeDetailFormatFillCount(initialCount),
+                    thmTradeDetailFormatFillCount(fillCount),
+                ];
+                cells.forEach((txt) => {
+                    const td = document.createElement('td');
+                    td.textContent = txt;
+                    tr.appendChild(td);
+                });
+                frag.appendChild(tr);
+            });
+            tbody.replaceChildren(frag);
+        }
+
+        function thmCloseTradeDetail() {
+            if (_thmTradeDetailAbortController) {
+                _thmTradeDetailAbortController.abort();
+                _thmTradeDetailAbortController = null;
+            }
+            _thmTradeDetailPayload = null;
+            const modal = document.getElementById('thm-trade-detail-modal');
+            if (modal) {
+                modal.hidden = true;
+                modal.setAttribute('aria-hidden', 'true');
+            }
+            document.getElementById('thm-trade-detail-body')?.setAttribute('hidden', '');
+            document.getElementById('thm-trade-detail-summary')?.replaceChildren();
+            document.getElementById('thm-trade-detail-grid')?.replaceChildren();
+            thmTradeDetailSetFieldsExpanded(false);
+            thmTradeDetailSetFills([]);
+            thmTradeDetailSetOrders([]);
+            thmTradeDetailSetRecordTab('fills');
+            const fillsSection = document.getElementById('thm-trade-detail-fills-section');
+            if (fillsSection) fillsSection.hidden = false;
+        }
+
+        function thmRenderTradeDetail(payload) {
+            const trade = payload.trade || {};
+            const isPaper = thmTradeDetailIsPaperTrade(trade);
+            const titleParts = [`Trade ${thmTradeDetailDisplayValue(trade.id)}`];
+            const monitorId = thmTradeDetailMonitorId(trade.monitor);
+            if (monitorId) titleParts.push(`Mon ${monitorId}`);
+            const strategy = tradeHistoryDisplayStrategy(trade);
+            if (strategy) titleParts.push(strategy);
+
+            const titleEl = document.getElementById('thm-trade-detail-title');
+            if (titleEl) {
+                titleEl.replaceChildren();
+                titleEl.append(document.createTextNode(titleParts.join(' - ')));
+                if (isPaper) {
+                    const paperTag = document.createElement('span');
+                    paperTag.className = 'thm-trade-detail-title-paper';
+                    paperTag.textContent = ' PAPER';
+                    titleEl.appendChild(paperTag);
+                }
+            }
+
+            thmTradeDetailSetSummary(trade);
+            thmTradeDetailSetFieldsExpanded(false);
+            thmTradeDetailSetRecordTab('fills');
+
+            const fillsSection = document.getElementById('thm-trade-detail-fills-section');
+            if (fillsSection) fillsSection.hidden = isPaper;
+
+            if (isPaper) {
+                thmTradeDetailSetFills([]);
+                thmTradeDetailSetOrders([]);
+            } else {
+                thmTradeDetailSetFills(payload.fills);
+                thmTradeDetailSetOrders(payload.orders);
+            }
+
+            thmTradeDetailSetFields([
+                ['Status', trade.status],
+                ['Date', trade.date],
+                ['Symbol', trade.symbol],
+                ['Ticker', trade.ticker],
+                ['Contract', trade.contract],
+                ['Strike', trade.strike],
+                ['Fees', trade.fees],
+                ['Market result', trade.market_result],
+                ['Symbol open', trade.symbol_open],
+                ['Symbol close', trade.symbol_close],
+                ['Close method', trade.close_method],
+                ['Initial count', trade.initial_count],
+                ['Initial price', trade.initial_price],
+                ['Order type', trade.order_type],
+                ['Subaccount', trade.subaccount],
+            ]);
+
+            const status = document.getElementById('thm-trade-detail-status');
+            if (status) status.hidden = true;
+            const body = document.getElementById('thm-trade-detail-body');
+            if (body) body.hidden = false;
+            _thmTradeDetailPayload = payload;
+        }
+
+        async function thmOpenTradeDetail(tradeId) {
+            const id = Number(tradeId);
+            if (!Number.isInteger(id) || id < 1) return;
+            thmCloseTradeDetail();
+            const modal = document.getElementById('thm-trade-detail-modal');
+            const status = document.getElementById('thm-trade-detail-status');
+            if (!modal || !status) return;
+            modal.hidden = false;
+            modal.setAttribute('aria-hidden', 'false');
+            status.hidden = false;
+            status.classList.remove('thm-trade-detail-error');
+            status.textContent = `Loading trade ${id}…`;
+            document.getElementById('thm-trade-detail-close')?.focus();
+            const controller = new AbortController();
+            _thmTradeDetailAbortController = controller;
+            try {
+                const response = await fetch(`/api/trades/${encodeURIComponent(id)}/detail`, {
+                    credentials: 'same-origin',
+                    cache: 'no-store',
+                    signal: controller.signal,
+                });
+                const payload = await response.json().catch(() => ({}));
+                if (!response.ok) {
+                    throw new Error(payload.detail || `Trade detail request failed (HTTP ${response.status})`);
+                }
+                if (controller.signal.aborted) return;
+                _thmTradeDetailAbortController = null;
+                thmRenderTradeDetail(payload);
+            } catch (error) {
+                if (error && error.name === 'AbortError') return;
+                _thmTradeDetailAbortController = null;
+                status.hidden = false;
+                status.classList.add('thm-trade-detail-error');
+                status.textContent = error && error.message ? error.message : 'Trade detail request failed.';
+            }
+        }
+
+        function thmEnsureTradeDetailListeners() {
+            if (_thmTradeDetailListenersBound) return;
+            const table = document.getElementById('trade-log-table');
+            const modal = document.getElementById('thm-trade-detail-modal');
+            if (!table || !modal) return;
+            _thmTradeDetailListenersBound = true;
+
+            // Table row tap opens detail view
+            table.addEventListener('click', (event) => {
+                const row = event.target.closest && event.target.closest('tbody tr[data-trade-id]');
+                if (row) {
+                    event.preventDefault();
+                    event.stopPropagation();
+                    thmOpenTradeDetail(row.getAttribute('data-trade-id'));
+                }
+            });
+
+            // Close button
+            const closeBtn = document.getElementById('thm-trade-detail-close');
+            if (closeBtn) {
+                closeBtn.addEventListener('click', thmCloseTradeDetail);
+            }
+
+            // Toggle details panel
+            const toggle = document.getElementById('thm-trade-detail-toggle');
+            if (toggle) {
+                toggle.addEventListener('click', thmTradeDetailToggleFieldsPanel);
+            }
+
+            // Record tabs (fills/orders)
+            modal.addEventListener('click', (event) => {
+                const recordTab = event.target.closest && event.target.closest('[data-thm-record-tab]');
+                if (recordTab) {
+                    thmTradeDetailSetRecordTab(recordTab.getAttribute('data-thm-record-tab'));
+                }
+            });
+
+            // Escape key closes detail view
+            document.addEventListener('keydown', (event) => {
+                if (event.key === 'Escape' && !modal.hidden) {
+                    thmCloseTradeDetail();
+                }
+            });
+        }
+        // ========== End Mobile Trade Detail View Functions ==========
 
         function normalizeActiveMonitorsForTradeHistory(data) {
             if (!data || data.status !== 'ok' || !Array.isArray(data.monitors)) return [];
@@ -4181,6 +4918,7 @@
         document.addEventListener('DOMContentLoaded', async function() {
             console.log('Mobile trade history initialized');
             thmEnsureTradeTableMonitorCrossHoverListeners();
+            thmEnsureTradeDetailListeners();
 
             await loadStrategyOptions();
             await loadSymbolOptions();
