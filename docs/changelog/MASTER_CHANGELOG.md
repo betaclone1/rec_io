@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-07-31 — Release v3.9.5: False drawdown halt guard (settlement understatement)
+
+**Summary**
+- **Release: v3.9.5**
+- **Problem:** Kalshi `GET /portfolio/balance` can briefly understate MTB equity mid-settlement (cash after buy debits, marks cleared, settlement credits not yet applied). One bad tick crossed the 50% bankroll ratchet and fired emergency halt (prod 2026-07-31 21:59 ET; same class on 2026-07-30).
+- **Guard:** Detect large one-tick portfolio drops on MTB; skip write + repoll (`REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC`). Persisting understatement is written; overstatement still keeps last good row.
+- **Halt confirm:** Emergency halt requires two consecutive crash-sized portfolio readings (`REC_DRAWDOWN_HALT_CONFIRM_TICKS`, default `2`); first crossing keeps sticky bankroll and does not halt.
+- Docs: `docs/PORTFOLIO_ACCOUNT_SYNC.md`. No migrations.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart account sync (loads `balance_snapshot` glitch/halt logic):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart kalshi_account_sync_0001`
+  (Restart other `kalshi_account_sync_*` tenants if present and active.)
+- [ ] Verify: `supervisorctl … status kalshi_account_sync_0001` RUNNING; `curl -sSf http://127.0.0.1:3000/health`; no import/SyntaxError in `logs/kalshi_account_sync_0001.err.log` after restart.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.5`
+
+---
+
 ## 2026-07-30 — Release v3.9.4: Multi-leg order IDs on trades (zero-fill no wipe)
 
 **Summary**
