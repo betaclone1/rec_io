@@ -5,6 +5,11 @@
 # Uses DB_HOST / DB_PORT / DB_NAME / DB_USER / DB_PASSWORD from env or project .env
 # (falls back to POSTGRES_* then package_user_data defaults).
 #
+# On production (root cron + local Postgres), dumps via peer auth as the OS
+# ``postgres`` superuser. ``rec_io_user`` is NOBYPASSRLS, so FORCE ROW LEVEL
+# SECURITY tables (tenant ``users_NNNN`` and related) make ``pg_dump`` as
+# ``rec_io_user`` fail mid-COPY. Override with DB_BACKUP_USE_PEER_POSTGRES=0.
+#
 # Usage (from repo root):
 #   ./scripts/backup/create_compressed_db_backup.sh
 #   DB_BACKUP_OUT_DIR=/tmp/backups ./scripts/backup/create_compressed_db_backup.sh
@@ -79,22 +84,46 @@ if [[ -z "$PG_DUMP" ]]; then
   exit 1
 fi
 
+# Prefer peer-auth dump as OS postgres when dumping a local server. Needed because
+# app role rec_io_user is NOBYPASSRLS and FORCE RLS breaks pg_dump COPY.
+_use_peer_postgres=0
+_peer_host="$(printf '%s' "$DB_HOST" | tr '[:upper:]' '[:lower:]')"
+if [[ "${DB_BACKUP_USE_PEER_POSTGRES:-1}" == "1" ]] \
+  && [[ "$_peer_host" == "localhost" || "$_peer_host" == "127.0.0.1" || "$_peer_host" == "::1" ]] \
+  && id -u postgres >/dev/null 2>&1; then
+  if [[ "$(id -u)" -eq 0 ]] || [[ "$(id -un)" == "postgres" ]] || sudo -n -u postgres true >/dev/null 2>&1; then
+    _use_peer_postgres=1
+  fi
+fi
+
 TS="$(TZ="${TZ:-America/New_York}" date +%Y%m%d_%H%M%S)"
 OUT_FILE="$OUT_DIR/rec_io_db_backup_${TS}.sql.gz"
 
-echo "create_compressed_db_backup: dumping ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
 echo "create_compressed_db_backup: writing $OUT_FILE"
 
+_run_dump() {
+  if [[ "$_use_peer_postgres" == "1" ]]; then
+    echo "create_compressed_db_backup: dumping via peer auth as postgres (db=${DB_NAME})"
+    if [[ "$(id -un)" == "postgres" ]]; then
+      "$PG_DUMP" -p "$DB_PORT" -d "$DB_NAME" --clean --if-exists --create
+    else
+      sudo -u postgres "$PG_DUMP" -p "$DB_PORT" -d "$DB_NAME" --clean --if-exists --create
+    fi
+  else
+    echo "create_compressed_db_backup: dumping ${DB_USER}@${DB_HOST}:${DB_PORT}/${DB_NAME}"
+    "$PG_DUMP" \
+      -h "$DB_HOST" \
+      -p "$DB_PORT" \
+      -U "$DB_USER" \
+      -d "$DB_NAME" \
+      --clean \
+      --if-exists \
+      --create
+  fi
+}
+
 # Full DB dump (clean/create) compressed with gzip — portable restore via gunzip | psql
-if ! "$PG_DUMP" \
-  -h "$DB_HOST" \
-  -p "$DB_PORT" \
-  -U "$DB_USER" \
-  -d "$DB_NAME" \
-  --clean \
-  --if-exists \
-  --create \
-  | gzip -c >"$OUT_FILE"; then
+if ! _run_dump | gzip -c >"$OUT_FILE"; then
   rm -f "$OUT_FILE"
   echo "create_compressed_db_backup: pg_dump failed" >&2
   exit 1

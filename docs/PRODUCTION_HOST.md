@@ -95,7 +95,7 @@ Schedule with **cron** only (not Supervisor). Wrapper: `scripts/cron/do_auto_bac
 
 - Project at **`/opt/rec_io_server`**.
 - **`DIGITALOCEAN_API_TOKEN`** in `/opt/rec_io_server/.env` (same token used locally for `scripts/do/snapshot_prod.sh`).
-- **`DB_*`** in `.env` and **`pg_dump`** on PATH.
+- **`DB_*`** in `.env` and **`pg_dump`** on PATH. Nightly dump prefers local **`postgres`** OS peer auth (root cron) so FORCE RLS / `rec_io_user` `NOBYPASSRLS` does not block `pg_dump`; set `DB_BACKUP_USE_PEER_POSTGRES=0` to force the app role instead.
 - Google Drive OAuth as **`eric@rec-io.com`**: `backend/data/secrets/gdrive_oauth_client.json` + `gdrive_oauth_token.json` (see `backend/data/secrets/README.md`). Same credentials as cycle package upload.
 - **Node** on PATH and `npm install` under `scripts/gdrive/` (needs `googleapis`).
 - Python via **`venv/bin/python`** for the DO step (`doctl` is **not** required).
