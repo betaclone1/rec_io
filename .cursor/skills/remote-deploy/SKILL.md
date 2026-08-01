@@ -1,4 +1,4 @@
-# Remote deploy (commit, push, pull, restart specific scripts if needed)
+# Remote deploy (commit, push, merge to main, pull on prod, restart specific scripts if needed)
 
 **Prerequisite:** Export `REC_PROD_SSH_HOST` to the production server IP or DNS name (SSH).
 
@@ -31,7 +31,7 @@ Quick deploy workflow for changes that don't require migrations or the full chan
   ```
 - If nothing to commit (already committed), proceed to step 2.
 
-### 2. Push to origin
+### 2. Push current branch to origin
 
 - Push the current branch:
   ```bash
@@ -40,7 +40,22 @@ Quick deploy workflow for changes that don't require migrations or the full chan
 - If push fails due to network errors, retry up to 4 times with exponential backoff (4s, 8s, 16s, 32s).
 - If push fails for other reasons (e.g., not fast-forward), report the error and stop.
 
-### 3. Pull on prod via SSH
+### 3. Merge to main and push
+
+Production pulls from `main`, so changes must be merged there.
+
+- If already on `main`, skip to step 4.
+- If on a feature branch:
+  ```bash
+  git checkout main
+  git pull origin main
+  git merge <feature-branch> --no-edit
+  git push origin main
+  ```
+- If merge conflicts occur, report them and stop (do not force or auto-resolve).
+- Note which files changed in the merge (use `git diff HEAD~1 --name-only` or the merge output).
+
+### 4. Pull on prod via SSH
 
 - From the **repo root**, run:
   ```bash
@@ -50,7 +65,7 @@ Quick deploy workflow for changes that don't require migrations or the full chan
 - If the pull fails, report the error and stop.
 - Note which files changed from the pull output.
 
-### 4. Determine which scripts need restart (if any)
+### 5. Determine which scripts need restart (if any)
 
 Analyze the files that changed. **Only restart the specific supervisor programs affected.**
 
@@ -59,7 +74,7 @@ Analyze the files that changed. **Only restart the specific supervisor programs 
 - `frontend/**/*.png`, `*.jpg`, `*.svg`, `*.ico`, etc.
 - `docs/**/*`, `.cursor/**/*`, `README.md`, etc.
 
-If ALL changed files are static, skip to step 6.
+If ALL changed files are static, skip to step 7.
 
 #### File-to-program mapping (restart only affected programs):
 
@@ -100,7 +115,7 @@ If ALL changed files are static, skip to step 6.
 - Multiple core infrastructure files changed that affect most/all programs
 - Unsure which programs are affected by a broad change
 
-### 5. Restart specific programs on prod
+### 6. Restart specific programs on prod
 
 For each program that needs restart, run:
 ```bash
@@ -124,7 +139,7 @@ ssh "${REC_PROD_SSH_USER:-root}@$REC_PROD_SSH_HOST" 'cd /opt/rec_io_server && su
 ssh "${REC_PROD_SSH_USER:-root}@$REC_PROD_SSH_HOST" 'cd /opt/rec_io_server && ./scripts/MASTER_RESTART.sh'
 ```
 
-### 6. Verify restarted programs
+### 7. Verify restarted programs
 
 If any programs were restarted, check their status:
 ```bash
@@ -133,7 +148,7 @@ ssh "${REC_PROD_SSH_USER:-root}@$REC_PROD_SSH_HOST" 'cd /opt/rec_io_server && su
 - Verify the restarted programs show RUNNING.
 - If any restarted program is not running, report it clearly.
 
-### 7. Report outcome
+### 8. Report outcome
 
 Report:
 - What commit was deployed (short SHA and message)

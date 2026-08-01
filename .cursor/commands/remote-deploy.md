@@ -16,11 +16,12 @@ Use for straightforward changes that don't need migrations, snapshots, or the fu
 
 **Summary:**
 1. Stage and commit changes with a descriptive message
-2. Push to origin
-3. Pull on prod via SSH (`simple_git_pull_on_prod.sh`)
-4. Analyze changed files to determine which programs need restart
-5. Restart **only affected programs** via `supervisorctl restart <program>` (NOT full MASTER_RESTART unless absolutely necessary)
-6. Verify restarted programs are running
-7. Report outcome (what was deployed, which programs restarted)
+2. Push current branch to origin
+3. Merge to `main` and push (production pulls from main)
+4. Pull on prod via SSH (`simple_git_pull_on_prod.sh`)
+5. Analyze changed files to determine which programs need restart
+6. Restart **only affected programs** via `supervisorctl restart <program>` (NOT full MASTER_RESTART unless absolutely necessary)
+7. Verify restarted programs are running
+8. Report outcome (what was deployed, which programs restarted)
 
 **MASTER_RESTART is only used if:** supervisor config changed, requirements.txt changed, or broad infrastructure changes affect most programs.
