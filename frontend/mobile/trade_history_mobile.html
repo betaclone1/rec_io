@@ -3601,10 +3601,7 @@
                 return;
             }
             const startDate = new Date(state.dataTMin);
-            const endDate = new Date(state.dataTMax);
-            title.textContent =
-                `${symbol} · ${_thmTradeDetailDayFmt.format(startDate)} ` +
-                `${_thmTradeDetailTitleTimeFmt.format(startDate)} – ${_thmTradeDetailTitleTimeFmt.format(endDate)} ET`;
+            title.textContent = `${symbol} · ${_thmTradeDetailDayFmt.format(startDate)}`;
         }
 
         function thmUpdateTradeDetailChartStats(trade, kalshi) {
