@@ -5827,17 +5827,10 @@
                         if (typeof updateMonitorButtonText === 'function') updateMonitorButtonText();
                     }
 
-                    if (preferences.sort_key) {
-                        currentSort.key = preferences.sort_key;
-                        // 'id' column: always descending (most recent first) - ignore saved sort_asc
-                        // Other columns: use saved preference or default to ascending
-                        if (preferences.sort_key === 'id') {
-                            currentSort.asc = false;
-                        } else {
-                            currentSort.asc =
-                                preferences.sort_asc !== undefined ? !!preferences.sort_asc : true;
-                        }
-                    }
+                    // Always default to ID descending (most recent first) on page load
+                    // Ignore saved sort_key/sort_asc - user can manually change if needed
+                    currentSort.key = 'id';
+                    currentSort.asc = false;
 
                     const analysisIntervalSelect = document.getElementById('analysis-time-interval');
                     if (analysisIntervalSelect && preferences.analysis_interval) {
