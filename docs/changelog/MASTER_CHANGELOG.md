@@ -17,26 +17,26 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Plans / context: ad-hoc prod A/B diagnosis (10046 vs 10056); related movement-window implementation work. No dedicated plan file required for the gate fix.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+- [x] Migration pre-flight: confirm these files exist in the deployed commit:  
   `scripts/migrations/20260802_1645_historical_btc15m_cycle_candles.up.sql` / `.down.sql`  
   `scripts/migrations/20260802_1655_btc15m_cycle_candles_timestamp_utc_text.up.sql` / `.down.sql`  
   `scripts/migrations/20260802_1805_btc15m_cycle_candles_market_result.up.sql` / `.down.sql`  
   `scripts/migrations/20260803_1400_monitor_movement_window.up.sql` / `.down.sql`
-- [ ] Apply migrations **before restart** (additive only; apply in this order):  
+- [x] Apply migrations **before restart** (additive only; apply in this order):  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260802_1645_historical_btc15m_cycle_candles`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260802_1655_btc15m_cycle_candles_timestamp_utc_text`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260802_1805_btc15m_cycle_candles_market_result`  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260803_1400_monitor_movement_window`
-- [ ] Confirm migrations applied:  
+- [x] Confirm migrations applied:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list | grep -E '20260802_1645|20260802_1655|20260802_1805|20260803_1400'`
-- [ ] Schema drift check:  
+- [x] Schema drift check:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
-- [ ] Restart services that load new AES/TM/read/frontend wiring (**only after migrations confirmed**):  
+- [x] Restart services that load new AES/TM/read/frontend wiring (**only after migrations confirmed**):  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart auto_entry_supervisor_0001 trade_manager_0001 read_api main_app`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; AES/TM RUNNING; after restart, a live 15m open log must show `market=15m` (not `hourly`) on any pipeline-gate block line.
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; AES/TM RUNNING; after restart, a live 15m open log must show `market=15m` (not `hourly`) on any pipeline-gate block line.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.6`
 
 ---
