@@ -148,6 +148,12 @@ def apply_auto_entry_settings(
     if "max_probability" in data:
         update_fields.append("max_probability = %s")
         update_values.append(float(data["max_probability"]))
+    if "min_movement" in data:
+        update_fields.append("min_movement = %s")
+        update_values.append(float(data["min_movement"]))
+    if "max_movement" in data:
+        update_fields.append("max_movement = %s")
+        update_values.append(float(data["max_movement"]))
     if "min_differential" in data:
         update_fields.append("min_differential = %s")
         update_values.append(float(data["min_differential"]))

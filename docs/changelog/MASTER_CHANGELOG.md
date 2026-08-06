@@ -6,6 +6,41 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-06 — Release v3.9.6: Exp Scalp movement window + pipeline market keying
+
+**Summary**
+- **Release: v3.9.6**
+- **Pipeline gate market keying:** Live open health checks key `strike_pipeline_health` by the trade’s own interval (`15m` / `hourly`). AES tickets now send `market`; TM resolves payload → ticker → monitor (no silent `or "hourly"`). A 15m open must never consult the hourly health row (and vice versa). Unresolved market fails closed for live opens.
+- **Expiration Scalp Movement Window:** Monitor `min_movement` / `max_movement` (defaults 0–100) plus joint prob/movement sizing (in-prob = full size; out-of-prob + in-movement = half size; else block). UI dual slider on desktop/mobile; Exp Scalp replay/tests updated. Migration also aligns `min_probability` to `numeric(5,2)` on tenant `monitor_list_*` / `strategy_list_*`.
+- **Trade history:** Live / paper / test filter + detail/fills refinements (desktop + mobile).
+- **Historical BTC 15m cycle candles:** New `historical_data` tables + pull/build scripts and GDrive download helper for backtesting packs (additive migrations).
+- Plans / context: ad-hoc prod A/B diagnosis (10046 vs 10056); related movement-window implementation work. No dedicated plan file required for the gate fix.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Migration pre-flight: confirm these files exist in the deployed commit:  
+  `scripts/migrations/20260802_1645_historical_btc15m_cycle_candles.up.sql` / `.down.sql`  
+  `scripts/migrations/20260802_1655_btc15m_cycle_candles_timestamp_utc_text.up.sql` / `.down.sql`  
+  `scripts/migrations/20260802_1805_btc15m_cycle_candles_market_result.up.sql` / `.down.sql`  
+  `scripts/migrations/20260803_1400_monitor_movement_window.up.sql` / `.down.sql`
+- [ ] Apply migrations **before restart** (additive only; apply in this order):  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260802_1645_historical_btc15m_cycle_candles`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260802_1655_btc15m_cycle_candles_timestamp_utc_text`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260802_1805_btc15m_cycle_candles_market_result`  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260803_1400_monitor_movement_window`
+- [ ] Confirm migrations applied:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list | grep -E '20260802_1645|20260802_1655|20260802_1805|20260803_1400'`
+- [ ] Schema drift check:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/check_db_schema_drift.py`
+- [ ] Restart services that load new AES/TM/read/frontend wiring (**only after migrations confirmed**):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart auto_entry_supervisor_0001 trade_manager_0001 read_api main_app`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:3050/health`; AES/TM RUNNING; after restart, a live 15m open log must show `market=15m` (not `hourly`) on any pipeline-gate block line.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.6`
+
+---
+
 ## 2026-07-31 — Release v3.9.5: False drawdown halt guard (settlement understatement)
 
 **Summary**

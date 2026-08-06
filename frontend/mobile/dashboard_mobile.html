@@ -8860,12 +8860,17 @@
           </div>
         </div>
 
+        <div id="m_uatMinVolumeSection">
         <label for="m_autoEntryMinVolume" style="font-size:14px; color:#333; font-weight:500;">Minimum Volume:</label>
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_autoEntryMinVolume" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_minVolVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">1000</div>
         </div>
+        </div>
 
+        <div id="m_expirationScalpProbMovementNote" style="display:none; font-size:11px; color:#666; margin:0 0 8px 0; line-height:1.35;">
+          Full size when inside Win Prob (movement ignored). Outside Win Prob but inside Movement → ½ position. Outside both → blocked.
+        </div>
         <label for="m_probabilityWindowSlider" style="font-size:14px; color:#333; font-weight:500;">Win Probability Window:</label>
         <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
           <!-- Probability Window Slider Container -->
@@ -8881,6 +8886,19 @@
             <!-- Max Probability Display (ABOVE slider) -->
             <div id="m_probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
           </div>
+        </div>
+
+        <div id="m_expirationScalpMovementWindowSection" style="display:none;">
+        <label for="m_movementWindowSlider" style="font-size:14px; color:#333; font-weight:500;">Movement Window:</label>
+        <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
+          <div id="m_movementWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <div id="m_minMovementHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <div id="m_maxMovementHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <div id="m_movementWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <div id="m_movementWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0%</div>
+            <div id="m_movementWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">100.0%</div>
+          </div>
+        </div>
         </div>
 
         <div id="m_risingDevilMinAskRangeSection" style="display:none; margin-top:8px;">
@@ -9445,6 +9463,12 @@
       let dashboardMobileExpirationScalpAskIsDragging = false;
       let dashboardMobileExpirationScalpAskCurrentHandle = null;
 
+      let dashboardMobileMovementSliderWidth = 0;
+      window.dashboardMobileMinMovement = 0.00;
+      window.dashboardMobileMaxMovement = 100.00;
+      let dashboardMobileMovementIsDragging = false;
+      let dashboardMobileMovementCurrentHandle = null;
+
       function mobileDashApplyExpirationScalpLayout(isExpirationScalp) {
         const disp = (on) => (on ? '' : 'none');
         const setForId = (id, visible) => {
@@ -9458,6 +9482,8 @@
         setForId('m_autoEntryMinVolume', !isExpirationScalp);
         setForId('m_autoEntryDiff', !isExpirationScalp);
         setForId('m_autoEntryMaxDiff', !isExpirationScalp);
+        const minVolSection = document.getElementById('m_uatMinVolumeSection');
+        if (minVolSection) minVolSection.style.display = isExpirationScalp ? 'none' : '';
         document.querySelectorAll('.uat-loss-prevention-block').forEach(function (el) {
           el.style.display = disp(!isExpirationScalp);
         });
@@ -9481,6 +9507,10 @@
         if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(!isExpirationScalp);
         const esAsk = document.getElementById('m_expirationScalpAskWindowSection');
         if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
+        const esMov = document.getElementById('m_expirationScalpMovementWindowSection');
+        if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
+        const esNote = document.getElementById('m_expirationScalpProbMovementNote');
+        if (esNote) esNote.style.display = isExpirationScalp ? 'block' : 'none';
         const nonScalpTail = document.getElementById('m_uatNonExpirationScalpAutoEntry');
         if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
       }
@@ -9778,6 +9808,111 @@
         handleDashboardMobileProbMouseUp();
       }
 
+      function initDashboardMobileMovementWindowSlider() {
+        const container = document.getElementById('m_movementWindowSliderContainer');
+        if (!container) return;
+        dashboardMobileMovementSliderWidth = container.offsetWidth || container.clientWidth || 0;
+        updateDashboardMobileMovementWindowSlider();
+      }
+
+      function updateDashboardMobileMovementWindowSlider() {
+        const minHandle = document.getElementById('m_minMovementHandle');
+        const maxHandle = document.getElementById('m_maxMovementHandle');
+        const range = document.getElementById('m_movementWindowRange');
+        const minDisplay = document.getElementById('m_movementWindowMinDisplay');
+        const maxDisplay = document.getElementById('m_movementWindowMaxDisplay');
+        if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+        const MIN_SEPARATION = 0.5;
+        if (typeof window.dashboardMobileMinMovement === 'undefined' || window.dashboardMobileMinMovement === null) {
+          window.dashboardMobileMinMovement = 0.00;
+        }
+        if (typeof window.dashboardMobileMaxMovement === 'undefined' || window.dashboardMobileMaxMovement === null) {
+          window.dashboardMobileMaxMovement = 100.00;
+        }
+        if (window.dashboardMobileMaxMovement - window.dashboardMobileMinMovement < MIN_SEPARATION) {
+          if (window.dashboardMobileMaxMovement < 100) {
+            window.dashboardMobileMaxMovement = parseFloat((window.dashboardMobileMinMovement + MIN_SEPARATION).toFixed(1));
+          } else {
+            window.dashboardMobileMinMovement = parseFloat((window.dashboardMobileMaxMovement - MIN_SEPARATION).toFixed(1));
+          }
+        }
+        const minPercent = window.dashboardMobileMinMovement;
+        const maxPercent = window.dashboardMobileMaxMovement;
+        minHandle.style.left = `${minPercent}%`;
+        maxHandle.style.left = `${maxPercent}%`;
+        range.style.left = `${minPercent}%`;
+        range.style.width = `${maxPercent - minPercent}%`;
+        minDisplay.textContent = window.dashboardMobileMinMovement.toFixed(1) + '%';
+        maxDisplay.textContent = window.dashboardMobileMaxMovement.toFixed(1) + '%';
+        minDisplay.style.left = `${minPercent}%`;
+        maxDisplay.style.left = `${maxPercent}%`;
+      }
+
+      function handleDashboardMobileMovementMouseDown(e) {
+        dashboardMobileMovementIsDragging = true;
+        dashboardMobileMovementCurrentHandle = e.target;
+        document.addEventListener('mousemove', handleDashboardMobileMovementMouseMove);
+        document.addEventListener('mouseup', handleDashboardMobileMovementMouseUp);
+        document.addEventListener('touchmove', handleDashboardMobileMovementTouchMove, { passive: false });
+        document.addEventListener('touchend', handleDashboardMobileMovementTouchEnd);
+        e.preventDefault();
+      }
+
+      function handleDashboardMobileMovementTouchMove(e) {
+        if (!dashboardMobileMovementIsDragging || !dashboardMobileMovementCurrentHandle) return;
+        const container = document.getElementById('m_movementWindowSliderContainer');
+        if (!container || !e.touches || !e.touches[0]) return;
+        e.preventDefault();
+        const rect = container.getBoundingClientRect();
+        const x = e.touches[0].clientX - rect.left;
+        const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+        _applyMobileMovementFromPercent(percent);
+      }
+
+      function handleDashboardMobileMovementMouseMove(e) {
+        if (!dashboardMobileMovementIsDragging || !dashboardMobileMovementCurrentHandle) return;
+        const container = document.getElementById('m_movementWindowSliderContainer');
+        if (!container) return;
+        const rect = container.getBoundingClientRect();
+        const x = e.clientX - rect.left;
+        const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+        _applyMobileMovementFromPercent(percent);
+      }
+
+      function _applyMobileMovementFromPercent(percent) {
+        const movement = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+        const MIN_SEPARATION = 0.5;
+        const minHandle = document.getElementById('m_minMovementHandle');
+        const maxHandle = document.getElementById('m_maxMovementHandle');
+        if (dashboardMobileMovementCurrentHandle === minHandle) {
+          if (movement >= window.dashboardMobileMaxMovement - MIN_SEPARATION) {
+            window.dashboardMobileMinMovement = parseFloat((window.dashboardMobileMaxMovement - MIN_SEPARATION).toFixed(1));
+          } else {
+            window.dashboardMobileMinMovement = movement;
+          }
+        } else if (dashboardMobileMovementCurrentHandle === maxHandle) {
+          if (movement <= window.dashboardMobileMinMovement + MIN_SEPARATION) {
+            window.dashboardMobileMaxMovement = parseFloat((window.dashboardMobileMinMovement + MIN_SEPARATION).toFixed(1));
+          } else {
+            window.dashboardMobileMaxMovement = movement;
+          }
+        }
+        updateDashboardMobileMovementWindowSlider();
+      }
+
+      function handleDashboardMobileMovementMouseUp() {
+        dashboardMobileMovementIsDragging = false;
+        dashboardMobileMovementCurrentHandle = null;
+        document.removeEventListener('mousemove', handleDashboardMobileMovementMouseMove);
+        document.removeEventListener('mouseup', handleDashboardMobileMovementMouseUp);
+        document.removeEventListener('touchmove', handleDashboardMobileMovementTouchMove);
+        document.removeEventListener('touchend', handleDashboardMobileMovementTouchEnd);
+      }
+
+      function handleDashboardMobileMovementTouchEnd() {
+        handleDashboardMobileMovementMouseUp();
+      }
+
       // COOLDOWN WINDOW SLIDER (Momentum Contain)
       function initDashboardMobileCooldownWindowSlider() {
         const container = document.getElementById('m_cooldownWindowSliderContainer');
@@ -9928,6 +10063,22 @@
             }
           });
           window._dashboardMobileProbResizeBound = true;
+        }
+      }
+
+      function ensureDashboardMobileMovementSliderHandlers() {
+        const minHandle = document.getElementById('m_minMovementHandle');
+        const maxHandle = document.getElementById('m_maxMovementHandle');
+        if (!minHandle || !maxHandle) return;
+        if (!minHandle._movBound) {
+          minHandle.addEventListener('mousedown', handleDashboardMobileMovementMouseDown);
+          minHandle.addEventListener('touchstart', handleDashboardMobileMovementMouseDown);
+          minHandle._movBound = true;
+        }
+        if (!maxHandle._movBound) {
+          maxHandle.addEventListener('mousedown', handleDashboardMobileMovementMouseDown);
+          maxHandle.addEventListener('touchstart', handleDashboardMobileMovementMouseDown);
+          maxHandle._movBound = true;
         }
       }
 
@@ -10803,6 +10954,15 @@
               window.dashboardMobileMinProbability = parseFloat((window.dashboardMobileMaxProbability - MIN_SEPARATION).toFixed(1));
             }
           }
+          window.dashboardMobileMinMovement = data.min_movement !== undefined ? parseFloat(data.min_movement) : 0.00;
+          window.dashboardMobileMaxMovement = data.max_movement !== undefined ? parseFloat(data.max_movement) : 100.00;
+          if (window.dashboardMobileMaxMovement - window.dashboardMobileMinMovement < MIN_SEPARATION) {
+            if (window.dashboardMobileMaxMovement < 100) {
+              window.dashboardMobileMaxMovement = parseFloat((window.dashboardMobileMinMovement + MIN_SEPARATION).toFixed(1));
+            } else {
+              window.dashboardMobileMinMovement = parseFloat((window.dashboardMobileMaxMovement - MIN_SEPARATION).toFixed(1));
+            }
+          }
           dashboardMobileExpirationScalpMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.9000;
           dashboardMobileExpirationScalpMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9900;
           const mfpRaw = data.min_fill_price !== undefined && data.min_fill_price !== null
@@ -10947,6 +11107,9 @@
             if (isExpirationScalp && typeof initDashboardMobileExpirationScalpAskWindowSlider === 'function') {
               initDashboardMobileExpirationScalpAskWindowSlider();
             }
+            if (isExpirationScalp && typeof initDashboardMobileMovementWindowSlider === 'function') {
+              initDashboardMobileMovementWindowSlider();
+            }
             // Initialize cooldown window slider (Momentum Contain only)
             if (typeof initDashboardMobileCooldownWindowSlider === 'function') {
               initDashboardMobileCooldownWindowSlider();
@@ -10958,6 +11121,9 @@
             if (typeof ensureDashboardMobileProbSliderHandlers === 'function') {
               ensureDashboardMobileProbSliderHandlers();
             }
+            if (isExpirationScalp && typeof ensureDashboardMobileMovementSliderHandlers === 'function') {
+              ensureDashboardMobileMovementSliderHandlers();
+            }
             // Ensure display is updated with loaded values
             setTimeout(() => {
               if (typeof updateDashboardMobileProbabilityWindowSlider === 'function') {
@@ -10965,6 +11131,9 @@
               }
               if (isExpirationScalp && typeof updateDashboardMobileExpirationScalpAskWindowSlider === 'function') {
                 updateDashboardMobileExpirationScalpAskWindowSlider();
+              }
+              if (isExpirationScalp && typeof updateDashboardMobileMovementWindowSlider === 'function') {
+                updateDashboardMobileMovementWindowSlider();
               }
             }, 50);
           }, 150);
@@ -11122,6 +11291,8 @@
             } else if (saveIsES) {
               payload.min_probability = parseFloat(parseFloat(window.dashboardMobileMinProbability || 90.00).toFixed(1));
               payload.max_probability = parseFloat(parseFloat(window.dashboardMobileMaxProbability || 100.00).toFixed(1));
+              payload.min_movement = parseFloat(parseFloat(window.dashboardMobileMinMovement || 0.00).toFixed(1));
+              payload.max_movement = parseFloat(parseFloat(window.dashboardMobileMaxMovement || 100.00).toFixed(1));
               payload.min_ask = parseFloat(parseFloat(dashboardMobileExpirationScalpMinAsk).toFixed(4));
               payload.max_ask = parseFloat(parseFloat(dashboardMobileExpirationScalpMaxAsk).toFixed(4));
               const mfpEl = document.getElementById('m_expirationScalpMinFillPriceSlider');

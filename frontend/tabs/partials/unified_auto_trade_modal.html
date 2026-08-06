@@ -423,12 +423,17 @@
           </div>
         </div>
 
+        <div id="uatMinVolumeSection">
         <label for="autoEntryMinVolumeSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Volume:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="autoEntryMinVolumeSlider" min="0" max="2000" step="25" value="1000" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="autoEntryMinVolumeValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
+        </div>
 
+        <div id="expirationScalpProbMovementNote" style="display:none; font-size:11px; color:#666; margin:0 0 8px 0; line-height:1.35;">
+          Full size when inside Win Prob (movement ignored). Outside Win Prob but inside Movement → ½ position. Outside both → blocked.
+        </div>
         <label for="probabilityWindowSlider" style="font-size:14px; color:#333; font-weight:500;">Win Probability Window:</label>
         <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
           <!-- Probability Window Slider Container -->
@@ -444,6 +449,19 @@
             <!-- Max Probability Display (ABOVE slider) -->
             <div id="probabilityWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
           </div>
+        </div>
+
+        <div id="expirationScalpMovementWindowSection" style="display:none;">
+        <label for="movementWindowSlider" style="font-size:14px; color:#333; font-weight:500;">Movement Window:</label>
+        <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
+          <div id="movementWindowSliderContainer" style="position:relative; width:100%; height:6px; background:#e0e0e0; border-radius:3px; margin-top:0px; box-sizing: border-box;">
+            <div id="minMovementHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <div id="maxMovementHandle" style="position:absolute; top:-5px; width:15px; height:15px; background:#007bff; border-radius:50%; cursor:pointer; z-index:10; transform:translateX(-50%); box-shadow:0 2px 4px rgba(0,0,0,0.2);" draggable="true"></div>
+            <div id="movementWindowRange" style="position:absolute; top:0; height:6px; background:#007bff; border-radius:3px; z-index:5;"></div>
+            <div id="movementWindowMinDisplay" style="position:absolute; top:16px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0%</div>
+            <div id="movementWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">100.0%</div>
+          </div>
+        </div>
         </div>
 
         <div id="risingDevilMinAskRangeSection" style="display:none; margin-top:8px;">

@@ -2124,7 +2124,8 @@ def get_auto_entry_settings():
                            spike_alert_enabled, spike_alert_momentum_threshold,
                            spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                            min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
-                           min_cooldown_timer, max_cooldown_timer, min_ask_range
+                           min_cooldown_timer, max_cooldown_timer, min_ask_range,
+                           min_movement, max_movement
                     """
                     + (sel_flip if has_flip else "")
                     + f"""
@@ -2156,12 +2157,14 @@ def get_auto_entry_settings():
                         "min_cooldown_timer": strategy_result[17] if strategy_result[17] is not None else None,
                         "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None,
                         "min_ask_range": float(strategy_result[19]) if strategy_result[19] is not None else None,
+                        "min_movement": float(strategy_result[20]) if strategy_result[20] is not None else 0.0,
+                        "max_movement": float(strategy_result[21]) if strategy_result[21] is not None else 100.0,
                     }
                     if has_flip:
-                        settings["flip_sell_prob"] = bool(strategy_result[20]) if strategy_result[20] is not None else False
-                        settings["flip_sell_prob_mult"] = strategy_result[21] if strategy_result[21] is not None else None
-                        settings["flip_sell_floor"] = bool(strategy_result[22]) if strategy_result[22] is not None else False
-                        settings["flip_sell_floor_mult"] = strategy_result[23] if strategy_result[23] is not None else None
+                        settings["flip_sell_prob"] = bool(strategy_result[22]) if strategy_result[22] is not None else False
+                        settings["flip_sell_prob_mult"] = strategy_result[23] if strategy_result[23] is not None else None
+                        settings["flip_sell_floor"] = bool(strategy_result[24]) if strategy_result[24] is not None else False
+                        settings["flip_sell_floor_mult"] = strategy_result[25] if strategy_result[25] is not None else None
                     else:
                         settings["flip_sell_prob"] = False
                         settings["flip_sell_prob_mult"] = None
@@ -2621,6 +2624,14 @@ def trigger_auto_entry_trade(strike_data):
             position_size = new_sz
         else:
             log(f"[AUTO ENTRY] Loss prevention is '{loss_prevention}' - using configured position size: {position_size}")
+
+        if strike_data.get("half_size") or strike_data.get("size_mode") == "half":
+            half_sz = max(1, int(round(float(position_size) * 0.5)))
+            log(
+                f"[AUTO ENTRY] Expiration Scalp half-size (out-of-prob, in-movement): "
+                f"{position_size} -> {half_sz}"
+            )
+            position_size = half_sz
         
         # Get bankroll allotment from monitor configuration
         bankroll_allotment = get_bankroll_allotment()
@@ -2700,6 +2711,12 @@ def trigger_auto_entry_trade(strike_data):
         except Exception as e:
             log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade/min_slippage setting: {e}, defaulting to False/0.0000")
         
+        # Market interval must travel with the ticket so TM pipeline gate keys the
+        # matching strike_pipeline_health row (15m must never consult hourly).
+        market_for_ticket = (current_market or "").strip().lower()
+        if market_for_ticket not in ("15m", "hourly"):
+            market_for_ticket = None
+
         # Prepare the trade data exactly like trade_initiator does (count_fp for full-chain consistency)
         trade_payload = {
             "ticket_id": ticket_id,
@@ -2707,6 +2724,7 @@ def trigger_auto_entry_trade(strike_data):
             "date": eastern_date,
             "time": eastern_time,
             "symbol": current_symbol,
+            "market": market_for_ticket,
             "exchange": "kalshi",
             "trade_strategy": trade_strategy,
             "contract": contract_name,
@@ -3181,7 +3199,8 @@ def trigger_simulated_trade(strike_data):
             "ticket_id": f"SIM-{uuid.uuid4().hex[:8]}-{int(est_now().timestamp() * 1000)}",
             "status": "pending", "date": today_est().strftime('%Y-%m-%d'),
             "time": est_now().strftime('%H:%M:%S'),
-            "symbol": current_symbol, "exchange": "kalshi", "trade_strategy": get_effective_trade_strategy(),
+            "symbol": current_symbol, "market": "15m", "exchange": "kalshi",
+            "trade_strategy": get_effective_trade_strategy(),
             "contract": contract_name, "strike": strike_data.get("strike"), "side": conv_side,
             "ticker": strike_data.get("ticker"), "prob": strike_data.get("probability"),
             "position": 1,
@@ -3781,6 +3800,8 @@ def check_auto_entry_conditions_expiration_scalp():
         max_probability = float(settings.get("max_probability", 100))
         min_ask = float(settings.get("min_ask", 0.90))
         max_ask = float(settings.get("max_ask", 0.99))
+        min_movement = float(settings.get("min_movement", 0.0))
+        max_movement = float(settings.get("max_movement", 100.0))
 
         current_ttc = get_current_ttc()
         ttc_within_window = min_time <= current_ttc <= max_time
@@ -3805,7 +3826,16 @@ def check_auto_entry_conditions_expiration_scalp():
         if not strike_table_data or "strikes" not in strike_table_data:
             return
 
+        movement_pct = strike_table_data.get("movement_percentile")
+        try:
+            movement_pct_f = float(movement_pct) if movement_pct is not None else None
+        except (TypeError, ValueError):
+            movement_pct_f = None
+
         from backend.core.strike_ladder_fetch import probability_from_strike_row_side_aware
+        from backend.util.auto_entry_expiration_scalp_gates import (
+            classify_expiration_scalp_prob_movement,
+        )
 
         sym = get_current_monitor_symbol()
         mkt = get_current_monitor_symbol_and_market()[1]
@@ -3841,7 +3871,22 @@ def check_auto_entry_conditions_expiration_scalp():
                     prob = probability_from_strike_row_side_aware(strike, mkt, side_key)
                     if prob is None:
                         prob = strike.get("probability")
-                    if prob is None or float(prob) < min_probability or float(prob) > max_probability:
+                    if prob is None:
+                        continue
+                    try:
+                        prob_f = float(prob)
+                    except (TypeError, ValueError):
+                        continue
+
+                    size_mode, size_reason = classify_expiration_scalp_prob_movement(
+                        probability=prob_f,
+                        movement_percentile=movement_pct_f,
+                        min_probability=min_probability,
+                        max_probability=max_probability,
+                        min_movement=min_movement,
+                        max_movement=max_movement,
+                    )
+                    if size_mode == "block":
                         continue
 
                     diff = strike.get("yes_diff") if side_key == "yes" else strike.get("no_diff")
@@ -3854,16 +3899,22 @@ def check_auto_entry_conditions_expiration_scalp():
                         "side": side_key,
                         "ticker": strike.get("ticker"),
                         "buy_price": ask_price,
-                        "probability": prob,
+                        "probability": prob_f,
                         "diff": diff,
+                        "half_size": size_mode == "half",
+                        "size_mode": size_mode,
+                        "size_reason": size_reason,
+                        "movement_percentile": movement_pct_f,
                     }
 
                     if is_strike_already_traded(strike_data):
                         continue
 
+                    size_note = "½ size" if size_mode == "half" else "full size"
                     log(
                         f"{log_tag} 🚀 TRIGGERING TRADE | {strike_key} {side_key.upper()} | "
-                        f"Prob: {prob}% | Ask: ${ask_price:.4f} | TTC: {current_ttc}s"
+                        f"Prob: {prob_f}% | Move: {movement_pct_f} | Ask: ${ask_price:.4f} | "
+                        f"TTC: {current_ttc}s | {size_note} ({size_reason})"
                     )
                     if trigger_auto_entry_trade(strike_data):
                         log(f"{log_tag} ✅ TRADE SUCCESSFUL | {strike_key} {side_key.upper()}")

@@ -8224,6 +8224,31 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ## Schema: `historical_data`
 
+### Table: `historical_data.btc15m_cycle_candles`
+
+**Purpose:** One row per **KXBTC15M** cycle summarizing spot vs Kalshi **floor_strike** (trade-detail methodology). Candle **open** is `floor_strike`; **high** / **low** / **close** come from Kalshi `GET /live_data/events/{event}` `details.timeseries` values (same source as desktop trade-history detail charts). Percents are vs `floor_strike`.
+
+**Creation:** Migration `20260802_1645_historical_btc15m_cycle_candles`; timestamp type aligned to UTC ISO-Z TEXT by `20260802_1655_btc15m_cycle_candles_timestamp_utc_text`; `market_result` + wider pct columns by `20260802_1805_btc15m_cycle_candles_market_result`.
+
+**Population:** `scripts/historical/pull_btc15m_cycle_candles.py` (uses `backend/core/btc15m_cycle_candles.py`).
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `timestamp` | `text` | NO | Cycle settlement end as **UTC ISO-Z** (e.g. `2026-08-02T04:00:00.000Z`), same convention as `historical_data.*_price_ring.timestamp`. |
+| `ticker` | `text` | NO | Market ticker PK (e.g. `KXBTC15M-26AUG020015-15`). |
+| `contract` | `text` | YES | Human label from `derive_contract_label_from_kalshi_ticker` (e.g. `BTC 12:15am`). |
+| `floor_strike` | `numeric(18,8)` | YES | Kalshi market `floor_strike` (candle open). |
+| `high_price` | `numeric(18,8)` | YES | Max timeseries `v`. |
+| `low_price` | `numeric(18,8)` | YES | Min timeseries `v`. |
+| `close` | `numeric(18,8)` | YES | Last timeseries `v`. |
+| `total_range_pct` | `numeric(18,8)` | YES | `(high - low) / floor_strike * 100`. |
+| `final_diff_pct` | `numeric(18,8)` | YES | `(close - floor_strike) / floor_strike * 100`. |
+| `market_result` | `text` | YES | Kalshi settlement outcome from market `result` / `market_result` (e.g. `yes`, `no`); NULL until settled. |
+
+**Index:** `idx_btc15m_cycle_candles_timestamp` on `"timestamp"`.
+
+---
+
 ### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)
 
 **Not** created by `database.py` or routine migrations. Tables matching **`kalshi_candles_1m_<slug>_<YYYYMMDD>`** are created by **`scripts/backtest/helpers/kalshi_market_candles_scratch.py`** for ad-hoc analysis (Kalshi 1m OHLC for a market’s trading window). **`YYYYMMDD`** is a UTC calendar date suffix for rotation. **Row count** follows Kalshi’s session length (e.g. **15** rows for a **15m** contract, **~60** for a typical **hourly** contract); see **`docs/BACKTESTING.md`** §5.4.
@@ -10379,7 +10404,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `created_strategy` | `timestamp without time zone` | YES | - | |
 | `updated_strategy` | `timestamp without time zone` | YES | - | |
 | `default_strategy` | `boolean` | NO | false | |
-| `min_probability` | `numeric(5,2)` | YES | 95.00 | |
+| `min_probability` | `numeric(5,2)` | YES | 95.00 | Decimal win-probability floor (prod was INTEGER; migration `20260803_1400_monitor_movement_window`). |
 | `min_differential` | `numeric(5,2)` | YES | 0.25 | |
 | `min_time` | `integer(32)` | YES | 120 | |
 | `max_time` | `integer(32)` | YES | 900 | |
@@ -10413,6 +10438,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `loss_prevention_toggle` | `boolean` | YES | true | Master enable for any monitor loss-prevention method. |
 | `loss_prevention_method` | `text` | YES | win_streak | Loss-prevention algorithm: `win_streak` or `time`. |
 | `max_probability` | `numeric(5,2)` | YES | 100.00 | |
+| `min_movement` | `numeric(5,2)` | YES | 0.00 | Expiration Scalp Movement Window min vs ladder `movement_percentile` (0–100). Migration `20260803_1400_monitor_movement_window`. |
+| `max_movement` | `numeric(5,2)` | YES | 100.00 | Expiration Scalp Movement Window max vs ladder `movement_percentile` (0–100). Migration `20260803_1400_monitor_movement_window`. |
 | `current_contract` | `text` | YES | - | |
 | `current_weekly_cycle` | `smallint(16)` | YES | - | |
 | `current_performance_modifier` | `numeric(10,2)` | YES | 1.00 | |
@@ -10608,7 +10635,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `created` | `timestamp without time zone` | YES | - | |
 | `updated` | `timestamp without time zone` | YES | - | |
 | `default` | `boolean` | NO | false | |
-| `min_probability` | `numeric(5,2)` | YES | 95.00 | |
+| `min_probability` | `numeric(5,2)` | YES | 95.00 | Decimal (aligned with `max_probability`; migration `20260803_1400_monitor_movement_window`). |
 | `max_probability` | `numeric(5,2)` | YES | - | |
 | `min_differential` | `numeric(5,2)` | YES | 0.25 | |
 | `min_time` | `integer(32)` | YES | 120 | |

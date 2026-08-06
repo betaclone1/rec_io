@@ -55,6 +55,12 @@ async def get_trade_history_detail_proxy(trade_id: int, request: Request):
     return await _get(request, f"/api/trades/{int(trade_id)}/detail")
 
 
+@read_api_passthrough_router.get("/api/trades/{trade_id}/spot-candles")
+async def get_trade_history_spot_candles_proxy(trade_id: int, request: Request):
+    """Proxy to read_api: lazy cycle-package candles for trade-detail chart."""
+    return await _get(request, f"/api/trades/{int(trade_id)}/spot-candles")
+
+
 @read_api_passthrough_router.get("/api/debug/active_trades_redis_pool")
 async def active_trades_redis_pool_debug_proxy(request: Request):
     """Proxy to read_api: full Redis active_trades pool (debug test UI)."""

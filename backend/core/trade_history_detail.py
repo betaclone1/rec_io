@@ -3,8 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import datetime, timedelta
-from typing import Any, Callable, Dict, Optional, Tuple
+from datetime import datetime, timedelta, timezone
+from typing import Any, Callable, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 import requests
@@ -12,6 +12,11 @@ import requests
 from backend.core.kalshi_event_market_fetch import (
     event_ticker_from_market_ticker,
     kalshi_trade_api_base,
+)
+from backend.core.market_watchdog.venues.kalshi.schedule import (
+    EST as _KALSHI_EST,
+    est_15m_period_end,
+    ticker_for_15m_end,
 )
 from backend.core.trade_order_ids import trade_associated_order_ids
 from backend.core.trades_list_query import (
@@ -354,6 +359,271 @@ def following_event_ticker(
     clock_format = "%H%M" if len(match.group("clock")) == 4 else "%H"
     token = following_eastern.strftime(f"%y%b%d{clock_format}").upper()
     return f"{match.group('series')}-{token}", following_close
+
+
+def market_ticker_from_event_ticker(event_ticker: str) -> Optional[str]:
+    """Map 15m event ticker ``SERIES-YYMONDDHHMM`` → market ``…-MM`` (clock minutes)."""
+    match = _EVENT_DATE_TOKEN_RE.fullmatch(str(event_ticker or "").strip().upper())
+    if not match:
+        return None
+    clock = match.group("clock")
+    if len(clock) != 4:
+        return None
+    return f"{match.group('series')}-{match.group('date')}{clock}-{clock[-2:]}"
+
+
+_SERIES_FROM_MARKET_RE = re.compile(
+    r"^(?P<series>[A-Z0-9]+)-\d{2}[A-Z]{3}\d{2}\d{4}-\d{2}$"
+)
+_CHART_BUFFER = timedelta(minutes=5)
+
+
+def series_from_market_ticker(market_ticker: str) -> Optional[str]:
+    match = _SERIES_FROM_MARKET_RE.fullmatch(str(market_ticker or "").strip().upper())
+    return match.group("series") if match else None
+
+
+def _parse_iso_dt(value: Any) -> Optional[datetime]:
+    if value in (None, ""):
+        return None
+    try:
+        dt = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        return None
+    if dt.tzinfo is None:
+        return dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _timeseries_bounds(
+    *live_blobs: Optional[Dict[str, Any]],
+) -> Optional[Tuple[datetime, datetime]]:
+    times: List[int] = []
+    for blob in live_blobs:
+        details = (blob or {}).get("details") if isinstance(blob, dict) else None
+        series = details.get("timeseries") if isinstance(details, dict) else None
+        if not isinstance(series, list):
+            continue
+        for point in series:
+            if not isinstance(point, dict):
+                continue
+            try:
+                t = int(point.get("t"))
+            except (TypeError, ValueError):
+                continue
+            times.append(t)
+    if not times:
+        return None
+    return (
+        datetime.fromtimestamp(min(times) / 1000.0, tz=timezone.utc),
+        datetime.fromtimestamp(max(times) / 1000.0, tz=timezone.utc),
+    )
+
+
+def _align_15m_period_end_et(dt: datetime) -> datetime:
+    """Smallest Eastern 15m period end at or after ``dt`` (on-boundary → that end)."""
+    local = dt.astimezone(_KALSHI_EST)
+    floored = local.replace(second=0, microsecond=0)
+    if (
+        floored.minute % 15 == 0
+        and local.second == 0
+        and local.microsecond == 0
+    ):
+        return floored
+    return est_15m_period_end(dt)
+
+
+def market_tickers_covering_window(
+    series: str,
+    start: datetime,
+    end: datetime,
+) -> List[str]:
+    """Market tickers whose 15m packages overlap ``[start, end]``."""
+    series_u = str(series or "").strip().upper()
+    if not series_u or end <= start:
+        return []
+    start_u = start.astimezone(timezone.utc)
+    end_u = end.astimezone(timezone.utc)
+    cursor = _align_15m_period_end_et(start_u)
+    last = _align_15m_period_end_et(end_u)
+    out: List[str] = []
+    # Cap runaway loops (e.g. bad timestamps) at ~1 day of 15m slots.
+    for _ in range(96):
+        if cursor > last:
+            break
+        out.append(ticker_for_15m_end(series_u, cursor))
+        cursor = cursor + timedelta(minutes=15)
+    return out
+
+
+def detail_candle_window(
+    market: Optional[Dict[str, Any]],
+    *,
+    following_cycle_close_time: Optional[str] = None,
+    live_data: Optional[Dict[str, Any]] = None,
+    following_live_data: Optional[Dict[str, Any]] = None,
+) -> Optional[Tuple[datetime, datetime]]:
+    """
+    Time range candles must cover for the trade-detail chart.
+
+    Prefer the Kalshi timeseries span (title / full chart extent). Fall back to
+    market open/close with the same 5-minute buffer the desktop chart uses,
+    extended through the following cycle close when present.
+    """
+    bounds = _timeseries_bounds(live_data, following_live_data)
+    if bounds is not None:
+        return bounds
+
+    if not isinstance(market, dict):
+        return None
+    open_dt = _parse_iso_dt(market.get("open_time"))
+    close_dt = _parse_iso_dt(market.get("close_time"))
+    following_close = _parse_iso_dt(following_cycle_close_time)
+    if open_dt is None or close_dt is None:
+        return None
+    end = close_dt
+    if following_close is not None and following_close > end:
+        end = following_close
+    return open_dt - _CHART_BUFFER, end + _CHART_BUFFER
+
+
+def candle_package_tickers(
+    market_ticker: str,
+    *,
+    following_event_ticker_value: Optional[str] = None,
+    market: Optional[Dict[str, Any]] = None,
+    following_cycle_close_time: Optional[str] = None,
+    live_data: Optional[Dict[str, Any]] = None,
+    following_live_data: Optional[Dict[str, Any]] = None,
+) -> List[str]:
+    """Ordered unique market tickers needed to fill the detail candle window."""
+    mt = str(market_ticker or "").strip()
+    tickers: List[str] = []
+    series = series_from_market_ticker(mt)
+    window = detail_candle_window(
+        market,
+        following_cycle_close_time=following_cycle_close_time,
+        live_data=live_data,
+        following_live_data=following_live_data,
+    )
+    if series and series.endswith("15M") and window is not None:
+        tickers.extend(market_tickers_covering_window(series, window[0], window[1]))
+    if mt and mt not in tickers:
+        tickers.insert(0, mt)
+    following_mt = market_ticker_from_event_ticker(str(following_event_ticker_value or ""))
+    if following_mt and following_mt not in tickers:
+        tickers.append(following_mt)
+    # De-dupe preserving order
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for ticker in tickers:
+        if ticker in seen:
+            continue
+        seen.add(ticker)
+        ordered.append(ticker)
+    return ordered
+
+
+def ohlc_1m_from_price_rows(price_rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Build UTC 1-minute OHLC candles from cycle-package ``price_ring`` ticks."""
+    buckets: dict[int, dict[str, Any]] = {}
+    for row in price_rows or []:
+        raw_ts = row.get("timestamp")
+        raw_price = row.get("price")
+        if raw_ts in (None, "") or raw_price in (None, ""):
+            continue
+        try:
+            ts = datetime.fromisoformat(str(raw_ts).replace("Z", "+00:00"))
+            if ts.tzinfo is None:
+                ts = ts.replace(tzinfo=ZoneInfo("UTC"))
+            else:
+                ts = ts.astimezone(ZoneInfo("UTC"))
+            price = float(raw_price)
+        except (TypeError, ValueError):
+            continue
+        floored = ts.replace(second=0, microsecond=0)
+        open_ts_ms = int(floored.timestamp() * 1000)
+        bucket = buckets.get(open_ts_ms)
+        if bucket is None:
+            buckets[open_ts_ms] = {
+                "open_ts_ms": open_ts_ms,
+                "open": price,
+                "high": price,
+                "low": price,
+                "close": price,
+            }
+        else:
+            bucket["high"] = max(bucket["high"], price)
+            bucket["low"] = min(bucket["low"], price)
+            bucket["close"] = price
+    return [buckets[k] for k in sorted(buckets)]
+
+
+def fetch_spot_candles_for_market(
+    market_ticker: str,
+    following_event_ticker_value: Optional[str] = None,
+    *,
+    market: Optional[Dict[str, Any]] = None,
+    following_cycle_close_time: Optional[str] = None,
+    live_data: Optional[Dict[str, Any]] = None,
+    following_live_data: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """
+    Build spot OHLC candles from sealed cycle packages (local cache, else Drive).
+
+    Pulls every 15m package overlapping the detail chart window (Kalshi
+    timeseries span when available). Source of truth is ``price_ring.csv`` inside
+    ``backtesting_data/.../*.tar.xz`` — not ``historical_data.*_price_history``.
+    Missing packages leave gaps (no Kalshi candlestick substitute).
+    """
+    from backend.core.cycle_gdrive_download import ensure_cycle_packages_local
+    from backend.core.cycle_package import load_cycle_package
+
+    tickers = candle_package_tickers(
+        market_ticker,
+        following_event_ticker_value=following_event_ticker_value,
+        market=market,
+        following_cycle_close_time=following_cycle_close_time,
+        live_data=live_data,
+        following_live_data=following_live_data,
+    )
+
+    if not tickers:
+        return {
+            "source": None,
+            "candles": [],
+            "error": "No market ticker for cycle package candles",
+        }
+
+    resolved = ensure_cycle_packages_local(tickers)
+    by_ts: dict[int, dict[str, Any]] = {}
+    sources: list[str] = []
+    errors: list[str] = []
+    for ticker in tickers:
+        path = resolved.get(ticker)
+        if path is None:
+            errors.append(f"{ticker}: package not found locally or on Drive")
+            continue
+        try:
+            pkg = load_cycle_package(path)
+            for candle in ohlc_1m_from_price_rows(pkg.price_rows):
+                by_ts[int(candle["open_ts_ms"])] = candle
+            sources.append(str(path))
+        except Exception as exc:
+            errors.append(f"{ticker}: {type(exc).__name__}: {exc}")
+
+    candles = [by_ts[k] for k in sorted(by_ts)]
+    if not candles:
+        return {
+            "source": sources[0] if sources else None,
+            "candles": [],
+            "error": "; ".join(errors) if errors else "No price_ring ticks in cycle package",
+        }
+    return {
+        "source": ",".join(sources) if sources else None,
+        "candles": candles,
+        "error": "; ".join(errors) if errors else None,
+    }
 
 
 def fetch_kalshi_trade_context(

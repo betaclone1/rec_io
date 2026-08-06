@@ -1015,8 +1015,29 @@ def _resolve_monitor_for_trade_insert(cursor, raw_monitor):
     return (mk, None)
 
 
+def _normalize_kalshi_market_interval(raw) -> Optional[str]:
+    """Return '15m' / 'hourly' or None. Never invents a market."""
+    m = str(raw or "").strip().lower()
+    return m if m in ("15m", "hourly") else None
+
+
+def _kalshi_market_interval_from_ticker(ticker) -> Optional[str]:
+    """Map Kalshi market ticker → 15m/hourly. Unknown series → None (no hourly default)."""
+    try:
+        from backend.core.orderbook_hot_publish_registry import symbol_market_from_orderbook_ticker
+
+        _, mkt = symbol_market_from_orderbook_ticker(ticker)
+        return _normalize_kalshi_market_interval(mkt)
+    except Exception:
+        return None
+
+
 def _get_market_for_monitor_key_cursor(cursor, monitor_key):
-    """Return market ('hourly' or '15m') from monitor_list using the caller's cursor (same transaction)."""
+    """Return market ('hourly' or '15m') from monitor_list using the caller's cursor (same transaction).
+
+    Prefer the configured monitor market. Do not invent hourly when the ticker clearly
+    identifies a 15m instrument (and vice versa is handled by callers that pass ticker).
+    """
     if not monitor_key or not cursor:
         return "hourly"
     if not _monitor_key_matches_worker(monitor_key):
@@ -1027,27 +1048,97 @@ def _get_market_for_monitor_key_cursor(cursor, monitor_key):
     try:
         cursor.execute(
             f"""
-            SELECT COALESCE(market, 'hourly') FROM {_tm_monitor_list_table()}
+            SELECT market FROM {_tm_monitor_list_table()}
             WHERE id = %s
             """,
             (monitor_id,),
         )
         row = cursor.fetchone()
-        if row and row[0]:
-            m = str(row[0]).strip().lower()
-            return m if m in ("hourly", "15m") else "hourly"
+        if row and row[0] is not None:
+            m = _normalize_kalshi_market_interval(row[0])
+            if m:
+                return m
         return "hourly"
     except Exception:
         return "hourly"
 
 
+def _lookup_monitor_market_interval(monitor_key) -> Optional[str]:
+    """Best-effort monitor_list.market; None if missing/unusable (no hourly invention)."""
+    if not monitor_key or not _monitor_key_matches_worker(monitor_key):
+        return None
+    _, monitor_id = _monitor_slot_and_id(monitor_key)
+    if not monitor_id:
+        return None
+    pg = None
+    try:
+        pg = get_postgresql_connection()
+        if not pg:
+            return None
+        with pg.cursor() as cur:
+            cur.execute(
+                f"SELECT market FROM {_tm_monitor_list_table()} WHERE id = %s",
+                (monitor_id,),
+            )
+            row = cur.fetchone()
+        if not row:
+            return None
+        return _normalize_kalshi_market_interval(row[0])
+    except Exception:
+        return None
+    finally:
+        if pg:
+            try:
+                pg.close()
+            except Exception:
+                pass
+
+
+def _resolve_market_for_open_pipeline_gate(data: dict) -> Tuple[Optional[str], str]:
+    """
+    Which strike_pipeline_health (market, symbol) row to consult for a live open.
+
+    Order: ticket market → ticker → monitor_list.market.
+    Never defaults 15m opens to hourly (or the reverse). Unresolved → (None, reason).
+    """
+    m = _normalize_kalshi_market_interval((data or {}).get("market"))
+    if m:
+        return m, "payload"
+    m = _kalshi_market_interval_from_ticker((data or {}).get("ticker"))
+    if m:
+        return m, "ticker"
+    m = _lookup_monitor_market_interval((data or {}).get("monitor"))
+    if m:
+        return m, "monitor"
+    return None, "market_unresolved"
+
+
 def _resolve_trade_market_for_insert(cursor, monitor_key, trade_strategy, ticker):
     """
     Trade cadence stored on each row: 'hourly' or '15m' (Kalshi cycle), not the venue slug.
-    Prefer users.monitor_list.market when monitor_key resolves; else infer from strategy/ticker.
+
+    Prefer an unambiguous ticker, then monitor_list.market, then strategy/ticker text hints.
+    Never map a clear 15m ticker to hourly via a missing monitor default.
     """
+    from_ticker = _kalshi_market_interval_from_ticker(ticker)
+    if from_ticker:
+        return from_ticker
     if monitor_key and cursor is not None:
-        return _get_market_for_monitor_key_cursor(cursor, monitor_key)
+        mon_m = None
+        try:
+            _, monitor_id = _monitor_slot_and_id(monitor_key)
+            if monitor_id and _monitor_key_matches_worker(monitor_key):
+                cursor.execute(
+                    f"SELECT market FROM {_tm_monitor_list_table()} WHERE id = %s",
+                    (monitor_id,),
+                )
+                row = cursor.fetchone()
+                if row:
+                    mon_m = _normalize_kalshi_market_interval(row[0])
+        except Exception:
+            mon_m = None
+        if mon_m:
+            return mon_m
     ts = (trade_strategy or "").lower()
     tk = (ticker or "").upper()
     if "15m" in ts or "15M" in tk:
@@ -6401,7 +6492,20 @@ async def add_trade(request: Request):
         log(f"⚠️ Error checking system trading mode: {e}")
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="trading_disabled")
 
-    # Hard fail-closed data gate for live opens: require healthy + non-flatlined spot pipeline.
+    # Resolve trade market interval once for the open path. Prefer ticket / ticker /
+    # monitor — never invent hourly for a 15m instrument (or the reverse).
+    # Stamp onto the payload so insert + downstream never re-default wrongly.
+    # Paper skips the health gate below but still gets the correct market stamp.
+    try:
+        _resolved_mkt, _resolved_src = _resolve_market_for_open_pipeline_gate(data)
+        if _resolved_mkt:
+            data["market"] = _resolved_mkt
+    except Exception as e:
+        log_debug(f"open market resolve stamp skipped: {e}")
+        _resolved_mkt, _resolved_src = None, "market_resolve_error"
+
+    # Hard fail-closed data gate for live opens: require healthy + non-flatlined spot pipeline
+    # for the trade's own market interval only (15m must not consult hourly health, and vice versa).
     # Paper/simulated paths are allowed to continue for diagnostics/backtesting.
     try:
         _paper_raw = data.get("paper_trade", False)
@@ -6411,8 +6515,22 @@ async def add_trade(request: Request):
             _paper_for_gate = bool(_paper_raw)
         if not simulated and not _paper_for_gate:
             symbol_for_gate = str(data.get("symbol") or "").strip().upper()
-            market_for_gate = str(data.get("market") or "hourly").strip().lower() or "hourly"
-            if symbol_for_gate:
+            market_for_gate = _normalize_kalshi_market_interval(data.get("market")) or _resolved_mkt
+            market_src = _resolved_src if market_for_gate else (
+                _resolved_src if _resolved_src else "market_unresolved"
+            )
+            if symbol_for_gate and not market_for_gate:
+                log(
+                    f"🚫 OPEN BLOCKED by pipeline gate: unresolved market "
+                    f"symbol={symbol_for_gate} ticker={data.get('ticker')!r} "
+                    f"monitor={data.get('monitor')!r} reason={market_src}"
+                )
+                raise HTTPException(
+                    status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                    detail=f"pipeline_gate_blocked:market_unresolved:{market_src}",
+                )
+            if symbol_for_gate and market_for_gate:
+                data["market"] = market_for_gate
                 pg_gate = get_postgresql_connection()
                 if not pg_gate:
                     raise HTTPException(
@@ -6434,7 +6552,7 @@ async def add_trade(request: Request):
                 if not ok_gate:
                     log(
                         f"🚫 OPEN BLOCKED by pipeline gate symbol={symbol_for_gate} "
-                        f"market={market_for_gate} reason={reason_gate}"
+                        f"market={market_for_gate} (src={market_src}) reason={reason_gate}"
                     )
                     raise HTTPException(
                         status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

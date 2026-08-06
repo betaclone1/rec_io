@@ -1,7 +1,8 @@
 """
 Server-side summary + analysis aggregates for trade history (full filtered set, not paginated).
 
-Filter semantics mirror desktop trade_history applyFilters (date bounds applied separately via min/max).
+Filter semantics mirror desktop/mobile trade_history LIVE/PAPER/TEST categories:
+TEST = ``test_filter``, PAPER = paper and not test, LIVE = non-paper and not test.
 """
 
 from __future__ import annotations
@@ -49,9 +50,6 @@ def build_trade_history_filter_sql(
         clauses.append(f"{a}.date <= %s")
         params.append(max_d.strip())
 
-    if not body.get("include_test_trades", False):
-        clauses.append(f"({a}.test_filter IS NOT TRUE)")
-
     show_win = bool(body.get("show_win", True))
     show_loss = bool(body.get("show_loss", True))
     if not show_win and not show_loss:
@@ -67,16 +65,28 @@ def build_trade_history_filter_sql(
             f"(NOT (UPPER(TRIM(COALESCE({a}.win_loss, ''))) IN ('W', 'WIN')))"
         )
 
+    # LIVE / PAPER / TEST are independent categories (OR). TEST = test_filter,
+    # regardless of paper_trade. PAPER = paper non-test. LIVE = non-paper non-test.
     show_live = bool(body.get("show_live", True))
     show_paper = bool(body.get("show_paper", False))
-    if not show_live and not show_paper:
+    show_test = bool(body.get("include_test_trades", False))
+    type_parts: List[str] = []
+    if show_live:
+        type_parts.append(
+            f"(COALESCE({a}.paper_trade, FALSE) = FALSE"
+            f" AND COALESCE({a}.test_filter, FALSE) IS NOT TRUE)"
+        )
+    if show_paper:
+        type_parts.append(
+            f"(COALESCE({a}.paper_trade, FALSE) = TRUE"
+            f" AND COALESCE({a}.test_filter, FALSE) IS NOT TRUE)"
+        )
+    if show_test:
+        type_parts.append(f"(COALESCE({a}.test_filter, FALSE) IS TRUE)")
+    if not type_parts:
         clauses.append("1=0")
-    elif show_live and show_paper:
-        pass
-    elif show_live:
-        clauses.append(f"(COALESCE({a}.paper_trade, FALSE) = FALSE)")
     else:
-        clauses.append(f"(COALESCE({a}.paper_trade, FALSE) = TRUE)")
+        clauses.append("(" + " OR ".join(type_parts) + ")")
 
     symbols = body.get("symbols") or []
     if symbols:

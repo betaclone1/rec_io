@@ -1164,6 +1164,31 @@
       color: white;
       user-select: none;
     }
+    .th-trade-detail-candles-loading {
+      display: none;
+      align-items: center;
+      gap: 6px;
+      margin: 0 2px 1px 0;
+      font-size: 11px;
+      letter-spacing: 0.01em;
+      color: rgba(226, 232, 240, 0.72);
+      white-space: nowrap;
+      line-height: 1;
+    }
+    .th-trade-detail-candles-loading.is-visible {
+      display: inline-flex;
+    }
+    .th-trade-detail-candles-loading-dot {
+      width: 5px;
+      height: 5px;
+      border-radius: 50%;
+      background: rgba(148, 163, 184, 0.95);
+      animation: th-trade-detail-candle-pulse 1s ease-in-out infinite;
+    }
+    @keyframes th-trade-detail-candle-pulse {
+      0%, 100% { opacity: 0.25; transform: scale(0.85); }
+      50% { opacity: 1; transform: scale(1); }
+    }
     .th-trade-detail-chart-layer-btn {
       margin: 0;
       padding: 0;
@@ -1728,6 +1753,15 @@
               role="group"
               aria-label="Chart layers"
             >
+              <span
+                id="th-trade-detail-candles-loading"
+                class="th-trade-detail-candles-loading"
+                hidden
+                aria-live="polite"
+              >
+                <span class="th-trade-detail-candles-loading-dot" aria-hidden="true"></span>
+                Loading candlestick data…
+              </span>
               <button
                 type="button"
                 id="th-trade-detail-candles-btn"
@@ -2143,32 +2177,29 @@
       });
     }
     
-    // === PAPER TRADE FILTER LOGIC ===
+    // === LIVE / PAPER / TEST filter (independent categories; TEST ignores paper_trade) ===
+    function thTradeTypeFlag(value) {
+      return value === true || value === 1 || value === 'true' || value === '1' || value === 'True';
+    }
+
     function filterTradesByPaperTrade(trades) {
       const liveCheckbox = document.getElementById('filter-live');
       const paperCheckbox = document.getElementById('filter-paper');
-      
+      const testCheckbox = document.getElementById('include-test-trades');
+
       // If checkboxes don't exist yet, return all trades (no filtering)
       if (!liveCheckbox || !paperCheckbox) {
         return trades;
       }
-      
+
       const showLive = liveCheckbox.checked;
       const showPaper = paperCheckbox.checked;
-      
-      return trades.filter(trade => {
-        const paperTrade = trade.paper_trade;
-        
-        // Convert to boolean - handle various formats
-        const isPaperTrade = paperTrade === true || paperTrade === 1 || paperTrade === 'true' || paperTrade === '1' || paperTrade === 'True';
-        const isLiveTrade = !isPaperTrade; // false, 0, null, undefined, 'false', etc. are all live trades
-        
-        // If it's a live trade (paper_trade = FALSE), show only if LIVE checkbox is checked
-        if (isLiveTrade) {
-          return showLive;
-        }
-        // If it's a paper trade (paper_trade = TRUE), show only if PAPER checkbox is checked
-        return showPaper;
+      const showTest = !!(testCheckbox && testCheckbox.checked);
+
+      return trades.filter((trade) => {
+        if (thTradeTypeFlag(trade.test_filter)) return showTest;
+        if (thTradeTypeFlag(trade.paper_trade)) return showPaper;
+        return showLive;
       });
     }
     
@@ -2614,12 +2645,7 @@
     /** Same filters as the table, but omit monitor filter so each selected tile can be compared. */
     function tradeHistoryApplyFiltersWithoutMonitor(tradeList) {
       const dateFilterPicker = document.getElementById('date-filter-picker');
-      const includeTestEl = document.getElementById('include-test-trades');
-      const includeTestTrades = includeTestEl && includeTestEl.checked;
       let filtered = tradeList;
-      if (!includeTestTrades) {
-        filtered = filtered.filter((trade) => !trade.test_filter);
-      }
       filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
       filtered = filterTradesByWinLoss(filtered);
       filtered = filterTradesBySymbol(filtered);
@@ -4218,9 +4244,19 @@
         _thTradeDetailAbortController.abort();
         _thTradeDetailAbortController = null;
       }
+      if (_thTradeDetailCandlesAbortController) {
+        _thTradeDetailCandlesAbortController.abort();
+        _thTradeDetailCandlesAbortController = null;
+      }
       _thTradeDetailPayload = null;
       _thTradeDetailChart = null;
       _thTradeDetailChartDrag = null;
+      _thTradeDetailShowLine = true;
+      _thTradeDetailShowCandles = false;
+      _thTradeDetailCandlesLoadState = 'idle';
+      _thTradeDetailCandlesTradeId = null;
+      tradeHistoryDetailSetCandlesLoadingVisible(false);
+      tradeHistoryDetailSyncChartTypeIcons();
       if (_thTradeDetailChartHoverFrame) {
         cancelAnimationFrame(_thTradeDetailChartHoverFrame);
         _thTradeDetailChartHoverFrame = null;
@@ -4256,6 +4292,10 @@
     /** Independent chart layers; both may be on and drawn overlaid (line on top). */
     let _thTradeDetailShowLine = true;
     let _thTradeDetailShowCandles = false;
+    /** idle | loading | loaded | error — candles stay cached while the modal stays open. */
+    let _thTradeDetailCandlesLoadState = 'idle';
+    let _thTradeDetailCandlesTradeId = null;
+    let _thTradeDetailCandlesAbortController = null;
 
     const _thTradeDetailTimeFmt = new Intl.DateTimeFormat('en-US', {
       timeZone: 'America/New_York',
@@ -4395,17 +4435,6 @@
       return Array.from(byTimestamp.values()).sort((left, right) => left.t - right.t);
     }
 
-    /** Prefer Kalshi's 1M buckets; fall back to the first available interval. */
-    function tradeHistoryDetailCandleSeries(details) {
-      const candles = details && details.candlesticks;
-      if (!candles || typeof candles !== 'object') return [];
-      if (Array.isArray(candles['1M'])) return candles['1M'];
-      for (const key of Object.keys(candles)) {
-        if (Array.isArray(candles[key])) return candles[key];
-      }
-      return [];
-    }
-
     function tradeHistoryDetailNormalizeCandle(raw) {
       const t = Number(raw && raw.open_ts_ms);
       const open = Number(raw && raw.open);
@@ -4424,26 +4453,99 @@
       return { t, open, high, low, close };
     }
 
-    function tradeHistoryDetailChartCandles(kalshi) {
-      const currentDetails = tradeHistoryDetailLiveDetails(kalshi, 'live_data');
-      const followingDetails = tradeHistoryDetailLiveDetails(kalshi, 'following_live_data');
-      const followingClose = Date.parse(kalshi.following_cycle_close_time);
+    /**
+     * Candles use cycle-package price_ring OHLC, loaded lazily into the detail payload.
+     * Kalshi live_data timeseries remains the line layer for comparison.
+     */
+    function tradeHistoryDetailChartCandles(payload) {
+      const rows = payload && Array.isArray(payload.spot_candles) ? payload.spot_candles : [];
       const byTimestamp = new Map();
-      tradeHistoryDetailCandleSeries(currentDetails).forEach((raw) => {
+      rows.forEach((raw) => {
         const candle = tradeHistoryDetailNormalizeCandle(raw);
         if (candle) byTimestamp.set(candle.t, candle);
-      });
-      // Buckets are keyed by minute, and the bucket straddling the cycle close only exists in the
-      // following event. Keep the current cycle authoritative and fill in whatever minutes it lacks.
-      tradeHistoryDetailCandleSeries(followingDetails).forEach((raw) => {
-        const candle = tradeHistoryDetailNormalizeCandle(raw);
-        if (!candle || byTimestamp.has(candle.t)) return;
-        if (Number.isFinite(followingClose) && candle.t > followingClose) return;
-        byTimestamp.set(candle.t, candle);
       });
       return Array.from(byTimestamp.values()).sort((left, right) => left.t - right.t);
     }
 
+    function tradeHistoryDetailSetCandlesLoadingVisible(visible) {
+      const el = document.getElementById('th-trade-detail-candles-loading');
+      if (!el) return;
+      const on = Boolean(visible);
+      el.hidden = !on;
+      el.classList.toggle('is-visible', on);
+    }
+
+    function tradeHistoryDetailApplySpotCandlesPayload(candlePayload) {
+      if (!_thTradeDetailPayload) return;
+      _thTradeDetailPayload.spot_candles = Array.isArray(candlePayload.spot_candles)
+        ? candlePayload.spot_candles
+        : [];
+      _thTradeDetailPayload.spot_candles_source = candlePayload.spot_candles_source || null;
+      _thTradeDetailPayload.spot_candles_error = candlePayload.spot_candles_error || null;
+      _thTradeDetailPayload.spot_candles_deferred = false;
+    }
+
+    async function tradeHistoryDetailEnsureSpotCandlesLoaded() {
+      const payload = _thTradeDetailPayload;
+      const tradeId = Number(payload && payload.trade && payload.trade.id);
+      if (!payload || !Number.isInteger(tradeId) || tradeId < 1) return;
+      if (
+        _thTradeDetailCandlesLoadState === 'loaded' &&
+        _thTradeDetailCandlesTradeId === tradeId
+      ) {
+        return;
+      }
+      if (
+        _thTradeDetailCandlesLoadState === 'loading' &&
+        _thTradeDetailCandlesTradeId === tradeId
+      ) {
+        return;
+      }
+
+      if (_thTradeDetailCandlesAbortController) {
+        _thTradeDetailCandlesAbortController.abort();
+      }
+      const controller = new AbortController();
+      _thTradeDetailCandlesAbortController = controller;
+      _thTradeDetailCandlesLoadState = 'loading';
+      _thTradeDetailCandlesTradeId = tradeId;
+      tradeHistoryDetailSetCandlesLoadingVisible(true);
+
+      try {
+        const response = await fetch(
+          `/api/trades/${encodeURIComponent(tradeId)}/spot-candles`,
+          {
+            credentials: 'same-origin',
+            cache: 'no-store',
+            signal: controller.signal,
+          }
+        );
+        const body = await response.json().catch(() => ({}));
+        if (!response.ok) {
+          throw new Error(body.detail || `Candlestick request failed (HTTP ${response.status})`);
+        }
+        if (controller.signal.aborted) return;
+        if (_thTradeDetailCandlesTradeId !== tradeId || !_thTradeDetailPayload) return;
+        tradeHistoryDetailApplySpotCandlesPayload(body);
+        _thTradeDetailCandlesLoadState = 'loaded';
+        _thTradeDetailCandlesAbortController = null;
+        tradeHistoryDetailSetCandlesLoadingVisible(false);
+        if (_thTradeDetailShowCandles) {
+          tradeHistoryDrawTradeDetailChart();
+        }
+      } catch (error) {
+        if (error && error.name === 'AbortError') return;
+        if (_thTradeDetailCandlesTradeId !== tradeId) return;
+        _thTradeDetailCandlesLoadState = 'error';
+        _thTradeDetailCandlesAbortController = null;
+        tradeHistoryDetailSetCandlesLoadingVisible(false);
+        if (_thTradeDetailPayload) {
+          _thTradeDetailPayload.spot_candles_error =
+            error && error.message ? error.message : 'Candlestick request failed.';
+        }
+        if (_thTradeDetailShowCandles) tradeHistoryRenderTradeDetailChart();
+      }
+    }
     /** Market open→close plus a 5-minute buffer on each side; fall back to the last 15 minutes. */
     function tradeHistoryDetailCycleWindow(market, dataTMin, dataTMax) {
       const open = Date.parse((market || {}).open_time);
@@ -4561,6 +4663,14 @@
       if (layer === 'candles') {
         if (_thTradeDetailShowCandles && !_thTradeDetailShowLine) return;
         _thTradeDetailShowCandles = !_thTradeDetailShowCandles;
+        if (_thTradeDetailShowCandles) {
+          tradeHistoryDetailEnsureSpotCandlesLoaded();
+          if (_thTradeDetailCandlesLoadState === 'loading') {
+            tradeHistoryDetailSetCandlesLoadingVisible(true);
+          }
+        } else {
+          tradeHistoryDetailSetCandlesLoadingVisible(false);
+        }
       } else if (layer === 'line') {
         if (_thTradeDetailShowLine && !_thTradeDetailShowCandles) return;
         _thTradeDetailShowLine = !_thTradeDetailShowLine;
@@ -4595,7 +4705,7 @@
       if (!payload) return null;
       const kalshi = payload.kalshi || {};
       const points = tradeHistoryDetailChartPoints(kalshi);
-      const candles = tradeHistoryDetailChartCandles(kalshi);
+      const candles = tradeHistoryDetailChartCandles(payload);
       const cssWidth = Math.max(320, canvas.clientWidth || 900);
       const cssHeight = Math.max(220, canvas.clientHeight || 330);
       const dpr = Math.max(1, window.devicePixelRatio || 1);
@@ -4841,12 +4951,16 @@
       if (showCandles) {
         if ((state.candles || []).length) {
           tradeHistoryDrawTradeDetailCandles(ctx, state);
-        } else if (!showLine) {
+        } else if (_thTradeDetailCandlesLoadState !== 'loading') {
           ctx.fillStyle = '#94a3b8';
           ctx.font = '12px sans-serif';
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
-          ctx.fillText('No Kalshi candlestick data returned.', pad.left + 12, pad.top + 12);
+          const emptyMsg =
+            _thTradeDetailCandlesLoadState === 'error'
+              ? 'Candlestick data failed to load.'
+              : 'No cycle package candlestick data.';
+          ctx.fillText(emptyMsg, pad.left + 12, pad.top + 12);
         }
       }
       if (showLine) {
@@ -5467,12 +5581,7 @@
       if (_thUseServerListFilters) {
         filtered = Array.isArray(trades) ? trades.slice() : [];
       } else {
-        const includeTestEl = document.getElementById('include-test-trades');
-        const includeTestTrades = includeTestEl && includeTestEl.checked;
         filtered = trades;
-        if (!includeTestTrades) {
-          filtered = filtered.filter(trade => !trade.test_filter);
-        }
         filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
         filtered = filterTradesByWinLoss(filtered);
         filtered = filterTradesBySymbol(filtered);

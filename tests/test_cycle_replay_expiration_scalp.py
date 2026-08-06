@@ -19,6 +19,8 @@ SETTINGS = {
     "max_probability": 100,
     "min_ask": 0.90,
     "max_ask": 0.99,
+    "min_movement": 0.0,
+    "max_movement": 100.0,
     "stop_loss_price": 0.35,
 }
 
@@ -47,6 +49,62 @@ def test_expiration_scalp_entry_rejects_ask_below_min():
     )
     assert passed is None
     assert reason == "ask_outside_band"
+
+
+def test_expiration_scalp_entry_blocks_outside_prob_and_movement():
+    passed, reason = evaluate_expiration_scalp_entry(
+        {**SETTINGS, "min_probability": 80.0, "min_movement": 40.0, "max_movement": 70.0},
+        ttc_seconds=56,
+        side="yes",
+        ask_dollars=0.958,
+        probability=55.0,
+        movement_percentile=25.0,
+    )
+    assert passed is None
+    assert reason == "out_of_probability_and_movement"
+
+
+def test_expiration_scalp_entry_half_size_out_of_prob_in_movement():
+    passed, reason = evaluate_expiration_scalp_entry(
+        {**SETTINGS, "min_probability": 80.0, "min_movement": 40.0, "max_movement": 70.0},
+        ttc_seconds=56,
+        side="yes",
+        ask_dollars=0.958,
+        probability=55.0,
+        movement_percentile=55.0,
+    )
+    assert reason is None
+    assert passed is not None
+    assert passed["half_size"] is True
+    assert passed["size_mode"] == "half"
+
+
+def test_expiration_scalp_entry_full_size_in_prob_ignores_movement():
+    passed, reason = evaluate_expiration_scalp_entry(
+        {**SETTINGS, "min_probability": 50.0, "min_movement": 40.0, "max_movement": 70.0},
+        ttc_seconds=56,
+        side="yes",
+        ask_dollars=0.958,
+        probability=55.0,
+        movement_percentile=10.0,
+    )
+    assert reason is None
+    assert passed is not None
+    assert passed["half_size"] is False
+    assert passed["size_mode"] == "full"
+
+
+def test_expiration_scalp_entry_blocks_out_of_prob_when_movement_missing():
+    passed, reason = evaluate_expiration_scalp_entry(
+        {**SETTINGS, "min_probability": 80.0, "min_movement": 40.0, "max_movement": 70.0},
+        ttc_seconds=56,
+        side="yes",
+        ask_dollars=0.958,
+        probability=55.0,
+        movement_percentile=None,
+    )
+    assert passed is None
+    assert reason == "out_of_probability_and_movement"
 
 
 def test_expiration_scalp_floor_exit_triggers_on_opp_ask():

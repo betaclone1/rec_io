@@ -60,6 +60,8 @@ def apply_paper_entry_fill(
     paper path would delete the pending trade (zero fill / min_fill).
     """
     position = _position_from_settings(settings)
+    if (entry.detail or {}).get("half_size") or (entry.detail or {}).get("size_mode") == "half":
+        position = max(1, int(round(position * 0.5)))
     ticket_ask = float(entry.ticket_ask if entry.ticket_ask is not None else entry.buy_price)
     side_yn = normalize_trade_side(entry.side)
     try:

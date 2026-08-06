@@ -514,6 +514,13 @@
     let dashboardMaxProbability = 100.00;
     let dashboardProbIsDragging = false;
     let dashboardProbCurrentHandle = null;
+
+    // Movement Window Slider Variables (Expiration Scalp)
+    let dashboardMovementSliderWidth = 0;
+    let dashboardMinMovement = 0.00;
+    let dashboardMaxMovement = 100.00;
+    let dashboardMovementIsDragging = false;
+    let dashboardMovementCurrentHandle = null;
     
     // Momentum Scalp Ask Window Slider Variables
     let dashboardMSAskSliderWidth = 0;
@@ -773,6 +780,84 @@
       dashboardProbCurrentHandle = null;
       document.removeEventListener('mousemove', handleDashboardProbMouseMove);
       document.removeEventListener('mouseup', handleDashboardProbMouseUp);
+    }
+
+    function initDashboardMovementWindowSlider() {
+      const container = document.getElementById('movementWindowSliderContainer');
+      if (!container) return;
+      dashboardMovementSliderWidth = container.offsetWidth;
+      updateDashboardMovementWindowSlider();
+    }
+
+    function updateDashboardMovementWindowSlider() {
+      const minHandle = document.getElementById('minMovementHandle');
+      const maxHandle = document.getElementById('maxMovementHandle');
+      const range = document.getElementById('movementWindowRange');
+      const minDisplay = document.getElementById('movementWindowMinDisplay');
+      const maxDisplay = document.getElementById('movementWindowMaxDisplay');
+      if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+
+      const MIN_SEPARATION = 0.5;
+      if (dashboardMaxMovement - dashboardMinMovement < MIN_SEPARATION) {
+        if (dashboardMaxMovement < 100) {
+          dashboardMaxMovement = parseFloat((dashboardMinMovement + MIN_SEPARATION).toFixed(1));
+        } else {
+          dashboardMinMovement = parseFloat((dashboardMaxMovement - MIN_SEPARATION).toFixed(1));
+        }
+      }
+
+      const minPercent = dashboardMinMovement;
+      const maxPercent = dashboardMaxMovement;
+      minHandle.style.left = `${minPercent}%`;
+      maxHandle.style.left = `${maxPercent}%`;
+      range.style.left = `${minPercent}%`;
+      range.style.width = `${maxPercent - minPercent}%`;
+      minDisplay.textContent = dashboardMinMovement.toFixed(1) + '%';
+      maxDisplay.textContent = dashboardMaxMovement.toFixed(1) + '%';
+      minDisplay.style.left = `${minPercent}%`;
+      maxDisplay.style.left = `${maxPercent}%`;
+    }
+
+    function handleDashboardMovementMouseDown(e) {
+      dashboardMovementIsDragging = true;
+      dashboardMovementCurrentHandle = e.target;
+      document.addEventListener('mousemove', handleDashboardMovementMouseMove);
+      document.addEventListener('mouseup', handleDashboardMovementMouseUp);
+      e.preventDefault();
+    }
+
+    function handleDashboardMovementMouseMove(e) {
+      if (!dashboardMovementIsDragging || !dashboardMovementCurrentHandle) return;
+      const container = document.getElementById('movementWindowSliderContainer');
+      if (!container) return;
+      const rect = container.getBoundingClientRect();
+      const x = e.clientX - rect.left;
+      const percent = Math.max(0, Math.min(100, (x / rect.width) * 100));
+      const movement = parseFloat((Math.round(percent * 10) / 10).toFixed(1));
+      const MIN_SEPARATION = 0.5;
+      const minHandle = document.getElementById('minMovementHandle');
+      const maxHandle = document.getElementById('maxMovementHandle');
+      if (dashboardMovementCurrentHandle === minHandle) {
+        if (movement >= dashboardMaxMovement - MIN_SEPARATION) {
+          dashboardMinMovement = parseFloat((dashboardMaxMovement - MIN_SEPARATION).toFixed(1));
+        } else {
+          dashboardMinMovement = movement;
+        }
+      } else if (dashboardMovementCurrentHandle === maxHandle) {
+        if (movement <= dashboardMinMovement + MIN_SEPARATION) {
+          dashboardMaxMovement = parseFloat((dashboardMinMovement + MIN_SEPARATION).toFixed(1));
+        } else {
+          dashboardMaxMovement = movement;
+        }
+      }
+      updateDashboardMovementWindowSlider();
+    }
+
+    function handleDashboardMovementMouseUp() {
+      dashboardMovementIsDragging = false;
+      dashboardMovementCurrentHandle = null;
+      document.removeEventListener('mousemove', handleDashboardMovementMouseMove);
+      document.removeEventListener('mouseup', handleDashboardMovementMouseUp);
     }
     
     // COOLDOWN WINDOW SLIDER (Momentum Contain)
@@ -1081,6 +1166,8 @@
       ['autoEntryMinVolumeSlider', 'autoEntryDifferentialSlider', 'autoEntryMaxDifferentialSlider'].forEach((id) => {
         setForId(id, !isExpirationScalp);
       });
+      const minVolSection = document.getElementById('uatMinVolumeSection');
+      if (minVolSection) minVolSection.style.display = isExpirationScalp ? 'none' : '';
       document.querySelectorAll('.uat-loss-prevention-block').forEach((el) => {
         el.style.display = disp(!isExpirationScalp);
       });
@@ -1101,6 +1188,10 @@
       if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(!isExpirationScalp);
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
       if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
+      const esMov = document.getElementById('expirationScalpMovementWindowSection');
+      if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
+      const esNote = document.getElementById('expirationScalpProbMovementNote');
+      if (esNote) esNote.style.display = isExpirationScalp ? 'block' : 'none';
       const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');
       if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
     }
@@ -1788,6 +1879,15 @@
               dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
             }
           }
+          dashboardMinMovement = data.min_movement !== undefined ? parseFloat(data.min_movement) : 0.00;
+          dashboardMaxMovement = data.max_movement !== undefined ? parseFloat(data.max_movement) : 100.00;
+          if (dashboardMaxMovement - dashboardMinMovement < MIN_SEPARATION) {
+            if (dashboardMaxMovement < 100) {
+              dashboardMaxMovement = parseFloat((dashboardMinMovement + MIN_SEPARATION).toFixed(1));
+            } else {
+              dashboardMinMovement = parseFloat((dashboardMaxMovement - MIN_SEPARATION).toFixed(1));
+            }
+          }
           dashboardExpirationScalpMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.9000;
           dashboardExpirationScalpMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9900;
           const mfpRaw = data.min_fill_price !== undefined && data.min_fill_price !== null
@@ -1809,6 +1909,9 @@
           setTimeout(() => {
             if (typeof initDashboardExpirationScalpAskWindowSlider === 'function') {
               initDashboardExpirationScalpAskWindowSlider();
+            }
+            if (typeof initDashboardMovementWindowSlider === 'function') {
+              initDashboardMovementWindowSlider();
             }
           }, 100);
         } else {
@@ -2043,6 +2146,19 @@
           } else if (isExpirationScalp) {
             if (typeof initDashboardExpirationScalpAskWindowSlider === 'function') {
               initDashboardExpirationScalpAskWindowSlider();
+            }
+            if (typeof initDashboardMovementWindowSlider === 'function') {
+              initDashboardMovementWindowSlider();
+            }
+            const movMinHandle = document.getElementById('minMovementHandle');
+            const movMaxHandle = document.getElementById('maxMovementHandle');
+            if (movMinHandle && !movMinHandle._dashWired) {
+              movMinHandle._dashWired = true;
+              movMinHandle.addEventListener('mousedown', handleDashboardMovementMouseDown);
+            }
+            if (movMaxHandle && !movMaxHandle._dashWired) {
+              movMaxHandle._dashWired = true;
+              movMaxHandle.addEventListener('mousedown', handleDashboardMovementMouseDown);
             }
           } else {
             // HOURLY HTC value bubbles
@@ -2312,6 +2428,8 @@
         } else if (isExpirationScalp) {
           payload.min_probability = parseFloat(parseFloat(dashboardMinProbability).toFixed(1));
           payload.max_probability = parseFloat(parseFloat(dashboardMaxProbability).toFixed(1));
+          payload.min_movement = parseFloat(parseFloat(dashboardMinMovement).toFixed(1));
+          payload.max_movement = parseFloat(parseFloat(dashboardMaxMovement).toFixed(1));
           payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk).toFixed(4));
           payload.max_ask = parseFloat(parseFloat(dashboardExpirationScalpMaxAsk).toFixed(4));
           const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');

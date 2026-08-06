@@ -46,6 +46,7 @@ class ExpirationScalpAdapter:
                 side=side,
                 ask_dollars=ask,
                 probability=prob,
+                movement_percentile=(tick.metrics or {}).get("movement_percentile"),
             )
             if passed is None:
                 continue
@@ -63,6 +64,10 @@ class ExpirationScalpAdapter:
                     "spot": tick.spot,
                     "yes_ask": tick.yes_ask,
                     "no_ask": tick.no_ask,
+                    "half_size": bool(passed.get("half_size")),
+                    "size_mode": passed.get("size_mode"),
+                    "size_reason": passed.get("size_reason"),
+                    "movement_percentile": passed.get("movement_percentile"),
                 },
             )
         return None

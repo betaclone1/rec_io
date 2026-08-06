@@ -51,6 +51,39 @@ def side_aware_probability_15m(
     return v
 
 
+def classify_expiration_scalp_prob_movement(
+    *,
+    probability: float,
+    movement_percentile: Optional[float],
+    min_probability: float,
+    max_probability: float,
+    min_movement: float = 0.0,
+    max_movement: float = 100.0,
+) -> tuple[str, str]:
+    """
+    Joint probability + movement gate for Expiration Scalp.
+
+    - Inside probability → ``full`` (movement ignored).
+    - Outside probability but inside movement → ``half`` (½ position size).
+    - Outside both (or outside prob with missing movement) → ``block``.
+    """
+    in_prob = float(min_probability) <= float(probability) <= float(max_probability)
+    if in_prob:
+        return "full", "in_probability_window"
+
+    in_mov = False
+    if movement_percentile is not None:
+        try:
+            mov = float(movement_percentile)
+            in_mov = float(min_movement) <= mov <= float(max_movement)
+        except (TypeError, ValueError):
+            in_mov = False
+
+    if in_mov:
+        return "half", "out_of_prob_in_movement_half_size"
+    return "block", "out_of_probability_and_movement"
+
+
 def evaluate_expiration_scalp_entry(
     settings: Mapping[str, Any],
     *,
@@ -58,12 +91,16 @@ def evaluate_expiration_scalp_entry(
     side: str,
     ask_dollars: Optional[float],
     probability: Optional[float],
+    movement_percentile: Optional[float] = None,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """
     Pure Exp Scalp entry gate for one side of one contract.
 
     Returns (strike_data_dict, None) on pass, or (None, reason) on reject.
     ``buy_price`` is the ladder ask (live ticket price before executor VWAP/min_fill).
+
+    Prob+movement joint gate: see ``classify_expiration_scalp_prob_movement``.
+    Passed dict may include ``half_size`` True for out-of-prob / in-movement rescues.
     """
     try:
         min_time = int(settings["min_time"])
@@ -72,6 +109,8 @@ def evaluate_expiration_scalp_entry(
         max_probability = float(settings.get("max_probability", 100))
         min_ask = float(settings.get("min_ask", 0.90))
         max_ask = float(settings.get("max_ask", 0.99))
+        min_movement = float(settings.get("min_movement", 0.0))
+        max_movement = float(settings.get("max_movement", 100.0))
     except (KeyError, TypeError, ValueError) as e:
         return None, f"bad_settings:{e}"
 
@@ -93,8 +132,17 @@ def evaluate_expiration_scalp_entry(
         prob = float(probability)
     except (TypeError, ValueError):
         return None, "bad_probability"
-    if prob < min_probability or prob > max_probability:
-        return None, "probability_outside_band"
+
+    size_mode, size_reason = classify_expiration_scalp_prob_movement(
+        probability=prob,
+        movement_percentile=movement_percentile,
+        min_probability=min_probability,
+        max_probability=max_probability,
+        min_movement=min_movement,
+        max_movement=max_movement,
+    )
+    if size_mode == "block":
+        return None, size_reason
 
     side_l = (side or "").strip().lower()
     if side_l in ("y", "yes"):
@@ -110,6 +158,12 @@ def evaluate_expiration_scalp_entry(
             "buy_price": ask_price,
             "probability": prob,
             "ttc_seconds": int(ttc_seconds),
+            "movement_percentile": float(movement_percentile)
+            if movement_percentile is not None
+            else None,
+            "half_size": size_mode == "half",
+            "size_mode": size_mode,
+            "size_reason": size_reason,
         },
         None,
     )

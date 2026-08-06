@@ -1648,35 +1648,28 @@
             });
         }
         
-        // === PAPER TRADE FILTER LOGIC ===
+        // === LIVE / PAPER / TEST filter (independent categories; TEST ignores paper_trade) ===
+        function thmTradeTypeFlag(value) {
+            return value === true || value === 1 || value === 'true' || value === '1' || value === 'True';
+        }
+
         function filterTradesByPaperTrade(trades) {
             const liveCheckbox = document.getElementById('filter-live');
             const paperCheckbox = document.getElementById('filter-paper');
-            
+            const testCheckbox = document.getElementById('include-test-trades');
+
             // If checkboxes don't exist yet, return all trades (no filtering)
             if (!liveCheckbox || !paperCheckbox) {
                 return trades;
             }
-            
+
             const showLive = liveCheckbox.checked;
             const showPaper = paperCheckbox.checked;
-            
-            return trades.filter(trade => {
-                const paperTrade = trade.paper_trade;
-                
-                // Convert to boolean - handle various formats (boolean, string, number, null)
-                let isPaperTrade = false;
-                if (paperTrade === true || paperTrade === 1 || paperTrade === 'true' || paperTrade === '1' || paperTrade === 'True') {
-                    isPaperTrade = true;
-                } else if (paperTrade === false || paperTrade === 0 || paperTrade === 'false' || paperTrade === '0' || paperTrade === 'False' || paperTrade === null || paperTrade === undefined) {
-                    isPaperTrade = false;
-                }
-                
-                // If it's a paper trade (paper_trade = TRUE), show only if PAPER checkbox is checked
-                if (isPaperTrade) {
-                    return showPaper;
-                }
-                // If it's a live trade (paper_trade = FALSE), show only if LIVE checkbox is checked
+            const showTest = !!(testCheckbox && testCheckbox.checked);
+
+            return trades.filter((trade) => {
+                if (thmTradeTypeFlag(trade.test_filter)) return showTest;
+                if (thmTradeTypeFlag(trade.paper_trade)) return showPaper;
                 return showLive;
             });
         }
@@ -4467,12 +4460,7 @@
 
         function thmApplyFiltersWithoutMonitor(tradeList) {
             const dateFilterPicker = document.getElementById('date-filter-picker');
-            const includeTestEl = document.getElementById('include-test-trades');
-            const includeTestTrades = includeTestEl && includeTestEl.checked;
             let filtered = tradeList;
-            if (!includeTestTrades) {
-                filtered = filtered.filter((trade) => !trade.test_filter);
-            }
             filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
             filtered = filterTradesByWinLoss(filtered);
             filtered = filterTradesByStrategy(filtered);
@@ -4900,12 +4888,7 @@
             if (_thmUseServerListFilters) {
                 filtered = Array.isArray(trades) ? trades.slice() : [];
             } else {
-                const includeTestEl = document.getElementById('include-test-trades');
-                const includeTestTrades = includeTestEl && includeTestEl.checked;
                 filtered = trades;
-                if (!includeTestTrades) {
-                    filtered = filtered.filter(trade => !trade.test_filter);
-                }
 
                 filtered = filterTradesByDate(filtered, dateFilterPicker ? dateFilterPicker.value : 'TODAY');
                 filtered = filterTradesByWinLoss(filtered);
