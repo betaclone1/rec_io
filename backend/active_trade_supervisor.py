@@ -769,6 +769,14 @@ def log_debug(message: str):
     _ats_logger.debug("%s", message)
 
 
+try:
+    from backend.core.tradeflow_decision_trace import set_trace_logger as _ats_set_trace_logger
+
+    _ats_set_trace_logger(log)
+except Exception:
+    pass
+
+
 _ats_logger.info(
     "Monitor-aware supervisor starting user=%s monitor=%s unified_15m=%s unified_hourly=%s unified_all=%s",
     ctx_user(),
@@ -1522,6 +1530,17 @@ def _handle_ats_enroll_redis_message(data: dict) -> None:
                 log(f"✅ ATS ENROLL ACK ok trade={trade_id} {q}")
             else:
                 log(f"❌ ATS ENROLL ACK failed trade={trade_id}")
+                try:
+                    from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                    _dtrace(
+                        "ats_enroll_ack",
+                        trade_id=trade_id,
+                        ok=False,
+                        monitor=data.get("monitor_id") or data.get("monitor"),
+                    )
+                except Exception:
+                    pass
             return
 
         if suffix != MONITOR_IDENTIFIER:
@@ -1547,6 +1566,17 @@ def _handle_ats_enroll_redis_message(data: dict) -> None:
             log(f"✅ ATS ENROLL ACK ok trade={trade_id} {q}")
         else:
             log(f"❌ ATS ENROLL ACK failed trade={trade_id}")
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "ats_enroll_ack",
+                    trade_id=trade_id,
+                    ok=False,
+                    monitor=suffix or MONITOR_IDENTIFIER,
+                )
+            except Exception:
+                pass
     except Exception as e:
         log(f"❌ ATS enroll redis handler: {e}")
 
@@ -5175,6 +5205,54 @@ def reconcile_active_trades_with_trade_log_each_tick() -> None:
             return
         finally:
             conn_at.close()
+
+    try:
+        from backend.core.tradeflow_decision_trace import (
+            decision_trace_enabled as _dtrace_on,
+            trace as _dtrace,
+        )
+
+        if _dtrace_on():
+            missing = [
+                tid
+                for tid, (_, st) in trade_by_id.items()
+                if tid not in pool_rows and st in ("pending", "open", "closing")
+            ]
+            ghosts = [tid for tid in pool_rows if tid not in trade_by_id]
+            now_tr = time.time()
+            ts_map = getattr(
+                reconcile_active_trades_with_trade_log_each_tick, "_dtrace_ts_by_rk", None
+            )
+            if not isinstance(ts_map, dict):
+                ts_map = {}
+                reconcile_active_trades_with_trade_log_each_tick._dtrace_ts_by_rk = ts_map
+            last_tr = float(ts_map.get(rk, 0.0))
+            # Gaps: log immediately (throttled 15s). Clean: heartbeat every 60s.
+            if missing or ghosts:
+                if now_tr - last_tr >= 15.0:
+                    ts_map[rk] = now_tr
+                    _dtrace(
+                        "ats_enrollment_health",
+                        monitor=mid,
+                        user=u,
+                        trades_n=len(trade_by_id),
+                        pool_n=len(pool_rows),
+                        missing_from_pool=",".join(str(x) for x in missing[:20]) or "-",
+                        ghost_in_pool=",".join(str(x) for x in ghosts[:20]) or "-",
+                        ok=False,
+                    )
+            elif now_tr - last_tr >= 60.0:
+                ts_map[rk] = now_tr
+                _dtrace(
+                    "ats_enrollment_health",
+                    monitor=mid,
+                    user=u,
+                    trades_n=len(trade_by_id),
+                    pool_n=len(pool_rows),
+                    ok=True,
+                )
+    except Exception:
+        pass
 
     for tid, (ticket_id, st) in trade_by_id.items():
         ps = pool_rows.get(tid)

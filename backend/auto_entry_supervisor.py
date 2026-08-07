@@ -431,6 +431,13 @@ def log_debug(message: str):
     _aes_logger.debug("%s", message)
 
 
+try:
+    from backend.core.tradeflow_decision_trace import set_trace_logger as _aes_set_trace_logger
+
+    _aes_set_trace_logger(log)
+except Exception:
+    pass
+
 _aes_logger.info("Monitor-aware supervisor starting user=%s monitor=%s", ctx_user(), ctx_mid())
 
 _LAST_MONITOR_STATE = {
@@ -2566,12 +2573,36 @@ def trigger_auto_entry_trade(strike_data):
                         f"[AUTO ENTRY] 🚫 BLOCKED by pipeline gate symbol={current_symbol} "
                         f"market={cm} reason={reason}"
                     )
+                    try:
+                        from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                        _dtrace(
+                            "aes_fire_blocked",
+                            monitor=ctx_mid(),
+                            reason="pipeline_gate",
+                            detail=reason,
+                            strike=strike_data.get("strike"),
+                            side=strike_data.get("side"),
+                        )
+                    except Exception:
+                        pass
                     return False
             except Exception as gate_err:
                 log(f"[AUTO ENTRY] 🚫 BLOCKED by pipeline gate check error: {gate_err}")
                 try:
                     if conn:
                         conn.close()
+                except Exception:
+                    pass
+                try:
+                    from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                    _dtrace(
+                        "aes_fire_blocked",
+                        monitor=ctx_mid(),
+                        reason="pipeline_gate_error",
+                        detail=str(gate_err)[:120],
+                    )
                 except Exception:
                     pass
                 return False
@@ -2584,6 +2615,19 @@ def trigger_auto_entry_trade(strike_data):
                 f"[AUTO ENTRY] BLOCKED by strike vs live spot gate symbol={current_symbol} "
                 f"strike={strike_data.get('strike')} reason={spot_reason}"
             )
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_fire_blocked",
+                    monitor=ctx_mid(),
+                    reason="strike_vs_spot",
+                    detail=spot_reason,
+                    strike=strike_data.get("strike"),
+                    side=strike_data.get("side"),
+                )
+            except Exception:
+                pass
             return False
 
         port = scoped_trade_manager_http_port()
@@ -2815,12 +2859,55 @@ def trigger_auto_entry_trade(strike_data):
             except Exception:
                 pass
 
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_fire",
+                    monitor=ctx_mid(),
+                    ticket_id=ticket_id,
+                    strike=strike_data.get("strike"),
+                    side=strike_data.get("side"),
+                    ticker=strike_data.get("ticker"),
+                    via="redis" if redis_published else "http",
+                    ok=True,
+                )
+            except Exception:
+                pass
+
             return True
         log(f"[AUTO ENTRY] ❌ Trade initiation failed: {response.status_code} - {getattr(response, 'text', '')}")
+        try:
+            from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+            _dtrace(
+                "aes_fire",
+                monitor=ctx_mid(),
+                strike=strike_data.get("strike"),
+                side=strike_data.get("side"),
+                ticker=strike_data.get("ticker"),
+                ok=False,
+                http_status=response.status_code,
+            )
+        except Exception:
+            pass
         return False
         
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error initiating trade via trade_manager: {e}")
+        try:
+            from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+            _dtrace(
+                "aes_fire",
+                monitor=ctx_mid(),
+                strike=strike_data.get("strike"),
+                side=strike_data.get("side"),
+                ok=False,
+                error=str(e)[:120],
+            )
+        except Exception:
+            pass
         return False
     finally:
         if AES_UNIFIED_PROFILE and AES_UNIFIED_POOL:
@@ -2833,12 +2920,22 @@ def can_trade_strike(strike_key):
     if strike_key in last_trade_times:
         time_since_last_trade = current_time - last_trade_times[strike_key]
         if time_since_last_trade < TRADE_COOLDOWN:
-            # Skipping {strike_key} - traded {time_since_last_trade:.1f}s ago (cooldown: {TRADE_COOLDOWN}s)
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_cooldown_skip",
+                    monitor=ctx_mid(),
+                    strike_key=strike_key,
+                    age_s=round(time_since_last_trade, 3),
+                    cooldown_s=TRADE_COOLDOWN,
+                )
+            except Exception:
+                pass
             return False
     
     # ATOMIC: Add to cooldown immediately
     last_trade_times[strike_key] = current_time
-            # {strike_key} passed cooldown check - added to cooldown
     return True
 
 def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[int] = None) -> bool:
@@ -3329,9 +3426,19 @@ def check_auto_entry_conditions():
     """Check if auto entry conditions are met and trigger trades - routes to strategy-specific logic"""
     if AES_UNIFIED_POOL:
         try:
+            from backend.core.tradeflow_decision_trace import (
+                begin_pass as _dtrace_begin,
+                decision_trace_enabled as _dtrace_on,
+                end_pass as _dtrace_end,
+                ladder_identity_with_envelope as _dtrace_ladder_id,
+                trace as _dtrace,
+            )
+
             t_pass0 = time.perf_counter()
             if AES_UNIFIED_PROFILE:
                 _reset_unified_profile_state()
+            if _dtrace_on():
+                _dtrace_begin(service="aes")
             if AES_UNIFIED_15M:
                 from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
@@ -3356,18 +3463,44 @@ def check_auto_entry_conditions():
                     else:
                         mkt = "hourly"
                 by_ladder[(sym, mkt)].append((row["user_number"], row["monitor_id"]))
+            if _dtrace_on():
+                _dtrace(
+                    "aes_monitors",
+                    n=len(rows),
+                    groups=len(by_ladder),
+                    monitors=",".join(sorted({r["monitor_id"] for r in rows})),
+                )
             for (sym, mkt) in sorted(by_ladder.keys()):
                 bindings = by_ladder[(sym, mkt)]
                 tg0 = time.perf_counter()
                 snap = _fetch_master_strike_table_data(sym, mkt)
                 if AES_UNIFIED_PROFILE:
                     _unified_profile_state["group_prefetch_sec"] += time.perf_counter() - tg0
+                if _dtrace_on():
+                    ident = _dtrace_ladder_id(
+                        exchange=_strike_data_exchange_key(),
+                        symbol=sym,
+                        market=mkt,
+                        snap=snap,
+                    )
+                    _dtrace(
+                        "aes_ladder",
+                        symbol=sym,
+                        market=mkt,
+                        monitors=len(bindings),
+                        prefetch_s=round(time.perf_counter() - tg0, 4),
+                        **ident,
+                    )
                 if snap:
                     token = _aes_unified_tick_context.set({"symbol": sym, "market": mkt, "data": snap})
                     try:
                         for u, m in bindings:
                             tw0 = time.perf_counter()
+                            strat = ""
+                            auto_on = False
                             with aes_monitor_bind(u, m):
+                                strat = get_trade_strategy()
+                                auto_on = is_auto_trade_enabled()
                                 ms, mm = get_current_monitor_symbol_and_market()
                                 if ms != sym or mm != mkt:
                                     inner = _aes_unified_tick_context.set(None)
@@ -3377,17 +3510,46 @@ def check_auto_entry_conditions():
                                         _aes_unified_tick_context.reset(inner)
                                 else:
                                     _check_auto_entry_conditions_impl()
+                            wall_s = time.perf_counter() - tw0
                             if AES_UNIFIED_PROFILE:
-                                _unified_profile_state["monitor_wall_sec"].append((m, time.perf_counter() - tw0))
+                                _unified_profile_state["monitor_wall_sec"].append((m, wall_s))
+                            if _dtrace_on():
+                                _dtrace(
+                                    "aes_monitor_done",
+                                    user=u,
+                                    monitor=m,
+                                    strategy=strat,
+                                    auto_trade=auto_on,
+                                    wall_s=round(wall_s, 4),
+                                    symbol=sym,
+                                    market=mkt,
+                                )
                     finally:
                         _aes_unified_tick_context.reset(token)
                 else:
                     for u, m in bindings:
                         tw0 = time.perf_counter()
+                        strat = ""
+                        auto_on = False
                         with aes_monitor_bind(u, m):
+                            strat = get_trade_strategy()
+                            auto_on = is_auto_trade_enabled()
                             _check_auto_entry_conditions_impl()
+                        wall_s = time.perf_counter() - tw0
                         if AES_UNIFIED_PROFILE:
-                            _unified_profile_state["monitor_wall_sec"].append((m, time.perf_counter() - tw0))
+                            _unified_profile_state["monitor_wall_sec"].append((m, wall_s))
+                        if _dtrace_on():
+                            _dtrace(
+                                "aes_monitor_done",
+                                user=u,
+                                monitor=m,
+                                strategy=strat,
+                                auto_trade=auto_on,
+                                wall_s=round(wall_s, 4),
+                                symbol=sym,
+                                market=mkt,
+                                ladder_miss=True,
+                            )
             if AES_UNIFIED_PROFILE:
                 elapsed = time.perf_counter() - t_pass0
                 wall = _unified_profile_state["monitor_wall_sec"]
@@ -3405,6 +3567,12 @@ def check_auto_entry_conditions():
                         wall_sum,
                         [(mid, round(sec, 3)) for mid, sec in wall],
                     )
+                )
+            if _dtrace_on():
+                _dtrace_end(
+                    groups=len(by_ladder),
+                    monitors=len(rows),
+                    profile=1 if AES_UNIFIED_PROFILE else 0,
                 )
         except Exception as e:
             import traceback
@@ -3517,6 +3685,12 @@ def check_auto_entry_conditions_hourly_htc():
             })
             # Broadcast indicator state change
             broadcast_auto_entry_indicator_change()
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace("aes_gate", monitor=ctx_mid(), strategy="Hourly HTC", reason="auto_trade_off")
+            except Exception:
+                pass
             return
         
         # Get auto entry settings - NO DEFAULTS
@@ -3528,6 +3702,18 @@ def check_auto_entry_conditions_hourly_htc():
         if missing_settings:
             log(f"{log_tag} ❌ Missing required settings: {missing_settings}")
             log(f"{log_tag} Cannot proceed without complete settings configuration")
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_gate",
+                    monitor=ctx_mid(),
+                    strategy="Hourly HTC",
+                    reason="missing_settings",
+                    missing=",".join(missing_settings),
+                )
+            except Exception:
+                pass
             return
         
         min_time = settings["min_time"]
@@ -3586,6 +3772,20 @@ def check_auto_entry_conditions_hourly_htc():
                     f"allowed={min_time}-{max_time}s (no scans until TTC is in range)"
                 )
                 check_auto_entry_conditions_hourly_htc.last_ttc_log = current_time
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_gate",
+                    monitor=ctx_mid(),
+                    strategy="Hourly HTC",
+                    reason="ttc_outside_window",
+                    ttc=current_ttc,
+                    min_time=min_time,
+                    max_time=max_time,
+                )
+            except Exception:
+                pass
             return
         
         # Note: spike_alert_active no longer blocks trades - probability is adjusted instead (see min_probability calculation above)
@@ -3612,6 +3812,17 @@ def check_auto_entry_conditions_hourly_htc():
                     f"Check those logs for rollover gaps."
                 )
                 check_auto_entry_conditions_hourly_htc.last_strike_table_log = current_time
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_gate",
+                    monitor=ctx_mid(),
+                    strategy="Hourly HTC",
+                    reason="no_strike_ladder",
+                )
+            except Exception:
+                pass
             return
         
         if "strikes" not in strike_table_data:
@@ -3623,6 +3834,17 @@ def check_auto_entry_conditions_hourly_htc():
             if current_time - check_auto_entry_conditions_hourly_htc.last_strikes_missing_log >= 60:  # Log every 60 seconds
                 log(f"[AUTO ENTRY] ⚠️ Strike table data missing 'strikes' array")
                 check_auto_entry_conditions_hourly_htc.last_strikes_missing_log = current_time
+            try:
+                from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+                _dtrace(
+                    "aes_gate",
+                    monitor=ctx_mid(),
+                    strategy="Hourly HTC",
+                    reason="strikes_missing",
+                )
+            except Exception:
+                pass
             return
         
         # Log that we're scanning strikes (only log occasionally to avoid spam)
@@ -3668,17 +3890,55 @@ def check_auto_entry_conditions_hourly_htc():
                 }
 
                 if is_strike_already_traded(strike_data_for_check):
+                    try:
+                        from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                        _dtv(
+                            "aes_strike_skip",
+                            monitor=ctx_mid(),
+                            strike_key=strike_key,
+                            reason="already_traded",
+                        )
+                    except Exception:
+                        pass
                     continue
 
                 # STEP 3: Check probability window (min_probability <= prob <= max_probability)
                 prob = strike.get('probability')
                 if prob is None or prob < min_probability or prob > max_probability:
+                    try:
+                        from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                        _dtv(
+                            "aes_strike_skip",
+                            monitor=ctx_mid(),
+                            strike_key=strike_key,
+                            reason="prob_band",
+                            prob=prob,
+                            min_p=min_probability,
+                            max_p=max_probability,
+                        )
+                    except Exception:
+                        pass
                     continue
                 
                 # STEP 4: Check differential threshold (if applicable)
                 if min_differential is not None:
                     diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
                     if diff is None or diff < (min_differential - 0.5):
+                        try:
+                            from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                            _dtv(
+                                "aes_strike_skip",
+                                monitor=ctx_mid(),
+                                strike_key=strike_key,
+                                reason="min_differential",
+                                diff=diff,
+                                floor=float(min_differential) - 0.5,
+                            )
+                        except Exception:
+                            pass
                         continue
                 
                 # STEP 4.5: Check max differential threshold (if applicable)
@@ -3686,12 +3946,38 @@ def check_auto_entry_conditions_hourly_htc():
                 if max_differential is not None:
                     diff = strike.get('yes_diff') if active_side == 'yes' else strike.get('no_diff')
                     if diff is None or diff > max_differential:
+                        try:
+                            from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                            _dtv(
+                                "aes_strike_skip",
+                                monitor=ctx_mid(),
+                                strike_key=strike_key,
+                                reason="max_differential",
+                                diff=diff,
+                                cap=max_differential,
+                            )
+                        except Exception:
+                            pass
                         continue
                 
                 # STEP 5: Check volume threshold
                 min_volume = settings.get("min_volume", 1000)
                 volume = _kalshi_fp_volume_number(strike.get("volume_fp")) or 0
                 if volume < min_volume:
+                    try:
+                        from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                        _dtv(
+                            "aes_strike_skip",
+                            monitor=ctx_mid(),
+                            strike_key=strike_key,
+                            reason="min_volume",
+                            volume=volume,
+                            min_volume=min_volume,
+                        )
+                    except Exception:
+                        pass
                     continue
                 
                 # STEP 6: Check max ask price threshold using _dollars values
@@ -3699,10 +3985,34 @@ def check_auto_entry_conditions_hourly_htc():
                 yes_ask_dollars = strike.get('yes_ask_dollars')
                 no_ask_dollars = strike.get('no_ask_dollars')
                 if not yes_ask_dollars or not no_ask_dollars:
+                    try:
+                        from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                        _dtv(
+                            "aes_strike_skip",
+                            monitor=ctx_mid(),
+                            strike_key=strike_key,
+                            reason="missing_asks",
+                        )
+                    except Exception:
+                        pass
                     continue
                 max_ask_price = max(float(yes_ask_dollars), float(no_ask_dollars))
                 max_ask_limit = float(max_ask) if max_ask < 1 else float(max_ask) / 100.0
                 if max_ask_price > max_ask_limit:
+                    try:
+                        from backend.core.tradeflow_decision_trace import trace_verbose as _dtv
+
+                        _dtv(
+                            "aes_strike_skip",
+                            monitor=ctx_mid(),
+                            strike_key=strike_key,
+                            reason="max_ask",
+                            max_ask_price=max_ask_price,
+                            limit=max_ask_limit,
+                        )
+                    except Exception:
+                        pass
                     continue
                 
                 # STEP 5: Determine buy price based on active_side using subpenny precision

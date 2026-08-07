@@ -968,6 +968,21 @@ environment={env_vars}
                     continue
                 esc = str(_hf_val).replace("\\", "\\\\").replace('"', '\\"')
                 env_vars.append(f'{_hf_opt}="{esc}"')
+
+            # Stage 0 tradeflow diagnostics (opt-in via shell/env at supervisord generate time).
+            for _diag_key in (
+                "TRADEFLOW_DECISION_TRACE",
+                "TRADEFLOW_DECISION_TRACE_VERBOSE",
+                "AES_UNIFIED_PROFILE",
+            ):
+                if any(x.startswith(f"{_diag_key}=") for x in env_vars):
+                    continue
+                _diag_val = os.getenv(_diag_key)
+                if _diag_val is None or str(_diag_val).strip() == "":
+                    continue
+                esc = str(_diag_val).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{_diag_key}="{esc}"')
+
             # v3.7+ hot path defaults ON in backend/core/live_state_config.py (no env required).
             # Still propagate explicit overrides from shell or config.local.json "live_state".
 

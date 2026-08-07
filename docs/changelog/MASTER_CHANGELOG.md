@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-07 — Release v3.9.7: Tradeflow Stage 0 diagnostics (opt-in, off by default)
+
+**Summary**
+- **Release: v3.9.7**
+- **Stage 0 observability only** (plan: auto-trade workflow audit / Stage 0). No changes to entry/exit gates, cooldowns, submit/close paths, paper vs live, or settlement.
+- Opt-in `[TRADEFLOW TRACE]` lines in AES/ATS via `TRADEFLOW_DECISION_TRACE=1` (optional verbose strike skips). Default unset/off — **do not enable on production for this release**.
+- Diagnostic scripts: `check_tradeflow_env_parity.py`, `check_ats_enrollment_health.py`.
+- Docs: unified AES tick contract cooldown/live_state wording; Architecture per-tenant unified supervisors.
+- Supervisor generator propagates the trace env vars when set at generate time (local only for now).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Confirm `TRADEFLOW_DECISION_TRACE` is **not** set in the production shell/env used for supervisor regen (leave unset so trading stays at baseline log volume).
+- [ ] Restart AES/ATS tenants (loads new code; no migrations):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart auto_entry_supervisor_0001 active_trade_supervisor_0001`  
+  (Also restart other `auto_entry_supervisor_*` / `active_trade_supervisor_*` if present and RUNNING.)
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; AES/ATS RUNNING; confirm AES logs do **not** spam `[TRADEFLOW TRACE]` (trace stays off).
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.7`
+
+---
+
 ## 2026-08-06 — Release v3.9.6: Exp Scalp movement window + pipeline market keying
 
 **Summary**
