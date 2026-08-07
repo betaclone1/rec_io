@@ -456,9 +456,11 @@ def evaluate_symbol_pipeline_gate_conn(
 # Confirmed-unhealthy already waits degrade_confirm_sec (~30s) before the
 # dashboard light goes red. Brief Kalshi floor_strike TBD blips at 15m rollover
 # usually clear before that. Emit a master event only after confirmed unhealthy
-# lasts STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC (default 90s), plus one recovery.
+# lasts STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC (default 900s / 15m), plus one
+# recovery. Shorter flap cycles (common on thin symbols like DOGE) stay in
+# service logs / strike_pipeline_health only — not the admin master timeline.
 
-_DEFAULT_PROLONGED_OUTAGE_SEC = 90
+_DEFAULT_PROLONGED_OUTAGE_SEC = 900
 
 _prolonged_lock = threading.Lock()
 _prolonged_state: dict[tuple[str, str, str], dict[str, Any]] = {}

@@ -166,3 +166,10 @@ def test_recovery_without_prior_event_is_silent():
             now_mono=1020.0,
         )
         mock_log.assert_not_called()
+
+
+def test_default_prolonged_outage_threshold_is_15m(monkeypatch):
+    monkeypatch.delenv("STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC", raising=False)
+    from backend.core.strike_pipeline_health import prolonged_outage_event_sec
+
+    assert prolonged_outage_event_sec() == 900
