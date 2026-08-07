@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-07 — Release v3.9.8: Lean strike-pipeline master log (15m threshold)
+
+**Summary**
+- **Release: v3.9.8**
+- **Problem:** Prod System Event Log was ~99% DOGE hourly `strike_pipeline` flap noise (WARNING at ~90s + INFO recovery every few minutes).
+- **Fix:** Raise default `STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC` from 90s to **900s (15 minutes)**. Sub-threshold flaps stay in service logs / `strike_pipeline_health` only; master log still gets WARNING + recovery for true prolonged outages.
+- Docs: `LOGGING_INVENTORY.md`. No migrations.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart strike table generators (load new prolonged-outage default):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart strike_table_generator_ws_hourly strike_table_generator_ws_15m`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; both strike generators RUNNING; confirm new master_events lines are not DOGE flap pairs every few minutes.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.8`
+
+---
+
 ## 2026-08-07 — Release v3.9.7: Tradeflow Stage 0 diagnostics (opt-in, off by default)
 
 **Summary**
