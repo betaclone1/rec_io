@@ -15,12 +15,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Docs: `LOGGING_INVENTORY.md`. No migrations.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart strike table generators (load new prolonged-outage default):  
+- [x] Restart strike table generators (load new prolonged-outage default):  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart strike_table_generator_ws_hourly strike_table_generator_ws_15m`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; both strike generators RUNNING; confirm new master_events lines are not DOGE flap pairs every few minutes.
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; both strike generators RUNNING; confirm new master_events lines are not DOGE flap pairs every few minutes.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.8`
 
 ---
