@@ -17,14 +17,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Supervisor generator propagates the trace env vars when set at generate time (local only for now).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Confirm `TRADEFLOW_DECISION_TRACE` is **not** set in the production shell/env used for supervisor regen (leave unset so trading stays at baseline log volume).
-- [ ] Restart AES/ATS tenants (loads new code; no migrations):  
+- [x] Confirm `TRADEFLOW_DECISION_TRACE` is **not** set in the production shell/env used for supervisor regen (leave unset so trading stays at baseline log volume).
+- [x] Restart AES/ATS tenants (loads new code; no migrations):  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart auto_entry_supervisor_0001 active_trade_supervisor_0001`  
   (Also restart other `auto_entry_supervisor_*` / `active_trade_supervisor_*` if present and RUNNING.)
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; AES/ATS RUNNING; confirm AES logs do **not** spam `[TRADEFLOW TRACE]` (trace stays off).
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; AES/ATS RUNNING; confirm AES logs do **not** spam `[TRADEFLOW TRACE]` (trace stays off).
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.7`
 
 ---
