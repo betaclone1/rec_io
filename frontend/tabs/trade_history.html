@@ -3798,6 +3798,14 @@
       return String(value);
     }
 
+    /** Format probability / percentile scalars for the detail grid (match table density). */
+    function tradeHistoryDetailMetricText(value, { digits = 1 } = {}) {
+      if (value === null || value === undefined || value === '') return '—';
+      const n = Number(value);
+      if (!Number.isFinite(n)) return tradeHistoryDetailDisplayValue(value);
+      return n.toFixed(digits);
+    }
+
     function tradeHistoryDetailSetFields(containerId, fields) {
       const host = document.getElementById(containerId);
       if (!host) return;
@@ -5169,6 +5177,9 @@
         ['Ticker', trade.ticker],
         ['Contract', trade.contract],
         ['Strike', trade.strike],
+        ['Probability', tradeHistoryDetailMetricText(trade.prob)],
+        ['Momentum percentile', tradeHistoryDetailMetricText(trade.momentum_percentile)],
+        ['Movement percentile', tradeHistoryDetailMetricText(trade.movement_percentile)],
         ['Fees', trade.fees],
         ['Market result', trade.market_result],
         ['Symbol open', trade.symbol_open],

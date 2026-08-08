@@ -3745,6 +3745,14 @@
             return String(value);
         }
 
+        /** Format probability / percentile scalars for the detail grid (match desktop). */
+        function thmTradeDetailMetricText(value, { digits = 1 } = {}) {
+            if (value === null || value === undefined || value === '') return '—';
+            const n = Number(value);
+            if (!Number.isFinite(n)) return thmTradeDetailDisplayValue(value);
+            return n.toFixed(digits);
+        }
+
         function thmTradeDetailMonitorId(monitor) {
             const raw = monitor == null ? '' : String(monitor).trim();
             if (!raw) return '';
@@ -4071,14 +4079,21 @@
                 ['Ticker', trade.ticker],
                 ['Contract', trade.contract],
                 ['Strike', trade.strike],
+                ['Probability', thmTradeDetailMetricText(trade.prob)],
+                ['Momentum percentile', thmTradeDetailMetricText(trade.momentum_percentile)],
+                ['Movement percentile', thmTradeDetailMetricText(trade.movement_percentile)],
                 ['Fees', trade.fees],
                 ['Market result', trade.market_result],
                 ['Symbol open', trade.symbol_open],
                 ['Symbol close', trade.symbol_close],
+                ['Symbol expiration', trade.symbol_expiration],
                 ['Close method', trade.close_method],
                 ['Initial count', trade.initial_count],
                 ['Initial price', trade.initial_price],
+                ['Initial projected price', trade.initial_proj_price],
+                ['Slippage', trade.slippage],
                 ['Order type', trade.order_type],
+                ['Loss prevention state', trade.loss_prevention_state],
                 ['Subaccount', trade.subaccount],
             ]);
 
