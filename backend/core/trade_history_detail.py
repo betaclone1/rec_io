@@ -38,6 +38,7 @@ _TICKER_COLUMNS = tuple(
     dict.fromkeys(
         (
             *TRADES_LIST_HTTP_COLUMNS,
+            "movement_percentile",
             "market_result",
             "symbol_expiration",
             "order_id_open",
