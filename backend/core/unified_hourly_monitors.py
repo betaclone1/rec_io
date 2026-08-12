@@ -26,7 +26,7 @@ def iter_active_hourly_monitor_bindings() -> Iterator[Tuple[str, str]]:
 
 
 def list_active_hourly_monitor_rows() -> List[dict]:
-    """Rows with user_number, monitor_id, db_id, name."""
+    """Rows with user_number, monitor_id, db_id, name, symbol, market, strategy."""
     out: List[dict] = []
     try:
         conn = get_postgresql_connection()
@@ -36,7 +36,8 @@ def list_active_hourly_monitor_rows() -> List[dict]:
             ml = legacy_users_monitor_list(default_pool_user_number())
             cursor.execute(
                 f"""
-                SELECT id, name, symbol, COALESCE(NULLIF(TRIM(market), ''), 'hourly') AS market
+                SELECT id, name, symbol, COALESCE(NULLIF(TRIM(market), ''), 'hourly') AS market,
+                       COALESCE(strategy, '') AS strategy
                 FROM {ml}
                 WHERE status = 'active'
                   AND {_MARKET_NOT_15M_SQL}
@@ -44,7 +45,7 @@ def list_active_hourly_monitor_rows() -> List[dict]:
                 """
             )
             worker = default_pool_user_number()
-            for mid, name, symbol, _market in cursor.fetchall():
+            for mid, name, symbol, _market, strategy in cursor.fetchall():
                 user_number = worker
                 monitor_id = str(mid)
                 sym_u = str(symbol or "BTC").strip().upper() or "BTC"
@@ -56,6 +57,7 @@ def list_active_hourly_monitor_rows() -> List[dict]:
                         "name": name,
                         "symbol": sym_u,
                         "market": "hourly",
+                        "strategy": str(strategy or "").strip(),
                     }
                 )
         conn.close()

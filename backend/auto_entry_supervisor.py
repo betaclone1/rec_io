@@ -158,6 +158,8 @@ def get_monitor_identifier():
             return "unified_hourly"
         if sys.argv[1] == "unified":
             return "unified"
+        if sys.argv[1] == "btc15m_exp_scalp":
+            return "btc15m_exp_scalp"
         return sys.argv[1]  # Use first argument as monitor identifier
     
     # Default to first active monitor if no identifier provided
@@ -168,7 +170,14 @@ MONITOR_IDENTIFIER = get_monitor_identifier()
 AES_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
 AES_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
 AES_UNIFIED_ALL = MONITOR_IDENTIFIER == "unified"
-AES_UNIFIED_POOL = AES_UNIFIED_15M or AES_UNIFIED_HOURLY or AES_UNIFIED_ALL
+AES_BTC15M_EXP_SCALP = MONITOR_IDENTIFIER == "btc15m_exp_scalp"
+# Cutout is a specialized multi-monitor pool (same bind/context rules as unified).
+AES_UNIFIED_POOL = (
+    AES_UNIFIED_15M
+    or AES_UNIFIED_HOURLY
+    or AES_UNIFIED_ALL
+    or AES_BTC15M_EXP_SCALP
+)
 if AES_UNIFIED_POOL:
     USER_NUMBER = default_pool_user_number()
     MONITOR_ID = "0"
@@ -181,6 +190,23 @@ _aes_bind_m: ContextVar[Optional[str]] = ContextVar("_aes_bind_m", default=None)
 
 # Unified pool: one strike-table snapshot per (symbol, market) per monitoring tick (see docs/UNIFIED_AES_TICK_CONTRACT.md).
 _aes_unified_tick_context: ContextVar[Optional[Dict[str, Any]]] = ContextVar("_aes_unified_tick_context", default=None)
+# Latest-only fire guard: refuse submit when mailbox gen advanced during eval.
+_aes_lane_fire_guard: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "_aes_lane_fire_guard", default=None
+)
+_aes_lane_hub = None
+_aes_lane_hub_lock = threading.Lock()
+# Short process caches for lane hot path (PG remains authoritative on miss / TTL).
+_aes_settings_mem_lock = threading.Lock()
+_aes_settings_mem_cache: Dict[str, Tuple[float, Dict[str, Any]]] = {}
+_aes_strategy_mem_cache: Dict[str, Tuple[float, str]] = {}
+_AES_MEM_CACHE_TTL_SEC = float(os.getenv("AES_MONITOR_MEM_CACHE_TTL_SEC", "2"))
+_aes_monitor_state_touch: Dict[str, float] = {}
+_AES_MONITOR_STATE_MIN_SEC = float(os.getenv("AES_MONITOR_STATE_UPDATE_MIN_SEC", "5"))
+# Warm set of (ticker, side_bucket) for is_strike_already_traded within one bind eval.
+_aes_open_ticker_sides: ContextVar[Optional[Set[Tuple[str, str]]]] = ContextVar(
+    "_aes_open_ticker_sides", default=None
+)
 
 AES_UNIFIED_PROFILE = os.environ.get("AES_UNIFIED_PROFILE", "").strip().lower() in ("1", "true", "yes")
 _unified_profile_state: Dict[str, Any] = {
@@ -776,6 +802,13 @@ def _apply_performance_based_multiplier(multiplier_value: float, position_size: 
 
 def update_monitor_current_state(strike_table_data: Dict[str, Any]) -> None:
     """Update monitor_list with the current contract, weekly cycle, and performance modifier."""
+    if AES_UNIFIED_POOL:
+        key = ctx_ident()
+        now = time.monotonic()
+        last = _aes_monitor_state_touch.get(key, 0.0)
+        if now - last < _AES_MONITOR_STATE_MIN_SEC:
+            return
+        _aes_monitor_state_touch[key] = now
     symbol = (strike_table_data or {}).get("symbol") or MONITOR_SYMBOL or "BTC"
     market_title = (strike_table_data or {}).get("market_title")
     event_ticker = (strike_table_data or {}).get("event_ticker")
@@ -916,6 +949,9 @@ def get_monitor_symbol():
     try:
         import psycopg2
 
+        if AES_BTC15M_EXP_SCALP:
+            # Cutout may start with zero matching monitors; stay up for membership changes.
+            return "BTC", "15m"
         if AES_UNIFIED_15M:
             from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
@@ -1034,6 +1070,13 @@ if AES_UNIFIED_15M:
 elif AES_UNIFIED_HOURLY:
     AUTO_ENTRY_SUPERVISOR_PORT = get_port("auto_entry_supervisor_hourly")
     _aes_logger.info("Using unified hourly AES port: %s", AUTO_ENTRY_SUPERVISOR_PORT)
+elif AES_BTC15M_EXP_SCALP:
+    AUTO_ENTRY_SUPERVISOR_PORT = get_port(
+        f"auto_entry_supervisor_{default_pool_user_number()}_btc15m_exp_scalp"
+    )
+    _aes_logger.info(
+        "Using BTC 15m Expiration Scalp cutout AES port: %s", AUTO_ENTRY_SUPERVISOR_PORT
+    )
 elif AES_UNIFIED_ALL:
     AUTO_ENTRY_SUPERVISOR_PORT = get_port(unified_auto_entry_supervisor_service_name())
     _aes_logger.info("Using pool AES port (15m+hourly): %s", AUTO_ENTRY_SUPERVISOR_PORT)
@@ -2105,6 +2148,12 @@ def get_effective_trade_strategy():
 def get_auto_entry_settings():
     """Get auto entry settings from monitor's assigned strategy"""
     global previous_settings
+    cache_key = f"{ctx_user()}:{ctx_mid()}"
+    now = time.monotonic()
+    with _aes_settings_mem_lock:
+        hit = _aes_settings_mem_cache.get(cache_key)
+        if hit and (now - hit[0]) <= _AES_MEM_CACHE_TTL_SEC:
+            return dict(hit[1])
     try:
         import psycopg2
         conn = get_db_connection()
@@ -2192,6 +2241,8 @@ def get_auto_entry_settings():
                     # Only log settings loading on first load or when settings change
                     if previous_settings is None:
                         log_debug(f"Loaded settings from monitor: {MONITOR_IDENTIFIER}")
+                    with _aes_settings_mem_lock:
+                        _aes_settings_mem_cache[cache_key] = (time.monotonic(), dict(settings))
                     return settings
                 else:
                     log_debug(f"No monitor found with ID: {ctx_mid()}")
@@ -2444,6 +2495,12 @@ def get_trade_strategy():
     """Get trade strategy from monitor-specific configuration"""
     if AES_UNIFIED_POOL and _aes_bind_m.get() is None:
         return "Hourly HTC"
+    cache_key = f"{ctx_user()}:{ctx_mid()}"
+    now = time.monotonic()
+    with _aes_settings_mem_lock:
+        hit = _aes_strategy_mem_cache.get(cache_key)
+        if hit and (now - hit[0]) <= _AES_MEM_CACHE_TTL_SEC:
+            return hit[1]
     conn = None
     try:
         import psycopg2
@@ -2453,6 +2510,8 @@ def get_trade_strategy():
             result = cursor.fetchone()
             if result:
                 trade_strategy = result[0]
+                with _aes_settings_mem_lock:
+                    _aes_strategy_mem_cache[cache_key] = (time.monotonic(), trade_strategy)
                 return trade_strategy
             else:
                 return "Hourly HTC"  # Default fallback
@@ -2552,6 +2611,9 @@ def trigger_auto_entry_trade(strike_data):
 
     t_trig = time.perf_counter()
     log(f"[AUTO ENTRY] 🟢 Triggered AUTO ENTRY for strike: {strike_data.get('strike')} {strike_data.get('side')}")
+
+    if _aes_refuse_stale_fire("pre_pipeline"):
+        return False
     
     try:
         current_symbol, current_market = get_current_monitor_symbol_and_market()
@@ -2606,6 +2668,9 @@ def trigger_auto_entry_trade(strike_data):
                 except Exception:
                     pass
                 return False
+
+        if _aes_refuse_stale_fire("post_pipeline"):
+            return False
 
         ok_spot, spot_reason = _auto_entry_strike_vs_spot_gate(
             strike_data, (current_symbol or "").strip().upper()
@@ -2790,6 +2855,9 @@ def trigger_auto_entry_trade(strike_data):
             "min_slippage": min_slippage
         }
         
+        if _aes_refuse_stale_fire("pre_submit"):
+            return False
+
         log(f"[AUTO ENTRY] 📤 Sending trade to trade_manager_{ctx_user()} :{port}/trades | {trade_payload}")
 
         log_message = (
@@ -3057,9 +3125,6 @@ def is_strike_already_traded(strike_data):
     Side comparison is canonicalized so DB ``Y`` matches strike_data ``yes`` (prior bug: never matched).
     """
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-
         current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
         ticker = strike_data.get("ticker")
         reverse = is_reverse_monitor()
@@ -3070,6 +3135,13 @@ def is_strike_already_traded(strike_data):
         )
         if not ticker or not want_side:
             return False
+
+        warm = _aes_open_ticker_sides.get()
+        if warm is not None:
+            return (str(ticker), want_side) in warm
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
 
         cursor.execute(
             f"""
@@ -3097,6 +3169,40 @@ def is_strike_already_traded(strike_data):
     except Exception as e:
         log(f"Error checking {_aes_trades_table()} for in-flight trades: {e}")
         return False
+
+
+def _aes_prime_open_ticker_sides_cache() -> None:
+    """One PG read of in-flight (ticker, side) pairs for the current monitor bind."""
+    try:
+        current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
+        conn = get_db_connection()
+        if not conn:
+            _aes_open_ticker_sides.set(set())
+            return
+        try:
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT ticker, side
+                    FROM {_aes_trades_table()}
+                    WHERE status IN ('open', 'pending', 'closing')
+                      AND monitor = %s
+                    """,
+                    (current_monitor,),
+                )
+                warm: Set[Tuple[str, str]] = set()
+                for trade_ticker, trade_side in cursor.fetchall():
+                    if not trade_ticker:
+                        continue
+                    bucket = _aes_side_bucket_for_dedupe(trade_side)
+                    if bucket:
+                        warm.add((str(trade_ticker), bucket))
+                _aes_open_ticker_sides.set(warm)
+        finally:
+            conn.close()
+    except Exception as e:
+        log_debug(f"[AES] open ticker cache prime failed: {e}")
+        _aes_open_ticker_sides.set(set())
 
 
 def _momentum_breakout_legs_in_db(strike_above_data, strike_below_data) -> Tuple[bool, bool]:
@@ -3422,162 +3528,233 @@ def check_simulated_15m_entry_hourly_htc():
         log(f"[SIMULATED 15m] Error: {e}")
 
 
+def _aes_list_lane_monitor_rows() -> List[dict]:
+    """Active monitors owned by this AES process (cutout membership or general excl. cutout)."""
+    from backend.core.aes_btc15m_exp_scalp_cutout import (
+        filter_out_cutout_rows,
+        list_active_btc15m_exp_scalp_cutout_rows,
+    )
+
+    if AES_BTC15M_EXP_SCALP:
+        return list_active_btc15m_exp_scalp_cutout_rows()
+    if AES_UNIFIED_15M:
+        from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
+
+        return filter_out_cutout_rows(list_active_15m_monitor_rows())
+    if AES_UNIFIED_HOURLY:
+        from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+        return list_active_hourly_monitor_rows()
+    if AES_UNIFIED_ALL:
+        from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+        return filter_out_cutout_rows(list_active_unified_monitor_rows())
+    return []
+
+
+def _aes_lane_parallelism() -> int:
+    raw = os.getenv("AES_LANE_PARALLELISM", "32").strip()
+    try:
+        return max(1, min(int(raw), 64))
+    except (TypeError, ValueError):
+        return 32
+
+
+def _aes_refuse_stale_fire(stage: str) -> bool:
+    """
+    Observe whether the lane gen advanced during a fire path.
+
+    Default: do **not** abort — once AES decided to enter on the snap it
+    evaluated, hand the ticket to TM. Latest-only applies to which snap gets
+    *evaluated*, not to killing a fire mid-handoff.
+
+    Set ``AES_REFUSE_STALE_FIRE=1`` (or ``TRADEFLOW_REFUSE_STALE_FIRE=1``) to
+    restore hard refuse when the mailbox gen has advanced.
+    """
+    guard = _aes_lane_fire_guard.get()
+    if not guard:
+        return False
+    lane = guard.get("lane")
+    epoch = guard.get("epoch")
+    gid = guard.get("generation_id")
+    if lane is None or epoch is None or not gid:
+        return False
+    if lane.is_current(int(epoch), str(gid)):
+        return False
+    refuse = os.getenv("AES_REFUSE_STALE_FIRE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) or os.getenv("TRADEFLOW_REFUSE_STALE_FIRE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    try:
+        from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+        _dtrace(
+            "aes_fire_blocked" if refuse else "aes_fire_stale_notice",
+            monitor=ctx_mid(),
+            reason="stale_generation",
+            stage=stage,
+            generation_id=gid,
+            epoch=epoch,
+            refuse=1 if refuse else 0,
+        )
+    except Exception:
+        pass
+    if refuse:
+        log(
+            f"[AUTO ENTRY] 🚫 BLOCKED stale fire stage={stage} monitor={ctx_mid()} "
+            f"gen={gid} epoch={epoch}"
+        )
+        return True
+    log(
+        f"[AUTO ENTRY] ⚠️ stale gen during fire (continuing handoff) stage={stage} "
+        f"monitor={ctx_mid()} gen={gid} epoch={epoch}"
+    )
+    return False
+
+
+def _aes_lane_bind_worker(u: str, m: str, slot, lane) -> None:
+    if not lane.is_current(slot.epoch, slot.generation_id):
+        return
+    guard_tok = _aes_lane_fire_guard.set(
+        {
+            "lane": lane,
+            "epoch": slot.epoch,
+            "generation_id": slot.generation_id,
+        }
+    )
+    tick_tok = _aes_unified_tick_context.set(
+        {"symbol": slot.symbol, "market": slot.market, "data": slot.snap}
+    )
+    tw0 = time.perf_counter()
+    strat = ""
+    auto_on = False
+    open_tok = _aes_open_ticker_sides.set(None)
+    try:
+        with aes_monitor_bind(u, m):
+            if not lane.is_current(slot.epoch, slot.generation_id):
+                return
+            strat = get_trade_strategy()
+            auto_on = is_auto_trade_enabled()
+            _aes_prime_open_ticker_sides_cache()
+            ms, mm = get_current_monitor_symbol_and_market()
+            if ms != slot.symbol or mm != slot.market:
+                inner = _aes_unified_tick_context.set(None)
+                try:
+                    _check_auto_entry_conditions_impl()
+                finally:
+                    _aes_unified_tick_context.reset(inner)
+            else:
+                _check_auto_entry_conditions_impl()
+    finally:
+        _aes_open_ticker_sides.reset(open_tok)
+        _aes_unified_tick_context.reset(tick_tok)
+        _aes_lane_fire_guard.reset(guard_tok)
+        try:
+            from backend.core.tradeflow_decision_trace import (
+                decision_trace_enabled as _dtrace_on,
+                trace as _dtrace,
+            )
+
+            if _dtrace_on():
+                _dtrace(
+                    "aes_monitor_done",
+                    user=u,
+                    monitor=m,
+                    strategy=strat,
+                    auto_trade=auto_on,
+                    wall_s=round(time.perf_counter() - tw0, 4),
+                    symbol=slot.symbol,
+                    market=slot.market,
+                    generation_id=slot.generation_id,
+                    cutout=1 if AES_BTC15M_EXP_SCALP else 0,
+                )
+        except Exception:
+            pass
+
+
+def _aes_evaluate_lane(slot, lane) -> None:
+    hub = _aes_ensure_lane_hub()
+    rows = [
+        r
+        for r in _aes_list_lane_monitor_rows()
+        if (r.get("symbol") or "").strip().upper() == slot.symbol
+        and (r.get("market") or "").strip().lower() == slot.market
+    ]
+    bindings = [(r["user_number"], r["monitor_id"]) for r in rows]
+    try:
+        from backend.core.tradeflow_decision_trace import (
+            decision_trace_enabled as _dtrace_on,
+            ladder_identity_with_envelope as _dtrace_ladder_id,
+            trace as _dtrace,
+        )
+
+        if _dtrace_on():
+            ident = _dtrace_ladder_id(
+                exchange=_strike_data_exchange_key(),
+                symbol=slot.symbol,
+                market=slot.market,
+                snap=slot.snap,
+            )
+            _dtrace(
+                "aes_ladder",
+                symbol=slot.symbol,
+                market=slot.market,
+                monitors=len(bindings),
+                generation_id=slot.generation_id,
+                epoch=slot.epoch,
+                cutout=1 if AES_BTC15M_EXP_SCALP else 0,
+                monitors_csv=",".join(sorted({b[1] for b in bindings})),
+                **ident,
+            )
+    except Exception:
+        pass
+    hub.run_bindings_parallel(
+        lane=lane,
+        slot=slot,
+        bindings=bindings,
+        worker=_aes_lane_bind_worker,
+    )
+
+
+def _aes_ensure_lane_hub():
+    global _aes_lane_hub
+    with _aes_lane_hub_lock:
+        if _aes_lane_hub is not None:
+            return _aes_lane_hub
+        from backend.core.tradeflow_latest_only_lane import LatestOnlyLaneHub
+
+        def _keys():
+            return _aes_active_pool_ladder_keys()
+
+        _aes_lane_hub = LatestOnlyLaneHub(
+            service=f"aes_{MONITOR_IDENTIFIER}",
+            fetch_snap=_fetch_master_strike_table_data,
+            evaluate_lane=_aes_evaluate_lane,
+            ladder_keys=_keys,
+            parallelism=_aes_lane_parallelism(),
+        )
+        return _aes_lane_hub
+
+
 def check_auto_entry_conditions():
     """Check if auto entry conditions are met and trigger trades - routes to strategy-specific logic"""
     if AES_UNIFIED_POOL:
         try:
-            from backend.core.tradeflow_decision_trace import (
-                begin_pass as _dtrace_begin,
-                decision_trace_enabled as _dtrace_on,
-                end_pass as _dtrace_end,
-                ladder_identity_with_envelope as _dtrace_ladder_id,
-                trace as _dtrace,
-            )
-
-            t_pass0 = time.perf_counter()
-            if AES_UNIFIED_PROFILE:
-                _reset_unified_profile_state()
-            if _dtrace_on():
-                _dtrace_begin(service="aes")
-            if AES_UNIFIED_15M:
-                from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
-
-                rows = list_active_15m_monitor_rows()
-            elif AES_UNIFIED_HOURLY:
-                from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
-
-                rows = list_active_hourly_monitor_rows()
-            else:
-                from backend.core.unified_all_monitors import list_active_unified_monitor_rows
-
-                rows = list_active_unified_monitor_rows()
-            by_ladder: Dict[Tuple[str, str], List[Tuple[str, str]]] = defaultdict(list)
-            for row in rows:
-                sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
-                mkt = (row.get("market") or "").strip().lower()
-                if mkt not in ("hourly", "15m"):
-                    if AES_UNIFIED_15M:
-                        mkt = "15m"
-                    elif AES_UNIFIED_HOURLY:
-                        mkt = "hourly"
-                    else:
-                        mkt = "hourly"
-                by_ladder[(sym, mkt)].append((row["user_number"], row["monitor_id"]))
-            if _dtrace_on():
-                _dtrace(
-                    "aes_monitors",
-                    n=len(rows),
-                    groups=len(by_ladder),
-                    monitors=",".join(sorted({r["monitor_id"] for r in rows})),
-                )
-            for (sym, mkt) in sorted(by_ladder.keys()):
-                bindings = by_ladder[(sym, mkt)]
-                tg0 = time.perf_counter()
-                snap = _fetch_master_strike_table_data(sym, mkt)
-                if AES_UNIFIED_PROFILE:
-                    _unified_profile_state["group_prefetch_sec"] += time.perf_counter() - tg0
-                if _dtrace_on():
-                    ident = _dtrace_ladder_id(
-                        exchange=_strike_data_exchange_key(),
-                        symbol=sym,
-                        market=mkt,
-                        snap=snap,
-                    )
-                    _dtrace(
-                        "aes_ladder",
-                        symbol=sym,
-                        market=mkt,
-                        monitors=len(bindings),
-                        prefetch_s=round(time.perf_counter() - tg0, 4),
-                        **ident,
-                    )
-                if snap:
-                    token = _aes_unified_tick_context.set({"symbol": sym, "market": mkt, "data": snap})
-                    try:
-                        for u, m in bindings:
-                            tw0 = time.perf_counter()
-                            strat = ""
-                            auto_on = False
-                            with aes_monitor_bind(u, m):
-                                strat = get_trade_strategy()
-                                auto_on = is_auto_trade_enabled()
-                                ms, mm = get_current_monitor_symbol_and_market()
-                                if ms != sym or mm != mkt:
-                                    inner = _aes_unified_tick_context.set(None)
-                                    try:
-                                        _check_auto_entry_conditions_impl()
-                                    finally:
-                                        _aes_unified_tick_context.reset(inner)
-                                else:
-                                    _check_auto_entry_conditions_impl()
-                            wall_s = time.perf_counter() - tw0
-                            if AES_UNIFIED_PROFILE:
-                                _unified_profile_state["monitor_wall_sec"].append((m, wall_s))
-                            if _dtrace_on():
-                                _dtrace(
-                                    "aes_monitor_done",
-                                    user=u,
-                                    monitor=m,
-                                    strategy=strat,
-                                    auto_trade=auto_on,
-                                    wall_s=round(wall_s, 4),
-                                    symbol=sym,
-                                    market=mkt,
-                                )
-                    finally:
-                        _aes_unified_tick_context.reset(token)
-                else:
-                    for u, m in bindings:
-                        tw0 = time.perf_counter()
-                        strat = ""
-                        auto_on = False
-                        with aes_monitor_bind(u, m):
-                            strat = get_trade_strategy()
-                            auto_on = is_auto_trade_enabled()
-                            _check_auto_entry_conditions_impl()
-                        wall_s = time.perf_counter() - tw0
-                        if AES_UNIFIED_PROFILE:
-                            _unified_profile_state["monitor_wall_sec"].append((m, wall_s))
-                        if _dtrace_on():
-                            _dtrace(
-                                "aes_monitor_done",
-                                user=u,
-                                monitor=m,
-                                strategy=strat,
-                                auto_trade=auto_on,
-                                wall_s=round(wall_s, 4),
-                                symbol=sym,
-                                market=mkt,
-                                ladder_miss=True,
-                            )
-            if AES_UNIFIED_PROFILE:
-                elapsed = time.perf_counter() - t_pass0
-                wall = _unified_profile_state["monitor_wall_sec"]
-                wall_sum = sum(w for _, w in wall)
-                log(
-                    "[AES PROFILE] unified_pass=%.3fs groups=%s prefetch=%.3fs get_master_extra=%.3fs "
-                    "master_hits=%s trigger_trade=%.3fs monitor_wall_sum=%.3fs detail=%s"
-                    % (
-                        elapsed,
-                        len(by_ladder),
-                        _unified_profile_state["group_prefetch_sec"],
-                        _unified_profile_state["master_fetch_sec"],
-                        _unified_profile_state["master_cache_hits"],
-                        _unified_profile_state["trigger_trade_sec"],
-                        wall_sum,
-                        [(mid, round(sec, 3)) for mid, sec in wall],
-                    )
-                )
-            if _dtrace_on():
-                _dtrace_end(
-                    groups=len(by_ladder),
-                    monitors=len(rows),
-                    profile=1 if AES_UNIFIED_PROFILE else 0,
-                )
+            hub = _aes_ensure_lane_hub()
+            hub.failsafe_refresh_all()
         except Exception as e:
             import traceback
 
-            if AES_UNIFIED_ALL:
+            if AES_BTC15M_EXP_SCALP:
+                pool_n = "btc15m_exp_scalp"
+            elif AES_UNIFIED_ALL:
                 pool_n = "unified"
             else:
                 pool_n = "15m" if AES_UNIFIED_15M else "hourly"
@@ -4074,7 +4251,9 @@ def check_auto_entry_conditions_expiration_scalp():
     """Near-expiration: buy the side whose ask and side-aware probability both pass (not active_side/HTC)."""
     log_tag = "[AUTO ENTRY EXPIRATION SCALP]"
     try:
-        check_spike_alert_conditions()
+        # Spike-alert path is not gate-binding for Exp Scalp; skip on unified/cutout lanes.
+        if not AES_UNIFIED_POOL:
+            check_spike_alert_conditions()
 
         strike_table_data = get_master_strike_table_data()
         if strike_table_data:
@@ -4136,6 +4315,9 @@ def check_auto_entry_conditions_expiration_scalp():
         if not strike_table_data or "strikes" not in strike_table_data:
             return
 
+        if _aes_refuse_stale_fire("exp_scalp_pre_strikes"):
+            return
+
         movement_pct = strike_table_data.get("movement_percentile")
         try:
             movement_pct_f = float(movement_pct) if movement_pct is not None else None
@@ -4150,8 +4332,12 @@ def check_auto_entry_conditions_expiration_scalp():
         sym = get_current_monitor_symbol()
         mkt = get_current_monitor_symbol_and_market()[1]
         processed_strikes = set()
+        strike_i = 0
 
         for strike in strike_table_data["strikes"]:
+            strike_i += 1
+            if strike_i % 8 == 0 and _aes_refuse_stale_fire("exp_scalp_strike_loop"):
+                return
             for side_key in ("yes", "no"):
                 try:
                     strike_key = _strike_cooldown_key(strike.get("strike"), side_key)
@@ -6174,23 +6360,14 @@ def _aes_active_pool_ladder_keys() -> Set[Tuple[str, str]]:
     if not AES_UNIFIED_POOL:
         sym, mkt = get_current_monitor_symbol_and_market()
         return {((sym or "BTC").upper(), (mkt or "hourly").lower())}
+    if AES_BTC15M_EXP_SCALP:
+        return {("BTC", "15m")}
     now = time.monotonic()
     if _aes_pool_ladder_keys and (now - _aes_pool_ladder_keys_at) < 5.0:
         return _aes_pool_ladder_keys
     keys: Set[Tuple[str, str]] = set()
     try:
-        if AES_UNIFIED_15M:
-            from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
-
-            rows = list_active_15m_monitor_rows()
-        elif AES_UNIFIED_HOURLY:
-            from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
-
-            rows = list_active_hourly_monitor_rows()
-        else:
-            from backend.core.unified_all_monitors import list_active_unified_monitor_rows
-
-            rows = list_active_unified_monitor_rows()
+        rows = _aes_list_lane_monitor_rows()
         for row in rows:
             sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
             mkt = (row.get("market") or "").strip().lower()
@@ -6254,11 +6431,17 @@ def start_monitoring_loop():
     def monitoring_worker():
         global monitoring_thread
         log("📊 MONITORING: Starting auto entry monitoring loop")
+        if AES_UNIFIED_POOL:
+            mode = "btc15m_exp_scalp_cutout" if AES_BTC15M_EXP_SCALP else "latest_only_lanes"
+            log(f"📊 MONITORING: AES mode={mode} (mailbox per ladder; cancel in-flight eval only)")
         
         # Broadcast initial state immediately on startup
         log("📊 MONITORING: Broadcasting initial auto entry state")
         _aes_run_symbol_wide_startup_once()
-        check_auto_entry_conditions()
+        if AES_UNIFIED_POOL:
+            _aes_ensure_lane_hub().failsafe_refresh_all()
+        else:
+            check_auto_entry_conditions()
         
         check_count = 0
         last_heartbeat = time.time()
@@ -6281,10 +6464,15 @@ def start_monitoring_loop():
 
                 _aes_maybe_lp_recompute()
 
-                check_auto_entry_conditions()
-
-                _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
-                _aes_live_state_wake.clear()
+                if AES_UNIFIED_POOL:
+                    # Failsafe only: ladder wakes drive on_ladder_update → hub.publish/eval.
+                    _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
+                    _aes_live_state_wake.clear()
+                    _aes_ensure_lane_hub().failsafe_refresh_all()
+                else:
+                    check_auto_entry_conditions()
+                    _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
+                    _aes_live_state_wake.clear()
                 
             except Exception as e:
                 import traceback
@@ -6312,6 +6500,8 @@ def start_monitoring_loop():
 
         def _aes_symbol_market_filter(s: str, m: str) -> bool:
             try:
+                if AES_BTC15M_EXP_SCALP:
+                    return s.strip().upper() == "BTC" and m.strip().lower() == "15m"
                 if AES_UNIFIED_POOL:
                     return (s.strip().upper(), m.strip().lower()) in _aes_active_pool_ladder_keys()
                 cs, cm = get_current_monitor_symbol_and_market()
@@ -6322,11 +6512,24 @@ def start_monitoring_loop():
         def _aes_on_live_state() -> None:
             _aes_live_state_wake.set()
 
-        if start_tradeflow_live_state_listener(
-            _aes_on_live_state,
-            service=f"aes_{MONITOR_IDENTIFIER}",
-            symbol_market_filter=_aes_symbol_market_filter,
-        ):
+        def _aes_on_ladder(s: str, m: str) -> None:
+            if AES_UNIFIED_POOL:
+                _aes_ensure_lane_hub().on_ladder_notify(s, m)
+            else:
+                _aes_live_state_wake.set()
+
+        listener_kwargs = {
+            "service": f"aes_{MONITOR_IDENTIFIER}",
+            "symbol_market_filter": _aes_symbol_market_filter,
+            "on_ladder_update": _aes_on_ladder,
+        }
+        if AES_UNIFIED_POOL:
+            # active_trades kind still wakes failsafe path
+            listener_kwargs["on_evaluate"] = _aes_on_live_state
+        else:
+            listener_kwargs["on_evaluate"] = _aes_on_live_state
+
+        if start_tradeflow_live_state_listener(**listener_kwargs):
             log(
                 "📊 MONITORING: live_state trigger enabled for %s/%s",
                 sym,

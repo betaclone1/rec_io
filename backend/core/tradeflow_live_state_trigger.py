@@ -100,13 +100,17 @@ def parse_tradeflow_symbol_market(payload: dict) -> List[Tuple[str, str]]:
 
 
 def start_tradeflow_live_state_listener(
-    on_evaluate: Callable[[], None],
+    on_evaluate: Optional[Callable[[], None]] = None,
     *,
+    on_ladder_update: Optional[Callable[[str, str], None]] = None,
     service: str = "tradeflow",
     symbol_market_filter: Optional[Callable[[str, str], bool]] = None,
 ) -> bool:
     """
-    Subscribe to live_state updates and invoke ``on_evaluate`` (coalesced).
+    Subscribe to live_state updates.
+
+    - ``on_ladder_update(symbol, market)``: preferred for latest-only lanes (per ladder).
+    - ``on_evaluate()``: legacy blanket wake (also used for ``active_trades`` kind).
 
     Returns False if not started (cache off, trigger disabled, or no Redis).
     """
@@ -116,6 +120,8 @@ def start_tradeflow_live_state_listener(
     if not live_state_cache_enabled() or not tradeflow_requires_live_state():
         return False
     if not tradeflow_live_state_trigger_enabled():
+        return False
+    if on_evaluate is None and on_ladder_update is None:
         return False
 
     with _listener_lock:
@@ -157,20 +163,29 @@ def start_tradeflow_live_state_listener(
                     if payload.get("type") != "live_state_updated":
                         continue
 
-                    fired = False
                     kind = str(payload.get("kind") or "").strip()
                     # Redis active_trades pool writes use kind=active_trades (not symbol/market keys).
                     if kind == "active_trades":
-                        if coalescer.should_fire("__ACTIVE_TRADES__", "all"):
-                            fired = True
-                    elif kind == "orderbook":
+                        if coalescer.should_fire("__ACTIVE_TRADES__", "all") and on_evaluate:
+                            try:
+                                on_evaluate()
+                            except Exception as exc:
+                                logger.warning(
+                                    "[%s] live_state evaluate callback failed: %s",
+                                    service,
+                                    exc,
+                                )
+                        continue
+
+                    ladder_pairs: List[Tuple[str, str]] = []
+                    if kind == "orderbook":
                         for sym, mkt in parse_tradeflow_symbol_market(payload):
                             if symbol_market_filter and not symbol_market_filter(
                                 sym, mkt
                             ):
                                 continue
                             if ob_coalescer.should_fire(sym, mkt):
-                                fired = True
+                                ladder_pairs.append((sym, mkt))
                     else:
                         for sym, mkt in parse_tradeflow_symbol_market(payload):
                             if symbol_market_filter and not symbol_market_filter(
@@ -178,8 +193,24 @@ def start_tradeflow_live_state_listener(
                             ):
                                 continue
                             if coalescer.should_fire(sym, mkt):
-                                fired = True
-                    if fired:
+                                ladder_pairs.append((sym, mkt))
+
+                    if not ladder_pairs:
+                        continue
+
+                    if on_ladder_update is not None:
+                        for sym, mkt in ladder_pairs:
+                            try:
+                                on_ladder_update(sym, mkt)
+                            except Exception as exc:
+                                logger.warning(
+                                    "[%s] live_state ladder callback failed %s/%s: %s",
+                                    service,
+                                    sym,
+                                    mkt,
+                                    exc,
+                                )
+                    elif on_evaluate is not None:
                         try:
                             on_evaluate()
                         except Exception as exc:

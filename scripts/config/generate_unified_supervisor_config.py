@@ -618,6 +618,35 @@ class SupervisorConfigGenerator:
                         "autostart": True,
                     }
                 )
+                # BTC 15m Expiration Scalp cutout: dedicated AES+ATS (latest-only mailbox).
+                cut_aes = f"auto_entry_supervisor_{user_no}_btc15m_exp_scalp"
+                cut_ats = f"active_trade_supervisor_{user_no}_btc15m_exp_scalp"
+                try:
+                    cut_aes_port = int(ports.get(cut_aes) or (8039 if user_no == "0001" else 8045))
+                except (TypeError, ValueError):
+                    cut_aes_port = 8039
+                try:
+                    cut_ats_port = int(ports.get(cut_ats) or (8041 if user_no == "0001" else 8046))
+                except (TypeError, ValueError):
+                    cut_ats_port = 8041
+                services.append(
+                    {
+                        "name": cut_aes,
+                        "script": "auto_entry_supervisor.py btc15m_exp_scalp",
+                        "port": cut_aes_port,
+                        "environment": env_u,
+                        "autostart": True,
+                    }
+                )
+                services.append(
+                    {
+                        "name": cut_ats,
+                        "script": "active_trade_supervisor.py btc15m_exp_scalp",
+                        "port": cut_ats_port,
+                        "environment": env_u,
+                        "autostart": True,
+                    }
+                )
 
         services.append(
             {

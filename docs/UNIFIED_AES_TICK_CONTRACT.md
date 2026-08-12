@@ -2,11 +2,15 @@
 
 This document defines semantics for the **unified** auto entry supervisor process (`auto_entry_supervisor.py unified`): one OS process per tenant evaluates many active monitors in that tenant’s `monitor_list_*` without running one script per monitor. (Legacy argv modes and older `unified_hourly` / `unified_15m` labels may still appear in docs/history; current supervisor generation uses a single unified pool.)
 
+**Latest-only lanes (current):** Unified AES/ATS evaluate per `(symbol, market)` **mailbox** — a newer ladder publish **replaces** the pending snap and cancels in-flight **evaluation** (already-submitted TM/TE trades are never cancelled). Monitors on the same ladder run in parallel; fire/submit is refused if `generation_id`/epoch is superseded. See `backend/core/tradeflow_latest_only_lane.py`.
+
+**BTC 15m Expiration Scalp cutout:** Dedicated processes `auto_entry_supervisor.py btc15m_exp_scalp` and `active_trade_supervisor.py btc15m_exp_scalp` (per tenant) own monitors with `symbol=BTC`, `market=15m`, `strategy=Expiration Scalp`. Those monitors are **excluded** from the general unified AES/ATS pool to prevent double-fire. Membership helpers: `backend/core/aes_btc15m_exp_scalp_cutout.py`.
+
 ## Logical tick
 
-- **Tick**: One pass of the AES monitoring loop. Wakes are primarily **event-driven** via Redis `rec_io:live_state:updated` (coalesced; see `TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC`, default **0.2s**; orderbook **0.05s**), with failsafe poll `AES_FAILSAFE_POLL_SEC` (default **1s**) when quiet.
+- **Tick**: Ladder-scoped latest-only eval driven by Redis `rec_io:live_state:updated` (coalesced; see `TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC`, default **0.2s**; orderbook **0.05s**), with failsafe poll `AES_FAILSAFE_POLL_SEC` / `ATS_FAILSAFE_POLL_SEC` (default **1s** for pool modes) when quiet.
 - **Strike table snapshot**: For a given `(exchange, symbol, market)` ladder (e.g. Kalshi BTC hourly / 15m), the latest ladder read from Redis **`live_state`** strike_ladder (AES hot path uses `tradeflow_live_reads.strike_ladder` — not a live PostgreSQL substitute). Header fields (`ttc`, `event_ticker`, …) plus the `strikes` array.
-- **Snapshot identity**: Implicitly identified by `(exchange, symbol, market)` at read time plus ladder/envelope fields (`event_ticker`, TTC, `generation_id` when present, ask fingerprint). Per tick, monitors that share the same symbol and normalized market reuse **one** fetched snapshot to avoid N identical queries.
+- **Snapshot identity**: `(exchange, symbol, market)` plus a **decision** fingerprint (default): `event_ticker` + TTC bucketed by `TRADEFLOW_LANE_TTC_BUCKET_SEC` (default **1s**) + yes/no asks rounded to **1¢** for the first N strikes (`TRADEFLOW_LANE_DECISION_STRIKES`). Publisher `generation_id` is used only when `TRADEFLOW_LANE_USE_PUBLISHER_GEN=1`. Same decision gen refreshes the mailbox payload without cancelling in-flight eval, and `TRADEFLOW_LANE_REEVAL_SEC` (default **1s**) still schedules a re-eval so quiet fingerprints cannot skip entry windows. Mailbox holds at most one latest snap per ladder; intermediates that never start (or are cancelled) are discarded — never FIFO of old gens.
 
 ## Submitted vs confirmed
 
