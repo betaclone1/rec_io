@@ -16,14 +16,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - Docs: `KALSHI_EXCHANGE_SHARDING.md` (+ diagram), portfolio/ingest/architecture pointers.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration **before** restarting balance pollers:  
+- [x] Apply migration **before** restarting balance pollers:  
   `cd /opt/rec_io_server && PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260813_1448_subaccount_exchange_balances`
-- [ ] Restart account sync + trade executor (tenant 0001):  
+- [x] Restart account sync + trade executor (tenant 0001):  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart kalshi_account_sync_0001 trade_executor_0001`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; confirm `users_0001.subaccounts_0001` CASH/MTB balances are full matrix sums (not $1); account manager subaccount list matches.
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; confirm `users_0001.subaccounts_0001` CASH/MTB balances are full matrix sums (not $1); account manager subaccount list matches.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.9`
 
 ---
