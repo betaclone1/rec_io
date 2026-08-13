@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-13 — Release v3.9.9: Kalshi exchange sharding balance matrix + order auto-route
+
+**Summary**
+- **Release: v3.9.9**
+- **Problem:** After Kalshi multi-shard balances appeared (exchange_index × subaccount), prod `GET /portfolio/subaccounts/balances` sync **overwrote** per-subaccount cash with the last shard row (e.g. CASH/MTB stuck at $1 while hero total stayed ~$18k).
+- **Fix:** Poll matrix and **sum** cash across shards into `subaccounts_*`.`balance`; store per-shard cents in `exchange_0..3_balance` on `subaccounts_*` / `subaccount_balance_*_*` (migration **`20260813_1448_subaccount_exchange_balances`**). History sab rows use matrix cash + per-sub position marks; hero aggregate unchanged shape.
+- **Orders:** `trade_executor` Create Order V2 sends `exchange_index: -1` (auto-route by ticker).
+- Docs: `KALSHI_EXCHANGE_SHARDING.md` (+ diagram), portfolio/ingest/architecture pointers.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration **before** restarting balance pollers:  
+  `cd /opt/rec_io_server && PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260813_1448_subaccount_exchange_balances`
+- [ ] Restart account sync + trade executor (tenant 0001):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart kalshi_account_sync_0001 trade_executor_0001`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; confirm `users_0001.subaccounts_0001` CASH/MTB balances are full matrix sums (not $1); account manager subaccount list matches.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.9`
+
+---
+
 ## 2026-08-07 — Release v3.9.8: Lean strike-pipeline master log (15m threshold)
 
 **Summary**

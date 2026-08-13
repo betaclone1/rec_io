@@ -69,8 +69,11 @@ def test_poll_live_account_balances_skips_rake_when_requested(monkeypatch):
     monkeypatch.setattr(bs, "_write_polled_subaccount_balances", fake_write)
     monkeypatch.setattr(bs, "_subaccount_numbers_from_subaccounts_table", lambda *a, **k: [0, 1])
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda user_no: {0: 100, 1: 200},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        lambda user_no: {
+            0: {"balance_cents": 100, "exchange_balances_cents": {0: 100}},
+            1: {"balance_cents": 200, "exchange_balances_cents": {0: 200}},
+        },
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
@@ -117,8 +120,11 @@ def test_poll_live_account_balances_runs_rake_by_default(monkeypatch):
     monkeypatch.setattr(bs, "_write_polled_subaccount_balances", lambda *a, **k: (True, False))
     monkeypatch.setattr(bs, "_subaccount_numbers_from_subaccounts_table", lambda *a, **k: [0, 1])
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda user_no: {0: 100, 1: 200},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        lambda user_no: {
+            0: {"balance_cents": 100, "exchange_balances_cents": {0: 100}},
+            1: {"balance_cents": 200, "exchange_balances_cents": {0: 200}},
+        },
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",

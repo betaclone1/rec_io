@@ -145,7 +145,9 @@ def test_poll_live_account_balances_skips_understatement_then_writes_recovered(m
         {"balance_cents": 539721, "portfolio_value_cents": 0, "total_portfolio_cents": 539721},
         {"balance_cents": 1091721, "portfolio_value_cents": 0, "total_portfolio_cents": 1091721},
     ]
+    matrix_cash_sequence = [539721, 1091721]
     mtb_fetch_calls = {"n": 0}
+    matrix_calls = {"n": 0}
 
     def fake_fetch(slot, *, subaccount=None):
         if subaccount == 0:
@@ -156,11 +158,20 @@ def test_poll_live_account_balances_skips_understatement_then_writes_recovered(m
             return dict(mtb_fetch_sequence[idx])
         return None
 
+    def fake_matrix(slot):
+        idx = min(matrix_calls["n"], len(matrix_cash_sequence) - 1)
+        cash = matrix_cash_sequence[idx]
+        matrix_calls["n"] += 1
+        return {
+            0: {"balance_cents": 10000, "exchange_balances_cents": {0: 10000}},
+            1: {"balance_cents": cash, "exchange_balances_cents": {0: cash}},
+        }
+
     apply_calls = []
 
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda slot: {0: 10000, 1: 758245},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        fake_matrix,
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
@@ -190,6 +201,8 @@ def test_poll_live_account_balances_skips_understatement_then_writes_recovered(m
     mtb_writes = [c for c in apply_calls if "subaccount_balance_0001_1" in c.get("account_balance_table", "")]
     assert mtb_writes
     assert mtb_writes[-1]["portfolio_value"] == 1091721
+    assert mtb_writes[-1]["balance_amount"] == 1091721
+    assert mtb_writes[-1]["exchange_balances_cents"] == {0: 1091721}
 
 
 def test_poll_live_account_balances_understatement_exhausted_still_writes(monkeypatch):
@@ -206,8 +219,11 @@ def test_poll_live_account_balances_understatement_exhausted_still_writes(monkey
     apply_calls = []
 
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda slot: {0: 10000, 1: 758245},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        lambda slot: {
+            0: {"balance_cents": 10000, "exchange_balances_cents": {0: 10000}},
+            1: {"balance_cents": 539721, "exchange_balances_cents": {0: 539721}},
+        },
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
@@ -236,6 +252,8 @@ def test_poll_live_account_balances_understatement_exhausted_still_writes(monkey
     mtb_writes = [c for c in apply_calls if "subaccount_balance_0001_1" in c.get("account_balance_table", "")]
     assert mtb_writes
     assert mtb_writes[-1]["portfolio_value"] == 539721
+    assert mtb_writes[-1]["balance_amount"] == 539721
+    assert mtb_writes[-1]["exchange_balances_cents"] == {0: 539721}
 
 
 def test_poll_live_account_balances_skips_glitch_then_writes_clean(monkeypatch):
@@ -266,8 +284,11 @@ def test_poll_live_account_balances_skips_glitch_then_writes_clean(monkeypatch):
         return True, False
 
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda slot: {0: 10000, 1: 400349},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        lambda slot: {
+            0: {"balance_cents": 10000, "exchange_balances_cents": {0: 10000}},
+            1: {"balance_cents": 400349, "exchange_balances_cents": {0: 400349}},
+        },
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
@@ -312,8 +333,11 @@ def test_poll_live_account_balances_deposit_cycle_bypasses_guard(monkeypatch):
     apply_calls = []
 
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda slot: {0: 10000, 1: 400349},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        lambda slot: {
+            0: {"balance_cents": 10000, "exchange_balances_cents": {0: 10000}},
+            1: {"balance_cents": 400349, "exchange_balances_cents": {0: 400349}},
+        },
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
@@ -359,8 +383,11 @@ def test_poll_live_account_balances_exhausted_retries_no_write(monkeypatch):
     apply_calls = []
 
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_cents_map",
-        lambda slot: {0: 10000, 1: 400349},
+        "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
+        lambda slot: {
+            0: {"balance_cents": 10000, "exchange_balances_cents": {0: 10000}},
+            1: {"balance_cents": 400349, "exchange_balances_cents": {0: 400349}},
+        },
     )
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",

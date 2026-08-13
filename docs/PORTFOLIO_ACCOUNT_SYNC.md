@@ -48,9 +48,9 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 | Function | HTTP | When it runs |
 |----------|------|--------------|
-| `sync_balance` | `GET /portfolio/subaccounts/balances` | Step 1: upsert live `users.subaccounts_*` cash per Kalshi subaccount |
-| `sync_balance` | `GET /portfolio/balance?subaccount=N` | Step 2: per active subaccount → `subaccount_balance_*_<n>` history |
-| `sync_balance` (aggregate) | — | Step 3: sum subaccount snapshots → hero `account_balance_*`; bankroll from subaccount 1 |
+| `sync_balance` | `GET /portfolio/subaccounts/balances` | Step 1: upsert live `users.subaccounts_*` cash per Kalshi subaccount (matrix → `exchange_*_balance`, `balance` = sum) |
+| `sync_balance` | `GET /portfolio/balance?subaccount=N` | Step 2: position marks; sab history gets matrix cash + these marks → `subaccount_balance_*_<n>` |
+| `sync_balance` (aggregate) | — | Step 3: sum latest sab snapshots → hero `account_balance_*`; bankroll from subaccount 1 |
 | `sync_balance(full=True)` | same as above | **Startup baseline only** — disables 120s hero throttle so every subaccount + hero row is refreshed after `MASTER_RESTART` |
 | `sync_portfolio_hot_state_baseline` | positions + fills + orders REST | **Startup only** — positions snapshot; fills/orders paginated with `min_ts` = retention window |
 | `sync_positions_prune_hot_state` | `GET .../portfolio/positions?limit=200` | Every `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` (default 300s); **prune only** (no hot upsert) |
@@ -61,6 +61,8 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 | Manual internal transfer | `POST /portfolio/subaccounts/transfer` | Account manager `initiate-transfer` (live); then `sync_balance` repoll |
 
 **Live subaccounts:** #0 = **CASH** (deposits/withdrawals), #1 = **Master Trading Bankroll** (hero bankroll), #2+ = ancillary (`undefined_2`, …). No deposit/withdrawal routing. Orders default to **subaccount 1** via `trade_executor`.
+
+**Exchange sharding:** Kalshi balances are a **`(exchange_index, subaccount)`** matrix. After crypto cutover, trading MTB is **`(2, 1)`**; cross-shard moves use IAT through primaries only. Schema: `exchange_0..3_balance` on `subaccounts_*` / `subaccount_balance_*_*` (migration **`20260813_1448_subaccount_exchange_balances`**); `balance` = sum. Full model: [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md).
 
 **Automatic MTB rake (live):** When MTB `realized_pnl_pct` ≥ `target_pnl__pct` and `automatic_transfers` is on, `poll_live_account_balances` calls `POST /portfolio/subaccounts/transfer` **#1 → #0** for `transfer_amt × base_value` cents, updates MTB `base_value` in DB, then **repolls all subaccounts** (no throttle). Paper mode simulates the same destination (**CASH**) in `subaccounts_update` without Kalshi.
 

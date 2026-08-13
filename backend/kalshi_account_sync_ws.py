@@ -721,6 +721,7 @@ def _upsert_subaccount_balance(
     table_fqn: str,
     subaccount_number: int,
     balance_cents: int,
+    exchange_balances_cents: dict | None = None,
 ) -> None:
     """
     Write Kalshi cash balance for one subaccount number.
@@ -728,22 +729,45 @@ def _upsert_subaccount_balance(
     ``id`` is the Kalshi subaccount number. ``subaccount`` is only a display label —
     never used as the match key, and never overwritten on update.
     Insert only when Kalshi reports a number that has no row yet (default label only).
+
+    ``exchange_balances_cents`` maps exchange_index → cents for exchange_0..3_balance.
+    Missing indexes are written as 0. When omitted, all cash is attributed to exchange_0
+    (legacy / paper callers).
     """
     num = int(subaccount_number)
     cents = int(balance_cents)
+    ex = exchange_balances_cents or {}
+    e0 = int(ex.get(0, cents if exchange_balances_cents is None else 0))
+    e1 = int(ex.get(1, 0))
+    e2 = int(ex.get(2, 0))
+    e3 = int(ex.get(3, 0))
+    if exchange_balances_cents is not None:
+        # Authoritative total is the shard sum for known columns (plus any >3 already in cents).
+        known = e0 + e1 + e2 + e3
+        if known != cents:
+            # Keep Kalshi total in balance; columns hold 0..3 only.
+            pass
     try:
         cursor.execute(
-            psql.SQL("UPDATE {} SET balance = %s WHERE id = %s").format(table_ident),
-            (cents, num),
+            psql.SQL(
+                "UPDATE {} SET balance = %s, "
+                "exchange_0_balance = %s, exchange_1_balance = %s, "
+                "exchange_2_balance = %s, exchange_3_balance = %s "
+                "WHERE id = %s"
+            ).format(table_ident),
+            (cents, e0, e1, e2, e3, num),
         )
         if cursor.rowcount == 0:
             default_label = kalshi_subaccount_row_name(num)
             cursor.execute(
                 psql.SQL(
-                    "INSERT INTO {} (id, subaccount, balance, automatic_transfers) "
-                    "VALUES (%s, %s, %s, FALSE)"
+                    "INSERT INTO {} ("
+                    "id, subaccount, balance, "
+                    "exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance, "
+                    "automatic_transfers"
+                    ") VALUES (%s, %s, %s, %s, %s, %s, %s, FALSE)"
                 ).format(table_ident),
-                (num, default_label, cents),
+                (num, default_label, cents, e0, e1, e2, e3),
             )
             # Keep serial ahead of explicit Kalshi ids (setval rejects 0).
             cursor.execute(
@@ -772,6 +796,33 @@ def _upsert_subaccount_balance(
         raise
 
 
+def _normalize_subaccount_balances_arg(balances_by_number):
+    """
+    Accept legacy ``{num: cents}`` or matrix
+    ``{num: {"balance_cents", "exchange_balances_cents"}}``.
+    """
+    if not balances_by_number:
+        return {}
+    out = {}
+    for key, val in balances_by_number.items():
+        num = int(key)
+        if isinstance(val, dict):
+            ex_raw = val.get("exchange_balances_cents") or {}
+            ex = {int(i): int(c) for i, c in ex_raw.items()}
+            if val.get("balance_cents") is not None:
+                total = int(val["balance_cents"])
+            else:
+                total = sum(ex.values())
+            out[num] = {"balance_cents": total, "exchange_balances_cents": ex}
+        else:
+            cents = int(val)
+            out[num] = {
+                "balance_cents": cents,
+                "exchange_balances_cents": {0: cents},
+            }
+    return out
+
+
 def _fetch_kalshi_subaccount_balances_cents():
     """
     GET /portfolio/subaccounts/balances; return {subaccount_number: balance_cents}.
@@ -791,17 +842,28 @@ def _sync_subaccounts_from_kalshi_poll(cursor, subaccounts_table, balances_by_nu
     One row per Kalshi subaccount number from GET /portfolio/subaccounts/balances
     (including #0 CASH). Matches by ``id`` (= Kalshi number); preserves display labels.
     Does not create rows for numbers Kalshi did not report.
+
+    ``balances_by_number`` may be legacy ``{num: cents}`` or matrix entries with
+    ``exchange_balances_cents``.
     """
     from backend.balance_snapshot import refresh_mtb_realized_pnl_from_balance
     from backend.trading_mode import sql_ident_qualified_table
 
-    if not balances_by_number:
+    normalized = _normalize_subaccount_balances_arg(balances_by_number)
+    if not normalized:
         return None
     ident = sql_ident_qualified_table(subaccounts_table)
     synced = []
-    for num in sorted(balances_by_number.keys()):
-        cents = balances_by_number[num]
-        _upsert_subaccount_balance(cursor, ident, subaccounts_table, int(num), int(cents))
+    for num in sorted(normalized.keys()):
+        entry = normalized[num]
+        _upsert_subaccount_balance(
+            cursor,
+            ident,
+            subaccounts_table,
+            int(num),
+            int(entry["balance_cents"]),
+            exchange_balances_cents=entry.get("exchange_balances_cents"),
+        )
         synced.append(int(num))
     if synced:
         logger.debug(
@@ -819,9 +881,9 @@ def refresh_live_subaccounts_from_kalshi(
     portfolio_total_cents=None,
 ):
     """Poll Kalshi subaccount balances and upsert users.subaccounts_* (live)."""
-    from backend.bookkeeper.kalshi_portfolio_balance import fetch_subaccount_balances_cents_map
+    from backend.bookkeeper.kalshi_portfolio_balance import fetch_subaccount_balances_matrix
 
-    balances = fetch_subaccount_balances_cents_map(user_no)
+    balances = fetch_subaccount_balances_matrix(user_no)
     if balances is None:
         return None
     return _sync_subaccounts_from_kalshi_poll(cursor, subaccounts_table, balances)

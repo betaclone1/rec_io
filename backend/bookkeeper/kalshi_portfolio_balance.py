@@ -227,12 +227,15 @@ def fetch_total_portfolio_cents(user_no: str) -> tuple[int, dict]:
     return total, detail
 
 
-def fetch_subaccount_balances_cents_map(user_no: str) -> dict[int, int] | None:
+def fetch_subaccount_balances_matrix(user_no: str) -> dict[int, dict] | None:
     """
-    GET /portfolio/subaccounts/balances; normalize dollar ``balance`` strings to integer cents.
+    GET /portfolio/subaccounts/balances as a per-subaccount matrix.
 
-    Returns ``{kalshi_subaccount_number: balance_cents}`` or ``None`` if credentials missing
-    or the request fails.
+    Returns ``{subaccount_number: {"balance_cents": int, "exchange_balances_cents": {exchange_index: cents}}}``
+    or ``None`` if credentials missing / request fails.
+
+    Multiple rows for the same subaccount on different ``exchange_index`` values are **summed**
+    into ``balance_cents`` (do not overwrite).
     """
     from backend.core.kalshi_money import normalize_kalshi_subaccount_balances_response
 
@@ -244,17 +247,43 @@ def fetch_subaccount_balances_cents_map(user_no: str) -> dict[int, int] | None:
         return None
 
     normalized = normalize_kalshi_subaccount_balances_response(raw)
-    out: dict[int, int] = {}
+    out: dict[int, dict] = {}
     for row in normalized.get("subaccount_balances") or []:
         num = row.get("subaccount_number")
         bal = row.get("balance")
         if num is None or bal is None:
             continue
         try:
-            out[int(num)] = int(bal)
+            n = int(num)
+            cents = int(bal)
+            ex = int(row.get("exchange_index") if row.get("exchange_index") is not None else 0)
         except (TypeError, ValueError):
             continue
+        slot = out.setdefault(n, {"balance_cents": 0, "exchange_balances_cents": {}})
+        slot["balance_cents"] = int(slot["balance_cents"]) + cents
+        ex_map = slot["exchange_balances_cents"]
+        ex_map[ex] = int(ex_map.get(ex, 0)) + cents
+        if ex < 0 or ex > 3:
+            logger.warning(
+                "Kalshi subaccount %s has exchange_index=%s outside exchange_0..3 columns (user %s)",
+                n,
+                ex,
+                user_no,
+            )
     return out if out else None
+
+
+def fetch_subaccount_balances_cents_map(user_no: str) -> dict[int, int] | None:
+    """
+    GET /portfolio/subaccounts/balances; normalize dollar ``balance`` strings to integer cents.
+
+    Returns ``{kalshi_subaccount_number: balance_cents}`` summed across exchange shards,
+    or ``None`` if credentials missing or the request fails.
+    """
+    matrix = fetch_subaccount_balances_matrix(user_no)
+    if matrix is None:
+        return None
+    return {int(n): int(v["balance_cents"]) for n, v in matrix.items()}
 
 
 def fetch_subaccount_transferable_cents(user_no: str, subaccount_number: int) -> int | None:

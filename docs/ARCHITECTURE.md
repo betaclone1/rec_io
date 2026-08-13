@@ -13,7 +13,7 @@ High-level view of the REC.IO trading system: components, data flow, and where t
 | **Redis** | Real-time backbone: one channel `rec_io:db_changes` for all DB-driven events. Switchboard publishes here; frontend (WebSocket) and backend (Redis subscribe) consume the same payload. See [REALTIME_BACKBONE.md](REALTIME_BACKBONE.md). |
 | **Switchboard** | Single process: LISTENs to PostgreSQL NOTIFY, maps (schema, table) → stream name via [backend/core/stream_registry.py](../backend/core/stream_registry.py), publishes to Redis, serves `/ws/db_changes`. Run under supervisor; port 3010 by default. |
 | **read_api** | Single persistent process (supervisor: `read_api`). Hosts **all** read/aggregate HTTP endpoints (e.g. `/api/performance/realized`, `/api/account/balance`, `/api/subaccounts`, monitor stats, portfolio history). Request in → run query, compute, format → return JSON. Does not subscribe to Redis. See [REDIS_ARCHITECTURE.md](REDIS_ARCHITECTURE.md). |
-| **Kalshi** | External: markets, order execution, account/fills/orders. Backend uses Kalshi API and websockets; credentials in env or `backend/data/users/.../credentials/`. |
+| **Kalshi** | External: markets, order execution, account/fills/orders. Backend uses Kalshi API and websockets; credentials in env or `backend/data/users/.../credentials/`. Matching engines are **sharded** (`exchange_index`); crypto is shard **2** — see [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md). |
 
 ## Timezone convention
 
@@ -45,4 +45,5 @@ Runbooks and utilities should not scatter ad-hoc IPs; use env vars. For SSH, set
 - **Migrations:** `scripts/migrations/` (SQL); runner: `scripts/db/run_migration.py`. Drift check: `scripts/db/check_db_schema_drift.py`.
 - **Schema reference:** [MASTER_DB_SCHEMA_REFERENCE.md](MASTER_DB_SCHEMA_REFERENCE.md).
 - **Real-time / Redis:** [REDIS_ARCHITECTURE.md](REDIS_ARCHITECTURE.md) (full architecture: read_api, switchboard, main, flow). [REALTIME_BACKBONE.md](REALTIME_BACKBONE.md) (backbone only). [REDIS_DB_CHANGES_BACKEND_INTEGRATION.md](REDIS_DB_CHANGES_BACKEND_INTEGRATION.md). [redis_switchboard_structure.md](redis_switchboard_structure.md).
+- **Kalshi sharding / MTB matrix:** [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md). Market ingest: [KALSHI_MARKET_INGEST.md](KALSHI_MARKET_INGEST.md). Portfolio sync: [PORTFOLIO_ACCOUNT_SYNC.md](PORTFOLIO_ACCOUNT_SYNC.md).
 - **Runbooks and changelog:** [docs/README.md](README.md), [changelog/](changelog/).

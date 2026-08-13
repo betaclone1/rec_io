@@ -53,7 +53,8 @@ def test_sync_subaccounts_from_kalshi_poll_updates_by_id(monkeypatch):
     # One UPDATE per Kalshi number; match key is id, not label.
     assert cursor.execute.call_count == 3
     for call, expected_id in zip(cursor.execute.call_args_list, (0, 1, 2)):
-        assert call.args[1][1] == expected_id
+        # UPDATE SET balance, e0, e1, e2, e3 WHERE id = %s
+        assert call.args[1][5] == expected_id
 
 
 def test_upsert_subaccount_balance_inserts_with_kalshi_id_not_max_plus_one(monkeypatch):
@@ -76,7 +77,7 @@ def test_upsert_subaccount_balance_inserts_with_kalshi_id_not_max_plus_one(monke
     # UPDATE by id, then INSERT with id=3 (Kalshi number), then setval.
     assert cursor.execute.call_count == 3
     insert_call = cursor.execute.call_args_list[1]
-    assert insert_call.args[1] == (3, "undefined_3", 42)
+    assert insert_call.args[1] == (3, "undefined_3", 42, 42, 0, 0, 0)
 
 
 def test_upsert_preserves_custom_label_on_update():
@@ -92,7 +93,7 @@ def test_upsert_preserves_custom_label_on_update():
     )
     assert cursor.execute.call_count == 1
     args = cursor.execute.call_args.args[1]
-    assert args == (99, 2)
+    assert args == (99, 99, 0, 0, 0, 2)
     # No INSERT — custom label on id=2 is left alone.
 
 

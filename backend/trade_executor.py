@@ -480,6 +480,8 @@ def process_trigger_trade_request(data: dict):
         "cancel_order_on_pause": True,
         # Master Trading Bankroll (Kalshi subaccount 1); monitor-configurable later.
         "subaccount": int(data.get("subaccount", 1)),
+        # -1 = auto-route by market ticker (Kalshi exchange sharding).
+        "exchange_index": int(data.get("exchange_index", -1)),
     }
     if intent != "open":
         order_payload["post_only"] = False

@@ -113,16 +113,48 @@ def ensure_subaccount_balance_table(cursor, table_fqn: str) -> None:
         """,
         (sch, tbl),
     )
-    if cursor.fetchone():
-        return
-    cursor.execute(
-        sql.SQL("CREATE TABLE {} (LIKE {}.{} INCLUDING ALL)").format(
-            ident,
-            sql.Identifier(sch),
-            sql.Identifier(ab_tbl),
+    if not cursor.fetchone():
+        cursor.execute(
+            sql.SQL("CREATE TABLE {} (LIKE {}.{} INCLUDING ALL)").format(
+                ident,
+                sql.Identifier(sch),
+                sql.Identifier(ab_tbl),
+            )
         )
-    )
-    _LOG.info("Created subaccount balance table %s", table_fqn)
+        _LOG.info("Created subaccount balance table %s", table_fqn)
+    # account_balance LIKE clone lacks shard cols; migration + runtime keep them present.
+    _ensure_exchange_balance_columns(cursor, sch, tbl)
+
+
+_EXCHANGE_BALANCE_COLUMNS = (
+    "exchange_0_balance",
+    "exchange_1_balance",
+    "exchange_2_balance",
+    "exchange_3_balance",
+)
+
+
+def _ensure_exchange_balance_columns(cursor, sch: str, tbl: str) -> None:
+    """ADD COLUMN IF missing: exchange_0..3_balance (Kalshi shard cash, cents)."""
+    for col in _EXCHANGE_BALANCE_COLUMNS:
+        cursor.execute(
+            """
+            SELECT 1 FROM information_schema.columns
+            WHERE table_schema = %s AND table_name = %s AND column_name = %s
+            """,
+            (sch, tbl, col),
+        )
+        if cursor.fetchone():
+            continue
+        cursor.execute(
+            sql.SQL(
+                "ALTER TABLE {}.{} ADD COLUMN {} integer NOT NULL DEFAULT 0"
+            ).format(
+                sql.Identifier(sch),
+                sql.Identifier(tbl),
+                sql.Identifier(col),
+            )
+        )
 
 
 def _transfers_fqn_for_subaccounts_fqn(subaccounts_table: str) -> str:
@@ -816,6 +848,7 @@ def apply_balance_snapshot(
     notify_frontend: bool = True,
     notify_monitors: bool = True,
     defer_monitor_notify: bool = False,
+    exchange_balances_cents: Optional[Dict[int, int]] = None,
 ) -> Tuple[bool, bool]:
     """
     One full tick: ratchet bankroll, optional INSERT, notify frontend + monitor_manager.
@@ -836,6 +869,9 @@ def apply_balance_snapshot(
 
     ``force_bankroll_current_cents``: set ``bankroll_current`` to this exact value (hero aggregate
     mirrors subaccount #1 without re-applying the sticky ratchet).
+
+    ``exchange_balances_cents``: optional ``{exchange_index: cents}`` for ``subaccount_balance_*``
+    rows. When omitted on a subaccount history table, cash is attributed to ``exchange_0_balance``.
 
     Drawdown emergency halts (``bankroll_stepped_down`` → monitor_manager) run only when the
     snapshot table matches global trading mode (live tables in LIVE mode, paper in PAPER mode).
@@ -1017,29 +1053,67 @@ def apply_balance_snapshot(
     if skip_balance_write:
         return False, bankroll_stepped_down
 
-    cursor.execute(
-        sql.SQL(
-            """
-            INSERT INTO {} (
-                balance, exposure, positions, portfolio, bankroll_current,
-                portfolio_value, "timestamp", master_trading_bankroll, mtb_base_value,
-                created_at, updated_at
-            )
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
-            """
-        ).format(ab_ident),
-        (
-            balance_amount,
-            total_exposure,
-            positions_value,
-            portfolio_value,
-            bankroll_current,
-            portfolio_value_raw,
-            current_timestamp,
-            mtb_balance,
-            mtb_base,
-        ),
-    )
+    if is_subaccount_balance:
+        ex = exchange_balances_cents
+        if ex is None:
+            e0, e1, e2, e3 = int(balance_amount), 0, 0, 0
+        else:
+            e0 = int(ex.get(0, 0))
+            e1 = int(ex.get(1, 0))
+            e2 = int(ex.get(2, 0))
+            e3 = int(ex.get(3, 0))
+        cursor.execute(
+            sql.SQL(
+                """
+                INSERT INTO {} (
+                    balance, exposure, positions, portfolio, bankroll_current,
+                    portfolio_value, "timestamp", master_trading_bankroll, mtb_base_value,
+                    exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance,
+                    created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                """
+            ).format(ab_ident),
+            (
+                balance_amount,
+                total_exposure,
+                positions_value,
+                portfolio_value,
+                bankroll_current,
+                portfolio_value_raw,
+                current_timestamp,
+                mtb_balance,
+                mtb_base,
+                e0,
+                e1,
+                e2,
+                e3,
+            ),
+        )
+    else:
+        cursor.execute(
+            sql.SQL(
+                """
+                INSERT INTO {} (
+                    balance, exposure, positions, portfolio, bankroll_current,
+                    portfolio_value, "timestamp", master_trading_bankroll, mtb_base_value,
+                    created_at, updated_at
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                """
+            ).format(ab_ident),
+            (
+                balance_amount,
+                total_exposure,
+                positions_value,
+                portfolio_value,
+                bankroll_current,
+                portfolio_value_raw,
+                current_timestamp,
+                mtb_balance,
+                mtb_base,
+            ),
+        )
 
     if notify_frontend:
         from backend.kalshi_account_sync_ws import notify_frontend_db_change
@@ -1346,8 +1420,16 @@ def _write_polled_subaccount_balances(
     current_timestamp: str,
     throttle: bool,
     force_bankroll_to_mtb_base: bool = False,
+    exchange_by_number: Optional[Dict[int, Dict[int, int]]] = None,
+    matrix_cash_by_number: Optional[Dict[int, int]] = None,
 ) -> Tuple[bool, bool]:
-    """Persist per-subaccount rows and hero aggregate from pre-fetched Kalshi balance details."""
+    """
+    Persist per-subaccount rows and hero aggregate.
+
+    Cash ``balance`` and ``exchange_*_balance`` come from the Kalshi matrix
+    (``GET /portfolio/subaccounts/balances``) when present so ``balance`` equals the
+    shard sum. Open-position marks still come from ``GET /portfolio/balance?subaccount=N``.
+    """
     from backend.trading_mode import subaccount_balance_table_fqn
 
     polled: list[int] = []
@@ -1357,10 +1439,19 @@ def _write_polled_subaccount_balances(
             continue
         sab_fqn = subaccount_balance_table_fqn(slot, n)
         ensure_subaccount_balance_table(cursor, sab_fqn)
-        cash = int(detail["balance_cents"])
+        ex_map = (exchange_by_number or {}).get(int(n))
+        if matrix_cash_by_number is not None and int(n) in matrix_cash_by_number:
+            cash = int(matrix_cash_by_number[int(n)])
+        elif ex_map is not None:
+            cash = int(sum(int(v) for v in ex_map.values()))
+        else:
+            cash = int(detail["balance_cents"])
         pos = int(detail["portfolio_value_cents"])
-        total = int(detail["total_portfolio_cents"])
+        total = cash + pos
         live_mtb = total if n == 1 else None
+        if ex_map is None and matrix_cash_by_number is None:
+            # No matrix: attribute detail cash to shard 0 (pre-shard / fallback path).
+            ex_map = {0: cash}
         apply_balance_snapshot(
             cursor,
             balance_amount=cash,
@@ -1378,6 +1469,7 @@ def _write_polled_subaccount_balances(
             force_bankroll_to_mtb_base=force_bankroll_to_mtb_base and int(n) == 1,
             notify_frontend=False,
             notify_monitors=False,
+            exchange_balances_cents=ex_map,
         )
         polled.append(n)
 
@@ -1406,7 +1498,8 @@ def poll_live_account_balances(
     skip_automatic_mtb_rake: bool = False,
 ) -> Tuple[bool, bool]:
     """
-    Live Kalshi balance pipeline: subaccounts poll → per-subaccount GET balance → hero aggregate.
+    Live Kalshi balance pipeline: matrix cash (``subaccounts`` + sab ``balance`` /
+    ``exchange_*``) → per-subaccount GET for position marks → hero aggregate.
 
     When automatic MTB rake fires, posts Kalshi transfer #1→#0 and repolls once (full refresh).
     The post-rake write sets ``bankroll_current`` (MTB sab + hero) to the new MTB ``base_value``.
@@ -1420,7 +1513,7 @@ def poll_live_account_balances(
     """
     from backend.bookkeeper.kalshi_portfolio_balance import (
         fetch_portfolio_balance_detail,
-        fetch_subaccount_balances_cents_map,
+        fetch_subaccount_balances_matrix,
     )
     from backend.core.time_eastern import now_est
     from backend.kalshi_account_sync_ws import _sync_subaccounts_from_kalshi_poll
@@ -1430,16 +1523,24 @@ def poll_live_account_balances(
         subaccounts_table_for_user,
     )
 
+    def _matrix_maps(matrix: dict) -> Tuple[Dict[int, int], Dict[int, Dict[int, int]]]:
+        cash = {int(n): int(v["balance_cents"]) for n, v in matrix.items()}
+        exch = {
+            int(n): {int(i): int(c) for i, c in (v.get("exchange_balances_cents") or {}).items()}
+            for n, v in matrix.items()
+        }
+        return cash, exch
+
     slot = str(user_no).zfill(4)[-4:]
     sa_fqn = subaccounts_table_for_user(slot, force_live=True)
     ab_fqn = account_balance_table_for_user(slot, force_live=True)
 
-    balances_by_number = fetch_subaccount_balances_cents_map(slot)
-    if balances_by_number is None:
+    balances_matrix = fetch_subaccount_balances_matrix(slot)
+    if balances_matrix is None:
         _LOG.warning("Kalshi subaccount balances unavailable for user %s", slot)
-        balances_by_number = {}
+        balances_matrix = {}
 
-    _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_by_number)
+    _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_matrix)
     refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
     if (
         not skip_automatic_mtb_rake
@@ -1455,6 +1556,7 @@ def poll_live_account_balances(
             skip_automatic_mtb_rake=skip_automatic_mtb_rake,
         )
 
+    balances_by_number, exchange_by_number = _matrix_maps(balances_matrix)
     active_numbers = sorted(
         set(int(n) for n in balances_by_number.keys())
         | set(_subaccount_numbers_from_subaccounts_table(cursor, sa_fqn))
@@ -1468,6 +1570,14 @@ def poll_live_account_balances(
 
     while True:
         attempt += 1
+        if attempt > 1:
+            refreshed = fetch_subaccount_balances_matrix(slot)
+            if refreshed is not None:
+                balances_matrix = refreshed
+                balances_by_number, exchange_by_number = _matrix_maps(balances_matrix)
+                _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_matrix)
+                refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
+
         ts = now_est().isoformat()
         details_by_number: Dict[int, dict] = {}
         for n in active_numbers:
@@ -1479,6 +1589,13 @@ def poll_live_account_balances(
 
         if not details_by_number:
             return False, False
+
+        def _mtb_cash_and_pv() -> Tuple[int, int]:
+            d1 = details_by_number[1]
+            pv = int(d1["portfolio_value_cents"])
+            if 1 in balances_by_number:
+                return int(balances_by_number[1]), pv
+            return int(d1["balance_cents"]), pv
 
         glitch_detected = False
         glitch_reason = ""
@@ -1492,23 +1609,21 @@ def poll_live_account_balances(
             mtb_fqn = subaccount_balance_table_fqn(slot, 1)
             prev_mtb = _latest_subaccount_balance_row(cursor, mtb_fqn)
             if prev_mtb:
-                d1 = details_by_number[1]
+                api_cash, api_pv = _mtb_cash_and_pv()
                 glitch_detected, glitch_reason = detect_mtb_balance_glitch(
                     prev_mtb,
-                    int(d1["balance_cents"]),
-                    int(d1["portfolio_value_cents"]),
+                    api_cash,
+                    api_pv,
                 )
 
         if glitch_detected:
             prev_mtb = _latest_subaccount_balance_row(
                 cursor, subaccount_balance_table_fqn(slot, 1)
             ) or {}
-            d1 = details_by_number[1]
             prev_cash = int(prev_mtb.get("balance") or 0)
             prev_pv = int(prev_mtb.get("portfolio_value") or 0)
             prev_portfolio = int(prev_mtb.get("portfolio") or (prev_cash + prev_pv))
-            api_cash = int(d1["balance_cents"])
-            api_pv = int(d1["portfolio_value_cents"])
+            api_cash, api_pv = _mtb_cash_and_pv()
             api_portfolio = api_cash + api_pv
             cash_delta = api_cash - prev_cash
             portfolio_delta = api_portfolio - prev_portfolio
@@ -1570,6 +1685,8 @@ def poll_live_account_balances(
             current_timestamp=ts,
             throttle=throttle,
             force_bankroll_to_mtb_base=_after_automatic_rake,
+            exchange_by_number=exchange_by_number,
+            matrix_cash_by_number=balances_by_number,
         )
 
 

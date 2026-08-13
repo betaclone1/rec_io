@@ -1,5 +1,7 @@
 # Kalshi market ingest (production)
 
+**Exchange sharding:** Crypto markets live on Kalshi shard **2** after the 2026-08-24 cutover. Ticker strings and wall-clock subscribe/rollover are unchanged; see [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md).
+
 Production ingest is a **line-for-line port** of the verified sandbox feed test:
 
 - Source: `scripts/sandbox/kalshi_market_feed/kalshi_market_ws_master.py`

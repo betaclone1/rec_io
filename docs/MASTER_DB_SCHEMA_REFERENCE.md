@@ -9787,11 +9787,22 @@ Same as `testing.candlesticks_1m_KXBTCD-26JAN1320-T95499.99` except `market_tick
 
 ### Table: `users.subaccount_balance_0001_0` (and `_1`, `_2`, …)
 
-Per-subaccount balance history (live Kalshi). Same column shape as `users.account_balance_0001`. One table per Kalshi subaccount number (`subaccount_balance_<slot>_<n>`). Populated by `poll_live_account_balances` via `GET /portfolio/balance?subaccount=N`. Hero `account_balance_<slot>` aggregates latest rows from all active subaccount tables; `bankroll_current` / MTB columns on the hero row copy subaccount **1** only.
+Per-subaccount balance history (live Kalshi). Same column shape as `users.account_balance_0001`, plus Kalshi shard cash columns from migration **`20260813_1448_subaccount_exchange_balances`**. One table per Kalshi subaccount number (`subaccount_balance_<slot>_<n>`). Each poll writes **matrix cash** from `GET /portfolio/subaccounts/balances` into `exchange_*_balance` with **`balance` = sum of those columns**, and open-position marks from `GET /portfolio/balance?subaccount=N`. Hero `account_balance_<slot>` aggregates latest rows from all active subaccount tables; `bankroll_current` / MTB columns on the hero row copy subaccount **1** only.
 
 #### Columns
 
-Same as `users.account_balance_0001` (`balance`, `exposure`, `positions`, `portfolio`, `bankroll_current`, `portfolio_value`, `master_trading_bankroll`, `mtb_base_value`, timestamps).
+Same as `users.account_balance_0001` (`balance`, `exposure`, `positions`, `portfolio`, `bankroll_current`, `portfolio_value`, `master_trading_bankroll`, `mtb_base_value`, timestamps), plus:
+
+| Column Name | Data Type | Nullable | Default | Description |
+|-------------|-----------|----------|---------|-------------|
+| `exchange_0_balance` | `integer(32)` | NO | 0 | Cash on Kalshi exchange_index 0 (cents) |
+| `exchange_1_balance` | `integer(32)` | NO | 0 | Cash on Kalshi exchange_index 1 (cents) |
+| `exchange_2_balance` | `integer(32)` | NO | 0 | Cash on Kalshi exchange_index 2 (cents) |
+| `exchange_3_balance` | `integer(32)` | NO | 0 | Cash on Kalshi exchange_index 3 (cents) |
+
+`balance` is the sum of the shard columns. Pre-migration history was backfilled with `exchange_0_balance = balance`.
+
+See [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md).
 
 ---
 
@@ -9836,6 +9847,10 @@ Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`a
 | `id` | `integer(32)` | NO | nextval | Must match live `users.subaccounts_0001.id` for the same `subaccount`. |
 | `subaccount` | `text` | NO | - | |
 | `balance` | `integer(32)` | NO | 0 | |
+| `exchange_0_balance` | `integer(32)` | NO | 0 | Shard cash columns (parity with live `subaccounts_*`; migration `20260813_1448_subaccount_exchange_balances`). |
+| `exchange_1_balance` | `integer(32)` | NO | 0 | |
+| `exchange_2_balance` | `integer(32)` | NO | 0 | |
+| `exchange_3_balance` | `integer(32)` | NO | 0 | |
 | `base_value` | `integer(32)` | YES | - | |
 | `realized_pnl` | `integer(32)` | YES | - | |
 | `realized_pnl_pct` | `real(24)` | YES | - | |
@@ -10718,7 +10733,11 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 |-------------|-----------|----------|---------|-------------|
 | `id` | `integer(32)` | NO | nextval('users.subaccounts_0001_id_seq'::regclass) | |
 | `subaccount` | `text` | NO | '*** SUBACCOUNT NAME ***'::text | Name: PRIMARY, Master Trading Bankroll, Cash Transfer |
-| `balance` | `integer(32)` | NO | 0 | Balance in cents from Kalshi poll (PRIMARY = total portfolio; MTB/CT = Kalshi #1/#2) |
+| `balance` | `integer(32)` | NO | 0 | Balance in cents from Kalshi poll (PRIMARY = total portfolio; MTB/CT = Kalshi #1/#2). Equals sum of `exchange_*_balance` once shard poller is live. |
+| `exchange_0_balance` | `integer(32)` | NO | 0 | Cash on Kalshi `exchange_index` 0 (cents). Migration `20260813_1448_subaccount_exchange_balances`. |
+| `exchange_1_balance` | `integer(32)` | NO | 0 | Cash on Kalshi `exchange_index` 1 (cents). |
+| `exchange_2_balance` | `integer(32)` | NO | 0 | Cash on Kalshi `exchange_index` 2 (cents). Crypto MTB home after cutover. |
+| `exchange_3_balance` | `integer(32)` | NO | 0 | Cash on Kalshi `exchange_index` 3 (cents). |
 | `base_value` | `integer(32)` | YES | - | Starting value in cents (MTB). Used for realized_pnl and rake reset |
 | `realized_pnl` | `integer(32)` | YES | - | balance − base_value in cents (MTB) |
 | `realized_pnl_pct` | `real(24)` | YES | - | (balance − base_value) / base_value as fraction, 4 decimal places (e.g. 0.0148) |

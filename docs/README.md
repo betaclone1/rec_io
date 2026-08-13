@@ -25,6 +25,9 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 | [redis_switchboard_structure.md](redis_switchboard_structure.md) | Switchboard implementation and main.py migration plan |
 | [REDIS_LEGACY_COMMS_AUDIT.md](REDIS_LEGACY_COMMS_AUDIT.md) | Checklist: legacy notify/broadcast and WS usage (backend + frontend) to migrate to Redis/WS |
 | [DERIVED_DATA_COMPUTE_MODEL.md](DERIVED_DATA_COMPUTE_MODEL.md) | Derived data / compute: on-demand read APIs, no backend watchers; when to use alternatives |
+| [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md) | Kalshi matching-engine shards: `(exchange_index, subaccount)` matrix, crypto→shard 2, IAT hops, orders/market-data implications |
+| [KALSHI_MARKET_INGEST.md](KALSHI_MARKET_INGEST.md) | Production Kalshi market WS ingest and 15m/hourly rollover |
+| [PORTFOLIO_ACCOUNT_SYNC.md](PORTFOLIO_ACCOUNT_SYNC.md) | Kalshi account sync, balances, subaccounts, MTB rake |
 
 **Agent command docs** (verify, system-restart, log-chat) live in **`.cursor/`**, not in `docs/`. See [.cursor/commands/README.md](../.cursor/commands/README.md).
 
