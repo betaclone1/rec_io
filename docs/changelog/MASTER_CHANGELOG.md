@@ -22,6 +22,8 @@ This changelog is used when pushing updates to production. Each entry is timesta
   `cd /opt/rec_io_server && PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260813_1448_subaccount_exchange_balances`
 - [x] Restart account sync + trade executor (tenant 0001):  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart kalshi_account_sync_0001 trade_executor_0001`
+- [x] Also restart **`read_api`** (GET `/api/subaccounts` live-refreshes from Kalshi on each Account Manager load; stale process re-applied last-shard overwrite):  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart read_api`
 - [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; confirm `users_0001.subaccounts_0001` CASH/MTB balances are full matrix sums (not $1); account manager subaccount list matches.
 - [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.9.9`
