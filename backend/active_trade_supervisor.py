@@ -3769,6 +3769,8 @@ _ATS_FAILSAFE_POLL_SEC = float(
         "1" if ATS_UNIFIED_POOL else str(_ATS_MONITOR_SAFETY_WAKE_SEC),
     )
 )
+# Redis failsafe_refresh_all while busy: slow cadence (quiet timeout still refreshes).
+_ATS_FAILSAFE_REDIS_SEC = float(os.getenv("ATS_FAILSAFE_REDIS_SEC", "5"))
 _ats_last_failsafe_mono: float = 0.0
 
 
@@ -5155,11 +5157,14 @@ def start_monitoring_loop():
                 _ats_live_state_wake.clear()
                 if _ATS_LANE_EXITS:
                     try:
-                        # Cadence failsafe even while busy so non-waking ladders
-                        # still re-eval (quiet-only starved BTC under ETH flood).
+                        # Quiet timeout or slow busy Redis refresh — not 1s all-ladder.
+                        # Live ticks still drive full eval via on_ladder_notify.
                         global _ats_last_failsafe_mono
                         now_mono = time.monotonic()
-                        if now_mono - _ats_last_failsafe_mono >= _ATS_FAILSAFE_POLL_SEC:
+                        need_redis = (not _ats_woke) or (
+                            now_mono - _ats_last_failsafe_mono >= _ATS_FAILSAFE_REDIS_SEC
+                        )
+                        if need_redis:
                             _ats_ensure_lane_hub().failsafe_refresh_all()
                             _ats_last_failsafe_mono = now_mono
                     except Exception as _lane_e:

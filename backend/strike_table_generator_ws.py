@@ -73,7 +73,8 @@ DEFAULT_PIPELINE_MAX_AGE_SEC = 30
 DEFAULT_PIPELINE_MAX_AGE_15M_SEC = 900
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
 # Per-symbol floor between full strike regens (pub/sub can fire many times per second).
-STRIKE_REGEN_MIN_INTERVAL_SEC = 0.25
+# Env override: STRIKE_REGEN_MIN_INTERVAL_SEC (default 0.5; was 0.25).
+STRIKE_REGEN_MIN_INTERVAL_SEC = float(os.getenv("STRIKE_REGEN_MIN_INTERVAL_SEC", "0.5"))
 KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "DOGE"})
 _last_regen_mono: dict[str, float] = {}
 

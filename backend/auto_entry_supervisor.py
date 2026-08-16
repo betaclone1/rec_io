@@ -1096,9 +1096,12 @@ monitoring_thread = None
 monitoring_thread_lock = threading.Lock()
 _aes_live_state_wake = threading.Event()
 _AES_FAILSAFE_POLL_SEC = float(os.getenv("AES_FAILSAFE_POLL_SEC", "1"))
+# Redis failsafe_refresh_all while busy: slow cadence (quiet timeout still refreshes).
+_AES_FAILSAFE_REDIS_SEC = float(os.getenv("AES_FAILSAFE_REDIS_SEC", "5"))
 _AES_LP_RECONCILE_SEC = float(os.getenv("AES_LP_RECONCILE_SEC", "5"))
 _aes_last_lp_recompute_mono: float = 0.0
 _aes_last_failsafe_mono: float = 0.0
+_aes_last_cheap_status_mono: float = 0.0
 _aes_pool_ladder_keys: Set[Tuple[str, str]] = set()
 _aes_pool_ladder_keys_at: float = 0.0
 _aes_lane_monitor_rows_cache: Optional[List[dict]] = None
@@ -1591,26 +1594,26 @@ def update_cooldown_timer_in_db(seconds):
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
 
 def update_auto_entry_status_in_db(status):
-    """Update auto trade status in the monitor_list table"""
+    """Update auto trade status in the monitor_list table (no-op when unchanged)."""
     try:
         ident = ctx_ident()
         prev = _previous_auto_trade_status_by_monitor.get(ident)
-        if prev != status:
-            _previous_auto_trade_status_by_monitor[ident] = status
-            msg = f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {ctx_mid()} | {prev} → {status}"
-            import time as _t
+        if prev == status:
+            return
+        _previous_auto_trade_status_by_monitor[ident] = status
+        msg = f"[AUTO ENTRY] 🔄 STATUS CHANGE | Monitor {ctx_mid()} | {prev} → {status}"
+        import time as _t
 
-            now = _t.time()
-            last_info = _status_change_info_log_ts.get(ident, 0.0)
-            # DISABLED is safety-relevant; always surface at INFO.
-            force_info = status == "DISABLED" or prev == "DISABLED"
-            if force_info or (now - last_info >= STATUS_CHANGE_INFO_MIN_INTERVAL_SEC):
-                log(msg)
-                _status_change_info_log_ts[ident] = now
-            else:
-                log_debug(msg)
+        now = _t.time()
+        last_info = _status_change_info_log_ts.get(ident, 0.0)
+        # DISABLED is safety-relevant; always surface at INFO.
+        force_info = status == "DISABLED" or prev == "DISABLED"
+        if force_info or (now - last_info >= STATUS_CHANGE_INFO_MIN_INTERVAL_SEC):
+            log(msg)
+            _status_change_info_log_ts[ident] = now
+        else:
+            log_debug(msg)
 
-        import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
             # Update the monitor's auto_trade_status field (this is what the frontend reads)
@@ -1620,9 +1623,7 @@ def update_auto_entry_status_in_db(status):
             )
             conn.commit()
         conn.close()
-        # Only log actual status changes, not every update
-        pass
-        
+
         full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
         _aes_preferences_notify(
             "auto_trade_status_change",
@@ -3610,6 +3611,9 @@ def _aes_list_lane_monitor_rows() -> List[dict]:
 
     Short TTL cache: ladder wakes still evaluate every tick; only the membership
     query is coalesced so we do not hit PG twice (15m+hourly) on every wake.
+
+    Lane bind fanout only includes ``auto_trade=true`` rows (disabled monitors
+    get status via toggle / periodic_status_sync, not every ladder tick).
     """
     global _aes_lane_monitor_rows_cache, _aes_lane_monitor_rows_at
     now = time.monotonic()
@@ -3638,6 +3642,7 @@ def _aes_list_lane_monitor_rows() -> List[dict]:
         rows = filter_out_cutout_rows(list_active_unified_monitor_rows())
     else:
         rows = []
+    rows = [r for r in rows if r.get("auto_trade") is True]
     _aes_lane_monitor_rows_cache = rows
     _aes_lane_monitor_rows_at = now
     return rows
@@ -3738,6 +3743,13 @@ def _aes_lane_bind_worker(u: str, m: str, slot, lane) -> None:
                 return
             strat = get_trade_strategy()
             auto_on = is_auto_trade_enabled()
+            if not auto_on:
+                update_auto_entry_status_in_db("DISABLED")
+                return
+            # Out-of-window: status only (no open-ticker PG prime / strike scan).
+            if _aes_ttc_outside_entry_window():
+                update_auto_entry_status_in_db(determine_auto_entry_status())
+                return
             _aes_prime_open_ticker_sides_cache()
             ms, mm = get_current_monitor_symbol_and_market()
             if ms != slot.symbol or mm != slot.market:
@@ -3773,6 +3785,73 @@ def _aes_lane_bind_worker(u: str, m: str, slot, lane) -> None:
                 )
         except Exception:
             pass
+
+
+def _aes_ttc_outside_entry_window() -> bool:
+    """True when settings exist and current TTC is outside min_time..max_time."""
+    try:
+        settings = get_auto_entry_settings()
+        if not settings:
+            return False
+        if settings.get("min_time") is None or settings.get("max_time") is None:
+            return False
+        min_time = int(settings["min_time"])
+        max_time = int(settings["max_time"])
+        ttc = int(get_current_ttc())
+        return not (min_time <= ttc <= max_time)
+    except Exception:
+        return False
+
+
+def _aes_cheap_status_pass() -> None:
+    """
+    Update ACTIVE/INACTIVE from cached lane snaps (aged TTC) without Redis fetch
+    or strike scans. Keeps Exp Scalp window opens on time without failsafe_all.
+    """
+    if not AES_UNIFIED_POOL:
+        return
+    try:
+        hub = _aes_ensure_lane_hub()
+    except Exception:
+        return
+    rows_by_ladder: Dict[Tuple[str, str], List[dict]] = {}
+    try:
+        for r in _aes_list_lane_monitor_rows():
+            key = (
+                (r.get("symbol") or "BTC").strip().upper() or "BTC",
+                (r.get("market") or "").strip().lower(),
+            )
+            if key[1] not in ("hourly", "15m"):
+                continue
+            rows_by_ladder.setdefault(key, []).append(r)
+    except Exception:
+        return
+    for (sym, mkt), rows in rows_by_ladder.items():
+        try:
+            lane = hub.lane(sym, mkt)
+            cur = lane.current()
+            if cur is None or not cur.snap:
+                continue
+            for r in rows:
+                u = r["user_number"]
+                mid = r["monitor_id"]
+                tick_tok = _aes_unified_tick_context.set(
+                    {
+                        "symbol": sym,
+                        "market": mkt,
+                        "data": cur.snap,
+                        "captured_mono": getattr(cur, "captured_mono", None),
+                    }
+                )
+                try:
+                    with aes_monitor_bind(u, mid):
+                        update_auto_entry_status_in_db(determine_auto_entry_status())
+                except Exception:
+                    pass
+                finally:
+                    _aes_unified_tick_context.reset(tick_tok)
+        except Exception:
+            continue
 
 
 def _aes_evaluate_lane(slot, lane) -> None:
@@ -6772,16 +6851,25 @@ def start_monitoring_loop():
                 _aes_maybe_lp_recompute()
 
                 if AES_UNIFIED_POOL:
-                    # Ladder wakes already call on_ladder_notify for the updated
-                    # symbol. Failsafe must still run on a cadence while busy —
-                    # otherwise non-waking ladders (e.g. BTC under ETH flood)
-                    # never re-eval and miss Exp Scalp TTC windows. Cap at
-                    # AES_FAILSAFE_POLL_SEC; do not refresh on every wake.
-                    global _aes_last_failsafe_mono
+                    # Cheap status (~1s): ACTIVE/INACTIVE from cached snaps + aged
+                    # TTC (no Redis fetch / strike scan). Redis failsafe_refresh_all
+                    # only on quiet timeout or slow busy cadence (AES_FAILSAFE_REDIS_SEC).
+                    # Full strategy evals stay on live_state on_ladder_notify + that
+                    # Redis refresh — not 1s all-ladder fanout.
+                    global _aes_last_failsafe_mono, _aes_last_cheap_status_mono
                     woke = _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
                     _aes_live_state_wake.clear()
                     now_mono = time.monotonic()
-                    if now_mono - _aes_last_failsafe_mono >= _AES_FAILSAFE_POLL_SEC:
+                    if now_mono - _aes_last_cheap_status_mono >= _AES_FAILSAFE_POLL_SEC:
+                        try:
+                            _aes_cheap_status_pass()
+                        except Exception as _cheap_e:
+                            log_debug(f"AES cheap status: {_cheap_e}")
+                        _aes_last_cheap_status_mono = now_mono
+                    need_redis = (not woke) or (
+                        now_mono - _aes_last_failsafe_mono >= _AES_FAILSAFE_REDIS_SEC
+                    )
+                    if need_redis:
                         _aes_ensure_lane_hub().failsafe_refresh_all()
                         _aes_last_failsafe_mono = now_mono
                 else:

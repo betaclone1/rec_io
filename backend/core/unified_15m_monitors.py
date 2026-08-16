@@ -23,7 +23,7 @@ def iter_active_15m_monitor_bindings() -> Iterator[Tuple[str, str]]:
 
 
 def list_active_15m_monitor_rows() -> List[dict]:
-    """Rows with user_number, monitor_id, db_id, name, symbol, market, strategy."""
+    """Rows with user_number, monitor_id, db_id, name, symbol, market, strategy, auto_trade."""
     out: List[dict] = []
     try:
         conn = get_postgresql_connection()
@@ -34,7 +34,8 @@ def list_active_15m_monitor_rows() -> List[dict]:
             cursor.execute(
                 f"""
                 SELECT id, name, symbol, COALESCE(NULLIF(TRIM(market), ''), 'hourly') AS market,
-                       COALESCE(strategy, '') AS strategy
+                       COALESCE(strategy, '') AS strategy,
+                       COALESCE(auto_trade, FALSE) AS auto_trade
                 FROM {ml}
                 WHERE status = 'active'
                   AND LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) = '15m'
@@ -42,7 +43,7 @@ def list_active_15m_monitor_rows() -> List[dict]:
                 """
             )
             worker = default_pool_user_number()
-            for mid, name, symbol, market, strategy in cursor.fetchall():
+            for mid, name, symbol, market, strategy, auto_trade in cursor.fetchall():
                 # Rows already come from this process tenant; bind AES/ATS with worker slot (not name parse).
                 user_number = worker
                 monitor_id = str(mid)
@@ -59,6 +60,7 @@ def list_active_15m_monitor_rows() -> List[dict]:
                         "symbol": sym_u,
                         "market": mkt,
                         "strategy": str(strategy or "").strip(),
+                        "auto_trade": bool(auto_trade),
                     }
                 )
         conn.close()

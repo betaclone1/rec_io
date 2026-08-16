@@ -962,7 +962,12 @@ def _flush_ticker_tickers_sync(
     for mt in published_ticker:
         _redis_publish_push({"kind": "ticker", "market_ticker": mt})
     if published_ticker:
-        _live_state_strike_feed_sync(master)
+        changed_syms = {
+            _symbol_for_ticker(mt)
+            for mt in published_ticker
+            if mt
+        }
+        _live_state_strike_feed_sync(master, symbols=changed_syms or None)
 
 
 def _flush_dirty_redis_sync(master: KalshiMarketWsMaster, ob_tickers: list[str], ticker_tickers: list[str]) -> None:
@@ -1196,14 +1201,29 @@ def _ticker_row_for_live_state(
     return _apply_ticker_complement(body)
 
 
-def _live_state_strike_feed_sync(master: KalshiMarketWsMaster) -> None:
-    """Prod-only: write ``live_state`` market rows strike gen reads (same ticker bodies as flush)."""
+def _live_state_strike_feed_sync(
+    master: KalshiMarketWsMaster,
+    *,
+    symbols: Optional[Iterable[str]] = None,
+) -> None:
+    """Prod-only: write ``live_state`` market rows strike gen reads (same ticker bodies as flush).
+
+    When ``symbols`` is set, only those symbols are republished (avoids waking both
+    strike gens for every unrelated ticker flush).
+    """
     import backend.core.live_state_cache as live_state_cache
 
     now = time.time()
     ts = datetime.now(timezone.utc).isoformat()
     ex = master.cfg.exchange.strip().lower() or "kalshi"
-    for sym in master.symbols:
+    if symbols is None:
+        syms = list(master.symbols)
+    else:
+        want = {str(s).strip().upper() for s in symbols if s}
+        syms = [s for s in master.symbols if str(s).strip().upper() in want]
+        if not syms:
+            return
+    for sym in syms:
         if master.cfg.includes_15m:
             mt = _clock_current_15m_ticker(sym, now)
             if mt and (mt in master.ticker_subscribed or mt in master.books):

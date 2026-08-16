@@ -6,6 +6,33 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-16 — Release v3.10.3: AES/ATS CPU — cheap status + strike-feed amp cut
+
+**Summary**
+- **Release: v3.10.3**
+- **Plans:** `aes_cpu_real_fix_be19680a` (Actual CPU solution — no window-concentrated load).
+- **Unified AES:** Lane bind fanout skips `auto_trade=false`; out-of-window early-out before open-ticker PG prime / strike scan; ~1s **cheap cached-snap status** (aged TTC); Redis `failsafe_refresh_all` only on quiet timeout or slow busy cadence (`AES_FAILSAFE_REDIS_SEC`, default 5s) — not 1s all-ladder.
+- **ATS:** Same quiet/slow Redis failsafe (`ATS_FAILSAFE_REDIS_SEC`).
+- **Producers:** `_live_state_strike_feed_sync` republishes changed symbols only; strike gen floor `STRIKE_REGEN_MIN_INTERVAL_SEC` default **0.5** (env override).
+- **BTC Exp Scalp cutout:** Live ladder-notify → full eval cadence unchanged.
+- **Docs:** `docs/UNIFIED_AES_TICK_CONTRACT.md` updated. Unit tests: `tests/unit/test_aes_cpu_real_fix.py`.
+- **No DB migrations.**
+- **Tradeoff:** Momentum Contain / Breakout quiet full-eval may lag ~5s (owner accepted).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-16-aes-cpu`**. Code: `git revert` this commit. Full: restore droplet from snapshot.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor config and full restart:  
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify health + AES/ATS/cutout supervisor status; unified AES not pegged ~100% CPU; load average down vs pre-change:  
+  `curl -sSf http://127.0.0.1:3000/health`; `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp|strike_table|market_watchdog'`; `uptime`; `ps -axo %cpu,args | grep -E 'auto_entry_supervisor.py unified|btc15m_exp_scalp|strike_table_generator_ws|market_watchdog' | grep -v grep`
+- [ ] Spot-check next Exp Scalp window: cutout ACTIVE within ~1–3s of window open; fire path still works in-window (do not gate release on Momentum Contain/Breakout quiet latency).
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.3`
+- [ ] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-aes-cpu`**.
+
+---
+
 ## 2026-08-16 — Release v3.10.2: Fix late TTC window entry (Exp Scalp)
 
 **Summary**
@@ -21,7 +48,7 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - [x] Regenerate supervisor config and full restart:  
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
 - [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp'`
-- [x] Spot-check next Exp Scalp window: BTC cutout / unified ACTIVE should land within ~1–3s of `*:14:00` / `*:29:00` / `*:44:00` / `*:59:00` (not 15–40s late).
+- [ ] Spot-check next Exp Scalp window: BTC cutout / unified ACTIVE should land within ~1–3s of `*:14:00` / `*:29:00` / `*:44:00` / `*:59:00` (not 15–40s late).
 - [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.2`
 - [x] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-ttc-window`**.
