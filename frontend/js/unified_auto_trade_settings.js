@@ -502,9 +502,10 @@
     }
 
     // Time Window Slider Variables and Functions
+    // Unset until authoritative monitor settings hydrate — never invent 0/3600 for an existing monitor.
     let dashboardTimeWindowSliderWidth = 0;
-    let dashboardMinTimeSeconds = 0;
-    let dashboardMaxTimeSeconds = 3600;
+    let dashboardMinTimeSeconds = null;
+    let dashboardMaxTimeSeconds = null;
     let dashboardIsDragging = false;
     let dashboardCurrentHandle = null;
     
@@ -558,6 +559,7 @@
     // Update Time Window slider positions and range
     function updateDashboardTimeWindowSlider() {
       if (!dashboardTimeWindowSliderWidth) return;
+      if (!Number.isFinite(dashboardMinTimeSeconds) || !Number.isFinite(dashboardMaxTimeSeconds)) return;
       
       const minHandle = document.getElementById('minTimeHandle');
       const maxHandle = document.getElementById('maxTimeHandle');
@@ -1565,8 +1567,8 @@
     
     // MOMENTUM SCALP Time Window Slider Variables and Functions
     let dashboardMSSliderWidth = 0;
-    let dashboardMSMinTimeSeconds = 0;
-    let dashboardMSMaxTimeSeconds = 3600;
+    let dashboardMSMinTimeSeconds = null;
+    let dashboardMSMaxTimeSeconds = null;
     let dashboardMSIsDragging = false;
     let dashboardMSCurrentHandle = null;
     
@@ -1581,6 +1583,7 @@
     
     function updateDashboardMSTimeWindowSlider() {
       if (!dashboardMSSliderWidth) return;
+      if (!Number.isFinite(dashboardMSMinTimeSeconds) || !Number.isFinite(dashboardMSMaxTimeSeconds)) return;
       
       const minHandle = document.getElementById('msMinTimeHandle');
       const maxHandle = document.getElementById('msMaxTimeHandle');
@@ -1707,6 +1710,13 @@
       );
     }
 
+    /** Finite number from monitor API only — never invent strategy/UI defaults for an existing monitor. */
+    function uatFiniteOrNull(v) {
+      if (v === undefined || v === null || v === '') return null;
+      const n = Number(v);
+      return Number.isFinite(n) ? n : null;
+    }
+
     async function openUnifiedAutoTradeSettings(tileId){
       await ensureUnifiedAutoTradeModalMounted();
       const apiId = normalizeMonitorIdForApi(tileId);
@@ -1720,6 +1730,10 @@
       document.body.style.overflow = 'hidden';
       // Never allow Save until this open has loaded authoritative monitor settings.
       uatSetMonitorSettingsHydrated(modal, false);
+      dashboardMinTimeSeconds = null;
+      dashboardMaxTimeSeconds = null;
+      dashboardMSMinTimeSeconds = null;
+      dashboardMSMaxTimeSeconds = null;
       dashboardUatLoadMonitorPositionIntoModal(apiId);
       void fetchAndRenderDashboardAutoStopAccuracy(apiId);
 
@@ -1833,7 +1847,7 @@
         const setChk = (id,v) => { const el=document.getElementById(id); if (el) el.checked=!!v; };
         
           // Regime Monitor settings (common across strategies)
-          setChk('regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
+          if (data.regime_monitor_enabled != null) setChk('regimeMonitorEnabled', !!data.regime_monitor_enabled);
           setVal('regimeWindowSelect', data.regime_window ?? '30d');
           {
             const v = data.test_filter;
@@ -1883,13 +1897,16 @@
         
         // Probability window (for Hourly HTC) or Ask Price window (for Momentum Breakout/Contain)
         if (isMomentumBreakout || isMomentumContain) {
-          // Load min_ask/max_ask for Momentum Breakout/Contain
-          dashboardContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
-          dashboardContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+          // Load min_ask/max_ask for Momentum Breakout/Contain — monitor row only
+          const containMinAsk = uatFiniteOrNull(data.min_ask);
+          const containMaxAsk = uatFiniteOrNull(data.max_ask);
+          if (containMinAsk != null) dashboardContainMinAsk = containMinAsk;
+          if (containMaxAsk != null) dashboardContainMaxAsk = containMaxAsk;
           
-          // Enforce minimum separation (0.01 = 1 cent) when loading from database
+          // Enforce minimum separation (0.01 = 1 cent) when both loaded from database
           const MIN_ASK_SEPARATION = 0.01;
-          if (dashboardContainMaxAsk - dashboardContainMinAsk < MIN_ASK_SEPARATION) {
+          if (containMinAsk != null && containMaxAsk != null
+              && dashboardContainMaxAsk - dashboardContainMinAsk < MIN_ASK_SEPARATION) {
             if (dashboardContainMaxAsk < 1.0) {
               dashboardContainMaxAsk = parseFloat((dashboardContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
             } else {
@@ -1899,8 +1916,10 @@
           
           // Load cooldown timer window values (Momentum Contain only)
           if (isMomentumContain) {
-            dashboardMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
-            dashboardMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+            const cdMin = uatFiniteOrNull(data.min_cooldown_timer);
+            const cdMax = uatFiniteOrNull(data.max_cooldown_timer);
+            if (cdMin != null) dashboardMinCooldownTimerSeconds = Math.trunc(cdMin);
+            if (cdMax != null) dashboardMaxCooldownTimerSeconds = Math.trunc(cdMax);
             
             // Initialize slider after values are loaded
             setTimeout(() => {
@@ -1910,37 +1929,47 @@
             }, 100);
           }
         } else if (isExpirationScalpPopulate) {
-          dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 90.00;
-          dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          const esMinP = uatFiniteOrNull(data.min_probability);
+          const esMaxP = uatFiniteOrNull(data.max_probability);
+          if (esMinP != null) dashboardMinProbability = esMinP;
+          if (esMaxP != null) dashboardMaxProbability = esMaxP;
           const MIN_SEPARATION = 0.5;
-          if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+          if (esMinP != null && esMaxP != null
+              && dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
             if (dashboardMaxProbability < 100) {
               dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
             } else {
               dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
             }
           }
-          dashboardMinMovement = data.min_movement !== undefined ? parseFloat(data.min_movement) : 0.00;
-          dashboardMaxMovement = data.max_movement !== undefined ? parseFloat(data.max_movement) : 100.00;
-          if (dashboardMaxMovement - dashboardMinMovement < MIN_SEPARATION) {
+          const esMinMov = uatFiniteOrNull(data.min_movement);
+          const esMaxMov = uatFiniteOrNull(data.max_movement);
+          if (esMinMov != null) dashboardMinMovement = esMinMov;
+          if (esMaxMov != null) dashboardMaxMovement = esMaxMov;
+          if (esMinMov != null && esMaxMov != null
+              && dashboardMaxMovement - dashboardMinMovement < MIN_SEPARATION) {
             if (dashboardMaxMovement < 100) {
               dashboardMaxMovement = parseFloat((dashboardMinMovement + MIN_SEPARATION).toFixed(1));
             } else {
               dashboardMinMovement = parseFloat((dashboardMaxMovement - MIN_SEPARATION).toFixed(1));
             }
           }
-          dashboardExpirationScalpMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.9000;
-          dashboardExpirationScalpMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9900;
-          const mfpRaw = data.min_fill_price !== undefined && data.min_fill_price !== null
-            ? parseFloat(data.min_fill_price) : 0;
-          const mfpSlider = Math.min(99, Math.max(0, Math.round((Number.isFinite(mfpRaw) ? mfpRaw : 0) * 100)));
-          const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');
-          if (mfpEl) mfpEl.value = mfpSlider;
-          if (typeof updateExpirationScalpMinFillPriceBubble === 'function') {
-            updateExpirationScalpMinFillPriceBubble(mfpSlider);
+          const esMinAsk = uatFiniteOrNull(data.min_ask);
+          const esMaxAsk = uatFiniteOrNull(data.max_ask);
+          if (esMinAsk != null) dashboardExpirationScalpMinAsk = esMinAsk;
+          if (esMaxAsk != null) dashboardExpirationScalpMaxAsk = esMaxAsk;
+          const mfpRaw = uatFiniteOrNull(data.min_fill_price);
+          if (mfpRaw != null) {
+            const mfpSlider = Math.min(99, Math.max(0, Math.round(mfpRaw * 100)));
+            const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');
+            if (mfpEl) mfpEl.value = mfpSlider;
+            if (typeof updateExpirationScalpMinFillPriceBubble === 'function') {
+              updateExpirationScalpMinFillPriceBubble(mfpSlider);
+            }
           }
           const MIN_ASK_SEPARATION = 0.01;
-          if (dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
+          if (esMinAsk != null && esMaxAsk != null
+              && dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
             if (dashboardExpirationScalpMaxAsk < 1.0) {
               dashboardExpirationScalpMaxAsk = parseFloat((dashboardExpirationScalpMinAsk + MIN_ASK_SEPARATION).toFixed(4));
             } else {
@@ -1956,13 +1985,16 @@
             }
           }, 100);
         } else {
-          // Probability window (for Hourly HTC)
-          dashboardMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
-          dashboardMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          // Probability window (for Hourly HTC) — monitor row only
+          const htcMinP = uatFiniteOrNull(data.min_probability);
+          const htcMaxP = uatFiniteOrNull(data.max_probability);
+          if (htcMinP != null) dashboardMinProbability = htcMinP;
+          if (htcMaxP != null) dashboardMaxProbability = htcMaxP;
           
-          // Enforce minimum separation (0.5%) when loading from database
+          // Enforce minimum separation (0.5%) when both loaded from database
           const MIN_SEPARATION = 0.5;
-          if (dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
+          if (htcMinP != null && htcMaxP != null
+              && dashboardMaxProbability - dashboardMinProbability < MIN_SEPARATION) {
             // If too close, adjust max to maintain minimum separation
             if (dashboardMaxProbability < 100) {
               dashboardMaxProbability = parseFloat((dashboardMinProbability + MIN_SEPARATION).toFixed(1));
@@ -1974,14 +2006,16 @@
         }
         
         if (isMomentumScalp) {
-          // MOMENTUM SCALP settings
-          setVal('msAutoEntryMinVolumeSlider', data.min_volume ?? 1000);
-          setVal('msAutoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+          // MOMENTUM SCALP settings — monitor row only, never invent
+          const msVol = uatFiniteOrNull(data.min_volume);
+          if (msVol != null) setVal('msAutoEntryMinVolumeSlider', msVol);
+          const msWin = uatFiniteOrNull(data.win_streak_threshold);
+          if (msWin != null) setVal('msAutoEntryWinStreakThresholdSlider', msWin);
           const msLossPreventionToggle = document.getElementById('msAutoEntryLossPreventionToggle');
           const msWinStreakSlider = document.getElementById('msAutoEntryWinStreakThresholdSlider');
           const msWinStreakValueDisplay = document.getElementById('msAutoEntryWinStreakThresholdValueDisplay');
-          if (msLossPreventionToggle) {
-            msLossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+          if (msLossPreventionToggle && data.loss_prevention_toggle !== undefined && data.loss_prevention_toggle !== null) {
+            msLossPreventionToggle.checked = !!data.loss_prevention_toggle;
             // Enable/disable slider based on checkbox state
             if (msWinStreakSlider) {
               msWinStreakSlider.disabled = !msLossPreventionToggle.checked;
@@ -2006,12 +2040,15 @@
           }
           
           // Ask window (min_ask and max_ask)
-          dashboardMSMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
-          dashboardMSMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+          const msMinAsk = uatFiniteOrNull(data.min_ask);
+          const msMaxAsk = uatFiniteOrNull(data.max_ask);
+          if (msMinAsk != null) dashboardMSMinAsk = msMinAsk;
+          if (msMaxAsk != null) dashboardMSMaxAsk = msMaxAsk;
           
-          // Enforce minimum separation (0.01 = 1 cent) when loading from database
+          // Enforce minimum separation (0.01 = 1 cent) when both loaded from database
           const MIN_ASK_SEPARATION = 0.01;
-          if (dashboardMSMaxAsk - dashboardMSMinAsk < MIN_ASK_SEPARATION) {
+          if (msMinAsk != null && msMaxAsk != null
+              && dashboardMSMaxAsk - dashboardMSMinAsk < MIN_ASK_SEPARATION) {
             // If too close, adjust max to maintain minimum separation
             if (dashboardMSMaxAsk < 1.0) {
               dashboardMSMaxAsk = parseFloat((dashboardMSMinAsk + MIN_ASK_SEPARATION).toFixed(4));
@@ -2022,57 +2059,69 @@
           }
           
           // Momentum Threshold: stored as absolute value (0-100)
-          setVal('msMomentumScalpEntryThresholdSlider', data.momentum_scalp_entry_threshold ?? 35);
+          const msMom = uatFiniteOrNull(data.momentum_scalp_entry_threshold);
+          if (msMom != null) setVal('msMomentumScalpEntryThresholdSlider', msMom);
           
           // Max Price Spread: convert from database (0.0000-0.2000) to slider (0-20)
-          const maxPriceSpread = data.max_price_spread !== undefined ? parseFloat(data.max_price_spread) : 0.0300;
-          const maxPriceSpreadSliderValue = (maxPriceSpread * 100).toFixed(1); // Convert 0.0300 to 3.0
-          setVal('msMaxPriceSpreadSlider', maxPriceSpreadSliderValue);
-          // Initialize value display
-          const msMaxPriceSpreadValueDisplay = document.getElementById('msMaxPriceSpreadValueDisplay');
-          const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
-          if (msMaxPriceSpreadValueDisplay && msMaxPriceSpreadSlider) {
-            msMaxPriceSpreadValueDisplay.textContent = maxPriceSpreadSliderValue;
-            const min = parseFloat(msMaxPriceSpreadSlider.min), max = parseFloat(msMaxPriceSpreadSlider.max);
-            const percent = (parseFloat(maxPriceSpreadSliderValue) - min) / (max - min);
-            msMaxPriceSpreadValueDisplay.style.left = uatRangeBubbleLeftPx(msMaxPriceSpreadSlider, percent) + 'px';
+          const maxPriceSpread = uatFiniteOrNull(data.max_price_spread);
+          if (maxPriceSpread != null) {
+            const maxPriceSpreadSliderValue = (maxPriceSpread * 100).toFixed(1); // Convert 0.0300 to 3.0
+            setVal('msMaxPriceSpreadSlider', maxPriceSpreadSliderValue);
+            // Initialize value display
+            const msMaxPriceSpreadValueDisplay = document.getElementById('msMaxPriceSpreadValueDisplay');
+            const msMaxPriceSpreadSlider = document.getElementById('msMaxPriceSpreadSlider');
+            if (msMaxPriceSpreadValueDisplay && msMaxPriceSpreadSlider) {
+              msMaxPriceSpreadValueDisplay.textContent = maxPriceSpreadSliderValue;
+              const min = parseFloat(msMaxPriceSpreadSlider.min), max = parseFloat(msMaxPriceSpreadSlider.max);
+              const percent = (parseFloat(maxPriceSpreadSliderValue) - min) / (max - min);
+              msMaxPriceSpreadValueDisplay.style.left = uatRangeBubbleLeftPx(msMaxPriceSpreadSlider, percent) + 'px';
+            }
           }
           
           // Auto Stop
-          const msMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
-          const msMinTTCInput = document.getElementById('msAutoStopMinTTCInput');
-          const msMinTTCDisplay = document.getElementById('msAutoStopMinTTCDisplay');
-          if (msMinTTCInput) msMinTTCInput.value = msMinTTC;
-          if (msMinTTCDisplay) msMinTTCDisplay.textContent = formatSecondsToMMSS(msMinTTC);
+          const msMinTTC = uatFiniteOrNull(data.min_ttc_seconds);
+          if (msMinTTC != null) {
+            const msMinTTCInput = document.getElementById('msAutoStopMinTTCInput');
+            const msMinTTCDisplay = document.getElementById('msAutoStopMinTTCDisplay');
+            if (msMinTTCInput) msMinTTCInput.value = msMinTTC;
+            if (msMinTTCDisplay) msMinTTCDisplay.textContent = formatSecondsToMMSS(msMinTTC);
+          }
           
           // Trailing Stop: convert from decimal (0.00-1.00) to slider value (0-100)
-          const trailingStop = data.momentum_scalp_trailing_stop_amount ?? 0.10;
-          const trailingStopSliderValue = Math.round(trailingStop * 100);
-          setVal('msMomentumScalpTrailingStopSlider', trailingStopSliderValue);
+          const trailingStop = uatFiniteOrNull(data.momentum_scalp_trailing_stop_amount);
+          if (trailingStop != null) {
+            setVal('msMomentumScalpTrailingStopSlider', Math.round(trailingStop * 100));
+          }
           
-          // Profit Target: convert from decimal (0.01-0.50) to slider value (1-50)
-          const profitTarget = data.momentum_scalp_profit_target ?? 0.10;
-          const profitTargetSliderValue = Math.round(profitTarget * 100);
-          setVal('msMomentumScalpProfitTargetSlider', profitTargetSliderValue);
+          // Profit Target: convert from decimal to slider value
+          const profitTarget = uatFiniteOrNull(data.momentum_scalp_profit_target);
+          if (profitTarget != null) {
+            setVal('msMomentumScalpProfitTargetSlider', Math.round(profitTarget * 100));
+          }
         } else if (isExpirationScalpPopulate) {
-          // Expiration Scalp: time, probability, ask window, entry verification
-          const esVerifyOn = data.verification_period_enabled;
-          setChk('expirationScalpVerificationEnabled', esVerifyOn == null ? true : !!esVerifyOn);
-          let esVerifySec = data.verification_period_seconds;
-          if (esVerifySec == null || esVerifySec === '') esVerifySec = 3;
-          esVerifySec = Math.min(15, Math.max(0, parseInt(esVerifySec, 10) || 0));
-          setVal('expirationScalpVerificationSlider', esVerifySec);
+          // Expiration Scalp: entry verification from monitor row only
+          if (data.verification_period_enabled != null) {
+            setChk('expirationScalpVerificationEnabled', !!data.verification_period_enabled);
+          }
+          const esVerifySec = uatFiniteOrNull(data.verification_period_seconds);
+          if (esVerifySec != null) {
+            setVal('expirationScalpVerificationSlider', Math.min(15, Math.max(0, Math.trunc(esVerifySec))));
+          }
         } else {
-          // HOURLY HTC settings
-        setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
-        setVal('autoEntryDifferentialSlider', data.min_differential ?? 0);
-        setVal('autoEntryMaxDifferentialSlider', data.max_differential ?? 0);
-        setVal('autoEntryWinStreakThresholdSlider', data.win_streak_threshold ?? 22);
+          // HOURLY HTC settings — monitor row only
+        const htcVol = uatFiniteOrNull(data.min_volume);
+        if (htcVol != null) setVal('autoEntryMinVolumeSlider', htcVol);
+        const htcMinDiff = uatFiniteOrNull(data.min_differential);
+        if (htcMinDiff != null) setVal('autoEntryDifferentialSlider', htcMinDiff);
+        const htcMaxDiff = uatFiniteOrNull(data.max_differential);
+        if (htcMaxDiff != null) setVal('autoEntryMaxDifferentialSlider', htcMaxDiff);
+        const htcWin = uatFiniteOrNull(data.win_streak_threshold);
+        if (htcWin != null) setVal('autoEntryWinStreakThresholdSlider', htcWin);
           const lossPreventionToggle = document.getElementById('autoEntryLossPreventionToggle');
           const winStreakSlider = document.getElementById('autoEntryWinStreakThresholdSlider');
           const winStreakValueDisplay = document.getElementById('autoEntryWinStreakThresholdValueDisplay');
-          if (lossPreventionToggle) {
-            lossPreventionToggle.checked = data.loss_prevention_toggle !== undefined ? data.loss_prevention_toggle : true;
+          if (lossPreventionToggle && data.loss_prevention_toggle !== undefined && data.loss_prevention_toggle !== null) {
+            lossPreventionToggle.checked = !!data.loss_prevention_toggle;
             // Enable/disable slider based on checkbox state
             if (winStreakSlider) {
               winStreakSlider.disabled = !lossPreventionToggle.checked;
@@ -2096,41 +2145,49 @@
             });
           }
           
-        setVal('probAdjSlider', data.prob_adj ?? 5.00);
+        const htcProbAdj = uatFiniteOrNull(data.prob_adj);
+        if (htcProbAdj != null) setVal('probAdjSlider', htcProbAdj);
         if (currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL')) {
-          const raw = data.min_ask_range;
-          let c = 70;
-          if (raw != null && raw !== undefined && !isNaN(parseFloat(raw))) {
-            c = Math.min(100, Math.max(0, Math.round(parseFloat(raw) * 100)));
-          }
-          const rds = document.getElementById('risingDevilMinAskRangeSlider');
-          if (rds) {
-            rds.value = c;
-            if (typeof updateDashboardRisingDevilMinAskRangeDisplay === 'function') {
-              updateDashboardRisingDevilMinAskRangeDisplay(String(c));
+          const raw = uatFiniteOrNull(data.min_ask_range);
+          if (raw != null) {
+            const c = Math.min(100, Math.max(0, Math.round(raw * 100)));
+            const rds = document.getElementById('risingDevilMinAskRangeSlider');
+            if (rds) {
+              rds.value = c;
+              if (typeof updateDashboardRisingDevilMinAskRangeDisplay === 'function') {
+                updateDashboardRisingDevilMinAskRangeDisplay(String(c));
+              }
             }
           }
         }
           
           // Auto Stop settings
-        setVal('autoStopProbabilitySlider', data.current_probability ?? 40);
-        const minTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
-        const minTTCInput = document.getElementById('autoStopMinTTCInput');
-        const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
-        if (minTTCInput) minTTCInput.value = minTTC;
-        if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTC);
+        const autoStopProb = uatFiniteOrNull(data.current_probability);
+        if (autoStopProb != null) setVal('autoStopProbabilitySlider', autoStopProb);
+        const minTTC = uatFiniteOrNull(data.min_ttc_seconds);
+        if (minTTC != null) {
+          const minTTCInput = document.getElementById('autoStopMinTTCInput');
+          const minTTCDisplay = document.getElementById('autoStopMinTTCDisplay');
+          if (minTTCInput) minTTCInput.value = minTTC;
+          if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTC);
+        }
           
-        setChk('momentumSpikeEnabled', data.momentum_spike_enabled ?? true);
-        setVal('momentumSpikeThresholdSlider', data.momentum_spike_threshold ?? 35);
-        setChk('verificationPeriodEnabled', data.verification_period_enabled ?? false);
-        setVal('verificationPeriodSlider', data.verification_period_seconds ?? 15);
-        setChk('performanceBasedAllocation', data.performance_based_allocation ?? false);
+        if (data.momentum_spike_enabled != null) setChk('momentumSpikeEnabled', !!data.momentum_spike_enabled);
+        const momSpikeTh = uatFiniteOrNull(data.momentum_spike_threshold);
+        if (momSpikeTh != null) setVal('momentumSpikeThresholdSlider', momSpikeTh);
+        if (data.verification_period_enabled != null) setChk('verificationPeriodEnabled', !!data.verification_period_enabled);
+        const verifySec = uatFiniteOrNull(data.verification_period_seconds);
+        if (verifySec != null) setVal('verificationPeriodSlider', verifySec);
+        if (data.performance_based_allocation != null) setChk('performanceBasedAllocation', !!data.performance_based_allocation);
         }
         uatApplySymbolWideFromApi(data);
-        setChk('spikeAlertEnabled', data.spike_alert_enabled ?? true);
-        setVal('spikeAlertMomentumSlider', data.spike_alert_momentum_threshold ?? 60);
-        setVal('spikeAlertCooldownSlider', data.spike_alert_cooldown_threshold ?? 55);
-        setVal('spikeAlertTimeSlider', data.spike_alert_cooldown_minutes ?? 15);
+        if (data.spike_alert_enabled != null) setChk('spikeAlertEnabled', !!data.spike_alert_enabled);
+        const spikeMom = uatFiniteOrNull(data.spike_alert_momentum_threshold);
+        if (spikeMom != null) setVal('spikeAlertMomentumSlider', spikeMom);
+        const spikeCd = uatFiniteOrNull(data.spike_alert_cooldown_threshold);
+        if (spikeCd != null) setVal('spikeAlertCooldownSlider', spikeCd);
+        const spikeMin = uatFiniteOrNull(data.spike_alert_cooldown_minutes);
+        if (spikeMin != null) setVal('spikeAlertTimeSlider', spikeMin);
         dashboardUatUpdateSpikeAlertSliderGroupVisibility();
         const dashSpikeDetailCb = document.getElementById('spikeAlertEnabled');
         if (dashSpikeDetailCb && !dashSpikeDetailCb._dashboardSpikeDetailVisWired) {
@@ -2140,13 +2197,14 @@
         dashboardUatApplyFlipRow('uatFlipSellProbabilityStop', data.flip_sell_prob, data.flip_sell_prob_mult);
         dashboardUatApplyFlipRow('uatFlipSellStopLossFloor', data.flip_sell_floor, data.flip_sell_floor_mult);
         dashboardUatApplyFlipRow('uatFlipSellStopLossFloorMs', data.flip_sell_floor, data.flip_sell_floor_mult);
-        const slpRaw = data.stop_loss_price !== undefined && data.stop_loss_price !== null
-          ? parseFloat(data.stop_loss_price) : 0;
-        const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
-        const slp1 = document.getElementById('stopLossPriceSlider');
-        const slp2 = document.getElementById('stopLossPriceSliderMs');
-        if (slp1) slp1.value = String(slpCents);
-        if (slp2) slp2.value = String(slpCents);
+        const slpRaw = uatFiniteOrNull(data.stop_loss_price);
+        if (slpRaw != null) {
+          const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
+          const slp1 = document.getElementById('stopLossPriceSlider');
+          const slp2 = document.getElementById('stopLossPriceSliderMs');
+          if (slp1) slp1.value = String(slpCents);
+          if (slp2) slp2.value = String(slpCents);
+        }
         
         // Initialize time window slider
         setTimeout(() => {
@@ -2363,6 +2421,10 @@
         if (modal.dataset.uatSaveInFlight === '1') return;
         if (!uatMonitorSettingsHydrated(modal)) {
           alert('Monitor settings have not finished loading. Nothing was saved.');
+          return;
+        }
+        if (!Number.isFinite(dashboardMinTimeSeconds) || !Number.isFinite(dashboardMaxTimeSeconds)) {
+          alert('Monitor time window has not loaded from the monitor row. Nothing was saved.');
           return;
         }
         // Determine which strategy is active (use the strategy from monitor data)

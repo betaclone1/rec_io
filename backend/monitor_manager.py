@@ -2440,24 +2440,36 @@ def periodic_monitor_statistics_update():
         return jsonify({'success': False, 'error': str(e)}), 500
 
 def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
-    """Map strategy_list row tuple (from get_strategy_default_settings SELECT) to a dict."""
+    """Map strategy_list row tuple (from get_strategy_default_settings SELECT) to a dict.
+
+    Pass-through only — never invent code defaults when strategy_list columns are NULL.
+    """
+    def _f(v):
+        return float(v) if v is not None else None
+
+    def _b(v):
+        return bool(v) if v is not None else None
+
+    def _i(v):
+        return int(v) if v is not None else None
+
     return {
         "win_streak_threshold": result[0],
         "loss_prevention_state": result[1],
         "loss_prevention": result[1],
         "loss_prevention_toggle": result[2],
-        "loss_prevention_method": result[3] or "win_streak",
+        "loss_prevention_method": result[3],
         "performance_based_allocation": result[4],
-        "max_price_spread": float(result[5]) if result[5] is not None else 0.0300,
-        "paper_trade": bool(result[6]) if result[6] is not None else False,
-        "prob_adj": float(result[7]) if result[7] is not None else 5.00,
+        "max_price_spread": _f(result[5]),
+        "paper_trade": _b(result[6]),
+        "prob_adj": _f(result[7]),
         "position_size": result[8],
         "position_type": result[9],
-        "multiplier": float(result[10]) if result[10] is not None else 1.00,
-        "min_probability": float(result[11]) if result[11] is not None else None,
-        "max_probability": float(result[12]) if result[12] is not None else None,
-        "min_differential": float(result[13]) if result[13] else 0.25,
-        "max_differential": float(result[14]) if result[14] is not None else None,
+        "multiplier": _f(result[10]),
+        "min_probability": _f(result[11]),
+        "max_probability": _f(result[12]),
+        "min_differential": _f(result[13]),
+        "max_differential": _f(result[14]),
         "min_time": result[15],
         "max_time": result[16],
         "allow_re_entry": result[17],
@@ -2472,94 +2484,34 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "verification_period_enabled": result[26],
         "verification_period_seconds": result[27],
         "min_volume": result[28],
-        "momentum_scalp_entry_threshold": float(result[29]) if result[29] is not None else None,
-        "momentum_scalp_trailing_stop_amount": float(result[30]) if result[30] is not None else 0.10,
-        "momentum_scalp_profit_target": float(result[31]) if result[31] is not None else 0.99,
-        "min_ask": float(result[32]) if result[32] is not None else 0.0000,
-        "max_ask": float(result[33]) if result[33] is not None else 0.9800,
-        "max_profit": float(result[34]) if result[34] is not None else 0.9900,
-        "min_ask_range": float(result[35]) if result[35] is not None else None,
-        "stop_loss_price": float(result[36]) if result[36] is not None else 0.0,
-        "min_cooldown_timer": int(result[37]) if result[37] is not None else 300,
-        "max_cooldown_timer": int(result[38]) if result[38] is not None else 3300,
-        "regime_monitor_enabled": bool(result[39]) if result[39] is not None else False,
-        "regime_window": (result[40] if result[40] is not None else "30d"),
-        "time_in_force": (result[41] if result[41] is not None else "fill_or_kill"),
-        "order_type": (result[42] if result[42] is not None else "market"),
-        "simulated_trade_loss_prevention": bool(result[43]) if result[43] is not None else False,
-        "symbol_wide_loss_prevention": bool(result[44]) if result[44] is not None else False,
-        "loss_prevention_duration": int(result[45]) if result[45] is not None else 4,
+        "momentum_scalp_entry_threshold": _f(result[29]),
+        "momentum_scalp_trailing_stop_amount": _f(result[30]),
+        "momentum_scalp_profit_target": _f(result[31]),
+        "min_ask": _f(result[32]),
+        "max_ask": _f(result[33]),
+        "max_profit": _f(result[34]),
+        "min_ask_range": _f(result[35]),
+        "stop_loss_price": _f(result[36]),
+        "min_cooldown_timer": _i(result[37]),
+        "max_cooldown_timer": _i(result[38]),
+        "regime_monitor_enabled": _b(result[39]),
+        "regime_window": result[40],
+        "time_in_force": result[41],
+        "order_type": result[42],
+        "simulated_trade_loss_prevention": _b(result[43]),
+        "symbol_wide_loss_prevention": _b(result[44]),
+        "loss_prevention_duration": _i(result[45]),
         "simulated_loss_prevention_cooldown_start_time": (
             timestamptz_wire_iso_et(result[46])
             if hasattr(result[46], "isoformat")
             else result[46]
         ),
-        "flip_sell_prob": bool(result[47]) if result[47] is not None else False,
-        "flip_sell_floor": bool(result[48]) if result[48] is not None else False,
+        "flip_sell_prob": _b(result[47]),
+        "flip_sell_floor": _b(result[48]),
         "flip_sell_prob_mult": result[49],
         "flip_sell_floor_mult": result[50],
         "min_fill_price": None,
-        "min_slippage": 0.0000,
-    }
-
-
-def _code_fallback_strategy_defaults() -> Dict[str, Any]:
-    """Last-resort defaults when tenant and system.strategy_list_default both miss the strategy."""
-    return {
-        "win_streak_threshold": 22,
-        "loss_prevention_state": "none",
-        "loss_prevention": "none",
-        "loss_prevention_toggle": True,
-        "loss_prevention_method": "win_streak",
-        "performance_based_allocation": False,
-        "max_price_spread": 0.0300,
-        "paper_trade": False,
-        "prob_adj": 5.00,
-        "position_size": 1,
-        "position_type": "percent",
-        "multiplier": 1.00,
-        "min_probability": 25,
-        "max_probability": None,
-        "min_differential": 0.25,
-        "max_differential": None,
-        "min_time": 0,
-        "max_time": 0,
-        "allow_re_entry": False,
-        "spike_alert_enabled": False,
-        "spike_alert_momentum_threshold": 80,
-        "spike_alert_cooldown_threshold": 60,
-        "spike_alert_cooldown_minutes": 30,
-        "current_probability": None,
-        "min_ttc_seconds": 0,
-        "momentum_spike_enabled": False,
-        "momentum_spike_threshold": 70,
-        "verification_period_enabled": False,
-        "verification_period_seconds": 60,
-        "min_volume": 0,
-        "momentum_scalp_entry_threshold": None,
-        "momentum_scalp_trailing_stop_amount": 0.10,
-        "momentum_scalp_profit_target": 0.99,
-        "min_ask": 0.0000,
-        "max_ask": 0.9800,
-        "max_profit": 0.9900,
-        "min_ask_range": None,
-        "stop_loss_price": 0.0,
-        "min_cooldown_timer": 300,
-        "max_cooldown_timer": 3300,
-        "regime_monitor_enabled": False,
-        "regime_window": "30d",
-        "time_in_force": "fill_or_kill",
-        "order_type": "market",
-        "simulated_trade_loss_prevention": False,
-        "symbol_wide_loss_prevention": False,
-        "loss_prevention_duration": 4,
-        "simulated_loss_prevention_cooldown_start_time": None,
-        "flip_sell_prob": False,
-        "flip_sell_floor": False,
-        "flip_sell_prob_mult": None,
-        "flip_sell_floor_mult": None,
-        "min_fill_price": None,
-        "min_slippage": 0.0000,
+        "min_slippage": None,
     }
 
 
@@ -2632,9 +2584,9 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
     """
     Load per-strategy defaults from the tenant ``strategy_list_<slot>`` row.
 
-    If that table is missing columns (name-only stub) or has no matching row, read from
-    ``system.strategy_list_default`` (canonical mirror of slot 0001). Only then use
-    built-in code fallbacks.
+    Used only when creating a new monitor row. If the tenant table is missing columns
+    (name-only stub) or has no matching row, read from ``system.strategy_list_default``.
+    Returns None when neither has the strategy — never invent code defaults.
     """
     slot = _norm_slot(user_number)
     tenant_ident = sql_ident_qualified_table(strategy_list_fqn(slot))
@@ -2682,8 +2634,11 @@ def get_strategy_default_settings(strategy_name, user_number="0001"):
         _logger.debug("Loaded strategy defaults for '%s' (tenant or system)", strategy_name)
         return _strategy_defaults_tuple_to_dict(row)
 
-    _logger.debug("No DB row for strategy '%s'; using code fallback", strategy_name)
-    return _code_fallback_strategy_defaults()
+    _logger.error(
+        "No strategy_list row for '%s' (tenant or system.strategy_list_default); refusing code invent",
+        strategy_name,
+    )
+    return None
 
 def _format_hour_label(hour_index: int) -> str:
     """Return time label matching contract_hour formatting."""
@@ -2841,11 +2796,14 @@ def create_monitor():
         # Extract user number from user_id (e.g., user_0001 -> 0001, user_2 -> 0002)
         user_number = _norm_slot(user_id.replace("user_", ""))
 
-        # Get strategy default settings
+        # Get strategy default settings (create-only seed from strategy_list — never invent)
         strategy_defaults = get_strategy_default_settings(strategy, user_number)
         if not strategy_defaults:
-            _logger.warning("Monitor create: strategy_defaults empty for '%s'", strategy)
-            strategy_defaults = _code_fallback_strategy_defaults()
+            _logger.error("Monitor create: no strategy_list defaults for '%s'", strategy)
+            return jsonify({
+                "status": "error",
+                "message": f"No strategy defaults found for '{strategy}'. Cannot create monitor without strategy_list row.",
+            }), 400
         _logger.debug("Monitor create: using strategy defaults for '%s'", strategy)
         _logger.debug("Monitor create: min_time=%s max_time=%s min_probability=%s", strategy_defaults.get('min_time'), strategy_defaults.get('max_time'), strategy_defaults.get('min_probability'))
         _logger.debug("Monitor create: max_probability=%s min_differential=%s max_differential=%s", strategy_defaults.get('max_probability'), strategy_defaults.get('min_differential'), strategy_defaults.get('max_differential'))

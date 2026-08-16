@@ -104,7 +104,14 @@ def effective_min_probability_hourly_htc(
     When spike cooldown is active, min is base + prob_adj (matches supervisor).
     """
     base = float(settings["min_probability"])
-    prob_adj = float(settings.get("prob_adj", 5.00))
+    raw_adj = settings.get("prob_adj")
+    if raw_adj is None:
+        # No invent: missing adj means no spike bump (base only).
+        prob_adj = 0.0
+        if spike_alert_active:
+            return (base, base, prob_adj)
+        return (base, base, prob_adj)
+    prob_adj = float(raw_adj)
     if spike_alert_active:
         return (base + prob_adj, base, prob_adj)
     return (base, base, prob_adj)
@@ -224,12 +231,16 @@ def evaluate_hourly_htc_strike_entry(
                 if diff is None or diff > md:
                     return None, f"diff>max_differential {md:.2f} (got {diff})"
 
-        min_volume = settings.get("min_volume", 1000)
+        min_volume = settings.get("min_volume")
+        if min_volume is None:
+            return None, "missing_min_volume"
         volume = strike.get("volume", 0)
         if volume is None or volume < min_volume:
             return None, f"volume<{min_volume} (got {volume})"
 
-        max_ask = settings.get("max_ask", 0.9800)
+        max_ask = settings.get("max_ask")
+        if max_ask is None:
+            return None, "missing_max_ask"
         if not yes_ask_dollars or not no_ask_dollars:
             return None, "missing_yes_or_no_ask_dollars"
         try:

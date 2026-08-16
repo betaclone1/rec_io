@@ -149,11 +149,11 @@ def evaluate_expiration_scalp_entry(
         min_time = int(settings["min_time"])
         max_time = int(settings["max_time"])
         min_probability = float(settings["min_probability"])
-        max_probability = float(settings.get("max_probability", 100))
-        min_ask = float(settings.get("min_ask", 0.90))
-        max_ask = float(settings.get("max_ask", 0.99))
-        min_movement = float(settings.get("min_movement", 0.0))
-        max_movement = float(settings.get("max_movement", 100.0))
+        max_probability = float(settings["max_probability"])
+        min_ask = float(settings["min_ask"])
+        max_ask = float(settings["max_ask"])
+        min_movement = float(settings["min_movement"])
+        max_movement = float(settings["max_movement"])
     except (KeyError, TypeError, ValueError) as e:
         return None, f"bad_settings:{e}"
 

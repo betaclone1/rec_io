@@ -9341,8 +9341,9 @@
   <script>
     (function(){
       const state = {
-        minTimeSeconds: 0,
-        maxTimeSeconds: 3600,
+        // Unset until hydrate from monitor row — never invent 0/3600 for an existing monitor.
+        minTimeSeconds: null,
+        maxTimeSeconds: null,
         sliderInitialized: false,
         currentHandle: null,
         sliderBindingsInitialized: false,
@@ -10104,6 +10105,7 @@
         const minDisplay = document.getElementById('m_timeWindowMinDisplay');
         const maxDisplay = document.getElementById('m_timeWindowMaxDisplay');
         if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+        if (!Number.isFinite(state.minTimeSeconds) || !Number.isFinite(state.maxTimeSeconds)) return;
 
         const maxScale = window.dashboardMobileTimeWindowMaxSeconds || 3600;
         const minPercent = (state.minTimeSeconds / maxScale) * 100;
@@ -10123,6 +10125,7 @@
       function handlePointerMove(clientX) {
         const container = document.getElementById('m_timeWindowSliderContainer');
         if (!container || state.currentHandle === null) return;
+        if (!Number.isFinite(state.minTimeSeconds) || !Number.isFinite(state.maxTimeSeconds)) return;
         const rect = container.getBoundingClientRect();
         if (rect.width === 0) return;
 
@@ -10195,8 +10198,8 @@
       
       // MOMENTUM SCALP Time Window Slider Functions
       const msState = {
-        minTimeSeconds: 0,
-        maxTimeSeconds: 3600,
+        minTimeSeconds: null,
+        maxTimeSeconds: null,
         sliderInitialized: false,
         currentHandle: null
       };
@@ -10208,6 +10211,7 @@
         const minDisplay = document.getElementById('m_msTimeWindowMinDisplay');
         const maxDisplay = document.getElementById('m_msTimeWindowMaxDisplay');
         if (!minHandle || !maxHandle || !range || !minDisplay || !maxDisplay) return;
+        if (!Number.isFinite(msState.minTimeSeconds) || !Number.isFinite(msState.maxTimeSeconds)) return;
 
         const minPercent = (msState.minTimeSeconds / 3600) * 100;
         const maxPercent = (msState.maxTimeSeconds / 3600) * 100;
@@ -10774,6 +10778,10 @@
         modal.setAttribute('data-uat-tile-id', tileId);
         // Never allow Save until this open has loaded authoritative monitor settings.
         modal.dataset.uatSettingsHydrated = '0';
+        state.minTimeSeconds = null;
+        state.maxTimeSeconds = null;
+        msState.minTimeSeconds = null;
+        msState.maxTimeSeconds = null;
         const saveBtnEarly = document.getElementById('m_unifiedSave');
         if (saveBtnEarly) {
           saveBtnEarly.disabled = true;
@@ -10909,7 +10917,7 @@
         mobileUatApplyLossPreventionFromApi(data);
 
         // Regime Monitor settings (common across strategies)
-        setChk('m_regimeMonitorEnabled', data.regime_monitor_enabled ?? false);
+          if (data.regime_monitor_enabled != null) setChk('m_regimeMonitorEnabled', !!data.regime_monitor_enabled);
         setVal('m_regimeWindowSelect', data.regime_window ?? '30d');
         // Min Slippage gate (all strategies)
         mobileUatLoadMinSlippage(data);
@@ -10940,6 +10948,13 @@
           if (tifEl) tifEl.value = validTif;
         }
 
+
+        function uatMobileFiniteOrNull(v) {
+          if (v === undefined || v === null || v === '') return null;
+          const n = Number(v);
+          return Number.isFinite(n) ? n : null;
+        }
+
         // Common settings (both strategies) — Expiration Scalp max 300s; 15m HTC uses 0:00–15:00 (900s)
         const timeMax = isExpirationScalp ? 300 : ((currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600);
         window.dashboardMobileTimeWindowMaxSeconds = timeMax;
@@ -10950,15 +10965,16 @@
         const maxTimeRounded = Math.max(0, Math.min(timeMax, Math.round(maxTime / 15) * 15));
         const finalMaxTime = maxTimeRounded < minTimeRounded ? minTimeRounded : maxTimeRounded;
         
-        // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
+        // Probability / ask windows — monitor row only, never invent defaults for existing monitors
         if (isMomentumBreakout || isMomentumContain) {
-          // Load min_ask/max_ask for Momentum Breakout/Contain
-          window.dashboardMobileContainMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.0000;
-          window.dashboardMobileContainMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9800;
+          const containMinAsk = uatMobileFiniteOrNull(data.min_ask);
+          const containMaxAsk = uatMobileFiniteOrNull(data.max_ask);
+          if (containMinAsk != null) window.dashboardMobileContainMinAsk = containMinAsk;
+          if (containMaxAsk != null) window.dashboardMobileContainMaxAsk = containMaxAsk;
           
-          // Enforce minimum separation (0.01 = 1 cent) when loading from database
           const MIN_ASK_SEPARATION = 0.01;
-          if (window.dashboardMobileContainMaxAsk - window.dashboardMobileContainMinAsk < MIN_ASK_SEPARATION) {
+          if (containMinAsk != null && containMaxAsk != null
+              && window.dashboardMobileContainMaxAsk - window.dashboardMobileContainMinAsk < MIN_ASK_SEPARATION) {
             if (window.dashboardMobileContainMaxAsk < 1.0) {
               window.dashboardMobileContainMaxAsk = parseFloat((window.dashboardMobileContainMinAsk + MIN_ASK_SEPARATION).toFixed(4));
             } else {
@@ -10966,12 +10982,12 @@
             }
           }
           
-          // Load cooldown timer window values (Momentum Contain only)
           if (isMomentumContain) {
-            dashboardMobileMinCooldownTimerSeconds = data.min_cooldown_timer !== undefined && data.min_cooldown_timer !== null ? parseInt(data.min_cooldown_timer, 10) : 300;
-            dashboardMobileMaxCooldownTimerSeconds = data.max_cooldown_timer !== undefined && data.max_cooldown_timer !== null ? parseInt(data.max_cooldown_timer, 10) : 3300;
+            const cdMin = uatMobileFiniteOrNull(data.min_cooldown_timer);
+            const cdMax = uatMobileFiniteOrNull(data.max_cooldown_timer);
+            if (cdMin != null) dashboardMobileMinCooldownTimerSeconds = Math.trunc(cdMin);
+            if (cdMax != null) dashboardMobileMaxCooldownTimerSeconds = Math.trunc(cdMax);
             
-            // Initialize slider after values are loaded
             setTimeout(() => {
               if (typeof initDashboardMobileCooldownWindowSlider === 'function') {
                 initDashboardMobileCooldownWindowSlider();
@@ -10980,57 +10996,69 @@
           }
           
         } else if (isExpirationScalp) {
-          window.dashboardMobileMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 90.00;
-          window.dashboardMobileMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          const esMinP = uatMobileFiniteOrNull(data.min_probability);
+          const esMaxP = uatMobileFiniteOrNull(data.max_probability);
+          if (esMinP != null) window.dashboardMobileMinProbability = esMinP;
+          if (esMaxP != null) window.dashboardMobileMaxProbability = esMaxP;
           const MIN_SEPARATION = 0.5;
-          if (window.dashboardMobileMaxProbability - window.dashboardMobileMinProbability < MIN_SEPARATION) {
+          if (esMinP != null && esMaxP != null
+              && window.dashboardMobileMaxProbability - window.dashboardMobileMinProbability < MIN_SEPARATION) {
             if (window.dashboardMobileMaxProbability < 100) {
               window.dashboardMobileMaxProbability = parseFloat((window.dashboardMobileMinProbability + MIN_SEPARATION).toFixed(1));
             } else {
               window.dashboardMobileMinProbability = parseFloat((window.dashboardMobileMaxProbability - MIN_SEPARATION).toFixed(1));
             }
           }
-          window.dashboardMobileMinMovement = data.min_movement !== undefined ? parseFloat(data.min_movement) : 0.00;
-          window.dashboardMobileMaxMovement = data.max_movement !== undefined ? parseFloat(data.max_movement) : 100.00;
-          if (window.dashboardMobileMaxMovement - window.dashboardMobileMinMovement < MIN_SEPARATION) {
+          const esMinMov = uatMobileFiniteOrNull(data.min_movement);
+          const esMaxMov = uatMobileFiniteOrNull(data.max_movement);
+          if (esMinMov != null) window.dashboardMobileMinMovement = esMinMov;
+          if (esMaxMov != null) window.dashboardMobileMaxMovement = esMaxMov;
+          if (esMinMov != null && esMaxMov != null
+              && window.dashboardMobileMaxMovement - window.dashboardMobileMinMovement < MIN_SEPARATION) {
             if (window.dashboardMobileMaxMovement < 100) {
               window.dashboardMobileMaxMovement = parseFloat((window.dashboardMobileMinMovement + MIN_SEPARATION).toFixed(1));
             } else {
               window.dashboardMobileMinMovement = parseFloat((window.dashboardMobileMaxMovement - MIN_SEPARATION).toFixed(1));
             }
           }
-          dashboardMobileExpirationScalpMinAsk = data.min_ask !== undefined ? parseFloat(data.min_ask) : 0.9000;
-          dashboardMobileExpirationScalpMaxAsk = data.max_ask !== undefined ? parseFloat(data.max_ask) : 0.9900;
-          const mfpRaw = data.min_fill_price !== undefined && data.min_fill_price !== null
-            ? parseFloat(data.min_fill_price) : 0;
-          const mfpSlider = Math.min(99, Math.max(0, Math.round((Number.isFinite(mfpRaw) ? mfpRaw : 0) * 100)));
-          const mfpEl = document.getElementById('m_expirationScalpMinFillPriceSlider');
-          if (mfpEl) mfpEl.value = mfpSlider;
-          if (typeof updateMobileExpirationScalpMinFillPriceBubble === 'function') {
-            updateMobileExpirationScalpMinFillPriceBubble(mfpSlider);
+          const esMinAsk = uatMobileFiniteOrNull(data.min_ask);
+          const esMaxAsk = uatMobileFiniteOrNull(data.max_ask);
+          if (esMinAsk != null) dashboardMobileExpirationScalpMinAsk = esMinAsk;
+          if (esMaxAsk != null) dashboardMobileExpirationScalpMaxAsk = esMaxAsk;
+          const mfpRaw = uatMobileFiniteOrNull(data.min_fill_price);
+          if (mfpRaw != null) {
+            const mfpSlider = Math.min(99, Math.max(0, Math.round(mfpRaw * 100)));
+            const mfpEl = document.getElementById('m_expirationScalpMinFillPriceSlider');
+            if (mfpEl) mfpEl.value = mfpSlider;
+            if (typeof updateMobileExpirationScalpMinFillPriceBubble === 'function') {
+              updateMobileExpirationScalpMinFillPriceBubble(mfpSlider);
+            }
           }
           const MIN_ASK_SEPARATION = 0.01;
-          if (dashboardMobileExpirationScalpMaxAsk - dashboardMobileExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
+          if (esMinAsk != null && esMaxAsk != null
+              && dashboardMobileExpirationScalpMaxAsk - dashboardMobileExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
             if (dashboardMobileExpirationScalpMaxAsk < 1.0) {
               dashboardMobileExpirationScalpMaxAsk = parseFloat((dashboardMobileExpirationScalpMinAsk + MIN_ASK_SEPARATION).toFixed(4));
             } else {
               dashboardMobileExpirationScalpMinAsk = parseFloat((dashboardMobileExpirationScalpMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
             }
           }
-          const esVerifyOn = data.verification_period_enabled;
-          setChk('m_esVerifyEnabled', esVerifyOn == null ? true : !!esVerifyOn);
-          let esVerifySec = data.verification_period_seconds;
-          if (esVerifySec == null || esVerifySec === '') esVerifySec = 3;
-          esVerifySec = Math.min(15, Math.max(0, parseInt(esVerifySec, 10) || 0));
-          setVal('m_esVerifySeconds', esVerifySec);
+          if (data.verification_period_enabled != null) {
+            setChk('m_esVerifyEnabled', !!data.verification_period_enabled);
+          }
+          const esVerifySec = uatMobileFiniteOrNull(data.verification_period_seconds);
+          if (esVerifySec != null) {
+            setVal('m_esVerifySeconds', Math.min(15, Math.max(0, Math.trunc(esVerifySec))));
+          }
         } else {
-          // Probability window (for Hourly HTC)
-          window.dashboardMobileMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
-          window.dashboardMobileMaxProbability = data.max_probability !== undefined ? parseFloat(data.max_probability) : 100.00;
+          const htcMinP = uatMobileFiniteOrNull(data.min_probability);
+          const htcMaxP = uatMobileFiniteOrNull(data.max_probability);
+          if (htcMinP != null) window.dashboardMobileMinProbability = htcMinP;
+          if (htcMaxP != null) window.dashboardMobileMaxProbability = htcMaxP;
           
-          // Enforce minimum separation (0.5%) when loading from database
           const MIN_SEPARATION = 0.5;
-          if (window.dashboardMobileMaxProbability - window.dashboardMobileMinProbability < MIN_SEPARATION) {
+          if (htcMinP != null && htcMaxP != null
+              && window.dashboardMobileMaxProbability - window.dashboardMobileMinProbability < MIN_SEPARATION) {
             if (window.dashboardMobileMaxProbability < 100) {
               window.dashboardMobileMaxProbability = parseFloat((window.dashboardMobileMinProbability + MIN_SEPARATION).toFixed(1));
             } else {
@@ -11040,78 +11068,86 @@
         }
         
         if (isMomentumScalp) {
-          // MOMENTUM SCALP settings
-          setVal('m_msAutoEntryMinVolume', data.min_volume ?? 1000);
-          setVal('m_msAutoEntryProb', data.min_probability ?? 25);
-          setVal('m_msMomentumScalpEntryThreshold', data.momentum_scalp_entry_threshold ?? 35);
+          const msVol = uatMobileFiniteOrNull(data.min_volume);
+          if (msVol != null) setVal('m_msAutoEntryMinVolume', msVol);
+          const msProb = uatMobileFiniteOrNull(data.min_probability);
+          if (msProb != null) setVal('m_msAutoEntryProb', msProb);
+          const msMom = uatMobileFiniteOrNull(data.momentum_scalp_entry_threshold);
+          if (msMom != null) setVal('m_msMomentumScalpEntryThreshold', msMom);
           
-          // Auto Stop
-          const msMinTTC = data.min_ttc_seconds !== undefined ? data.min_ttc_seconds : 60;
-          const msMinTTCInput = document.getElementById('m_msAutoStopMinTTC');
-          const msMinTTCDisplay = document.getElementById('m_msMinTTCDisplay');
-          if (msMinTTCInput) msMinTTCInput.value = msMinTTC;
-          if (msMinTTCDisplay) msMinTTCDisplay.textContent = formatSecondsToMMSS(msMinTTC);
+          const msMinTTC = uatMobileFiniteOrNull(data.min_ttc_seconds);
+          if (msMinTTC != null) {
+            const msMinTTCInput = document.getElementById('m_msAutoStopMinTTC');
+            const msMinTTCDisplay = document.getElementById('m_msMinTTCDisplay');
+            if (msMinTTCInput) msMinTTCInput.value = msMinTTC;
+            if (msMinTTCDisplay) msMinTTCDisplay.textContent = formatSecondsToMMSS(msMinTTC);
+          }
           
-          // Trailing Stop: convert from decimal (0.00-1.00) to slider value (0-100)
-          const trailingStop = data.momentum_scalp_trailing_stop_amount ?? 0.10;
-          const trailingStopSliderValue = Math.round(trailingStop * 100);
-          setVal('m_msTrailingStop', trailingStopSliderValue);
+          const trailingStop = uatMobileFiniteOrNull(data.momentum_scalp_trailing_stop_amount);
+          if (trailingStop != null) setVal('m_msTrailingStop', Math.round(trailingStop * 100));
           
-          // Profit Target: convert from decimal (0.50-1.00) to slider value (50-100)
-          const profitTarget = data.momentum_scalp_profit_target ?? 0.99;
-          const profitTargetSliderValue = Math.round(profitTarget * 100);
-          setVal('m_msProfitTarget', profitTargetSliderValue);
+          const profitTarget = uatMobileFiniteOrNull(data.momentum_scalp_profit_target);
+          if (profitTarget != null) setVal('m_msProfitTarget', Math.round(profitTarget * 100));
           
-          // Initialize MS time window slider
           msState.minTimeSeconds = minTimeRounded;
           msState.maxTimeSeconds = finalMaxTime;
         } else if (isExpirationScalp) {
           state.minTimeSeconds = minTimeRounded;
           state.maxTimeSeconds = finalMaxTime;
         } else {
-          // HOURLY HTC / REVERSE HTC / MOMENTUM BREAKOUT / MOMENTUM CONTAIN settings
-          setVal('m_autoEntryMinVolume', data.min_volume ?? 1000);
-          setVal('m_autoEntryDiff', data.min_differential ?? 0);
-          setVal('m_autoEntryMaxDiff', data.max_differential ?? 0);
-          setVal('m_winStreak', data.win_streak_threshold ?? 22);
+          const htcVol = uatMobileFiniteOrNull(data.min_volume);
+          if (htcVol != null) setVal('m_autoEntryMinVolume', htcVol);
+          const htcMinDiff = uatMobileFiniteOrNull(data.min_differential);
+          if (htcMinDiff != null) setVal('m_autoEntryDiff', htcMinDiff);
+          const htcMaxDiff = uatMobileFiniteOrNull(data.max_differential);
+          if (htcMaxDiff != null) setVal('m_autoEntryMaxDiff', htcMaxDiff);
+          const htcWin = uatMobileFiniteOrNull(data.win_streak_threshold);
+          if (htcWin != null) setVal('m_winStreak', htcWin);
 
-          setVal('m_probAdjSlider', data.prob_adj ?? 5.00);
+          const htcProbAdj = uatMobileFiniteOrNull(data.prob_adj);
+          if (htcProbAdj != null) setVal('m_probAdjSlider', htcProbAdj);
         if (isRisingDevil) {
-          const raw = data.min_ask_range;
-          let c = 70;
-          if (raw != null && raw !== undefined && !isNaN(parseFloat(raw))) {
-            c = Math.min(100, Math.max(0, Math.round(parseFloat(raw) * 100)));
-          }
-          setVal('m_risingDevilMinAskRange', c);
-          const el = document.getElementById('m_risingDevilMinAskRange');
-          const disp = document.getElementById('m_risingDevilMinAskRangeVal');
-          if (el && disp) {
-            disp.textContent = (parseInt(el.value, 10) / 100).toFixed(4);
+          const raw = uatMobileFiniteOrNull(data.min_ask_range);
+          if (raw != null) {
+            const c = Math.min(100, Math.max(0, Math.round(raw * 100)));
+            setVal('m_risingDevilMinAskRange', c);
+            const el = document.getElementById('m_risingDevilMinAskRange');
+            const disp = document.getElementById('m_risingDevilMinAskRangeVal');
+            if (el && disp) {
+              disp.textContent = (parseInt(el.value, 10) / 100).toFixed(4);
+            }
           }
         }
-          setChk('m_perfAlloc', data.performance_based_allocation ?? false);
+          if (data.performance_based_allocation != null) setChk('m_perfAlloc', !!data.performance_based_allocation);
 
-          setVal('m_stopProb', data.current_probability ?? 40);
-          setChk('m_momentumEnabled', data.momentum_spike_enabled ?? true);
-          setVal('m_momentumThreshold', data.momentum_spike_threshold ?? 35);
-          setChk('m_verifyEnabled', data.verification_period_enabled ?? false);
-          setVal('m_verifySeconds', data.verification_period_seconds ?? 15);
+          const stopProb = uatMobileFiniteOrNull(data.current_probability);
+          if (stopProb != null) setVal('m_stopProb', stopProb);
+          if (data.momentum_spike_enabled != null) setChk('m_momentumEnabled', !!data.momentum_spike_enabled);
+          const momTh = uatMobileFiniteOrNull(data.momentum_spike_threshold);
+          if (momTh != null) setVal('m_momentumThreshold', momTh);
+          if (data.verification_period_enabled != null) setChk('m_verifyEnabled', !!data.verification_period_enabled);
+          const verifySec = uatMobileFiniteOrNull(data.verification_period_seconds);
+          if (verifySec != null) setVal('m_verifySeconds', verifySec);
 
-          const minTTCSeconds = data.min_ttc_seconds ?? 60;
-          const minTTCInput = document.getElementById('m_minTTC');
-          if (minTTCInput) minTTCInput.value = minTTCSeconds;
-          const minTTCDisplay = document.getElementById('m_minTTCDisplay');
-          if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTCSeconds);
+          const minTTCSeconds = uatMobileFiniteOrNull(data.min_ttc_seconds);
+          if (minTTCSeconds != null) {
+            const minTTCInput = document.getElementById('m_minTTC');
+            if (minTTCInput) minTTCInput.value = minTTCSeconds;
+            const minTTCDisplay = document.getElementById('m_minTTCDisplay');
+            if (minTTCDisplay) minTTCDisplay.textContent = formatSecondsToMMSS(minTTCSeconds);
+          }
 
-          // Initialize HTC time window slider
           state.minTimeSeconds = minTimeRounded;
           state.maxTimeSeconds = finalMaxTime;
         }
 
-        setChk('m_spikeEnabled', data.spike_alert_enabled ?? true);
-        setVal('m_spikeMomentum', data.spike_alert_momentum_threshold ?? 60);
-        setVal('m_spikeCooldown', data.spike_alert_cooldown_threshold ?? 55);
-        setVal('m_spikeTime', data.spike_alert_cooldown_minutes ?? 15);
+        if (data.spike_alert_enabled != null) setChk('m_spikeEnabled', !!data.spike_alert_enabled);
+        const spikeMom = uatMobileFiniteOrNull(data.spike_alert_momentum_threshold);
+        if (spikeMom != null) setVal('m_spikeMomentum', spikeMom);
+        const spikeCd = uatMobileFiniteOrNull(data.spike_alert_cooldown_threshold);
+        if (spikeCd != null) setVal('m_spikeCooldown', spikeCd);
+        const spikeMin = uatMobileFiniteOrNull(data.spike_alert_cooldown_minutes);
+        if (spikeMin != null) setVal('m_spikeTime', spikeMin);
         mobileDashUatUpdateSpikeAlertSliderGroupVisibility();
         const mSpikeVisCbAll = document.getElementById('m_spikeEnabled');
         if (mSpikeVisCbAll && !mSpikeVisCbAll._mobileDashSpikeDetailVisWired) {
@@ -11123,13 +11159,14 @@
         mobileDashUatApplyFlipRow('m_flipSellStopLossFloor', data.flip_sell_floor, data.flip_sell_floor_mult);
         mobileDashUatApplyFlipRow('m_flipSellStopLossFloorMs', data.flip_sell_floor, data.flip_sell_floor_mult);
 
-        const slpRaw = data.stop_loss_price !== undefined && data.stop_loss_price !== null
-          ? parseFloat(data.stop_loss_price) : 0;
-        const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
-        const slpEl1 = document.getElementById('m_stopLossPriceSlider');
-        const slpEl2 = document.getElementById('m_stopLossPriceSliderMs');
-        if (slpEl1) slpEl1.value = String(slpCents);
-        if (slpEl2) slpEl2.value = String(slpCents);
+        const slpRaw = uatMobileFiniteOrNull(data.stop_loss_price);
+        if (slpRaw != null) {
+          const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
+          const slpEl1 = document.getElementById('m_stopLossPriceSlider');
+          const slpEl2 = document.getElementById('m_stopLossPriceSliderMs');
+          if (slpEl1) slpEl1.value = String(slpCents);
+          if (slpEl2) slpEl2.value = String(slpCents);
+        }
 
         ensureSliderBindings();
         refreshSliderDisplays();
@@ -11218,13 +11255,18 @@
               alert('Monitor settings have not finished loading. Nothing was saved.');
               return;
             }
-            // Determine which strategy is active (reuse variables from outer scope)
             const saveIsMS = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
-            
+            const saveMinT = saveIsMS ? msState.minTimeSeconds : state.minTimeSeconds;
+            const saveMaxT = saveIsMS ? msState.maxTimeSeconds : state.maxTimeSeconds;
+            if (!Number.isFinite(saveMinT) || !Number.isFinite(saveMaxT)) {
+              alert('Monitor time window has not loaded from the monitor row. Nothing was saved.');
+              return;
+            }
+
             const payload = {
               monitor_id: apiId,
-              min_time: saveIsMS ? msState.minTimeSeconds : state.minTimeSeconds,
-              max_time: saveIsMS ? msState.maxTimeSeconds : state.maxTimeSeconds
+              min_time: saveMinT,
+              max_time: saveMaxT
             };
 
             const regimeMonitorEnabledEl = document.getElementById('m_regimeMonitorEnabled');

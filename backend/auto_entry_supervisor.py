@@ -1121,8 +1121,9 @@ AES_INDICATOR_DEFAULTS = {
     "spike_alert_recovery_countdown": None,
     "current_momentum": None,
     "current_ttc": 0,
-    "min_time": 0,
-    "max_time": 3600,
+    # Time window comes only from the monitor row — never invent 0/3600.
+    "min_time": None,
+    "max_time": None,
     "last_updated": None,
 }
 
@@ -1392,22 +1393,8 @@ def check_spike_alert_conditions():
         # Load current state from database (PHASE 2: Replaced JSON with DB)
         state = load_auto_entry_state_from_db()
         if state is None:
-            # Initialize state if file not found (should ideally not happen if load_auto_entry_state handles defaults)
-            state = {
-                "user_id": f"user_{ctx_user()}",
-                "monitor_id": "default",
-                "enabled": False,
-                "scanning_active": False,
-                "spike_alert_active": False,
-                "spike_alert_start_time": None,
-                "spike_alert_momentum_value": None,
-                "spike_alert_recovery_countdown": None,
-                "current_momentum": current_momentum,
-                "current_ttc": 0,
-                "min_time": 0,
-                "max_time": 3600,
-                "last_updated": None
-            }
+            # No DB state yet — do not invent monitor gate settings.
+            return
         
         # Get spike alert settings from auto entry settings - NO DEFAULTS
         settings = get_auto_entry_settings()
@@ -1420,7 +1407,11 @@ def check_spike_alert_conditions():
             "spike_alert_cooldown_minutes"
         ]
         
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[SPIKE ALERT] ❌ Missing required settings: {missing_settings}")
             log(f"[SPIKE ALERT] Cannot proceed without complete settings configuration")
@@ -1686,7 +1677,11 @@ def determine_auto_entry_status_hourly_htc(*, expiration_scalp: bool = False):
         required_settings = ["min_time", "max_time", "min_probability", "max_probability"]
         if not expiration_scalp:
             required_settings.append("min_differential")
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         
         if missing_settings:
             return "DISABLED"  # Missing required settings
@@ -1729,7 +1724,11 @@ def determine_auto_entry_status_momentum_scalp():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time", "min_probability", "momentum_scalp_entry_threshold"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         
         if missing_settings:
             return "DISABLED"  # Missing required settings
@@ -1785,7 +1784,11 @@ def determine_auto_entry_status_momentum_reversal():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time", "min_probability", "momentum_scalp_entry_threshold"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         
         if missing_settings:
             return "DISABLED"  # Missing required settings
@@ -1851,7 +1854,11 @@ def determine_auto_entry_status_reverse_htc():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time", "min_probability", "min_differential"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         
         if missing_settings:
             return "DISABLED"  # Missing required settings
@@ -1899,7 +1906,11 @@ def determine_auto_entry_status_momentum_breakout():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         
         if missing_settings:
             return "DISABLED"  # Missing required settings
@@ -1947,7 +1958,11 @@ def determine_auto_entry_status_momentum_contain():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         
         if missing_settings:
             return "DISABLED"  # Missing required settings
@@ -2227,42 +2242,52 @@ def get_auto_entry_settings():
                 strategy_result = cursor.fetchone()
                 
                 if strategy_result:
+                    def _f(v):
+                        return float(v) if v is not None else None
+
+                    def _i(v):
+                        return int(v) if v is not None else None
+
+                    def _b(v):
+                        return bool(v) if v is not None else None
+
+                    # Pass-through from monitor_list only — never invent strategy/UI defaults.
                     settings = {
-                        "min_probability": float(strategy_result[0]) if strategy_result[0] is not None else 95.0,
-                        "max_probability": float(strategy_result[1]) if strategy_result[1] is not None else 100.0,
-                        "min_differential": float(strategy_result[2]),
-                        "max_differential": float(strategy_result[3]) if strategy_result[3] is not None else None,
-                        "min_time": strategy_result[4],
-                        "max_time": strategy_result[5],
-                        "allow_re_entry": strategy_result[6],
-                        "spike_alert_enabled": strategy_result[7],
+                        "min_probability": _f(strategy_result[0]),
+                        "max_probability": _f(strategy_result[1]),
+                        "min_differential": _f(strategy_result[2]),
+                        "max_differential": _f(strategy_result[3]),
+                        "min_time": _i(strategy_result[4]),
+                        "max_time": _i(strategy_result[5]),
+                        "allow_re_entry": _b(strategy_result[6]),
+                        "spike_alert_enabled": _b(strategy_result[7]),
                         "spike_alert_momentum_threshold": strategy_result[8],
                         "spike_alert_cooldown_threshold": strategy_result[9],
                         "spike_alert_cooldown_minutes": strategy_result[10],
-                        "min_volume": strategy_result[11],  # From monitor min_volume
-                        "momentum_scalp_entry_threshold": float(strategy_result[12]) if strategy_result[12] is not None else None,
-                        "min_ask": float(strategy_result[13]) if strategy_result[13] is not None else 0.0000,
-                        "max_ask": float(strategy_result[14]) if strategy_result[14] is not None else 0.9800,
-                        "max_price_spread": float(strategy_result[15]) if strategy_result[15] is not None else 0.0300,
-                        "prob_adj": float(strategy_result[16]) if strategy_result[16] is not None else 5.00,
-                        "min_cooldown_timer": strategy_result[17] if strategy_result[17] is not None else None,
-                        "max_cooldown_timer": strategy_result[18] if strategy_result[18] is not None else None,
-                        "min_ask_range": float(strategy_result[19]) if strategy_result[19] is not None else None,
-                        "min_movement": float(strategy_result[20]) if strategy_result[20] is not None else 0.0,
-                        "max_movement": float(strategy_result[21]) if strategy_result[21] is not None else 100.0,
-                        "verification_period_enabled": bool(strategy_result[22]) if strategy_result[22] is not None else False,
-                        "verification_period_seconds": int(strategy_result[23]) if strategy_result[23] is not None else 3,
+                        "min_volume": strategy_result[11],
+                        "momentum_scalp_entry_threshold": _f(strategy_result[12]),
+                        "min_ask": _f(strategy_result[13]),
+                        "max_ask": _f(strategy_result[14]),
+                        "max_price_spread": _f(strategy_result[15]),
+                        "prob_adj": _f(strategy_result[16]),
+                        "min_cooldown_timer": strategy_result[17],
+                        "max_cooldown_timer": strategy_result[18],
+                        "min_ask_range": _f(strategy_result[19]),
+                        "min_movement": _f(strategy_result[20]),
+                        "max_movement": _f(strategy_result[21]),
+                        "verification_period_enabled": _b(strategy_result[22]),
+                        "verification_period_seconds": _i(strategy_result[23]),
                     }
                     flip_base = 24
                     if has_flip:
-                        settings["flip_sell_prob"] = bool(strategy_result[flip_base]) if strategy_result[flip_base] is not None else False
-                        settings["flip_sell_prob_mult"] = strategy_result[flip_base + 1] if strategy_result[flip_base + 1] is not None else None
-                        settings["flip_sell_floor"] = bool(strategy_result[flip_base + 2]) if strategy_result[flip_base + 2] is not None else False
-                        settings["flip_sell_floor_mult"] = strategy_result[flip_base + 3] if strategy_result[flip_base + 3] is not None else None
+                        settings["flip_sell_prob"] = _b(strategy_result[flip_base])
+                        settings["flip_sell_prob_mult"] = strategy_result[flip_base + 1]
+                        settings["flip_sell_floor"] = _b(strategy_result[flip_base + 2])
+                        settings["flip_sell_floor_mult"] = strategy_result[flip_base + 3]
                     else:
-                        settings["flip_sell_prob"] = False
+                        settings["flip_sell_prob"] = None
                         settings["flip_sell_prob_mult"] = None
-                        settings["flip_sell_floor"] = False
+                        settings["flip_sell_floor"] = None
                         settings["flip_sell_floor_mult"] = None
                     
                     # Check for settings changes
@@ -3499,9 +3524,9 @@ def check_simulated_15m_entry_hourly_htc():
         max_t = int(float(settings["max_time"]))
         base_min_p = float(settings["min_probability"])
         max_p = float(settings["max_probability"])
-        prob_adj = float(settings.get("prob_adj", 5.00))
+        prob_adj = float(settings["prob_adj"]) if settings.get("prob_adj") is not None else None
         spike_alert_active = _aes_indicator_bucket().get("spike_alert_active", False)
-        min_p = base_min_p + prob_adj if spike_alert_active else base_min_p
+        min_p = base_min_p + prob_adj if spike_alert_active and prob_adj is not None else base_min_p
         data = get_master_strike_table_data_simulated_15m()
         if not data or "strikes" not in data:
             if _do_log:
@@ -3913,7 +3938,11 @@ def check_auto_entry_conditions_hourly_htc():
         
         # Check if all required settings exist
         required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_differential"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"{log_tag} ❌ Missing required settings: {missing_settings}")
             log(f"{log_tag} Cannot proceed without complete settings configuration")
@@ -3938,8 +3967,8 @@ def check_auto_entry_conditions_hourly_htc():
         min_differential = settings["min_differential"]
         
         # Apply prob_adj adjustment during spike alert cooldown
-        prob_adj = settings.get("prob_adj", 5.00)  # Default to 5.00 if not set
-        if spike_alert_active:
+        prob_adj = settings.get("prob_adj")
+        if spike_alert_active and prob_adj is not None:
             min_probability = base_min_probability + prob_adj
             log_debug(f"{log_tag} 📊 Using adjusted probability: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}% (spike cooldown active)")
         else:
@@ -4177,7 +4206,9 @@ def check_auto_entry_conditions_hourly_htc():
                         continue
                 
                 # STEP 5: Check volume threshold
-                min_volume = settings.get("min_volume", 1000)
+                min_volume = settings.get("min_volume")
+                if min_volume is None:
+                    continue
                 volume = _kalshi_fp_volume_number(strike.get("volume_fp")) or 0
                 if volume < min_volume:
                     try:
@@ -4196,7 +4227,9 @@ def check_auto_entry_conditions_hourly_htc():
                     continue
                 
                 # STEP 6: Check max ask price threshold using _dollars values
-                max_ask = settings.get("max_ask", 0.9800)
+                max_ask = settings.get("max_ask")
+                if max_ask is None:
+                    continue
                 yes_ask_dollars = strike.get('yes_ask_dollars')
                 no_ask_dollars = strike.get('no_ask_dollars')
                 if not yes_ask_dollars or not no_ask_dollars:
@@ -4315,8 +4348,21 @@ def check_auto_entry_conditions_expiration_scalp():
             return
 
         settings = get_auto_entry_settings()
-        required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_ask", "max_ask"]
-        missing_settings = [s for s in required_settings if s not in settings]
+        required_settings = [
+            "min_time",
+            "max_time",
+            "min_probability",
+            "max_probability",
+            "min_ask",
+            "max_ask",
+            "min_movement",
+            "max_movement",
+            "verification_period_enabled",
+            "verification_period_seconds",
+        ]
+        missing_settings = [
+            s for s in required_settings if s not in settings or settings.get(s) is None
+        ]
         if missing_settings:
             log(f"{log_tag} ❌ Missing required settings: {missing_settings}")
             return
@@ -4324,16 +4370,17 @@ def check_auto_entry_conditions_expiration_scalp():
         min_time = settings["min_time"]
         max_time = settings["max_time"]
         min_probability = float(settings["min_probability"])
-        max_probability = float(settings.get("max_probability", 100))
-        min_ask = float(settings.get("min_ask", 0.90))
-        max_ask = float(settings.get("max_ask", 0.99))
-        min_movement = float(settings.get("min_movement", 0.0))
-        max_movement = float(settings.get("max_movement", 100.0))
-        verify_enabled = bool(settings.get("verification_period_enabled", False))
+        max_probability = float(settings["max_probability"])
+        min_ask = float(settings["min_ask"])
+        max_ask = float(settings["max_ask"])
+        min_movement = float(settings["min_movement"])
+        max_movement = float(settings["max_movement"])
+        verify_enabled = bool(settings["verification_period_enabled"])
         try:
-            verify_seconds = int(settings.get("verification_period_seconds", 3))
+            verify_seconds = int(settings["verification_period_seconds"])
         except (TypeError, ValueError):
-            verify_seconds = 3
+            log(f"{log_tag} ❌ Invalid verification_period_seconds on monitor row")
+            return
         verify_seconds = max(0, min(15, verify_seconds))
 
         current_ttc = get_current_ttc()
@@ -4636,7 +4683,11 @@ def check_auto_entry_conditions_rising_devil():
             "min_differential",
             "min_ask_range",
         ]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[AUTO ENTRY RISING DEVIL] ❌ monitor={ctx_mid()} missing required settings: {missing_settings}")
             return
@@ -4674,8 +4725,8 @@ def check_auto_entry_conditions_rising_devil():
         base_min_probability = settings["min_probability"]
         max_probability = settings["max_probability"]
 
-        prob_adj = settings.get("prob_adj", 5.00)
-        if spike_alert_active:
+        prob_adj = settings.get("prob_adj")
+        if spike_alert_active and prob_adj is not None:
             min_probability = base_min_probability + prob_adj
             log_debug(f"[AUTO ENTRY RISING DEVIL] 📊 Adjusted probability floor: {base_min_probability:.2f} + {prob_adj:.2f} = {min_probability:.2f}%")
         else:
@@ -4787,12 +4838,16 @@ def check_auto_entry_conditions_rising_devil():
                     if diff is None or diff > max_differential:
                         continue
 
-                min_volume = settings.get("min_volume", 1000)
+                min_volume = settings.get("min_volume")
+                if min_volume is None:
+                    continue
                 volume = _kalshi_fp_volume_number(strike.get("volume_fp")) or 0
                 if volume < min_volume:
                     continue
 
-                max_ask = settings.get("max_ask", 0.9800)
+                max_ask = settings.get("max_ask")
+                if max_ask is None:
+                    continue
                 yes_ask_dollars = strike.get('yes_ask_dollars')
                 no_ask_dollars = strike.get('no_ask_dollars')
                 if not yes_ask_dollars or not no_ask_dollars:
@@ -4918,7 +4973,11 @@ def check_auto_entry_conditions_reverse_htc():
         
         # Check if all required settings exist
         required_settings = ["min_time", "max_time", "min_probability", "max_probability", "min_differential"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[AUTO ENTRY REVERSE HTC] ❌ Missing required settings: {missing_settings}")
             log(f"[AUTO ENTRY REVERSE HTC] Cannot proceed without complete settings configuration")
@@ -5086,13 +5145,17 @@ def check_auto_entry_conditions_reverse_htc():
                     continue
                 
                 # STEP 5: Check volume threshold (EXACT SAME AS HOURLY HTC)
-                min_volume = settings.get("min_volume", 1000)
+                min_volume = settings.get("min_volume")
+                if min_volume is None:
+                    continue
                 volume = _kalshi_fp_volume_number(strike.get("volume_fp")) or 0
                 if volume < min_volume:
                     continue
                 
                 # STEP 6: Check max ask price threshold (EXACT SAME AS HOURLY HTC)
-                max_ask = settings.get("max_ask", 0.9800)
+                max_ask = settings.get("max_ask")
+                if max_ask is None:
+                    continue
                 yes_ask_dollars = strike.get('yes_ask_dollars')
                 no_ask_dollars = strike.get('no_ask_dollars')
                 if not yes_ask_dollars or not no_ask_dollars:
@@ -5237,7 +5300,11 @@ def check_auto_entry_conditions_momentum_breakout():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[AUTO ENTRY MOMENTUM BREAKOUT] ❌ Missing required settings: {missing_settings}")
             return
@@ -5541,7 +5608,11 @@ def check_auto_entry_conditions_momentum_contain():
         # Get auto entry settings
         settings = get_auto_entry_settings()
         required_settings = ["min_time", "max_time"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Missing required settings: {missing_settings}")
             return
@@ -5778,9 +5849,15 @@ def check_auto_entry_conditions_momentum_contain():
         
         # VALIDATION CHECKS: Volume, Momentum, and Ask Price checks before entering trades
         # Get required settings
-        min_volume = settings.get("min_volume", 1000)
-        min_ask = settings.get("min_ask", 0.0000)
-        max_ask = settings.get("max_ask", 0.9800)
+        min_volume = settings.get("min_volume")
+        if min_volume is None:
+            return
+        min_ask = settings.get("min_ask")
+        if min_ask is None:
+            return
+        max_ask = settings.get("max_ask")
+        if max_ask is None:
+            return
         cooldown_threshold = settings.get("spike_alert_cooldown_threshold")
         
         # VOLUME CHECK: Ensure both strikes meet minimum volume requirement
@@ -5982,18 +6059,28 @@ def check_auto_entry_conditions_momentum_scalp():
         
         # Check if all required settings exist
         required_settings = ["min_time", "max_time", "min_volume", "momentum_scalp_entry_threshold", "min_ask", "max_ask"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[AUTO ENTRY MS] ❌ Missing required settings: {missing_settings}")
             return
         
         min_time = settings["min_time"]
         max_time = settings["max_time"]
-        min_volume = settings.get("min_volume", 1000)
+        min_volume = settings.get("min_volume")
+        if min_volume is None:
+            return
         momentum_threshold = settings.get("momentum_scalp_entry_threshold")
-        min_ask = settings.get("min_ask", 0.0000)
-        max_ask = settings.get("max_ask", 0.9800)
-        max_price_spread = settings.get("max_price_spread", 0.0300)
+        min_ask = settings.get("min_ask")
+        if min_ask is None:
+            return
+        max_ask = settings.get("max_ask")
+        if max_ask is None:
+            return
+        max_price_spread = settings.get("max_price_spread")
         
         if momentum_threshold is None:
             log(f"[AUTO ENTRY MS] ❌ Missing momentum_scalp_entry_threshold")
@@ -6235,18 +6322,28 @@ def check_auto_entry_conditions_momentum_reversal():
         
         # Check if all required settings exist
         required_settings = ["min_time", "max_time", "min_volume", "momentum_scalp_entry_threshold", "min_ask", "max_ask"]
-        missing_settings = [setting for setting in required_settings if setting not in settings]
+        missing_settings = [
+            setting
+            for setting in required_settings
+            if setting not in settings or settings.get(setting) is None
+        ]
         if missing_settings:
             log(f"[AUTO ENTRY MR] ❌ Missing required settings: {missing_settings}")
             return
         
         min_time = settings["min_time"]
         max_time = settings["max_time"]
-        min_volume = settings.get("min_volume", 1000)
+        min_volume = settings.get("min_volume")
+        if min_volume is None:
+            return
         momentum_threshold = settings.get("momentum_scalp_entry_threshold")
-        min_ask = settings.get("min_ask", 0.0000)
-        max_ask = settings.get("max_ask", 0.9800)
-        max_price_spread = settings.get("max_price_spread", 0.0300)
+        min_ask = settings.get("min_ask")
+        if min_ask is None:
+            return
+        max_ask = settings.get("max_ask")
+        if max_ask is None:
+            return
+        max_price_spread = settings.get("max_price_spread")
         
         if momentum_threshold is None:
             log(f"[AUTO ENTRY MR] ❌ Missing momentum_scalp_entry_threshold")

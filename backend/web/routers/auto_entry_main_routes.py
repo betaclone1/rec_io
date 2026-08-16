@@ -94,11 +94,21 @@ async def get_auto_entry_settings(monitor_id: str = None):
                             str(symbol_wide_monitor_follow or "").strip() == monitor_name
                         )
 
+                def _f(v):
+                    return float(v) if v is not None else None
+
+                def _b(v):
+                    return bool(v) if v is not None else None
+
+                def _s(v):
+                    return str(v) if v is not None else None
+
+                # Pass-through from monitor_list only — never invent UI/strategy defaults.
                 row = {
-                    "min_probability": float(result[0]) if result[0] is not None else 95.00,
-                    "max_probability": float(result[1]) if result[1] is not None else 100.00,
-                    "min_differential": float(result[2]) if result[2] else 0.25,
-                    "max_differential": float(result[3]) if result[3] is not None else None,
+                    "min_probability": _f(result[0]),
+                    "max_probability": _f(result[1]),
+                    "min_differential": _f(result[2]),
+                    "max_differential": _f(result[3]),
                     "min_time": result[4],
                     "max_time": result[5],
                     "allow_re_entry": result[6],
@@ -115,54 +125,48 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     "min_volume": result[17],
                     "win_streak_threshold": result[18],
                     "performance_based_allocation": result[19],
-                    "momentum_scalp_entry_threshold": float(result[20]) if result[20] is not None else None,
-                    "momentum_scalp_trailing_stop_amount": float(result[21]) if result[21] is not None else None,
-                    "momentum_scalp_profit_target": float(result[22]) if result[22] is not None else None,
-                    "min_ask": float(result[23]) if result[23] is not None else 0.0000,
-                    "max_ask": float(result[24]) if result[24] is not None else 0.9800,
-                    "loss_prevention_toggle": bool(result[25]) if result[25] is not None else True,
-                    "max_price_spread": float(result[26]) if result[26] is not None else 0.0300,
-                    "prob_adj": float(result[27]) if result[27] is not None else 5.00,
-                    "min_cooldown_timer": result[28] if result[28] is not None else None,
-                    "max_cooldown_timer": result[29] if result[29] is not None else None,
-                    "regime_monitor_enabled": bool(result[30]) if result[30] is not None else False,
-                    "regime_window": str(result[31]) if result[31] is not None else "30d",
-                    "stop_loss_price": float(result[32]) if result[32] is not None else 0.0,
-                    "min_ask_range": float(result[33]) if result[33] is not None else None,
-                    "test_filter": bool(result[34]) if result[34] is not None else False,
-                    "reverse": bool(result[35]) if result[35] is not None else False,
-                    "time_in_force": str(result[36]) if result[36] is not None else "fill_or_kill",
-                    "order_type": str(result[37]) if result[37] is not None else "market",
-                    "min_fill_price": float(result[38]) if result[38] is not None else None,
+                    "momentum_scalp_entry_threshold": _f(result[20]),
+                    "momentum_scalp_trailing_stop_amount": _f(result[21]),
+                    "momentum_scalp_profit_target": _f(result[22]),
+                    "min_ask": _f(result[23]),
+                    "max_ask": _f(result[24]),
+                    "loss_prevention_toggle": _b(result[25]),
+                    "max_price_spread": _f(result[26]),
+                    "prob_adj": _f(result[27]),
+                    "min_cooldown_timer": result[28],
+                    "max_cooldown_timer": result[29],
+                    "regime_monitor_enabled": _b(result[30]),
+                    "regime_window": _s(result[31]),
+                    "stop_loss_price": _f(result[32]),
+                    "min_ask_range": _f(result[33]),
+                    "test_filter": _b(result[34]),
+                    "reverse": _b(result[35]),
+                    "time_in_force": _s(result[36]),
+                    "order_type": _s(result[37]),
+                    "min_fill_price": _f(result[38]),
                     "name": monitor_name,
                     "symbol": monitor_symbol,
                 }
                 if has_flip:
-                    row["flip_sell_prob"] = bool(result[41]) if result[41] is not None else False
-                    row["flip_sell_prob_mult"] = str(result[42]) if result[42] is not None else None
-                    row["flip_sell_floor"] = bool(result[43]) if result[43] is not None else False
-                    row["flip_sell_floor_mult"] = str(result[44]) if result[44] is not None else None
+                    row["flip_sell_prob"] = _b(result[41])
+                    row["flip_sell_prob_mult"] = _s(result[42])
+                    row["flip_sell_floor"] = _b(result[43])
+                    row["flip_sell_floor_mult"] = _s(result[44])
                     _sw_i = 45
                 else:
-                    row["flip_sell_prob"] = False
+                    row["flip_sell_prob"] = None
                     row["flip_sell_prob_mult"] = None
-                    row["flip_sell_floor"] = False
+                    row["flip_sell_floor"] = None
                     row["flip_sell_floor_mult"] = None
                     _sw_i = 41
-                st_on = bool(result[_sw_i]) if result[_sw_i] is not None else False
-                st_dur = int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else 4
+                st_on = _b(result[_sw_i])
+                st_dur = int(result[_sw_i + 1]) if result[_sw_i + 1] is not None else None
                 st_start = result[_sw_i + 2]
-                lp_method = str(result[_sw_i + 3]) if result[_sw_i + 3] is not None else "win_streak"
-                symbol_wide_on = bool(result[_sw_i + 4]) if result[_sw_i + 4] is not None else False
-                row["min_slippage"] = (
-                    float(result[_sw_i + 5]) if result[_sw_i + 5] is not None else 0.0000
-                )
-                row["min_movement"] = (
-                    float(result[_sw_i + 6]) if result[_sw_i + 6] is not None else 0.00
-                )
-                row["max_movement"] = (
-                    float(result[_sw_i + 7]) if result[_sw_i + 7] is not None else 100.00
-                )
+                lp_method = _s(result[_sw_i + 3])
+                symbol_wide_on = _b(result[_sw_i + 4])
+                row["min_slippage"] = _f(result[_sw_i + 5])
+                row["min_movement"] = _f(result[_sw_i + 6])
+                row["max_movement"] = _f(result[_sw_i + 7])
                 st_start_iso = (
                     timestamptz_wire_iso_et(st_start)
                     if hasattr(st_start, "isoformat")
