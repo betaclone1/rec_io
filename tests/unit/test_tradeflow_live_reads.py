@@ -21,6 +21,41 @@ def test_tradeflow_max_age_defaults():
     assert tradeflow_live_state_max_age_sec() >= 0.5
 
 
+def test_ttc_prefers_settlement_end_over_stale_frozen_ttc():
+    """Delayed ladder publish must not keep window gates on frozen ttc."""
+    now = 1_700_000_000.0
+    ladder = {
+        "ttc": 80,  # stale snapshot still showing 80s
+        "settlement_end_ms": int((now + 55) * 1000),
+        "event_ticker": "KXBTC15M-26AUG161115-15",
+    }
+    assert ttc_seconds_from_ladder(ladder, "15m", now_unix=now) == 55
+
+
+def test_ttc_ages_frozen_value_by_last_updated_when_no_settlement():
+    now = 1_700_000_000.0
+    from datetime import datetime, timezone
+
+    asof = datetime.fromtimestamp(now - 22, tz=timezone.utc).isoformat()
+    ladder = {"ttc": 80, "last_updated": asof}
+    assert ttc_seconds_from_ladder(ladder, "15m", now_unix=now) == 58
+
+
+def test_ttc_ages_by_snap_age_sec_kwarg():
+    ladder = {"ttc": 70}
+    assert ttc_seconds_from_ladder(ladder, "15m", snap_age_sec=25) == 45
+
+
+def test_ttc_from_event_ticker_settlement_when_ms_missing():
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    end = datetime(2026, 8, 16, 11, 15, 0, tzinfo=ZoneInfo("America/New_York"))
+    now = end.timestamp() - 48
+    ladder = {"ttc": 900, "event_ticker": "KXBTC15M-26AUG161115-15"}
+    assert ttc_seconds_from_ladder(ladder, "15m", now_unix=now) == 48
+
+
 def test_symbol_metrics_stale_returns_none():
     env = {"updated_at": "2000-01-01T00:00:00+00:00", "data": {"price": 1.0}}
     with patch("backend.core.tradeflow_live_reads.live_state_cache_enabled", return_value=True):

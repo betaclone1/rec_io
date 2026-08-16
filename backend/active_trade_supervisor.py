@@ -3769,6 +3769,7 @@ _ATS_FAILSAFE_POLL_SEC = float(
         "1" if ATS_UNIFIED_POOL else str(_ATS_MONITOR_SAFETY_WAKE_SEC),
     )
 )
+_ats_last_failsafe_mono: float = 0.0
 
 
 def _ats_refuse_stale_fire(stage: str) -> bool:
@@ -5150,11 +5151,17 @@ def start_monitoring_loop():
                         "📊 MONITORING: No active, pending, or closing trades; stopping monitoring loop"
                     )
                     break
-                _ats_live_state_wake.wait(timeout=_ATS_FAILSAFE_POLL_SEC)
+                _ats_woke = _ats_live_state_wake.wait(timeout=_ATS_FAILSAFE_POLL_SEC)
                 _ats_live_state_wake.clear()
                 if _ATS_LANE_EXITS:
                     try:
-                        _ats_ensure_lane_hub().failsafe_refresh_all()
+                        # Cadence failsafe even while busy so non-waking ladders
+                        # still re-eval (quiet-only starved BTC under ETH flood).
+                        global _ats_last_failsafe_mono
+                        now_mono = time.monotonic()
+                        if now_mono - _ats_last_failsafe_mono >= _ATS_FAILSAFE_POLL_SEC:
+                            _ats_ensure_lane_hub().failsafe_refresh_all()
+                            _ats_last_failsafe_mono = now_mono
                     except Exception as _lane_e:
                         log_debug(f"ATS lane failsafe: {_lane_e}")
 

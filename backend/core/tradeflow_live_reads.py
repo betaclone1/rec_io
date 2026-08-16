@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+import threading
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
@@ -21,7 +22,10 @@ from backend.core.time_eastern import EST
 logger = logging.getLogger(__name__)
 
 _last_warn_mono: Dict[str, float] = {}
-_WARN_INTERVAL_SEC = 30.0
+_last_fresh_state: Dict[str, str] = {}
+_warn_lock = threading.Lock()
+# While stale, remind at most this often per key (transition into stale always logs).
+_WARN_INTERVAL_SEC = 120.0
 
 
 def tradeflow_live_state_max_age_sec() -> float:
@@ -43,11 +47,37 @@ def tradeflow_requires_live_state() -> bool:
 
 
 def _log_throttled(key: str, msg: str, *args: Any) -> None:
+    """Periodic reminder while a problem persists (race-safe across lane threads)."""
     now = time.monotonic()
-    last = _last_warn_mono.get(key, 0.0)
-    if now - last < _WARN_INTERVAL_SEC:
-        return
-    _last_warn_mono[key] = now
+    with _warn_lock:
+        last = _last_warn_mono.get(key, 0.0)
+        if now - last < _WARN_INTERVAL_SEC:
+            return
+        _last_warn_mono[key] = now
+    logger.warning(msg, *args)
+
+
+def _log_freshness_issue(
+    fkey: str,
+    state: str,
+    msg: str,
+    *args: Any,
+) -> None:
+    """
+    Log on transition into miss/stale; while stuck, at most every ``_WARN_INTERVAL_SEC``.
+    Recovery (ok) clears state so the next failure logs immediately.
+    """
+    now = time.monotonic()
+    with _warn_lock:
+        prev = _last_fresh_state.get(fkey)
+        _last_fresh_state[fkey] = state
+        if state == "ok":
+            return
+        if prev == state:
+            last = _last_warn_mono.get(fkey, 0.0)
+            if now - last < _WARN_INTERVAL_SEC:
+                return
+        _last_warn_mono[fkey] = now
     logger.warning(msg, *args)
 
 
@@ -64,11 +94,13 @@ def _check_fresh(
     *,
     max_age_sec: Optional[float] = None,
 ) -> Tuple[bool, str, float]:
+    fkey = f"{kind}:{key}"
     if not live_state_cache_enabled():
         return False, "cache_disabled", float("inf")
     if not envelope:
-        _log_throttled(
-            f"{kind}:{key}",
+        _log_freshness_issue(
+            fkey,
+            "miss",
             "stale_live_state miss %s key=%s",
             kind,
             key,
@@ -77,8 +109,9 @@ def _check_fresh(
     age = _envelope_age_sec(envelope)
     limit = max_age_sec if max_age_sec is not None else tradeflow_live_state_max_age_sec()
     if age > limit:
-        _log_throttled(
-            f"{kind}:{key}",
+        _log_freshness_issue(
+            fkey,
+            "stale",
             "stale_live_state %s key=%s age=%.2fs max=%.2fs",
             kind,
             key,
@@ -86,6 +119,8 @@ def _check_fresh(
             limit,
         )
         return False, "stale", age
+    with _warn_lock:
+        _last_fresh_state[fkey] = "ok"
     return True, "ok", age
 
 
@@ -193,12 +228,78 @@ def strike_ladder(
     return ladder
 
 
-def ttc_seconds_from_ladder(
-    ladder: Optional[Dict[str, Any]],
+def _ladder_settlement_end_unix(ladder: Dict[str, Any]) -> Optional[float]:
+    """Authoritative contract end from ladder ``settlement_end_ms`` or Kalshi ticker parse."""
+    ms = ladder.get("settlement_end_ms")
+    if ms is not None:
+        try:
+            return float(ms) / 1000.0
+        except (TypeError, ValueError):
+            pass
+    tickers: List[Any] = [ladder.get("event_ticker")]
+    strikes = ladder.get("strikes") or []
+    if isinstance(strikes, list) and strikes:
+        first = strikes[0]
+        if isinstance(first, dict):
+            tickers.append(first.get("ticker"))
+            tickers.append(first.get("event_ticker"))
+    try:
+        from backend.core.kalshi_contract_settlement import (
+            kalshi_contract_settlement_end_est,
+        )
+    except Exception:
+        return None
+    for raw in tickers:
+        if raw is None:
+            continue
+        try:
+            end_est = kalshi_contract_settlement_end_est(str(raw).strip())
+        except Exception:
+            continue
+        if end_est is None:
+            continue
+        try:
+            return float(end_est.timestamp())
+        except Exception:
+            continue
+    return None
+
+
+def _ladder_asof_age_sec(
+    ladder: Dict[str, Any],
+    *,
+    now_unix: Optional[float] = None,
+) -> Optional[float]:
+    """Seconds since ladder ``last_updated`` (when present)."""
+    raw = ladder.get("last_updated")
+    if raw is None:
+        return None
+    try:
+        if isinstance(raw, (int, float)):
+            asof = float(raw)
+            if asof > 1e12:
+                asof /= 1000.0
+        else:
+            text = str(raw).strip()
+            if not text:
+                return None
+            # Support Z and offset ISO forms used by strike_table_generator.
+            if text.endswith("Z"):
+                text = text[:-1] + "+00:00"
+            asof_dt = datetime.fromisoformat(text)
+            if asof_dt.tzinfo is None:
+                asof_dt = asof_dt.replace(tzinfo=EST)
+            asof = asof_dt.timestamp()
+    except (TypeError, ValueError, OSError):
+        return None
+    now = time.time() if now_unix is None else float(now_unix)
+    return max(0.0, now - asof)
+
+
+def _raw_ttc_seconds_from_ladder(
+    ladder: Dict[str, Any],
     market: str,
 ) -> Optional[int]:
-    if not ladder:
-        return None
     mkt = (market or "hourly").strip().lower()
     for key in ("ttc", "ttc_seconds"):
         v = ladder.get(key)
@@ -218,6 +319,39 @@ def ttc_seconds_from_ladder(
         return int(v)
     except (TypeError, ValueError):
         return None
+
+
+def ttc_seconds_from_ladder(
+    ladder: Optional[Dict[str, Any]],
+    market: str,
+    *,
+    now_unix: Optional[float] = None,
+    snap_age_sec: Optional[float] = None,
+) -> Optional[int]:
+    """
+    Seconds to contract end for tradeflow window gates.
+
+    Prefer authoritative settlement end (``settlement_end_ms`` / Kalshi ticker).
+    Otherwise age the frozen ladder ``ttc`` by elapsed time since as-of
+    (``snap_age_sec`` or ``last_updated``) so delayed ladder publishes cannot
+    hold monitors outside their TTC windows.
+    """
+    if not ladder:
+        return None
+    now = time.time() if now_unix is None else float(now_unix)
+    end_unix = _ladder_settlement_end_unix(ladder)
+    if end_unix is not None:
+        return max(0, int(end_unix - now))
+
+    raw = _raw_ttc_seconds_from_ladder(ladder, market)
+    if raw is None:
+        return None
+    age = snap_age_sec
+    if age is None:
+        age = _ladder_asof_age_sec(ladder, now_unix=now)
+    if age is not None and age > 0:
+        return max(0, int(raw) - int(age))
+    return int(raw)
 
 
 def _market_snapshot_from_strike_ladder(ladder: Dict[str, Any]) -> Dict[str, Any]:

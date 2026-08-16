@@ -1098,8 +1098,12 @@ _aes_live_state_wake = threading.Event()
 _AES_FAILSAFE_POLL_SEC = float(os.getenv("AES_FAILSAFE_POLL_SEC", "1"))
 _AES_LP_RECONCILE_SEC = float(os.getenv("AES_LP_RECONCILE_SEC", "5"))
 _aes_last_lp_recompute_mono: float = 0.0
+_aes_last_failsafe_mono: float = 0.0
 _aes_pool_ladder_keys: Set[Tuple[str, str]] = set()
 _aes_pool_ladder_keys_at: float = 0.0
+_aes_lane_monitor_rows_cache: Optional[List[dict]] = None
+_aes_lane_monitor_rows_at: float = 0.0
+_AES_LANE_MONITOR_ROWS_TTL_SEC = float(os.getenv("AES_LANE_MONITOR_ROWS_TTL_SEC", "2"))
 
 # SIMPLIFIED: Track last trade time per strike (atomic)
 last_trade_times = {}  # strike_key -> timestamp
@@ -2339,11 +2343,21 @@ def get_current_ttc():
         if not current_market or current_market not in ("hourly", "15m"):
             return 0
         ctx = _aes_unified_tick_context.get()
+        snap_age = None
+        if ctx and ctx.get("captured_mono") is not None:
+            try:
+                snap_age = max(0.0, time.monotonic() - float(ctx["captured_mono"]))
+            except (TypeError, ValueError):
+                snap_age = None
         if ctx and ctx.get("data") is not None:
             if ctx.get("symbol") == current_symbol and ctx.get("market") == current_market:
                 from backend.core.tradeflow_live_reads import ttc_seconds_from_ladder
 
-                ttc_val = ttc_seconds_from_ladder(ctx["data"], current_market)
+                ttc_val = ttc_seconds_from_ladder(
+                    ctx["data"],
+                    current_market,
+                    snap_age_sec=snap_age,
+                )
                 if ttc_val is not None:
                     return int(ttc_val)
         from backend.core.tradeflow_live_reads import strike_ladder, ttc_seconds_from_ladder
@@ -3592,27 +3606,41 @@ def check_simulated_15m_entry_hourly_htc():
 
 
 def _aes_list_lane_monitor_rows() -> List[dict]:
-    """Active monitors owned by this AES process (cutout membership or general excl. cutout)."""
+    """Active monitors owned by this AES process (cutout membership or general excl. cutout).
+
+    Short TTL cache: ladder wakes still evaluate every tick; only the membership
+    query is coalesced so we do not hit PG twice (15m+hourly) on every wake.
+    """
+    global _aes_lane_monitor_rows_cache, _aes_lane_monitor_rows_at
+    now = time.monotonic()
+    ttl = _AES_LANE_MONITOR_ROWS_TTL_SEC
+    if _aes_lane_monitor_rows_cache is not None and (now - _aes_lane_monitor_rows_at) < ttl:
+        return _aes_lane_monitor_rows_cache
+
     from backend.core.aes_btc15m_exp_scalp_cutout import (
         filter_out_cutout_rows,
         list_active_btc15m_exp_scalp_cutout_rows,
     )
 
     if AES_BTC15M_EXP_SCALP:
-        return list_active_btc15m_exp_scalp_cutout_rows()
-    if AES_UNIFIED_15M:
+        rows = list_active_btc15m_exp_scalp_cutout_rows()
+    elif AES_UNIFIED_15M:
         from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
-        return filter_out_cutout_rows(list_active_15m_monitor_rows())
-    if AES_UNIFIED_HOURLY:
+        rows = filter_out_cutout_rows(list_active_15m_monitor_rows())
+    elif AES_UNIFIED_HOURLY:
         from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
 
-        return list_active_hourly_monitor_rows()
-    if AES_UNIFIED_ALL:
+        rows = list_active_hourly_monitor_rows()
+    elif AES_UNIFIED_ALL:
         from backend.core.unified_all_monitors import list_active_unified_monitor_rows
 
-        return filter_out_cutout_rows(list_active_unified_monitor_rows())
-    return []
+        rows = filter_out_cutout_rows(list_active_unified_monitor_rows())
+    else:
+        rows = []
+    _aes_lane_monitor_rows_cache = rows
+    _aes_lane_monitor_rows_at = now
+    return rows
 
 
 def _aes_lane_parallelism() -> int:
@@ -3693,7 +3721,12 @@ def _aes_lane_bind_worker(u: str, m: str, slot, lane) -> None:
         }
     )
     tick_tok = _aes_unified_tick_context.set(
-        {"symbol": slot.symbol, "market": slot.market, "data": slot.snap}
+        {
+            "symbol": slot.symbol,
+            "market": slot.market,
+            "data": slot.snap,
+            "captured_mono": getattr(slot, "captured_mono", None),
+        }
     )
     tw0 = time.perf_counter()
     strat = ""
@@ -6739,10 +6772,18 @@ def start_monitoring_loop():
                 _aes_maybe_lp_recompute()
 
                 if AES_UNIFIED_POOL:
-                    # Failsafe only: ladder wakes drive on_ladder_update → hub.publish/eval.
-                    _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
+                    # Ladder wakes already call on_ladder_notify for the updated
+                    # symbol. Failsafe must still run on a cadence while busy —
+                    # otherwise non-waking ladders (e.g. BTC under ETH flood)
+                    # never re-eval and miss Exp Scalp TTC windows. Cap at
+                    # AES_FAILSAFE_POLL_SEC; do not refresh on every wake.
+                    global _aes_last_failsafe_mono
+                    woke = _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
                     _aes_live_state_wake.clear()
-                    _aes_ensure_lane_hub().failsafe_refresh_all()
+                    now_mono = time.monotonic()
+                    if now_mono - _aes_last_failsafe_mono >= _AES_FAILSAFE_POLL_SEC:
+                        _aes_ensure_lane_hub().failsafe_refresh_all()
+                        _aes_last_failsafe_mono = now_mono
                 else:
                     check_auto_entry_conditions()
                     _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
