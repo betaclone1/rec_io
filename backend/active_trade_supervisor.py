@@ -228,7 +228,7 @@ def create_monitor_active_trades_table():
         create_unified_15m_active_trades_pool_table()
         create_unified_hourly_active_trades_pool_table()
         return
-    if ATS_UNIFIED_15M:
+    if ATS_BTC15M_EXP_SCALP or ATS_UNIFIED_15M:
         create_unified_15m_active_trades_pool_table()
         return
     if ATS_UNIFIED_HOURLY:
@@ -300,7 +300,7 @@ def drop_monitor_active_trades_table():
 def get_monitor_active_trades_table():
     """Per-monitor legacy table or unified pool active_trades_15m_*|active_trades_hourly_* (tenant rewrite)."""
     slot = effective_tenant_context_for_sql_rewrite().user_no
-    if ATS_UNIFIED_15M:
+    if ATS_BTC15M_EXP_SCALP or ATS_UNIFIED_15M:
         return legacy_active_trades_pool_15m(slot)
     if ATS_UNIFIED_HOURLY:
         return legacy_active_trades_pool_hourly(slot)
@@ -628,8 +628,10 @@ def get_monitor_identifier():
             return "unified_hourly"
         if sys.argv[1] == "unified":
             return "unified"
+        if sys.argv[1] == "btc15m_exp_scalp":
+            return "btc15m_exp_scalp"
         return sys.argv[1]  # Use first argument as monitor identifier
-    
+
     # Default to first active monitor if no identifier provided
     raise ValueError("No monitor identifier found in script name")
 
@@ -638,13 +640,20 @@ MONITOR_IDENTIFIER = get_monitor_identifier()
 ATS_UNIFIED_15M = MONITOR_IDENTIFIER == "unified_15m"
 ATS_UNIFIED_HOURLY = MONITOR_IDENTIFIER == "unified_hourly"
 ATS_UNIFIED_ALL = MONITOR_IDENTIFIER == "unified"
-ATS_UNIFIED_POOL = ATS_UNIFIED_15M or ATS_UNIFIED_HOURLY or ATS_UNIFIED_ALL
+ATS_BTC15M_EXP_SCALP = MONITOR_IDENTIFIER == "btc15m_exp_scalp"
+ATS_UNIFIED_POOL = (
+    ATS_UNIFIED_15M
+    or ATS_UNIFIED_HOURLY
+    or ATS_UNIFIED_ALL
+    or ATS_BTC15M_EXP_SCALP
+)
 
 
 def _unified_pool_accepts_monitor_suffix(monitor_suffix: str) -> bool:
     """
     Unified 15m and unified hourly ATS both subscribe to the same Redis enrollment/TM channels.
     Ignore messages for monitors that belong to the other pool so rows do not land in the wrong table.
+    Cutout ATS accepts only BTC 15m Expiration Scalp monitors; general pools exclude them.
     """
     if not ATS_UNIFIED_POOL:
         return True
@@ -656,6 +665,21 @@ def _unified_pool_accepts_monitor_suffix(monitor_suffix: str) -> bool:
         monitor_suffix_uses_unified_hourly_pool,
         monitor_suffix_uses_unified_aes_ats_pool,
     )
+    from backend.core.aes_btc15m_exp_scalp_cutout import lookup_monitor_is_cutout
+
+    mid = s.split("_", 1)[1].strip()
+    cutout_hit = lookup_monitor_is_cutout(mid)
+    if ATS_BTC15M_EXP_SCALP:
+        if cutout_hit is False:
+            return False
+        if cutout_hit is True:
+            return True
+        # Unknown membership: only accept if suffix is a 15m-pool style id
+        return monitor_suffix_uses_unified_15m_pool(s)
+
+    # General / legacy unified pools never take cutout members (dedicated ATS owns them).
+    if cutout_hit is True:
+        return False
 
     if ATS_UNIFIED_ALL:
         return monitor_suffix_uses_unified_aes_ats_pool(s)
@@ -813,6 +837,8 @@ def get_monitor_symbol():
     try:
         import psycopg2
 
+        if ATS_BTC15M_EXP_SCALP:
+            return "BTC", "15m"
         if ATS_UNIFIED_15M:
             from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
@@ -926,6 +952,13 @@ if ATS_UNIFIED_15M:
 elif ATS_UNIFIED_HOURLY:
     ACTIVE_TRADE_SUPERVISOR_PORT = get_port("active_trade_supervisor_hourly")
     _ats_logger.info("Using unified hourly ATS port: %s", ACTIVE_TRADE_SUPERVISOR_PORT)
+elif ATS_BTC15M_EXP_SCALP:
+    ACTIVE_TRADE_SUPERVISOR_PORT = get_port(
+        f"active_trade_supervisor_{default_pool_user_number()}_btc15m_exp_scalp"
+    )
+    _ats_logger.info(
+        "Using BTC 15m Expiration Scalp cutout ATS port: %s", ACTIVE_TRADE_SUPERVISOR_PORT
+    )
 elif ATS_UNIFIED_ALL:
     ACTIVE_TRADE_SUPERVISOR_PORT = get_port(unified_active_trade_supervisor_service_name())
     _ats_logger.info("Using pool ATS port (15m+hourly): %s", ACTIVE_TRADE_SUPERVISOR_PORT)
@@ -3619,10 +3652,24 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
     """
     Monitors to tick in unified ATS: active rows in monitor_list for this pool, plus any
     monitor_id that still has an active row in the pool (reconcile may enroll paused monitors).
+    Cutout ATS: only BTC 15m Expiration Scalp members. General: exclude those members.
     """
+    from backend.core.aes_btc15m_exp_scalp_cutout import (
+        active_cutout_monitor_ids,
+        list_active_btc15m_exp_scalp_cutout_rows,
+        lookup_monitor_is_cutout,
+    )
+
     seen = set()
     out: List[Tuple[str, str]] = []
-    if ATS_UNIFIED_ALL:
+    if ATS_BTC15M_EXP_SCALP:
+        for row in list_active_btc15m_exp_scalp_cutout_rows():
+            t = (row["user_number"], row["monitor_id"])
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+        iter_bindings = []
+    elif ATS_UNIFIED_ALL:
         from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
 
         iter_bindings = iter_active_unified_monitor_bindings()
@@ -3636,7 +3683,10 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
         iter_bindings = iter_active_hourly_monitor_bindings()
     else:
         return out
+    cutout_ids = active_cutout_monitor_ids()
     for u, m in iter_bindings:
+        if not ATS_BTC15M_EXP_SCALP and str(m) in cutout_ids:
+            continue
         t = (u, m)
         if t not in seen:
             seen.add(t)
@@ -3649,6 +3699,12 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
             for rec in ls_at.list_trades(u):
                 mid = str(rec.get("monitor_id") or "").strip()
                 if not mid:
+                    continue
+                cut = lookup_monitor_is_cutout(mid)
+                if ATS_BTC15M_EXP_SCALP:
+                    if cut is False:
+                        continue
+                elif cut is True:
                     continue
                 t = (u, mid)
                 if t not in seen:
@@ -3663,6 +3719,8 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
             legacy_active_trades_pool_15m(wh),
             legacy_active_trades_pool_hourly(wh),
         ]
+    elif ATS_BTC15M_EXP_SCALP or ATS_UNIFIED_15M:
+        pool_tables = [get_monitor_active_trades_table()]
     else:
         pool_tables = [get_monitor_active_trades_table()]
     conn = get_postgresql_connection(tenant_user_no=USER_NUMBER)
@@ -3680,6 +3738,12 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
                         if mid is None:
                             continue
                         m = str(mid).strip()
+                        cut = lookup_monitor_is_cutout(m)
+                        if ATS_BTC15M_EXP_SCALP:
+                            if cut is False:
+                                continue
+                        elif cut is True:
+                            continue
                         t = (u, m)
                         if t not in seen:
                             seen.add(t)
@@ -3689,6 +3753,222 @@ def _iter_unified_pool_monitor_bindings_for_monitoring():
         finally:
             conn.close()
     return out
+
+
+_ats_lane_fire_guard: ContextVar[Optional[Dict[str, Any]]] = ContextVar(
+    "_ats_lane_fire_guard", default=None
+)
+_ats_lane_hub = None
+_ats_lane_hub_lock = threading.Lock()
+_ats_auto_stop_triggered_trades: Set[Any] = set()
+_ats_verification_pending_trades: Dict[Any, Any] = {}
+_ATS_LANE_EXITS = ATS_UNIFIED_POOL
+_ATS_FAILSAFE_POLL_SEC = float(
+    os.getenv(
+        "ATS_FAILSAFE_POLL_SEC",
+        "1" if ATS_UNIFIED_POOL else str(_ATS_MONITOR_SAFETY_WAKE_SEC),
+    )
+)
+
+
+def _ats_refuse_stale_fire(stage: str) -> bool:
+    """
+    Observe whether the lane gen advanced during an ATS action path.
+
+    Default: do **not** abort — hand off to TM. Latest-only is for eval mailbox
+    scheduling, not killing a decided action mid-handoff.
+
+    Set ``ATS_REFUSE_STALE_FIRE=1`` (or ``TRADEFLOW_REFUSE_STALE_FIRE=1``) to
+    restore hard refuse when the mailbox gen has advanced.
+    """
+    guard = _ats_lane_fire_guard.get()
+    if not guard:
+        return False
+    lane = guard.get("lane")
+    epoch = guard.get("epoch")
+    gid = guard.get("generation_id")
+    if lane is None or epoch is None or not gid:
+        return False
+    if lane.is_current(int(epoch), str(gid)):
+        return False
+    refuse = os.getenv("ATS_REFUSE_STALE_FIRE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) or os.getenv("TRADEFLOW_REFUSE_STALE_FIRE", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
+    try:
+        from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+        _dtrace(
+            "ats_fire_blocked" if refuse else "ats_fire_stale_notice",
+            monitor=ctx_mid(),
+            reason="stale_generation",
+            stage=stage,
+            generation_id=gid,
+            epoch=epoch,
+            refuse=1 if refuse else 0,
+        )
+    except Exception:
+        pass
+    if refuse:
+        log(
+            f"[AUTO STOP] 🚫 BLOCKED stale fire stage={stage} monitor={ctx_mid()} "
+            f"gen={gid} epoch={epoch}"
+        )
+        return True
+    log(
+        f"[AUTO STOP] ⚠️ stale gen during action (continuing handoff) stage={stage} "
+        f"monitor={ctx_mid()} gen={gid} epoch={epoch}"
+    )
+    return False
+
+
+def _ats_list_lane_monitor_rows() -> List[dict]:
+    from backend.core.aes_btc15m_exp_scalp_cutout import (
+        filter_out_cutout_rows,
+        list_active_btc15m_exp_scalp_cutout_rows,
+    )
+
+    if ATS_BTC15M_EXP_SCALP:
+        return list_active_btc15m_exp_scalp_cutout_rows()
+    if ATS_UNIFIED_15M:
+        from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
+
+        return filter_out_cutout_rows(list_active_15m_monitor_rows())
+    if ATS_UNIFIED_HOURLY:
+        from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+        return list_active_hourly_monitor_rows()
+    if ATS_UNIFIED_ALL:
+        from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+        return filter_out_cutout_rows(list_active_unified_monitor_rows())
+    return []
+
+
+def _ats_fetch_ladder_snap(symbol: str, market: str) -> Optional[Dict[str, Any]]:
+    from backend.core.tradeflow_live_reads import strike_ladder
+
+    return strike_ladder(symbol, market, DEFAULT_EXCHANGE)
+
+
+def _ats_lane_keys() -> List[Tuple[str, str]]:
+    if ATS_BTC15M_EXP_SCALP:
+        return [("BTC", "15m")]
+    keys: Set[Tuple[str, str]] = set()
+    for row in _ats_list_lane_monitor_rows():
+        sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
+        mkt = (row.get("market") or "").strip().lower()
+        if mkt not in ("hourly", "15m"):
+            mkt = "15m" if ATS_UNIFIED_15M else "hourly"
+        keys.add((sym, mkt))
+    return sorted(keys) if keys else [("BTC", "15m")]
+
+
+def _ats_lane_bind_worker(u: str, m: str, slot, lane) -> None:
+    if not lane.is_current(slot.epoch, slot.generation_id):
+        return
+    guard_tok = _ats_lane_fire_guard.set(
+        {
+            "lane": lane,
+            "epoch": slot.epoch,
+            "generation_id": slot.generation_id,
+        }
+    )
+    try:
+        with ats_monitor_bind(u, m):
+            if not lane.is_current(slot.epoch, slot.generation_id):
+                return
+            ms, mm = get_current_monitor_symbol_and_market()
+            if (ms or "").strip().upper() != slot.symbol or (
+                mm or ""
+            ).strip().lower() != slot.market:
+                return
+            active_trades = _fetch_active_trades_for_monitoring()
+            if not active_trades:
+                return
+            if is_auto_stop_enabled() and not is_reverse_monitor():
+                check_auto_stop_conditions(
+                    active_trades,
+                    _ats_auto_stop_triggered_trades,
+                    _ats_verification_pending_trades,
+                )
+    finally:
+        _ats_lane_fire_guard.reset(guard_tok)
+
+
+def _ats_evaluate_lane(slot, lane) -> None:
+    hub = _ats_ensure_lane_hub()
+    want = {
+        (r["user_number"], r["monitor_id"])
+        for r in _ats_list_lane_monitor_rows()
+        if (r.get("symbol") or "").strip().upper() == slot.symbol
+        and (r.get("market") or "").strip().lower() == slot.market
+    }
+    # Also include open-trade monitors on this ladder still returned by pool iter.
+    for u, m in _iter_unified_pool_monitor_bindings_for_monitoring():
+        if (u, m) in want:
+            continue
+        with ats_monitor_bind(u, m):
+            ms, mm = get_current_monitor_symbol_and_market()
+            if (ms or "").strip().upper() == slot.symbol and (
+                mm or ""
+            ).strip().lower() == slot.market:
+                want.add((u, m))
+    bindings = sorted(want)
+    try:
+        from backend.core.tradeflow_decision_trace import (
+            decision_trace_enabled as _dtrace_on,
+            trace as _dtrace,
+        )
+
+        if _dtrace_on():
+            _dtrace(
+                "ats_ladder",
+                symbol=slot.symbol,
+                market=slot.market,
+                monitors=len(bindings),
+                generation_id=slot.generation_id,
+                epoch=slot.epoch,
+                cutout=1 if ATS_BTC15M_EXP_SCALP else 0,
+                monitors_csv=",".join(sorted({b[1] for b in bindings})),
+            )
+    except Exception:
+        pass
+    hub.run_bindings_parallel(
+        lane=lane,
+        slot=slot,
+        bindings=bindings,
+        worker=_ats_lane_bind_worker,
+    )
+
+
+def _ats_ensure_lane_hub():
+    global _ats_lane_hub
+    with _ats_lane_hub_lock:
+        if _ats_lane_hub is not None:
+            return _ats_lane_hub
+        from backend.core.tradeflow_latest_only_lane import LatestOnlyLaneHub
+
+        raw = os.getenv("ATS_LANE_PARALLELISM", "32").strip()
+        try:
+            parallelism = max(1, min(int(raw), 64))
+        except (TypeError, ValueError):
+            parallelism = 32
+        _ats_lane_hub = LatestOnlyLaneHub(
+            service=f"ats_{MONITOR_IDENTIFIER}",
+            fetch_snap=_ats_fetch_ladder_snap,
+            evaluate_lane=_ats_evaluate_lane,
+            ladder_keys=_ats_lane_keys,
+            parallelism=parallelism,
+        )
+        return _ats_lane_hub
 
 
 def _fetch_active_trades_for_monitoring() -> List[Dict[str, Any]]:
@@ -4539,9 +4819,18 @@ def start_monitoring_loop():
     def monitoring_worker():
         global monitoring_thread
         log("📊 MONITORING: Starting monitoring loop for active trades")
-        auto_stop_triggered_trades = set()
-        verification_pending_trades = {}  # trade_id -> (trigger_time, verification_end_time)
+        auto_stop_triggered_trades = _ats_auto_stop_triggered_trades
+        verification_pending_trades = _ats_verification_pending_trades  # trade_id -> (trigger_time, verification_end_time)
+        auto_stop_triggered_trades.clear()
+        verification_pending_trades.clear()
         log("🔄 AUTO STOP: Reset auto-stop triggered trades set (clearing any failed attempts)")
+        if _ATS_LANE_EXITS:
+            mode = "btc15m_exp_scalp_cutout" if ATS_BTC15M_EXP_SCALP else "latest_only_lanes"
+            log(f"📊 MONITORING: ATS mode={mode} (mailbox exit eval; cancel in-flight only)")
+            try:
+                _ats_ensure_lane_hub().failsafe_refresh_all()
+            except Exception as _lane_e:
+                log_debug(f"ATS lane initial refresh: {_lane_e}")
         
         try:
             while True:
@@ -4585,8 +4874,13 @@ def start_monitoring_loop():
                             monitoring_worker.last_failsafe_check = current_time
                 
                         # === AUTO STOP LOGIC ===
+                        # Pool/cutout: latest-only ladder lanes own exit checks.
                         auto_stop_enabled = is_auto_stop_enabled()
-                        if auto_stop_enabled and not is_reverse_monitor():
+                        if (
+                            auto_stop_enabled
+                            and not is_reverse_monitor()
+                            and not _ATS_LANE_EXITS
+                        ):
                             check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades)
                 
                         # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
@@ -4856,8 +5150,13 @@ def start_monitoring_loop():
                         "📊 MONITORING: No active, pending, or closing trades; stopping monitoring loop"
                     )
                     break
-                _ats_live_state_wake.wait(timeout=_ATS_MONITOR_SAFETY_WAKE_SEC)
+                _ats_live_state_wake.wait(timeout=_ATS_FAILSAFE_POLL_SEC)
                 _ats_live_state_wake.clear()
+                if _ATS_LANE_EXITS:
+                    try:
+                        _ats_ensure_lane_hub().failsafe_refresh_all()
+                    except Exception as _lane_e:
+                        log_debug(f"ATS lane failsafe: {_lane_e}")
 
         except Exception as e:
             log(f"🚨 CRITICAL: Monitoring loop crashed with error: {e}")
@@ -4938,9 +5237,27 @@ def start_monitoring_loop():
                     except Exception as live_exc:
                         log(f"live_state mark refresh failed: {live_exc}")
 
+                def _ats_on_ladder(s: str, m: str) -> None:
+                    if _ATS_LANE_EXITS:
+                        try:
+                            _ats_ensure_lane_hub().on_ladder_notify(s, m)
+                        except Exception as le:
+                            log_debug(f"ATS lane notify failed: {le}")
+                    else:
+                        _ats_live_state_wake.set()
+
+                def _ats_symbol_market_filter(s: str, m: str) -> bool:
+                    if ATS_BTC15M_EXP_SCALP:
+                        return s.strip().upper() == "BTC" and m.strip().lower() == "15m"
+                    return True
+
                 if start_tradeflow_live_state_listener(
-                    _ats_on_live_state,
+                    on_evaluate=_ats_on_live_state,
+                    on_ladder_update=_ats_on_ladder if _ATS_LANE_EXITS else None,
                     service=f"ats_{MONITOR_IDENTIFIER}",
+                    symbol_market_filter=_ats_symbol_market_filter
+                    if ATS_BTC15M_EXP_SCALP
+                    else None,
                 ):
                     log("📊 MONITORING: live_state trigger enabled")
             except Exception as trig_exc:
@@ -6498,6 +6815,9 @@ def trigger_auto_stop_close(
     import requests
     import random
 
+    if _ats_refuse_stale_fire("pre_pipeline"):
+        return False
+
     tid = trade.get("trade_id")
     if should_suppress_auto_close_past_kalshi_settlement(trade.get("ticker"), tid):
         return False
@@ -6533,6 +6853,9 @@ def trigger_auto_stop_close(
                 conn.close()
         except Exception:
             pass
+        return False
+
+    if _ats_refuse_stale_fire("post_pipeline"):
         return False
 
     # Generate unique ticket ID (single braces: random/time must run)
@@ -6601,6 +6924,8 @@ def trigger_auto_stop_close(
         "close_method": close_method_val,
         "monitor": trade.get("monitor"),
     }
+    if _ats_refuse_stale_fire("pre_submit"):
+        return False
     try:
         from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
 

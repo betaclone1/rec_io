@@ -10434,9 +10434,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
 | `user_id_strategy` | `character varying(10)` | YES | '0001'::character varying | |
-| `verification_period_enabled` | `boolean` | YES | false | |
-| `verification_period_seconds` | `integer(32)` | YES | 15 | |
-| `min_volume` | `integer(32)` | YES | 1000 | |
+| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp: entry dwell (defaults true/3s) |
+| `verification_period_seconds` | `integer(32)` | YES | 15 | See verification_period_enabled |
+| `min_volume` | `integer(32)` | YES | 1000 | | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `win_streak` | `integer(32)` | YES | 0 | |
 | `loss_prevention_state` | `character varying(50)` | YES | 'none'::character varying | Monitor LP state token; renamed from `loss_prevention` by migration `20260511_1035_loss_prevention_consolidation`. |
@@ -10666,9 +10666,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
 | `user_id` | `character varying(10)` | YES | '0001'::character varying | |
-| `verification_period_enabled` | `boolean` | YES | false | |
-| `verification_period_seconds` | `integer(32)` | YES | 15 | |
-| `min_volume` | `integer(32)` | YES | 1000 | |
+| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp: entry dwell (defaults true/3s) |
+| `verification_period_seconds` | `integer(32)` | YES | 15 | See verification_period_enabled |
+| `min_volume` | `integer(32)` | YES | 1000 | | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_trailing_stop_amount` | `numeric(5,2)` | YES | 0.10 | |

@@ -1,7 +1,7 @@
 """
-Offline / backtest mirror of Expiration Scalp entry + floor-exit gates.
+Expiration Scalp entry + floor-exit gates (offline mirror + shared helpers).
 
-**Production does not import this module.** Keep aligned manually with:
+Keep aligned with:
 
 - Entry: ``auto_entry_supervisor.check_auto_entry_conditions_expiration_scalp``
 - Exit: ``active_trade_supervisor.check_auto_stop_conditions_expiration_scalp``
@@ -9,11 +9,54 @@ Offline / backtest mirror of Expiration Scalp entry + floor-exit gates.
 
 Does not handle cooldown, DB duplicate checks, spike alerts, or AES service health.
 Callers supply TTC and market asks/probs for a single ticker (or ladder row).
+
+Entry verification dwell (``update_expiration_scalp_entry_verification``) is used by
+production AES when ``verification_period_enabled`` is set on the monitor.
 """
 
 from __future__ import annotations
 
-from typing import Any, Mapping, Optional
+from typing import Any, Mapping, Optional, Tuple
+
+
+def update_expiration_scalp_entry_verification(
+    state: Optional[Mapping[str, Any]],
+    *,
+    eligible: bool,
+    now_ts: float,
+    enabled: bool,
+    period_seconds: int,
+) -> Tuple[Optional[dict], bool, float]:
+    """
+    Contiguous eligibility dwell before Exp Scalp entry.
+
+    Returns ``(new_state, may_enter, dwell_seconds)``.
+
+    - Disabled: ``may_enter`` follows ``eligible``; state cleared.
+    - Enabled with ``period_seconds <= 0``: first eligible tick may enter.
+    - Enabled: accumulate continuous eligibility; any ineligible tick resets.
+    """
+    if not enabled:
+        return None, bool(eligible), 0.0
+    try:
+        need = max(0, int(period_seconds))
+    except (TypeError, ValueError):
+        need = 0
+    if not eligible:
+        return None, False, 0.0
+    started = None
+    if state is not None:
+        try:
+            started = float(state.get("started_at"))
+        except (TypeError, ValueError, AttributeError):
+            started = None
+    if started is None:
+        started = float(now_ts)
+    dwell = max(0.0, float(now_ts) - started)
+    new_state = {"started_at": started}
+    if dwell >= float(need):
+        return new_state, True, dwell
+    return new_state, False, dwell
 
 
 def side_aware_probability_15m(

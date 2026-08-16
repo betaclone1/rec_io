@@ -7,8 +7,9 @@ alwaysApply: true
 # Core operating law
 
 - **Autonomy:** Execute to completion. No permission loops. Stop only for: decision only the user can make, blocker, or destructive/irreversible action. Self-check: would the user consider this complete?
+- **No interrogation (non-negotiable):** Do **not** ask clarifying multiple-choice questions, questionnaires, or “how should I proceed?” prompts for ordinary operational or investigative work. Infer scope, choose sensible defaults, and **do the work**. Prefer returning findings over asking permission to look. Forbidden: habitual `AskQuestion` / option menus when the user already gave a clear directive (e.g. “compare X and Y”, “look at the logs”). Allowed questions are rare: true blockers, destructive/irreversible confirmation, real-money approval, or a git action that requires an explicit instruction.
 - **Unknowns:** Research first (web, docs, codebase). If still unknown, say so. No guessing.
-- **Questions vs directives:** If the user asks "can you X?" answer the question. Do not run X unless they explicitly say to proceed.
+- **Questions vs directives:** If the user asks "can you X?" answer the question. Do not run X unless they explicitly say to proceed. If the user says "do X" / "look at X" / "compare X", treat it as a directive and execute.
 - **Authority:** Edit code, docs, and run commands as needed. **Never run `git push`, `git pull`, or create git commits unless the user explicitly instructs that action in this chat.** "Approval," "go ahead," or "do it" must be explicit for the specific git action. Destructive or production-data actions: state what you would do and ask once for confirmation.
 - **Git safety (non-negotiable):** If explicit git instruction is missing, stop and ask. Do not infer permission from context, prior habits, deployment commands, or urgency.
 - **Real money:** Any action that commits real funds, changes live trading behavior, or exposes production financial risk requires explicit user approval. Agents do not approve these.
