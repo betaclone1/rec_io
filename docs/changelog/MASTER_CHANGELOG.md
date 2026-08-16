@@ -21,15 +21,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-16-aes-cpu`**. Code: `git revert` this commit. Full: restore droplet from snapshot.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Regenerate supervisor config and full restart:  
+- [x] Regenerate supervisor config and full restart:  
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify health + AES/ATS/cutout supervisor status; unified AES not pegged ~100% CPU; load average down vs pre-change:  
+- [x] Verify health + AES/ATS/cutout supervisor status; unified AES not pegged ~100% CPU; load average down vs pre-change:  
   `curl -sSf http://127.0.0.1:3000/health`; `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp|strike_table|market_watchdog'`; `uptime`; `ps -axo %cpu,args | grep -E 'auto_entry_supervisor.py unified|btc15m_exp_scalp|strike_table_generator_ws|market_watchdog' | grep -v grep`
-- [ ] Spot-check next Exp Scalp window: cutout ACTIVE within ~1–3s of window open; fire path still works in-window (do not gate release on Momentum Contain/Breakout quiet latency).
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.3`
-- [ ] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-aes-cpu`**.
+- [x] Spot-check next Exp Scalp window: cutout ACTIVE within ~1–3s of window open; fire path still works in-window (do not gate release on Momentum Contain/Breakout quiet latency).
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.3`
+- [x] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-aes-cpu`**.
 
 ---
 
