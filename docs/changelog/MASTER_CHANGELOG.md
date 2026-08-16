@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-16 — Release v3.10.2: Fix late TTC window entry (Exp Scalp)
+
+**Summary**
+- **Release: v3.10.2**
+- **Problem:** Exp Scalp monitors were opening **15–40s late** into a 45s TTC window (`max_time=60` → `min_time=15`). AES/ATS treated frozen ladder `ttc` as wall-clock truth, and quiet-only failsafe starved non-waking ladders while other symbols flooded live_state wakes (seen on local unified BTC vs ETH; same class on prod unified / off-path evals after v3.10.1).
+- **Fix:** `ttc_seconds_from_ladder` prefers authoritative settlement end (`settlement_end_ms` / Kalshi ticker) or ages snapshot `ttc` by as-of / lane capture age. AES/ATS failsafe runs on a **1s cadence even while busy** (not every wake). Tick contract doc updated; unit tests for aged TTC + stale_live_state log throttle.
+- **No DB migrations.**
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-16-ttc-window`**. Code: `git revert` this commit. Full: restore droplet from snapshot.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor config and full restart:  
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp'`
+- [ ] Spot-check next Exp Scalp window: BTC cutout / unified ACTIVE should land within ~1–3s of `*:14:00` / `*:29:00` / `*:44:00` / `*:59:00` (not 15–40s late).
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.2`
+- [ ] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-ttc-window`**.
+
+---
+
 ## 2026-08-16 — Release v3.10.1: BTC 15m Exp Scalp AES cutout + latest-only lane + verify defaults
 
 **Summary**
