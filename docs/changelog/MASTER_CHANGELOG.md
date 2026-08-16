@@ -19,16 +19,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-16-full`**. Code: `git revert` this commit (and prior v3.10.0 if needed). DB: `run_migration.py down 20260812_1540_exp_scalp_entry_verification_defaults`. Full: restore droplet from snapshot.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration (before AES/ATS restart):  
+- [x] Apply migration (before AES/ATS restart):  
   `cd /opt/rec_io_server && PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260812_1540_exp_scalp_entry_verification_defaults`
-- [ ] Regenerate supervisor config and full restart:  
+- [x] Regenerate supervisor config and full restart:  
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp'`
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp'`
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.1`
-- [ ] Rollback (if needed): `run_migration.py down 20260812_1540_exp_scalp_entry_verification_defaults`; git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-full`**.
+- [x] Rollback (if needed): `run_migration.py down 20260812_1540_exp_scalp_entry_verification_defaults`; git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-full`**.
 
 ---
 
