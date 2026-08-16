@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-16 — Release v3.10.0: Monitor settings modal hydrate gate (no default overwrite)
+
+**Summary**
+- **Release: v3.10.0**
+- **Problem:** Unified Auto Trade modal (desktop) could enable Save before `get_auto_entry_settings` finished, while in-memory time-window state still held UI defaults **0–3600**. Saving then overwrote live monitor gate settings (seen on monitor **10046** after position edits).
+- **Fix:** Desktop and mobile: Save stays disabled until authoritative settings load (finite `min_time`/`max_time` from API); always await fresh load on open; Enter/Save refuse if not hydrated; do not invent time-window defaults on load.
+- Also ships Expiration Scalp verification controls in the modal UI (existing `verification_period_*` columns; no schema change).
+- **Scope:** Frontend only (`unified_auto_trade_settings.js`, `dashboard_mobile.html`, `unified_auto_trade_modal.html`). No migrations. No AES/backend cutout in this release.
+- **Reversibility:** Droplet snapshot **`rec-io-prod-pre-update-2026-08-16`** (DO action submitted before deploy). Code rollback: `git revert` this commit (or `git checkout <prior> --` the three frontend files) + pull + hard-refresh browsers. No DB down migration required.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart `main_app` so static/modal assets are served from the new tree:  
+  `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart main_app`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; open a monitor settings modal and confirm Save stays disabled until settings load.
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.0`
+- [ ] Rollback (if needed): restore prior frontend via git revert of this release commit, pull, restart `main_app`; or restore droplet from snapshot **`rec-io-prod-pre-update-2026-08-16`**.
+
+---
+
 ## 2026-08-13 — Release v3.9.9: Kalshi exchange sharding balance matrix + order auto-route
 
 **Summary**

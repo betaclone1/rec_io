@@ -1192,6 +1192,8 @@
       if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
       const esNote = document.getElementById('expirationScalpProbMovementNote');
       if (esNote) esNote.style.display = isExpirationScalp ? 'block' : 'none';
+      const esVerify = document.getElementById('expirationScalpVerificationSection');
+      if (esVerify) esVerify.style.display = isExpirationScalp ? 'block' : 'none';
       const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');
       if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
     }
@@ -1403,6 +1405,16 @@
       display.textContent = value;
       const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
       const percent = (value - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+    }
+    function updateExpirationScalpVerificationDisplay(value){
+      const display = document.getElementById('expirationScalpVerificationValueDisplay');
+      const slider = document.getElementById('expirationScalpVerificationSlider');
+      if (!display || !slider) return;
+      const n = Math.min(15, Math.max(0, parseInt(value, 10) || 0));
+      display.textContent = String(n);
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (n - min) / (max - min);
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
     }
     function updateDashboardStopLossBubblesFromInt(rawValue) {
@@ -1672,6 +1684,29 @@
       }
     }
 
+    function uatMonitorSettingsHydrated(modal) {
+      return !!(modal && modal.dataset && modal.dataset.uatSettingsHydrated === '1');
+    }
+
+    function uatSetMonitorSettingsHydrated(modal, ready) {
+      if (!modal) return;
+      modal.dataset.uatSettingsHydrated = ready ? '1' : '0';
+      const saveBtn = document.getElementById('unifiedAutoTradeSave');
+      if (saveBtn) {
+        saveBtn.disabled = !ready;
+        saveBtn.title = ready ? '' : 'Waiting for monitor settings to load';
+      }
+    }
+
+    function uatApiSettingsHaveTimeWindow(data) {
+      return !!(
+        data
+        && data.status !== 'error'
+        && Number.isFinite(Number(data.min_time))
+        && Number.isFinite(Number(data.max_time))
+      );
+    }
+
     async function openUnifiedAutoTradeSettings(tileId){
       await ensureUnifiedAutoTradeModalMounted();
       const apiId = normalizeMonitorIdForApi(tileId);
@@ -1683,6 +1718,8 @@
       modal.style.display = 'flex';
       modal.setAttribute('data-tile-id', tileId); // Store for slider functions
       document.body.style.overflow = 'hidden';
+      // Never allow Save until this open has loaded authoritative monitor settings.
+      uatSetMonitorSettingsHydrated(modal, false);
       dashboardUatLoadMonitorPositionIntoModal(apiId);
       void fetchAndRenderDashboardAutoStopAccuracy(apiId);
 
@@ -1837,8 +1874,12 @@
         // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
         const isExpirationScalpPopulate = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
         const timeMax = isExpirationScalpPopulate ? 300 : ((currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600);
-        dashboardMinTimeSeconds = data.min_time !== undefined ? Math.max(0, Math.min(timeMax, data.min_time)) : 0;
-        dashboardMaxTimeSeconds = data.max_time !== undefined ? Math.max(0, Math.min(timeMax, data.max_time)) : timeMax;
+        // Authoritative only — never invent 0/timeMax here; open() refuses Save until API returns finite times.
+        dashboardMinTimeSeconds = Math.max(0, Math.min(timeMax, Number(data.min_time)));
+        dashboardMaxTimeSeconds = Math.max(0, Math.min(timeMax, Number(data.max_time)));
+        if (dashboardMaxTimeSeconds < dashboardMinTimeSeconds) {
+          dashboardMaxTimeSeconds = dashboardMinTimeSeconds;
+        }
         
         // Probability window (for Hourly HTC) or Ask Price window (for Momentum Breakout/Contain)
         if (isMomentumBreakout || isMomentumContain) {
@@ -2014,7 +2055,13 @@
           const profitTargetSliderValue = Math.round(profitTarget * 100);
           setVal('msMomentumScalpProfitTargetSlider', profitTargetSliderValue);
         } else if (isExpirationScalpPopulate) {
-          // Expiration Scalp: time, probability, and ask window only (loaded above)
+          // Expiration Scalp: time, probability, ask window, entry verification
+          const esVerifyOn = data.verification_period_enabled;
+          setChk('expirationScalpVerificationEnabled', esVerifyOn == null ? true : !!esVerifyOn);
+          let esVerifySec = data.verification_period_seconds;
+          if (esVerifySec == null || esVerifySec === '') esVerifySec = 3;
+          esVerifySec = Math.min(15, Math.max(0, parseInt(esVerifySec, 10) || 0));
+          setVal('expirationScalpVerificationSlider', esVerifySec);
         } else {
           // HOURLY HTC settings
         setVal('autoEntryMinVolumeSlider', data.min_volume ?? 1000);
@@ -2160,6 +2207,8 @@
               movMaxHandle._dashWired = true;
               movMaxHandle.addEventListener('mousedown', handleDashboardMovementMouseDown);
             }
+            const esVerifySlider = document.getElementById('expirationScalpVerificationSlider');
+            if (esVerifySlider) updateExpirationScalpVerificationDisplay(esVerifySlider.value);
           } else {
             // HOURLY HTC value bubbles
         updateAutoEntryMinVolumeDisplay(document.getElementById('autoEntryMinVolumeSlider').value);
@@ -2230,6 +2279,12 @@
                 el.addEventListener('input', function(){ fn(this.value); });
               }
             });
+          } else if (isExpirationScalp) {
+            const esVerifyEl = document.getElementById('expirationScalpVerificationSlider');
+            if (esVerifyEl && !esVerifyEl._dashUnifiedWired) {
+              esVerifyEl._dashUnifiedWired = true;
+              esVerifyEl.addEventListener('input', function(){ updateExpirationScalpVerificationDisplay(this.value); });
+            }
           } else {
         const pairs = [
           ['autoEntryMinVolumeSlider', updateAutoEntryMinVolumeDisplay],
@@ -2279,12 +2334,25 @@
         }, 150);
       };
 
-      const cached = dashboardSettingsCache[tileId];
-      if (cached) {
-        populate(cached);
+      // Always load from API for this open. Cache is display-only after a successful hydrate —
+      // never enable Save on in-memory slider defaults (0/3600) or a prior session's state.
+      let hydrateOk = false;
+      try {
+        const r = await fetch('/api/get_auto_entry_settings?monitor_id=' + apiId);
+        const j = await r.json();
+        if (uatApiSettingsHaveTimeWindow(j)) {
+          dashboardSettingsCache[tileId] = j;
+          populate(j);
+          hydrateOk = true;
+        }
+      } catch (hydrateErr) {
+        console.error('get_auto_entry_settings failed', hydrateErr);
+      }
+      if (!hydrateOk) {
+        uatSetMonitorSettingsHydrated(modal, false);
+        alert('Could not load monitor settings. Save is disabled until settings load successfully.');
       } else {
-        fetch('/api/get_auto_entry_settings?monitor_id=' + apiId)
-          .then(r=>r.json()).then(j=>{ if (j&&j.status!=='error'){ dashboardSettingsCache[tileId]=j; populate(j);} });
+        uatSetMonitorSettingsHydrated(modal, true);
       }
 
       // Save
@@ -2293,6 +2361,10 @@
         console.warn('openUnifiedAutoTradeSettings: unifiedAutoTradeSave button missing');
       } else saveBtn.onclick = async function(){
         if (modal.dataset.uatSaveInFlight === '1') return;
+        if (!uatMonitorSettingsHydrated(modal)) {
+          alert('Monitor settings have not finished loading. Nothing was saved.');
+          return;
+        }
         // Determine which strategy is active (use the strategy from monitor data)
         const isMomentumScalp = currentStrategy && (currentStrategy.toUpperCase().includes('MOMENTUM SCALP') || currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL'));
       const isMomentumReversal = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM REVERSAL');
@@ -2437,6 +2509,12 @@
             const mfpVal = parseInt(mfpEl.value, 10) / 100;
             payload.min_fill_price = mfpVal > 0 ? parseFloat(mfpVal.toFixed(4)) : 0;
           }
+          const esVerifyCb = document.getElementById('expirationScalpVerificationEnabled');
+          const esVerifySl = document.getElementById('expirationScalpVerificationSlider');
+          payload.verification_period_enabled = esVerifyCb ? !!esVerifyCb.checked : true;
+          let esSec = esVerifySl ? parseInt(esVerifySl.value, 10) : 3;
+          if (isNaN(esSec)) esSec = 3;
+          payload.verification_period_seconds = Math.min(15, Math.max(0, esSec));
         } else {
           // HOURLY HTC specific fields
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
@@ -2559,8 +2637,9 @@
         if (modal.style.display === 'none') return;
         if (e.key === 'Enter') {
           e.preventDefault();
+          if (!uatMonitorSettingsHydrated(modal)) return;
           const btn = document.getElementById('unifiedAutoTradeSave');
-          if (btn) btn.click();
+          if (btn && !btn.disabled) btn.click();
         } else if (e.key === 'Escape') {
           e.preventDefault();
           closeUnifiedAutoTradeSettings();
@@ -2579,6 +2658,7 @@
       if (window.UatUnifiedModalPositionSize && modal) {
         window.UatUnifiedModalPositionSize.restoreOpenSnapshot(modal);
       }
+      uatSetMonitorSettingsHydrated(modal, false);
       modal.style.display = 'none';
       document.body.style.overflow = 'auto';
       if (modal._keydownHandler) {

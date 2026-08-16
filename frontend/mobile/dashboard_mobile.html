@@ -9048,6 +9048,19 @@
         <hr style="border:none; border-top:1px solid #4a5568; margin:16px 0 24px 0;">
 
         </div>
+        <div id="m_expirationScalpVerificationSection" style="display:none;">
+        <div class="uat-section-title">Verification Period</div>
+        <div style="position:relative; margin-bottom:24px; width:100%;">
+          <input type="checkbox" id="m_esVerifyEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;">
+          <span style="font-size:13px; color:#666;">Require criteria to hold before entry</span>
+        </div>
+        <label for="m_esVerifySeconds" style="font-size:14px; color:#333; font-weight:500;">Verification Duration (seconds):</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_esVerifySeconds" min="0" max="15" step="1" value="3" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
+          <div id="m_esVerifySecondsVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">3</div>
+        </div>
+        <hr style="border:none; border-top:1px solid #4a5568; margin:16px 0 24px 0;">
+        </div>
         <div id="m_htcAutoStopSection">
         <div class="uat-section-title">Auto Stop</div>
 
@@ -9511,6 +9524,8 @@
         if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
         const esNote = document.getElementById('m_expirationScalpProbMovementNote');
         if (esNote) esNote.style.display = isExpirationScalp ? 'block' : 'none';
+        const esVerify = document.getElementById('m_expirationScalpVerificationSection');
+        if (esVerify) esVerify.style.display = isExpirationScalp ? 'block' : 'none';
         const nonScalpTail = document.getElementById('m_uatNonExpirationScalpAutoEntry');
         if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
       }
@@ -10645,6 +10660,7 @@
         bindSlider('m_stopProb', 'm_stopProbVal', (value) => `${Math.round(value)}%`);
         bindSlider('m_momentumThreshold', 'm_momentumThresholdVal', (value) => `±${Math.round(value)}`);
         bindSlider('m_verifySeconds', 'm_verifySecondsVal', (value) => `${Math.round(value)}s`);
+        bindSlider('m_esVerifySeconds', 'm_esVerifySecondsVal', (value) => `${Math.round(value)}`);
         
         // MOMENTUM SCALP sliders
         bindSlider('m_msAutoEntryMinVolume', 'm_msMinVolVal', (value) => Math.round(Math.max(0, value)).toString());
@@ -10756,6 +10772,14 @@
         modal.style.display = 'flex';
         document.body.style.overflow = 'hidden';
         modal.setAttribute('data-uat-tile-id', tileId);
+        // Never allow Save until this open has loaded authoritative monitor settings.
+        modal.dataset.uatSettingsHydrated = '0';
+        const saveBtnEarly = document.getElementById('m_unifiedSave');
+        if (saveBtnEarly) {
+          saveBtnEarly.disabled = true;
+          saveBtnEarly.title = 'Waiting for monitor settings to load';
+          saveBtnEarly.onclick = null;
+        }
         mobileUatWireLossPreventionControls();
         mobileDashUatLoadMonitorPositionIntoModal(apiId);
         
@@ -10861,7 +10885,18 @@
         mobileDashApplyExpirationScalpLayout(isExpirationScalp);
 
         const data = await mobileFetchSettings(apiId);
-        if (!data) return;
+        if (!data || !Number.isFinite(Number(data.min_time)) || !Number.isFinite(Number(data.max_time))) {
+          modal.dataset.uatSettingsHydrated = '0';
+          if (saveBtnEarly) {
+            saveBtnEarly.disabled = true;
+            saveBtnEarly.title = 'Settings failed to load';
+            saveBtnEarly.onclick = function() {
+              alert('Monitor settings have not finished loading. Nothing was saved.');
+            };
+          }
+          alert('Could not load monitor settings. Save is disabled until settings load successfully.');
+          return;
+        }
 
         const setVal = (id, value) => {
           const el = document.getElementById(id);
@@ -10908,11 +10943,12 @@
         // Common settings (both strategies) — Expiration Scalp max 300s; 15m HTC uses 0:00–15:00 (900s)
         const timeMax = isExpirationScalp ? 300 : ((currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600);
         window.dashboardMobileTimeWindowMaxSeconds = timeMax;
-        const minTime = Number.isFinite(Number(data.min_time)) ? Number(data.min_time) : 0;
-        const maxTime = Number.isFinite(Number(data.max_time)) ? Number(data.max_time) : timeMax;
+        // Authoritative only — never invent 0/timeMax when API omits times.
+        const minTime = Number(data.min_time);
+        const maxTime = Number(data.max_time);
         const minTimeRounded = Math.max(0, Math.min(timeMax, Math.round(minTime / 15) * 15));
         const maxTimeRounded = Math.max(0, Math.min(timeMax, Math.round(maxTime / 15) * 15));
-        const finalMaxTime = maxTimeRounded <= minTimeRounded ? Math.min(timeMax, minTimeRounded + 900) : maxTimeRounded;
+        const finalMaxTime = maxTimeRounded < minTimeRounded ? minTimeRounded : maxTimeRounded;
         
         // Probability window (for HOURLY HTC) or Ask Price window (for Momentum Breakout/Contain)
         if (isMomentumBreakout || isMomentumContain) {
@@ -10981,6 +11017,12 @@
               dashboardMobileExpirationScalpMinAsk = parseFloat((dashboardMobileExpirationScalpMaxAsk - MIN_ASK_SEPARATION).toFixed(4));
             }
           }
+          const esVerifyOn = data.verification_period_enabled;
+          setChk('m_esVerifyEnabled', esVerifyOn == null ? true : !!esVerifyOn);
+          let esVerifySec = data.verification_period_seconds;
+          if (esVerifySec == null || esVerifySec === '') esVerifySec = 3;
+          esVerifySec = Math.min(15, Math.max(0, parseInt(esVerifySec, 10) || 0));
+          setVal('m_esVerifySeconds', esVerifySec);
         } else {
           // Probability window (for Hourly HTC)
           window.dashboardMobileMinProbability = data.min_probability !== undefined ? parseFloat(data.min_probability) : 95.00;
@@ -11166,9 +11208,16 @@
 
         const saveBtn = document.getElementById('m_unifiedSave');
         if (saveBtn) {
+          modal.dataset.uatSettingsHydrated = '1';
+          saveBtn.disabled = false;
+          saveBtn.title = '';
           saveBtn.onclick = async function() {
             const uatModal = document.getElementById('mobileUnifiedAutoTradeModal');
             if (uatModal && uatModal.dataset.uatSaveInFlight === '1') return;
+            if (!uatModal || uatModal.dataset.uatSettingsHydrated !== '1') {
+              alert('Monitor settings have not finished loading. Nothing was saved.');
+              return;
+            }
             // Determine which strategy is active (reuse variables from outer scope)
             const saveIsMS = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM SCALP');
             
@@ -11300,6 +11349,12 @@
                 const mfpVal = parseInt(mfpEl.value, 10) / 100;
                 payload.min_fill_price = mfpVal > 0 ? parseFloat(mfpVal.toFixed(4)) : 0;
               }
+              const esVerifyCb = document.getElementById('m_esVerifyEnabled');
+              const esVerifySl = document.getElementById('m_esVerifySeconds');
+              payload.verification_period_enabled = esVerifyCb ? !!esVerifyCb.checked : true;
+              let esSec = esVerifySl ? parseInt(esVerifySl.value, 10) : 3;
+              if (isNaN(esSec)) esSec = 3;
+              payload.verification_period_seconds = Math.min(15, Math.max(0, esSec));
             } else {
               // HOURLY HTC / REVERSE HTC specific fields
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
@@ -11435,8 +11490,9 @@
           if (modal.style.display === 'none') return;
           if (event.key === 'Enter') {
             event.preventDefault();
+            if (modal.dataset.uatSettingsHydrated !== '1') return;
             const save = document.getElementById('m_unifiedSave');
-            if (save) save.click();
+            if (save && !save.disabled) save.click();
           } else if (event.key === 'Escape') {
             event.preventDefault();
             hideModal();
@@ -11453,6 +11509,14 @@
         const modal = document.getElementById('mobileUnifiedAutoTradeModal');
         if (modal && window.UatUnifiedModalPositionSize) {
           window.UatUnifiedModalPositionSize.restoreOpenSnapshot(modal);
+        }
+        if (modal) {
+          modal.dataset.uatSettingsHydrated = '0';
+          const saveBtn = document.getElementById('m_unifiedSave');
+          if (saveBtn) {
+            saveBtn.disabled = true;
+            saveBtn.onclick = null;
+          }
         }
         modal.style.display = 'none';
         document.body.style.overflow = 'auto';
