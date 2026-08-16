@@ -17,14 +17,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Droplet snapshot **`rec-io-prod-pre-update-2026-08-16`** (DO action submitted before deploy). Code rollback: `git revert` this commit (or `git checkout <prior> --` the three frontend files) + pull + hard-refresh browsers. No DB down migration required.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart `main_app` so static/modal assets are served from the new tree:  
+- [x] Restart `main_app` so static/modal assets are served from the new tree:  
   `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock restart main_app`
-- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; open a monitor settings modal and confirm Save stays disabled until settings load.
-- [ ] Record release in DB:  
+- [x] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; open a monitor settings modal and confirm Save stays disabled until settings load.
+- [x] Record release in DB:  
   `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.0`
-- [ ] Rollback (if needed): restore prior frontend via git revert of this release commit, pull, restart `main_app`; or restore droplet from snapshot **`rec-io-prod-pre-update-2026-08-16`**.
+- [x] Rollback (if needed): restore prior frontend via git revert of this release commit, pull, restart `main_app`; or restore droplet from snapshot **`rec-io-prod-pre-update-2026-08-16`**.
 
 ---
 
