@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-16 — Release v3.10.1: BTC 15m Exp Scalp AES cutout + latest-only lane + verify defaults
+
+**Summary**
+- **Release: v3.10.1**
+- **AES/ATS:** Dedicated BTC 15m Expiration Scalp cutout workers (`btc15m_exp_scalp`) with ports in `port_config` / supervisor generator; main unified AES excludes cutout membership.
+- **Tradeflow:** Latest-only mailbox lane (`tradeflow_latest_only_lane`) for denser/non-backlogged evaluation; live_state trigger + unified 15m/hourly monitor wiring.
+- **Gates:** Expiration Scalp entry verification dwell path in `auto_entry_expiration_scalp_gates` / AES.
+- **DB:** Migration **`20260812_1540_exp_scalp_entry_verification_defaults`** sets Expiration Scalp strategy/monitor `verification_period_enabled=TRUE`, `verification_period_seconds=3` (down restores FALSE/15). Schema ref + tick contract docs updated.
+- **Ops:** Logrotate config cleanup; AGENTS / core-operating-law notes.
+- **Tests:** Unit tests for cutout, latest-only lane, exp-scalp verification.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-16-full`**. Code: `git revert` this commit (and prior v3.10.0 if needed). DB: `run_migration.py down 20260812_1540_exp_scalp_entry_verification_defaults`. Full: restore droplet from snapshot.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration (before AES/ATS restart):  
+  `cd /opt/rec_io_server && PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260812_1540_exp_scalp_entry_verification_defaults`
+- [ ] Regenerate supervisor config and full restart:  
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: `curl -sSf http://127.0.0.1:3000/health` and `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp'`
+- [ ] Record release in DB:  
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.1`
+- [ ] Rollback (if needed): `run_migration.py down 20260812_1540_exp_scalp_entry_verification_defaults`; git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-16-full`**.
+
+---
+
 ## 2026-08-16 — Release v3.10.0: Monitor settings modal hydrate gate (no default overwrite)
 
 **Summary**
