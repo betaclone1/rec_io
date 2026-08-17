@@ -18,14 +18,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot before deploy recommended. Code: `git revert` this commit.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Regenerate supervisor config and full restart:  
+- [x] Regenerate supervisor config and full restart:  
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify health + AES/ATS/cutout supervisor status; cutout log paths live under `logs/` (not archive-only):  
+- [x] Verify health + AES/ATS/cutout supervisor status; cutout log paths live under `logs/` (not archive-only):  
   `curl -sSf http://127.0.0.1:3000/health`; `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp'`; `ls -la logs/auto_entry_supervisor_0001_btc15m_exp_scalp.out.log logs/active_trade_supervisor_0001_btc15m_exp_scalp.out.log 2>&1`
-- [ ] Spot-check unified AES/ATS logs: no `Sync complete` / status churn for cutout monitor ids `10046`/`10056` on unified processes (cutout workers may still log them).
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.4`
+- [x] Spot-check unified AES/ATS logs: no `Sync complete` / status churn for cutout monitor ids `10046`/`10056` on unified processes (cutout workers may still log them).
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.10.4`
 
 ---
 
