@@ -5850,19 +5850,7 @@ def sync_with_trades_db():
     """
     try:
         if ATS_UNIFIED_POOL:
-            if ATS_UNIFIED_15M:
-                from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
-
-                iter_bindings = iter_active_15m_monitor_bindings()
-            elif ATS_UNIFIED_HOURLY:
-                from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
-
-                iter_bindings = iter_active_hourly_monitor_bindings()
-            else:
-                from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
-
-                iter_bindings = iter_active_unified_monitor_bindings()
-            for u, m in iter_bindings:
+            for u, m in _iter_unified_pool_monitor_bindings_for_monitoring():
                 with ats_monitor_bind(u, m):
                     _sync_with_trades_db_for_current_monitor()
             _reconcile_unified_pool_open_trades_full_scan()

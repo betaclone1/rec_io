@@ -7,6 +7,7 @@ Config/class rule (not hard-coded monitor ids):
 
 from __future__ import annotations
 
+import os
 import threading
 import time
 from typing import Any, Dict, List, Optional, Set
@@ -18,6 +19,27 @@ CUTOUT_ARGV = "btc15m_exp_scalp"
 
 _cutout_id_cache_lock = threading.Lock()
 _cutout_id_cache: Dict[str, Any] = {"ts": 0.0, "ids": set()}
+
+
+def supervisor_log_numeric_monitor_id(filename: str, slot: str) -> Optional[str]:
+    """
+    Numeric monitor id from ``service_<slot>_<id>*.log``.
+
+    Pool workers (``unified``, ``btc15m_exp_scalp``) are not monitor ids — return None
+    so orphan-log cleanup does not archive their live files.
+    """
+    name = os.path.basename(filename)
+    parts = name.split("_")
+    try:
+        idx_slot = parts.index(slot)
+    except ValueError:
+        return None
+    if idx_slot + 1 >= len(parts):
+        return None
+    token = parts[idx_slot + 1].split(".")[0]
+    if not token.isdigit():
+        return None
+    return token
 
 
 def is_btc15m_exp_scalp_cutout_row(row: Dict[str, Any]) -> bool:

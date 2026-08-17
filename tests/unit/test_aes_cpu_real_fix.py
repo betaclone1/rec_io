@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import sys
 import types
+from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "../..")))
@@ -238,3 +239,39 @@ def test_live_state_strike_feed_sync_symbols_filter(monkeypatch):
     # via set_market. Call with symbols={"ETH"} and ensure BTC/SOL never appear.
     wi._live_state_strike_feed_sync(master, symbols={"ETH"})
     assert all(sym == "ETH" for _, sym in calls)
+
+
+def test_periodic_status_sync_uses_lane_membership_not_all_monitors(monkeypatch):
+    """Cutout/unified status sync must not walk unfiltered unified bindings."""
+    bound = []
+
+    monkeypatch.setattr(aes, "AES_UNIFIED_POOL", True)
+    monkeypatch.setattr(
+        aes,
+        "_aes_list_lane_monitor_rows",
+        lambda: [
+            {"user_number": "0001", "monitor_id": "10046"},
+            {"user_number": "0001", "monitor_id": "10056"},
+        ],
+    )
+
+    @contextmanager
+    def _bind(u, m):
+        bound.append((u, m))
+        yield
+
+    monkeypatch.setattr(aes, "aes_monitor_bind", _bind)
+    monkeypatch.setattr(aes, "is_auto_trade_enabled", lambda: True)
+    monkeypatch.setattr(aes, "determine_auto_entry_status", lambda: "ACTIVE")
+    monkeypatch.setattr(aes, "update_auto_entry_status_in_db", lambda _s: None)
+
+    def _must_not_import_all():
+        raise AssertionError("periodic_status_sync must not iterate all unified monitors")
+
+    fake_all = types.ModuleType("backend.core.unified_all_monitors")
+    fake_all.iter_active_unified_monitor_bindings = _must_not_import_all
+    monkeypatch.setitem(sys.modules, "backend.core.unified_all_monitors", fake_all)
+
+    aes.periodic_status_sync()
+    assert bound == [("0001", "10046"), ("0001", "10056")]
+

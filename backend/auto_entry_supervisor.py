@@ -2102,22 +2102,15 @@ def periodic_status_sync():
 
     This is intentionally light: it only runs when auto_trade is enabled and
     delegates to determine_auto_entry_status + update_auto_entry_status_in_db.
+
+    Pool membership matches the fire path (``_aes_list_lane_monitor_rows``):
+    cutout AES only BTC 15m Expiration Scalp; unified excludes those rows.
     """
     try:
         if AES_UNIFIED_POOL:
-            if AES_UNIFIED_15M:
-                from backend.core.unified_15m_monitors import iter_active_15m_monitor_bindings
-
-                iter_bindings = iter_active_15m_monitor_bindings()
-            elif AES_UNIFIED_HOURLY:
-                from backend.core.unified_hourly_monitors import iter_active_hourly_monitor_bindings
-
-                iter_bindings = iter_active_hourly_monitor_bindings()
-            else:
-                from backend.core.unified_all_monitors import iter_active_unified_monitor_bindings
-
-                iter_bindings = iter_active_unified_monitor_bindings()
-            for u, m in iter_bindings:
+            for r in _aes_list_lane_monitor_rows():
+                u = r["user_number"]
+                m = r["monitor_id"]
                 with aes_monitor_bind(u, m):
                     if is_auto_trade_enabled():
                         status = determine_auto_entry_status()

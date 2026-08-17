@@ -37,6 +37,7 @@ from backend.core.time_eastern import (
     today_est,
 )
 from backend.core.port_config import get_port, default_pool_user_number
+from backend.core.aes_btc15m_exp_scalp_cutout import supervisor_log_numeric_monitor_id
 from backend.trading_mode import (
     account_balance_table_for_user,
     monitor_list_fqn,
@@ -2145,20 +2146,11 @@ environment={env_vars}
             
             for log_file in all_log_files:
                 filename = os.path.basename(log_file)
-                
-                # Extract monitor ID from filename
-                # Pattern: service_<slot>_MONITOR_ID.suffix.log
-                parts = filename.split("_")
                 slot = _mm_worker_slot()
-                try:
-                    idx_slot = parts.index(slot)
-                    if idx_slot + 1 < len(parts):
-                        monitor_id = parts[idx_slot + 1].split(".")[0]
-                    else:
-                        continue
-                except ValueError:
+                monitor_id = supervisor_log_numeric_monitor_id(filename, slot)
+                if not monitor_id:
                     continue
-                
+
                 # Check if this monitor ID exists in database
                 if monitor_id not in valid_monitor_ids:
                     destination = os.path.join(archive_dir, filename)
