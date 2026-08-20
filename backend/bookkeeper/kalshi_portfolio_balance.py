@@ -286,14 +286,20 @@ def fetch_subaccount_balances_cents_map(user_no: str) -> dict[int, int] | None:
     return {int(n): int(v["balance_cents"]) for n, v in matrix.items()}
 
 
-def fetch_subaccount_transferable_cents(user_no: str, subaccount_number: int) -> int | None:
+def fetch_subaccount_transferable_cents(
+    user_no: str,
+    subaccount_number: int,
+    *,
+    exchange_index: int = 0,
+) -> int | None:
     """
-    Largest whole-cent amount Kalshi will move out of ``subaccount_number``.
+    Largest whole-cent amount Kalshi will move out of ``(exchange_index, subaccount_number)``.
 
     Kalshi reports balances with sub-cent precision (``"3487.4972"``). Rounding that to
     348750c and transferring it is rejected with ``insufficient_balance``, so truncate:
-    348749c is the real maximum. ``None`` if credentials/API fail or the subaccount is
-    absent — callers must fail rather than guess.
+    348749c is the real maximum. ``None`` if credentials/API fail; ``0`` if the address
+    is absent from the matrix (unfunded pair) — callers distinguish fail vs empty.
+    Absent credentials / request errors return ``None`` (must not guess).
     """
     from decimal import Decimal, InvalidOperation
 
@@ -304,13 +310,24 @@ def fetch_subaccount_transferable_cents(user_no: str, subaccount_number: int) ->
     except Exception:
         return None
 
+    want_sub = int(subaccount_number)
+    want_ex = int(exchange_index)
+    found = False
     for row in (raw or {}).get("subaccount_balances") or []:
         if not isinstance(row, dict):
             continue
         try:
-            if int(row.get("subaccount_number")) != int(subaccount_number):
+            if int(row.get("subaccount_number")) != want_sub:
                 continue
-            return int(Decimal(str(row.get("balance")).strip()) * 100)
+            row_ex = int(row.get("exchange_index") if row.get("exchange_index") is not None else 0)
+            if row_ex != want_ex:
+                continue
+            found = True
+            # Truncate toward zero: floor of dollars*100 for positive balances.
+            dollars = Decimal(str(row.get("balance")).strip())
+            return int(dollars * 100)
         except (TypeError, ValueError, InvalidOperation):
             return None
+    if not found:
+        return 0
     return None

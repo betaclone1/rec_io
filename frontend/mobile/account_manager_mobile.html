@@ -490,8 +490,26 @@
                     <select id="initiate-transfer-from"><option value="">--</option></select>
                 </div>
                 <div class="row">
+                    <label>From exchange</label>
+                    <select id="initiate-transfer-from-exchange">
+                        <option value="0">0</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                    </select>
+                </div>
+                <div class="row">
                     <label>To</label>
                     <select id="initiate-transfer-to"><option value="">--</option></select>
+                </div>
+                <div class="row">
+                    <label>To exchange</label>
+                    <select id="initiate-transfer-to-exchange">
+                        <option value="0">0</option>
+                        <option value="1">1</option>
+                        <option value="2">2</option>
+                        <option value="3">3</option>
+                    </select>
                 </div>
                 <div class="row">
                     <label>Amount ($)</label>
@@ -917,23 +935,27 @@
         }
         startAccountManagerMobilePolling();
 
+        function exchangeBalanceCents(sub, exchangeIndex) {
+            if (!sub) return null;
+            const key = "exchange_" + Number(exchangeIndex) + "_balance";
+            if (sub[key] != null && sub[key] !== "") return Number(sub[key]);
+            if (Number(exchangeIndex) === 0 && sub.balance != null) return Number(sub.balance);
+            return 0;
+        }
+
         function updateInitiateTransferAvailable() {
             const fromVal = document.getElementById("initiate-transfer-from")?.value;
+            const fromEx = document.getElementById("initiate-transfer-from-exchange")?.value ?? "0";
             const availableEl = document.getElementById("initiate-transfer-available");
             if (!availableEl) return;
             if (!fromVal || fromVal === "External") { availableEl.textContent = ""; return; }
-            if (fromVal === "CASH" || fromVal === "PRIMARY") {
-                const cashCents = window.subaccountsForTransfer?.find(s => s.subaccount === "CASH")?.balance;
-                if (cashCents != null) {
-                    availableEl.textContent = "Available: $" + (Number(cashCents) / 100).toFixed(2) + " (CASH)";
-                } else {
-                    availableEl.textContent = "";
-                }
-                return;
-            }
-            const sub = (window.subaccountsForTransfer || []).find(s => s.subaccount === fromVal);
-            if (!sub || sub.balance == null) { availableEl.textContent = ""; return; }
-            availableEl.textContent = "Available: $" + (Number(sub.balance) / 100).toFixed(2);
+            const label = fromVal === "PRIMARY" ? "CASH" : fromVal;
+            const sub = (window.subaccountsForTransfer || []).find(s => s.subaccount === label);
+            const cents = exchangeBalanceCents(sub, fromEx);
+            if (cents == null) { availableEl.textContent = ""; return; }
+            availableEl.textContent =
+                "Available: $" + (Number(cents) / 100).toFixed(2) +
+                " (" + label + " @ exchange " + fromEx + ")";
         }
 
         function openInitiateTransferModal() {
@@ -942,8 +964,12 @@
             const fromEl = document.getElementById("initiate-transfer-from");
             const toEl = document.getElementById("initiate-transfer-to");
             const amountEl = document.getElementById("initiate-transfer-amount");
+            const fromExEl = document.getElementById("initiate-transfer-from-exchange");
+            const toExEl = document.getElementById("initiate-transfer-to-exchange");
             if (fromEl) fromEl.innerHTML = "<option value=\"\">--</option>" + options.map(o => `<option value="${o}">${o}</option>`).join("");
             if (toEl) toEl.innerHTML = "<option value=\"\">--</option>" + options.map(o => `<option value="${o}">${o}</option>`).join("");
+            if (fromExEl) fromExEl.value = "0";
+            if (toExEl) toExEl.value = "0";
             if (amountEl) amountEl.value = "";
             updateInitiateTransferAvailable();
             const modal = document.getElementById("initiate-transfer-modal");
@@ -1150,22 +1176,32 @@
         });
 
         document.getElementById("initiate-transfer-from")?.addEventListener("change", updateInitiateTransferAvailable);
+        document.getElementById("initiate-transfer-from-exchange")?.addEventListener("change", updateInitiateTransferAvailable);
         document.getElementById("initiate-transfer-btn")?.addEventListener("click", openInitiateTransferModal);
         document.getElementById("initiate-transfer-cancel")?.addEventListener("click", closeInitiateTransferModal);
         document.getElementById("initiate-transfer-submit")?.addEventListener("click", function() {
             const fromVal = document.getElementById("initiate-transfer-from")?.value;
             const toVal = document.getElementById("initiate-transfer-to")?.value;
+            const fromEx = parseInt(document.getElementById("initiate-transfer-from-exchange")?.value ?? "0", 10);
+            const toEx = parseInt(document.getElementById("initiate-transfer-to-exchange")?.value ?? "0", 10);
             const amountVal = document.getElementById("initiate-transfer-amount")?.value;
             if (!fromVal || !toVal) { alert("Please select From and To."); return; }
             if (fromVal === "External" || toVal === "External") { alert("External transfers are not supported yet."); return; }
             const amount = parseFloat(amountVal);
             if (isNaN(amount) || amount <= 0) { alert("Please enter a positive amount."); return; }
+            if (fromVal === toVal && fromEx === toEx) { alert("From and To addresses must differ."); return; }
             closeInitiateTransferModal();
             void (async function() {
                 try {
                     const res = await fetch(window.location.origin + "/api/subaccounts/initiate-transfer", {
                         method: "POST", headers: { "Content-Type": "application/json" },
-                        body: JSON.stringify({ from: fromVal, to: toVal, amount: amount })
+                        body: JSON.stringify({
+                            from: fromVal,
+                            to: toVal,
+                            amount: amount,
+                            from_exchange_index: fromEx,
+                            to_exchange_index: toEx
+                        })
                     });
                     const data = await res.json();
                     if (!data.ok) { alert(data.error || "Transfer failed."); return; }

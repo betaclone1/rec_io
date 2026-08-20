@@ -604,7 +604,8 @@ async def get_subaccounts(
                     sql.SQL(
                         """
                     SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
-                           target_pnl__pct, transfer_amt, automatic_transfers
+                           target_pnl__pct, transfer_amt, automatic_transfers,
+                           exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance
                     FROM {}
                     ORDER BY id
                     """

@@ -292,12 +292,17 @@ async def initiate_transfer(request: Request):
         from_name = payload.get("from")
         to_name = payload.get("to")
         amount_dollars = payload.get("amount")
+        try:
+            from_exchange_index = int(payload.get("from_exchange_index", 0))
+            to_exchange_index = int(payload.get("to_exchange_index", 0))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "from_exchange_index and to_exchange_index must be integers"}
+        if from_exchange_index < 0 or to_exchange_index < 0:
+            return {"ok": False, "error": "exchange indexes must be >= 0"}
         if not from_name or not to_name:
             return {"ok": False, "error": "from and to required"}
         if from_name == "External" or to_name == "External":
             return {"ok": False, "error": "External transfers not supported yet"}
-        if from_name == to_name:
-            return {"ok": False, "error": "from and to must differ"}
         try:
             amount_val = float(amount_dollars)
         except (TypeError, ValueError):
@@ -309,6 +314,10 @@ async def initiate_transfer(request: Request):
         transfer_timestamp_est = now_est().strftime("%Y-%m-%d %H:%M:%S")
         slot = resolved_tenant_user_no_for_app()
         paper = is_paper_trading()
+        if from_name == to_name and (
+            paper or from_exchange_index == to_exchange_index
+        ):
+            return {"ok": False, "error": "from and to addresses must differ"}
         sa_tbl = subaccounts_table_for_user(slot)
         sa_ident = sql_ident_qualified_table(sa_tbl)
         ab_fqn = account_balance_table_for_user(slot)
@@ -355,18 +364,34 @@ async def initiate_transfer(request: Request):
                 fetch_subaccount_transferable_cents,
             )
 
-            from_balance = fetch_subaccount_transferable_cents(slot, from_num)
+            from_balance = fetch_subaccount_transferable_cents(
+                slot,
+                from_num,
+                exchange_index=from_exchange_index,
+            )
             if from_balance is None:
                 return {
                     "ok": False,
-                    "error": f"Unable to read Kalshi balance for {from_name} (#{from_num})",
+                    "error": (
+                        f"Unable to read Kalshi balance for {from_name} "
+                        f"(#{from_num}, exchange {from_exchange_index})"
+                    ),
                 }
         if from_balance <= 0:
-            return {"ok": False, "error": f"no balance available in {from_name}"}
+            return {
+                "ok": False,
+                "error": (
+                    f"no balance available in {from_name} "
+                    f"(exchange {from_exchange_index})"
+                ),
+            }
         if amount_cents > from_balance:
             _log.info(
-                "initiate-transfer %s → %s: requested %sc exceeds available %sc; sending full balance",
+                "initiate-transfer (%s,%s) → (%s,%s): requested %sc exceeds available %sc; "
+                "sending full balance",
+                from_exchange_index,
                 from_name,
+                to_exchange_index,
                 to_name,
                 amount_cents,
                 from_balance,
@@ -375,7 +400,7 @@ async def initiate_transfer(request: Request):
 
         if not paper:
             from backend.bookkeeper.kalshi_subaccount_transfer import (
-                apply_subaccount_transfer,
+                transfer_kalshi_address,
             )
 
             if cash_to_mtb:
@@ -388,12 +413,15 @@ async def initiate_transfer(request: Request):
                     conn.close()
 
             try:
-                apply_subaccount_transfer(
+                transfer_kalshi_address(
                     slot,
-                    from_num,
-                    to_num,
-                    amount_cents,
-                    str(uuid.uuid4()),
+                    from_exchange=from_exchange_index,
+                    from_subaccount=from_num,
+                    to_exchange=to_exchange_index,
+                    to_subaccount=to_num,
+                    amount_cents=amount_cents,
+                    client_transfer_id=str(uuid.uuid4()),
+                    wait_for_iat_credit=True,
                 )
             except Exception as exc:
                 if cash_to_mtb:
@@ -409,7 +437,7 @@ async def initiate_transfer(request: Request):
                         )
                     finally:
                         conn.close()
-                _log.warning("Kalshi subaccount transfer failed: %s", exc)
+                _log.warning("Kalshi address transfer failed: %s", exc)
                 return {"ok": False, "error": f"Kalshi transfer failed: {exc}"}
 
             conn = get_postgresql_connection()

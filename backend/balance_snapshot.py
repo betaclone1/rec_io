@@ -634,19 +634,37 @@ def _mtb_realized_pnl_pct(mtb_balance: int, base_value: Optional[int]) -> Option
 def compute_automatic_mtb_rake_amount_cents(
     cursor,
     subaccounts_table: str,
+    *,
+    home_exchange_index: int | None = None,
 ) -> Optional[int]:
     """
     If MTB automatic-transfers settings are met, return rake amount in cents; else None.
     Caller should refresh MTB realized_pnl from Kalshi-synced balance first when live.
+
+    When ``home_exchange_index`` is set (or via ``REC_MTB_HOME_EXCHANGE_INDEX``),
+    eligibility and the rake amount are capped to cash on that shard's MTB column
+    (``exchange_N_balance``), not the cross-shard sum in ``balance``.
     """
     if not _allowed_subaccounts_fqn(subaccounts_table):
         raise ValueError(f"Invalid subaccounts table: {subaccounts_table}")
+    from backend.bookkeeper.kalshi_subaccount_transfer import mtb_home_exchange_index
+
+    home_ex = (
+        int(home_exchange_index)
+        if home_exchange_index is not None
+        else mtb_home_exchange_index()
+    )
+    if home_ex < 0 or home_ex > 3:
+        _LOG.warning("Automatic MTB rake: invalid home_exchange_index=%s", home_ex)
+        return None
+
     sch, tbl = _split_fqn(subaccounts_table)
     ident = sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
     cursor.execute(
         sql.SQL(
             """
-            SELECT balance, base_value, target_pnl__pct, transfer_amt, automatic_transfers
+            SELECT balance, base_value, target_pnl__pct, transfer_amt, automatic_transfers,
+                   exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance
             FROM {} WHERE subaccount = 'Master Trading Bankroll'
             """
         ).format(ident),
@@ -655,19 +673,39 @@ def compute_automatic_mtb_rake_amount_cents(
     if not row:
         return None
     if isinstance(row, dict):
-        mtb_balance = row.get("balance")
         base_value = row.get("base_value")
         target_pnl_pct = row.get("target_pnl__pct")
         transfer_amt = row.get("transfer_amt")
         automatic_transfers = row.get("automatic_transfers")
+        ex_cols = (
+            row.get("exchange_0_balance"),
+            row.get("exchange_1_balance"),
+            row.get("exchange_2_balance"),
+            row.get("exchange_3_balance"),
+        )
+        sum_balance = row.get("balance")
     else:
-        mtb_balance, base_value, target_pnl_pct, transfer_amt, automatic_transfers = row
+        (
+            sum_balance,
+            base_value,
+            target_pnl_pct,
+            transfer_amt,
+            automatic_transfers,
+            e0,
+            e1,
+            e2,
+            e3,
+        ) = row
+        ex_cols = (e0, e1, e2, e3)
     if not automatic_transfers:
         return None
     if base_value is None or int(base_value) == 0:
         return None
     if target_pnl_pct is None or transfer_amt is None:
         return None
+    home_cash = int(ex_cols[home_ex] or 0)
+    # PnL vs base uses home-shard MTB cash (trading bankroll on the home matching engine).
+    mtb_balance = home_cash
     if mtb_balance is None:
         return None
     mtb_balance = int(mtb_balance)
@@ -676,6 +714,17 @@ def compute_automatic_mtb_rake_amount_cents(
     if realized_pnl_pct is None or realized_pnl_pct < float(target_pnl_pct):
         return None
     transfer_amount = int(round(float(transfer_amt) * base_value))
+    if transfer_amount <= 0:
+        return None
+    if transfer_amount > home_cash:
+        _LOG.warning(
+            "Automatic MTB rake capped: computed %s > home shard %s cash %s (sum balance=%s)",
+            transfer_amount,
+            home_ex,
+            home_cash,
+            sum_balance,
+        )
+        transfer_amount = home_cash
     return transfer_amount if transfer_amount > 0 else None
 
 
@@ -769,7 +818,8 @@ def maybe_execute_live_automatic_mtb_rake(
     subaccounts_table: str,
 ) -> bool:
     """
-    Live: POST Kalshi transfer MTB (#1) → CASH (#0) when automatic rake triggers.
+    Live: POST Kalshi transfer MTB (#1) → CASH (#0) on ``REC_MTB_HOME_EXCHANGE_INDEX``
+    when automatic rake triggers.
     Updates MTB base_value in DB; caller should repoll all subaccount balances afterward.
     """
     slot = str(user_no).zfill(4)[-4:]
@@ -780,8 +830,18 @@ def maybe_execute_live_automatic_mtb_rake(
             slot,
         )
         return False
+    from backend.bookkeeper.kalshi_subaccount_transfer import (
+        apply_subaccount_transfer,
+        mtb_home_exchange_index,
+    )
+
+    home_ex = mtb_home_exchange_index()
     refresh_mtb_realized_pnl_from_balance(cursor, subaccounts_table)
-    transfer_amount = compute_automatic_mtb_rake_amount_cents(cursor, subaccounts_table)
+    transfer_amount = compute_automatic_mtb_rake_amount_cents(
+        cursor,
+        subaccounts_table,
+        home_exchange_index=home_ex,
+    )
     if transfer_amount is None:
         return False
     mtb_balance, _ = get_mtb_snapshot_from_subaccounts(cursor, subaccounts_table)
@@ -798,8 +858,6 @@ def maybe_execute_live_automatic_mtb_rake(
         return False
     import uuid
 
-    from backend.bookkeeper.kalshi_subaccount_transfer import apply_subaccount_transfer
-
     try:
         apply_subaccount_transfer(
             slot,
@@ -807,6 +865,7 @@ def maybe_execute_live_automatic_mtb_rake(
             KALSHI_CASH_SUBACCOUNT_NUMBER,
             int(transfer_amount),
             str(uuid.uuid4()),
+            exchange_index=home_ex,
         )
     except Exception as exc:
         _LOG.warning("Automatic MTB rake Kalshi transfer failed for user %s: %s", slot, exc)
@@ -819,9 +878,10 @@ def maybe_execute_live_automatic_mtb_rake(
         new_mtb_balance,
     )
     _LOG.info(
-        "Automatic MTB rake: user %s transferred %s cents MTB→CASH via Kalshi API",
+        "Automatic MTB rake: user %s transferred %s cents MTB→CASH on exchange %s via Kalshi API",
         slot,
         transfer_amount,
+        home_ex,
     )
     return True
 

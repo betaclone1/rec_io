@@ -62,7 +62,7 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 **Live subaccounts:** #0 = **CASH** (deposits/withdrawals), #1 = **Master Trading Bankroll** (hero bankroll), #2+ = ancillary (`undefined_2`, …). No deposit/withdrawal routing. Orders default to **subaccount 1** via `trade_executor`.
 
-**Exchange sharding:** Kalshi balances are a **`(exchange_index, subaccount)`** matrix. After crypto cutover, trading MTB is **`(2, 1)`**; cross-shard moves use IAT through primaries only. Schema: `exchange_0..3_balance` on `subaccounts_*` / `subaccount_balance_*_*` (migration **`20260813_1448_subaccount_exchange_balances`**); `balance` = sum. Full model: [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md).
+**Exchange sharding:** Kalshi balances are a **`(exchange_index, subaccount)`** matrix. After crypto cutover, trading MTB is **`(2, 1)`**; cross-shard moves use a **single IAT** with `source_subaccount` / `destination_subaccount` (no app multi-hop). Schema: `exchange_0..3_balance` on `subaccounts_*` / `subaccount_balance_*_*` (migration **`20260813_1448_subaccount_exchange_balances`**); `balance` = sum. Rake home shard: **`REC_MTB_HOME_EXCHANGE_INDEX`**. Full model: [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md).
 
 **Automatic MTB rake (live):** When MTB `realized_pnl_pct` ≥ `target_pnl__pct` and `automatic_transfers` is on, `poll_live_account_balances` calls `POST /portfolio/subaccounts/transfer` **#1 → #0** for `transfer_amt × base_value` cents, updates MTB `base_value` in DB, then **repolls all subaccounts** (no throttle). Paper mode simulates the same destination (**CASH**) in `subaccounts_update` without Kalshi.
 
