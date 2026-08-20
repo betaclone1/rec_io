@@ -61,10 +61,58 @@ _TICKER_RE = re.compile(
 
 _ddl_lock = threading.Lock()
 _ensured_tables: Set[str] = set()
+# Tickers whose hot tables were dropped (e.g. by cycle_packager in another process).
+# Stop enqueue/write for the rest of this process lifetime so we do not recreate
+# tables under an already-packaged cycle or retry forever on UndefinedTable.
+_ob_skip_tickers: Set[str] = set()
 _hot_tickers: Set[str] = set()
 _hot_lock = threading.Lock()
 _last_hot_refresh_mono = 0.0
 _HOT_REFRESH_MIN_SEC = 1.0
+
+
+def _ticker_key(market_ticker: str) -> str:
+    return str(market_ticker or "").strip().upper()
+
+
+def _is_undefined_relation(exc: BaseException) -> bool:
+    """True when Postgres reports a missing relation (packager drop / stale cache)."""
+    if getattr(exc, "pgcode", None) == "42P01":
+        return True
+    if type(exc).__name__ == "UndefinedTable":
+        return True
+    msg = str(exc).lower()
+    return "does not exist" in msg and "relation" in msg
+
+
+def _cycle_package_exists(market_ticker: str) -> bool:
+    """Lazy import — cycle_packager imports this module at top level."""
+    try:
+        from backend.core.cycle_packager import package_path_for_ticker
+
+        path = package_path_for_ticker(market_ticker)
+        return bool(path is not None and path.exists())
+    except Exception:
+        return False
+
+
+def _mark_ob_skip_ticker(market_ticker: str, reason: str) -> None:
+    key = _ticker_key(market_ticker)
+    with _ddl_lock:
+        _ensured_tables.discard(key)
+        _ob_skip_tickers.add(key)
+    unregister_hot_ticker(market_ticker)
+    logger.warning("OB cycle writer skipping %s (%s)", market_ticker, reason)
+
+
+def _should_skip_ob_ticker(market_ticker: str) -> bool:
+    return _ticker_key(market_ticker) in _ob_skip_tickers
+
+
+def invalidate_ensured_tables(market_ticker: str) -> None:
+    """Drop in-process DDL cache for ``market_ticker`` (cross-process drop recovery)."""
+    with _ddl_lock:
+        _ensured_tables.discard(_ticker_key(market_ticker))
 
 # market_ticker → last snapshot seq (stamped on following deltas)
 _last_snapshot_seq: Dict[str, int] = {}
@@ -619,15 +667,26 @@ def _upgrade_market_meta_table(cur, name: str) -> None:
             )
 
 
-def ensure_cycle_tables(market_ticker: str, conn=None) -> Tuple[str, str, str, str, str, str]:
-    """Create all hot tables for ``market_ticker``; register as hot."""
+def ensure_cycle_tables(
+    market_ticker: str,
+    conn=None,
+    *,
+    force: bool = False,
+) -> Tuple[str, str, str, str, str, str]:
+    """Create all hot tables for ``market_ticker``; register as hot.
+
+    ``force=True`` re-runs DDL even if this process previously cached success
+    (needed when another process dropped the tables via ``drop_cycle_tables``).
+    """
     names = all_table_names(market_ticker)
     if not is_cycle_ticker(market_ticker):
         return names
-    key = str(market_ticker).strip().upper()
+    key = _ticker_key(market_ticker)
+    if key in _ob_skip_tickers:
+        return names
     register_hot_ticker(market_ticker)
     with _ddl_lock:
-        if key in _ensured_tables:
+        if key in _ensured_tables and not force:
             return names
         own = conn is None
         c = conn or _system_conn()
@@ -699,9 +758,11 @@ def drop_cycle_tables(market_ticker: str, conn=None) -> None:
             for n in names:
                 cur.execute(f"DROP TABLE IF EXISTS {_qualified(n)}")
         c.commit()
-        key = str(market_ticker).strip().upper()
+        key = _ticker_key(market_ticker)
         with _ddl_lock:
             _ensured_tables.discard(key)
+            # Same-process packager path: also stop OB writes for this ticker.
+            _ob_skip_tickers.add(key)
         unregister_hot_ticker(market_ticker)
     except Exception as e:
         try:
@@ -908,6 +969,8 @@ def enqueue_snapshot(
     del sid
     if not recorder_enabled() or not is_cycle_ticker(market_ticker):
         return
+    if _should_skip_ob_ticker(market_ticker):
+        return
     if seq is None:
         return
     try:
@@ -940,6 +1003,8 @@ def enqueue_delta(
 ) -> None:
     del sid
     if not recorder_enabled() or not is_cycle_ticker(market_ticker):
+        return
+    if _should_skip_ob_ticker(market_ticker):
         return
     if seq is None:
         return
@@ -1152,19 +1217,61 @@ def _write_snapshot(
     reason: str,
     received_at: str,
 ) -> None:
+    if _should_skip_ob_ticker(market_ticker):
+        return
     snap_tbl, *_ = ensure_cycle_tables(market_ticker, conn)
-    with conn.cursor() as cur:
-        cur.execute(
-            f"""
-            INSERT INTO {_qualified(snap_tbl)}
-                (seq, received_at, reason, yes, no)
-            VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
-            """,
-            (seq, received_at, reason, json.dumps(yes), json.dumps(no)),
-        )
-    conn.commit()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {_qualified(snap_tbl)}
+                    (seq, received_at, reason, yes, no)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
+                """,
+                (seq, received_at, reason, json.dumps(yes), json.dumps(no)),
+            )
+        conn.commit()
+    except Exception as e:
+        if not _is_undefined_relation(e):
+            raise
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        invalidate_ensured_tables(market_ticker)
+        if _cycle_package_exists(market_ticker):
+            _mark_ob_skip_ticker(market_ticker, "snapshot table missing after package")
+            return
+        ensure_cycle_tables(market_ticker, conn, force=True)
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                INSERT INTO {_qualified(snap_tbl)}
+                    (seq, received_at, reason, yes, no)
+                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
+                """,
+                (seq, received_at, reason, json.dumps(yes), json.dumps(no)),
+            )
+        conn.commit()
     with _snapshot_seq_lock:
         _last_snapshot_seq[market_ticker.upper()] = int(seq)
+
+
+def _insert_delta_group(conn, mt: str, group: List[Tuple[Any, ...]]) -> None:
+    names = ensure_cycle_tables(mt, conn)
+    deltas_tbl = names[1]
+    params = [
+        (seq, received_at, side, price, delta, snap_seq)
+        for (_mt, side, price, delta, seq, snap_seq, received_at) in group
+    ]
+    q = f"""
+        INSERT INTO {_qualified(deltas_tbl)}
+            (seq, received_at, side, price, delta, snapshot_seq)
+        VALUES (%s, %s, %s, %s, %s, %s)
+        """
+    with conn.cursor() as cur:
+        cur.executemany(q, params)
+    conn.commit()
 
 
 def _flush_delta_batch(conn, rows: List[Tuple[Any, ...]]) -> None:
@@ -1174,20 +1281,33 @@ def _flush_delta_batch(conn, rows: List[Tuple[Any, ...]]) -> None:
     for r in rows:
         by_ticker.setdefault(r[0], []).append(r)
     for mt, group in by_ticker.items():
-        names = ensure_cycle_tables(mt, conn)
-        deltas_tbl = names[1]
-        params = [
-            (seq, received_at, side, price, delta, snap_seq)
-            for (_mt, side, price, delta, seq, snap_seq, received_at) in group
-        ]
-        q = f"""
-            INSERT INTO {_qualified(deltas_tbl)}
-                (seq, received_at, side, price, delta, snapshot_seq)
-            VALUES (%s, %s, %s, %s, %s, %s)
-            """
-        with conn.cursor() as cur:
-            cur.executemany(q, params)
-        conn.commit()
+        if _should_skip_ob_ticker(mt):
+            continue
+        try:
+            _insert_delta_group(conn, mt, group)
+        except Exception as e:
+            if not _is_undefined_relation(e):
+                raise
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            invalidate_ensured_tables(mt)
+            if _cycle_package_exists(mt):
+                _mark_ob_skip_ticker(mt, "deltas table missing after package")
+                continue
+            try:
+                ensure_cycle_tables(mt, conn, force=True)
+                _insert_delta_group(conn, mt, group)
+            except Exception as e2:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                if _is_undefined_relation(e2):
+                    _mark_ob_skip_ticker(mt, f"deltas table still missing: {e2}")
+                    continue
+                raise
 
 
 def _ob_writer_loop() -> None:
@@ -1240,6 +1360,9 @@ def _ob_writer_loop() -> None:
     def _handle_snapshot(payload: Tuple[Any, ...]) -> None:
         while not _flush():
             pass
+        mt = payload[0] if payload else ""
+        if _should_skip_ob_ticker(str(mt)):
+            return
         c = _conn()
         if c is None:
             if q is not None:
@@ -1253,6 +1376,24 @@ def _ob_writer_loop() -> None:
                 c.rollback()
             except Exception:
                 pass
+            if _is_undefined_relation(e):
+                invalidate_ensured_tables(str(mt))
+                if _cycle_package_exists(str(mt)):
+                    _mark_ob_skip_ticker(str(mt), "snapshot missing after package")
+                    return
+                try:
+                    ensure_cycle_tables(str(mt), c, force=True)
+                    _write_snapshot(c, *payload)
+                    return
+                except Exception as e2:
+                    try:
+                        c.rollback()
+                    except Exception:
+                        pass
+                    if _is_undefined_relation(e2):
+                        _mark_ob_skip_ticker(str(mt), f"snapshot still missing: {e2}")
+                        return
+                    e = e2
             logger.warning("OB cycle snapshot write failed %s: %s", payload[0], e)
             _close_conn()
             if q is not None:
@@ -1268,6 +1409,9 @@ def _ob_writer_loop() -> None:
             _handle_snapshot(payload)
             return
         if kind == "delta":
+            mt = payload[0] if payload else ""
+            if _should_skip_ob_ticker(str(mt)):
+                return
             pending.append(payload)
             if len(pending) >= batch_n:
                 _flush()
