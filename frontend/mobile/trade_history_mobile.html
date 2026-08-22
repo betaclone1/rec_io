@@ -4705,9 +4705,10 @@
             const stripSelected = thmSelectedMonitorIdsFromStrip();
             const effectiveMons = thmGetEffectiveSelectedMonitorIdsForDisplay();
             if (monCbs.length > 0) {
+                // Always pass the explicit strip selection (including "all tiles on").
+                // Omitting monitors when every tile is selected used to mean "no SQL filter",
+                // which pulled in trades for ids outside the strip (archived / manually reassigned).
                 if (stripSelected.length === 0) {
-                    body.monitors = [];
-                } else if (stripSelected.length === monCbs.length) {
                     body.monitors = [];
                 } else if (effectiveMons.length > 0) {
                     body.monitors = effectiveMons;
