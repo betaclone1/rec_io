@@ -4629,6 +4629,9 @@
             const byMonitor = {};
             for (const mid of selectedIds) {
                 const agg = thmAggForMonitorSummaryRow(mid, base);
+                // Omit monitors with no trades under current filters (LIVE/PAPER/TEST, date, etc.).
+                // Inclusion is trade-based — a PAPER-mode monitor with LIVE fills still appears when LIVE is on.
+                if (!(Number(agg.n) > 0)) continue;
                 byMonitor[mid] = {
                     monitorId: mid,
                     sumRet: agg.sumRet,

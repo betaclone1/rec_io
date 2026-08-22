@@ -2731,6 +2731,9 @@
       const byMonitor = {};
       for (const mid of selectedIds) {
         const agg = tradeHistoryAggForMonitorSummaryRow(mid, base);
+        // Omit monitors with no trades under current filters (LIVE/PAPER/TEST, date, etc.).
+        // Inclusion is trade-based — a PAPER-mode monitor with LIVE fills still appears when LIVE is on.
+        if (!(Number(agg.n) > 0)) continue;
         byMonitor[mid] = {
           monitorId: mid,
           sumRet: agg.sumRet,
@@ -3409,10 +3412,27 @@
         return;
       }
       const base = tradeHistoryApplyFiltersWithoutMonitor(Array.isArray(trades) ? trades : []);
-      const rows = selectedIds.map((mid) => ({
-        mid,
-        agg: tradeHistoryAggForMonitorSummaryRow(mid, base),
-      }));
+      const rows = selectedIds
+        .map((mid) => ({
+          mid,
+          agg: tradeHistoryAggForMonitorSummaryRow(mid, base),
+        }))
+        .filter((row) => Number(row.agg.n) > 0);
+      if (rows.length === 0) {
+        const tr = document.createElement('tr');
+        tr.classList.add('th-ms-summary-placeholder');
+        const td = document.createElement('td');
+        td.colSpan = 9;
+        td.style.textAlign = 'left';
+        td.style.color = '#a0aec0';
+        td.style.fontSize = '12px';
+        td.textContent =
+          'No trades for the selected monitors with current filters.';
+        tr.appendChild(td);
+        tbody.appendChild(tr);
+        tradeHistoryReapplyMonitorCrossHoverAfterDomRebuild();
+        return;
+      }
       rows.sort(tradeHistoryCompareSummaryRowsByRetDesc);
       for (const { mid, agg } of rows) {
         const tr = document.createElement('tr');
