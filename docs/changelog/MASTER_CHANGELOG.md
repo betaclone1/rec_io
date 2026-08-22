@@ -17,16 +17,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-22`**. Code: `git revert` this commit (or checkout prior SHA) + `scripts/MASTER_RESTART.sh`. Busy-book alone: `EXP_SCALP_BUSY_BOOK=0` on cutout AES. Full: restore droplet from snapshot.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):  
+- [x] Confirm codebase changes (pull latest on production):  
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Regenerate supervisor config and full restart:  
+- [x] Regenerate supervisor config and full restart:  
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify health + AES/ATS/cutout/strike/watchdog status; note load vs pre-deploy:  
+- [x] Verify health + AES/ATS/cutout/strike/watchdog status; note load vs pre-deploy:  
   `curl -sSf http://127.0.0.1:3000/health`; `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp|strike_table|market_watchdog'`; `uptime`
-- [ ] Spot-check cutout AES log mode line is live_state ladder-notify; watch for `busy_book_reversal` in next Exp Scalp windows:  
+- [x] Spot-check cutout AES log mode line is live_state ladder-notify; watch for `busy_book_reversal` in next Exp Scalp windows:  
   `grep -E 'AES mode=btc15m_exp_scalp|busy_book_reversal|TRIGGERING TRADE' logs/auto_entry_supervisor_0001_btc15m_exp_scalp.out.log | tail -40`
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.11.0`
-- [ ] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-22`**.
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.11.0`
+- [x] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-22`**.
 
 ---
 
