@@ -2643,6 +2643,39 @@ def _format_hour_label(hour_index: int) -> str:
     return f"{hour_index}am"
 
 
+def ensure_monitor_list_id_sequence(cursor, user_number: str) -> None:
+    """Advance monitor_list id sequence to at least MAX(id) before a SERIAL insert.
+
+    Archive is a soft status update and does not free ids or touch the sequence.
+    Sequence lag still happens after restores, clones, explicit-id inserts, or a
+    prior nextval that collided and left is_called/last_value inconsistent.
+    Call this on every create so nextval never reuses an existing PK (including
+    ARCHIVED rows, which still occupy id values).
+    """
+    ml_fqn = monitor_list_fqn(user_number)
+    ml_ident = sql_ident_qualified_table(ml_fqn)
+    cursor.execute(sql.SQL("SELECT COALESCE(MAX(id), 0) FROM {}").format(ml_ident))
+    max_id = int(cursor.fetchone()[0] or 0)
+    cursor.execute("SELECT pg_get_serial_sequence(%s, 'id')", (ml_fqn,))
+    seq_name = cursor.fetchone()[0]
+    if not seq_name:
+        raise RuntimeError(f"No serial sequence for {ml_fqn}.id")
+    seq_parts = seq_name.split(".")
+    if len(seq_parts) != 2:
+        raise RuntimeError(f"Unexpected sequence name {seq_name!r}")
+    seq_ident = sql.SQL("{}.{}").format(
+        sql.Identifier(seq_parts[0]),
+        sql.Identifier(seq_parts[1]),
+    )
+    cursor.execute(sql.SQL("SELECT last_value FROM {}").format(seq_ident))
+    last_value = int(cursor.fetchone()[0] or 0)
+    # is_called=true so the next nextval is target+1 (never re-issues target).
+    cursor.execute(
+        "SELECT setval(%s::regclass, %s, true)",
+        (seq_name, max(max_id, last_value)),
+    )
+
+
 def initialize_monitor_performance_table(
     cursor,
     user_number: str,
@@ -2847,6 +2880,9 @@ def create_monitor():
                 # For contracts: position_size * multiplier
                 total_position = int(final_position_size * multiplier_value)
             
+            # Durable: heal sequence drift before SERIAL allocate (archived rows still hold ids).
+            ensure_monitor_list_id_sequence(cursor, user_number)
+
             # Let PostgreSQL handle the ID automatically with SERIAL
             cursor.execute(
                 sql.SQL(
