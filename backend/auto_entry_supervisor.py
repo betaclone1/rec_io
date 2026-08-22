@@ -1202,6 +1202,29 @@ def _exp_scalp_verify_abort(
     log(msg)
 
 
+def _exp_scalp_live_side_ask(ticker: Any, side_key: str) -> Optional[float]:
+    """Peek live_state ask for flicker veto only. None if missing/stale — no substitute."""
+    want = str(ticker or "").strip()
+    if not want:
+        return None
+    from backend.core.tradeflow_live_reads import strike_ladder
+
+    ladder = strike_ladder("BTC", "15m", _strike_data_exchange_key())
+    if not ladder:
+        return None
+    for row in ladder.get("strikes") or []:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("ticker") or "").strip() != want:
+            continue
+        raw = row.get("yes_ask_dollars") if side_key == "yes" else row.get("no_ask_dollars")
+        try:
+            return float(raw)
+        except (TypeError, ValueError):
+            return None
+    return None
+
+
 # State tracking for logging reduction
 
 
@@ -3052,29 +3075,52 @@ def trigger_auto_entry_trade(strike_data):
         if AES_UNIFIED_PROFILE and AES_UNIFIED_POOL:
             _unified_profile_state["trigger_trade_sec"] += time.perf_counter() - t_trig
 
-def can_trade_strike(strike_key):
-    """ATOMIC: Check if we can trade this strike (cooldown check)"""
-    current_time = time.time()
-    
-    if strike_key in last_trade_times:
-        time_since_last_trade = current_time - last_trade_times[strike_key]
-        if time_since_last_trade < TRADE_COOLDOWN:
-            try:
-                from backend.core.tradeflow_decision_trace import trace as _dtrace
+def strike_on_trade_cooldown(strike_key, now=None):
+    """True if this strike/side is inside TRADE_COOLDOWN. Does not claim."""
+    current_time = time.time() if now is None else float(now)
+    last = last_trade_times.get(strike_key)
+    if last is None:
+        return False
+    return (current_time - last) < TRADE_COOLDOWN
 
-                _dtrace(
-                    "aes_cooldown_skip",
-                    monitor=ctx_mid(),
-                    strike_key=strike_key,
-                    age_s=round(time_since_last_trade, 3),
-                    cooldown_s=TRADE_COOLDOWN,
-                )
-            except Exception:
-                pass
-            return False
-    
-    # ATOMIC: Add to cooldown immediately
+
+def can_trade_strike(strike_key):
+    """ATOMIC: Claim TRADE_COOLDOWN if the strike is free.
+
+    Expiration Scalp claims at fire only. Other strategies still claim on look.
+    """
+    current_time = time.time()
+
+    if strike_on_trade_cooldown(strike_key, now=current_time):
+        try:
+            from backend.core.tradeflow_decision_trace import trace as _dtrace
+
+            last = last_trade_times.get(strike_key)
+            _dtrace(
+                "aes_cooldown_skip",
+                monitor=ctx_mid(),
+                strike_key=strike_key,
+                age_s=round(current_time - last, 3) if last is not None else None,
+                cooldown_s=TRADE_COOLDOWN,
+            )
+        except Exception:
+            pass
+        return False
+
     last_trade_times[strike_key] = current_time
+    return True
+
+
+def _exp_scalp_retain_verify_during_cooldown(strike_key, seen_verify_keys, dedupe_key) -> bool:
+    """If cooling down, keep verify dwell and skip the rest of this pass.
+
+    TRADE_COOLDOWN is anti-double-fire, not a product gate. A look-skip that
+    omits the key from seen_verify_keys used to abort as not_eligible_this_pass
+    and zero contiguous dwell whenever evals landed <1s apart.
+    """
+    if not strike_on_trade_cooldown(strike_key):
+        return False
+    seen_verify_keys.add(dedupe_key)
     return True
 
 def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[int] = None) -> bool:
@@ -4536,7 +4582,14 @@ def check_auto_entry_conditions_expiration_scalp():
 
         from backend.core.strike_ladder_fetch import probability_from_strike_row_side_aware
         from backend.util.auto_entry_expiration_scalp_gates import (
+            ask_dollars_to_cent,
             classify_expiration_scalp_prob_movement,
+            exp_scalp_busy_book_enabled,
+            exp_scalp_flicker_gate_enabled,
+            exp_scalp_flicker_live_band_enabled,
+            exp_scalp_flicker_step_cents,
+            expiration_scalp_busy_book_gate,
+            expiration_scalp_flicker_gate,
             update_expiration_scalp_entry_verification,
         )
 
@@ -4560,7 +4613,9 @@ def check_auto_entry_conditions_expiration_scalp():
                         continue
                     processed_strikes.add(dedupe_key)
 
-                    if not can_trade_strike(strike_key):
+                    if _exp_scalp_retain_verify_during_cooldown(
+                        strike_key, seen_verify_keys, dedupe_key
+                    ):
                         continue
 
                     strike_data_for_check = {
@@ -4664,6 +4719,93 @@ def check_auto_entry_conditions_expiration_scalp():
                         )
                         continue
 
+                    if exp_scalp_flicker_gate_enabled(cutout=AES_BTC15M_EXP_SCALP):
+                        prior_state = verify_bucket.get(dedupe_key)
+                        live_ask = None
+                        if exp_scalp_flicker_live_band_enabled():
+                            live_ask = _exp_scalp_live_side_ask(
+                                strike.get("ticker"), side_key
+                            )
+                        flicker_action, flicker_reason = expiration_scalp_flicker_gate(
+                            prior_ask_cent=(prior_state or {}).get("ask_cent")
+                            if prior_state
+                            else None,
+                            snapshot_ask=ask_price,
+                            min_ask=min_ask,
+                            max_ask=max_ask,
+                            live_ask=live_ask,
+                            step_cents=exp_scalp_flicker_step_cents(),
+                        )
+                        if flicker_action == "abort":
+                            extra = f"ask=${ask_price:.4f}"
+                            if live_ask is not None:
+                                extra = f"{extra} live_ask=${float(live_ask):.4f}"
+                            _exp_scalp_verify_abort(
+                                verify_bucket,
+                                dedupe_key,
+                                now_ts=now_ts,
+                                need_s=verify_seconds,
+                                reason=flicker_reason or "flicker_live_outside_band",
+                                strike_key=strike_key,
+                                side_key=side_key,
+                                log_tag=log_tag,
+                                extra=extra,
+                            )
+                            continue
+                        if flicker_action == "reset":
+                            seen_verify_keys.add(dedupe_key)
+                            try:
+                                started = float((prior_state or {}).get("started_at"))
+                                prior_dwell = max(0.0, now_ts - started)
+                            except (TypeError, ValueError, AttributeError):
+                                prior_dwell = 0.0
+                            verify_bucket[dedupe_key] = {
+                                "started_at": now_ts,
+                                "ask_cent": ask_dollars_to_cent(ask_price),
+                            }
+                            log(
+                                f"{log_tag} VERIFY RESET | {strike_key} {side_key.upper()} | "
+                                f"dwell={prior_dwell:.1f}s need={verify_seconds}s | "
+                                f"reason={flicker_reason} | "
+                                f"from={((prior_state or {}).get('ask_cent'))} "
+                                f"to={ask_dollars_to_cent(ask_price)}"
+                            )
+                            continue
+
+                    if exp_scalp_busy_book_enabled(cutout=AES_BTC15M_EXP_SCALP):
+                        prior_state = verify_bucket.get(dedupe_key)
+                        busy_reason, new_dir = expiration_scalp_busy_book_gate(
+                            prior_ask_cent=(prior_state or {}).get("ask_cent")
+                            if prior_state
+                            else None,
+                            prior_dir=(prior_state or {}).get("last_dir")
+                            if prior_state
+                            else None,
+                            ask=ask_price,
+                        )
+                        if busy_reason:
+                            seen_verify_keys.add(dedupe_key)
+                            try:
+                                started = float((prior_state or {}).get("started_at"))
+                                prior_dwell = max(0.0, now_ts - started)
+                            except (TypeError, ValueError, AttributeError):
+                                prior_dwell = 0.0
+                            verify_bucket[dedupe_key] = {
+                                "started_at": now_ts,
+                                "ask_cent": ask_dollars_to_cent(ask_price),
+                                "last_dir": new_dir,
+                            }
+                            log(
+                                f"{log_tag} VERIFY RESET | {strike_key} {side_key.upper()} | "
+                                f"dwell={prior_dwell:.1f}s need={verify_seconds}s | "
+                                f"reason={busy_reason} | "
+                                f"from={((prior_state or {}).get('ask_cent'))} "
+                                f"to={ask_dollars_to_cent(ask_price)}"
+                            )
+                            continue
+                    else:
+                        new_dir = None
+
                     seen_verify_keys.add(dedupe_key)
                     new_state, may_enter, dwell_s = update_expiration_scalp_entry_verification(
                         verify_bucket.get(dedupe_key),
@@ -4675,6 +4817,9 @@ def check_auto_entry_conditions_expiration_scalp():
                     if new_state is None:
                         verify_bucket.pop(dedupe_key, None)
                     else:
+                        new_state["ask_cent"] = ask_dollars_to_cent(ask_price)
+                        if exp_scalp_busy_book_enabled(cutout=AES_BTC15M_EXP_SCALP):
+                            new_state["last_dir"] = new_dir
                         verify_bucket[dedupe_key] = new_state
                     if not may_enter:
                         log_debug(
@@ -4721,6 +4866,9 @@ def check_auto_entry_conditions_expiration_scalp():
                         if verify_enabled
                         else "verify off"
                     )
+                    if not can_trade_strike(strike_key):
+                        continue
+
                     log(
                         f"{log_tag} 🚀 TRIGGERING TRADE | {strike_key} {side_key.upper()} | "
                         f"Prob: {prob_f}% | Move: {movement_pct_f} | Ask: ${ask_price:.4f} | "
@@ -6811,8 +6959,13 @@ def start_monitoring_loop():
         global monitoring_thread
         log("📊 MONITORING: Starting auto entry monitoring loop")
         if AES_UNIFIED_POOL:
-            mode = "btc15m_exp_scalp_cutout" if AES_BTC15M_EXP_SCALP else "latest_only_lanes"
-            log(f"📊 MONITORING: AES mode={mode} (mailbox per ladder; cancel in-flight eval only)")
+            if AES_BTC15M_EXP_SCALP:
+                log(
+                    "📊 MONITORING: AES mode=btc15m_exp_scalp_cutout "
+                    "(live_state ladder-notify; same eval trigger as prod)"
+                )
+            else:
+                log("📊 MONITORING: AES mode=latest_only_lanes (mailbox per ladder; cancel in-flight eval only)")
         
         # Broadcast initial state immediately on startup
         log("📊 MONITORING: Broadcasting initial auto entry state")
@@ -6844,12 +6997,12 @@ def start_monitoring_loop():
                 _aes_maybe_lp_recompute()
 
                 if AES_UNIFIED_POOL:
+                    global _aes_last_failsafe_mono, _aes_last_cheap_status_mono
                     # Cheap status (~1s): ACTIVE/INACTIVE from cached snaps + aged
                     # TTC (no Redis fetch / strike scan). Redis failsafe_refresh_all
                     # only on quiet timeout or slow busy cadence (AES_FAILSAFE_REDIS_SEC).
                     # Full strategy evals stay on live_state on_ladder_notify + that
                     # Redis refresh — not 1s all-ladder fanout.
-                    global _aes_last_failsafe_mono, _aes_last_cheap_status_mono
                     woke = _aes_live_state_wake.wait(timeout=_AES_FAILSAFE_POLL_SEC)
                     _aes_live_state_wake.clear()
                     now_mono = time.monotonic()

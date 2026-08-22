@@ -73,6 +73,31 @@ def test_snap_generation_id_uses_decision_fingerprint_by_default(monkeypatch):
     assert decision_generation_id(snap) == gid
 
 
+def test_exp_scalp_snapshot_gen_is_wall_second_not_asks():
+    snap_a = {
+        "rec_snapshot_eval": True,
+        "wall_second": 1780000000,
+        "event_ticker": "KXBTC15M-X",
+        "ttc": 40,
+        "strikes": [{"ticker": "T", "yes_ask_dollars": "0.90", "no_ask_dollars": "0.10"}],
+    }
+    snap_b = {
+        **snap_a,
+        "strikes": [{"ticker": "T", "yes_ask_dollars": "0.97", "no_ask_dollars": "0.03"}],
+    }
+    assert snap_generation_id(snap_a) == "snap:1780000000"
+    assert snap_generation_id(snap_b) == "snap:1780000000"
+    lane = LatestOnlyLadderLane("BTC", "15m")
+    s1 = lane.publish(snap_a)
+    s2 = lane.publish(snap_b)
+    assert s1 is not None
+    assert s2 is None
+    snap_c = {**snap_a, "wall_second": 1780000001}
+    s3 = lane.publish(snap_c)
+    assert s3 is not None
+    assert s3.epoch == s1.epoch + 1
+
+
 def test_publish_during_eval_marks_stale_on_new_decision_gen(monkeypatch):
     monkeypatch.setenv("TRADEFLOW_LANE_TTC_BUCKET_SEC", "5")
     lane = LatestOnlyLadderLane("BTC", "15m")

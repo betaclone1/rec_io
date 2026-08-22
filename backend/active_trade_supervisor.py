@@ -1074,6 +1074,56 @@ def _unified_pool_tracked_ids(user_no: str, *, pool_15m: bool) -> set:
     return t15 if pool_15m else th
 
 
+def _unified_pool_monitor_bindings_with_tracked_trades() -> List[Tuple[str, str]]:
+    """
+    Monitors with active/pending/closing rows — for mark refresh only.
+
+    Auto-stop / lane exit eval uses on_ladder_notify and is unchanged.
+    """
+    user_no = USER_NUMBER
+    seen: set = set()
+    out: List[Tuple[str, str]] = []
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        for rec in ls_at.list_trades(user_no):
+            mid = str(rec.get("monitor_id") or "").strip()
+            if not mid:
+                continue
+            t = (user_no, mid)
+            if t not in seen:
+                seen.add(t)
+                out.append(t)
+        return out
+    conn = get_postgresql_connection(tenant_user_no=user_no)
+    if not conn:
+        return out
+    try:
+        for tbl in (
+            legacy_active_trades_pool_15m(user_no),
+            legacy_active_trades_pool_hourly(user_no),
+        ):
+            with conn.cursor() as cur:
+                cur.execute(
+                    f"""
+                    SELECT DISTINCT monitor_id FROM users.{tbl}
+                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                        IN ('active', 'pending', 'closing')
+                    """
+                )
+                for (mid,) in cur.fetchall():
+                    m = str(mid or "").strip()
+                    if not m:
+                        continue
+                    t = (user_no, m)
+                    if t not in seen:
+                        seen.add(t)
+                        out.append(t)
+    finally:
+        conn.close()
+    return out
+
+
 # Import centralized path utilities
 from backend.util.paths import get_project_root, get_data_dir, get_trade_history_dir, get_kalshi_data_dir, get_service_url, get_active_trades_dir
 
@@ -4015,13 +4065,21 @@ def _redis_list_trades_monitor_filter() -> Optional[str]:
 
 
 def _ats_refresh_monitoring_all_bindings() -> None:
-    """Run monitoring tick for every unified-pool monitor (or single monitor)."""
+    """Refresh marks/PnL for monitors with tracked trades only (not all pool members)."""
     if ATS_UNIFIED_POOL:
-        for _ats_u, _ats_mid in _iter_unified_pool_monitor_bindings_for_monitoring():
+        bindings = _unified_pool_monitor_bindings_with_tracked_trades()
+        if not bindings:
+            return
+        for _ats_u, _ats_mid in bindings:
             with ats_monitor_bind(_ats_u, _ats_mid):
                 update_active_trade_monitoring_data()
-    else:
-        update_active_trade_monitoring_data()
+        return
+    if _redis_active_trades_on():
+        from backend.core import live_state_active_trades as ls_at
+
+        if not ls_at.list_trades(ctx_user(), monitor_id=ctx_mid()):
+            return
+    update_active_trade_monitoring_data()
 
 
 def _update_monitoring_marks_redis(

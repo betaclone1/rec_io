@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-22 — Release v3.11.0: Exp Scalp busy-book gate + Tier-2 CPU hygiene
+
+**Summary**
+- **Release: v3.11.0**
+- **BTC 15m Exp Scalp cutout:** Keep live_state ladder-notify (same eval trigger as prod). Replace prod’s accidental `not_eligible_this_pass` verify wipe with an intentional **busy-book reversal** pause (≥1¢ direction change resets verify; one-way grind does not). Retain verify during trade cooldown so the old skip-pass hesitation is not left without a replacement. Optional live peek abort `flicker_live_outside_band` remains (env-gated). Drop-step flicker defaults **off**.
+- **CPU / hygiene (no fire-path identity change for non-cutout):** ATS mark refresh only for monitors with tracked trades; strike regen skips/backoffs when cache/OB is dead (no substitute data); strike snapshot Redis helpers refactored for envelope/age reads (1 Hz helper module present but cutout AES still evals live_state).
+- **Docs / tests:** `docs/UNIFIED_AES_TICK_CONTRACT.md`; unit tests for busy-book, flicker, verify cooldown, lane, snapshot helpers.
+- **No DB migrations.** Schema unchanged.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-22`**. Code: `git revert` this commit (or checkout prior SHA) + `scripts/MASTER_RESTART.sh`. Busy-book alone: `EXP_SCALP_BUSY_BOOK=0` on cutout AES. Full: restore droplet from snapshot.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):  
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor config and full restart:  
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify health + AES/ATS/cutout/strike/watchdog status; note load vs pre-deploy:  
+  `curl -sSf http://127.0.0.1:3000/health`; `curl -sSf http://127.0.0.1:8001/health`; `supervisorctl -c /opt/rec_io_server/backend/supervisord.conf -s unix:///tmp/supervisord.sock status | grep -E 'auto_entry_supervisor|active_trade_supervisor|btc15m_exp_scalp|strike_table|market_watchdog'`; `uptime`
+- [ ] Spot-check cutout AES log mode line is live_state ladder-notify; watch for `busy_book_reversal` in next Exp Scalp windows:  
+  `grep -E 'AES mode=btc15m_exp_scalp|busy_book_reversal|TRIGGERING TRADE' logs/auto_entry_supervisor_0001_btc15m_exp_scalp.out.log | tail -40`
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.11.0`
+- [ ] Rollback (if needed): git revert / restore snapshot **`rec-io-prod-pre-update-2026-08-22`**.
+
+---
+
 ## 2026-08-17 — Release v3.10.4: AES/ATS status membership parity + cutout log archive fix
 
 **Summary**

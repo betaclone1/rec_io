@@ -75,8 +75,14 @@ DEFAULT_DEGRADE_CONFIRM_SEC = 30
 # Per-symbol floor between full strike regens (pub/sub can fire many times per second).
 # Env override: STRIKE_REGEN_MIN_INTERVAL_SEC (default 0.5; was 0.25).
 STRIKE_REGEN_MIN_INTERVAL_SEC = float(os.getenv("STRIKE_REGEN_MIN_INTERVAL_SEC", "0.5"))
+# Longer backoff when cache/OB is dead — skip useless full regen loops (no substitute data).
+STRIKE_REGEN_DEAD_SYMBOL_BACKOFF_SEC = float(
+    os.getenv("STRIKE_REGEN_DEAD_SYMBOL_BACKOFF_SEC", "5")
+)
+STRIKE_REGEN_DEAD_OB_STALE_SEC = float(os.getenv("STRIKE_REGEN_DEAD_OB_STALE_SEC", "30"))
 KALSHI_HOURLY_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "DOGE"})
 _last_regen_mono: dict[str, float] = {}
+_last_dead_regen_skip_mono: dict[str, float] = {}
 
 
 def _redis_client():
@@ -501,6 +507,50 @@ def _collect_symbols_to_regenerate(
     return symbols
 
 
+def _strike_regen_precheck_skip(gen: StrikeTableGeneratorWS) -> str | None:
+    """
+    Cheap skip when regen cannot produce a ladder (missing cache / stale market stream).
+
+    Does not write substitute strike data — caller backs off and retries later.
+    """
+    try:
+        from backend.core.live_state_config import live_state_cache_enabled
+        from backend.core import live_state_cache
+
+        if not live_state_cache_enabled():
+            return None
+        mkt_data = live_state_cache.get_market_data(
+            gen.data_exchange, gen.pipeline_health_market, gen.symbol
+        )
+        if not mkt_data or not mkt_data.get("markets"):
+            return "market_cache_miss"
+        markets = mkt_data.get("markets") or []
+        if len(markets) == 1:
+            m0 = markets[0]
+            if m0.get("floor_strike") is None and m0.get("strike") is None:
+                return "missing_floor_strike"
+        age = gen.market_stream_age_sec()
+        if age > STRIKE_REGEN_DEAD_OB_STALE_SEC:
+            return f"market_stream_stale:{age:.1f}s"
+    except Exception:
+        return None
+    return None
+
+
+def _strike_regen_dead_backoff_reason(*, ok: bool, row_count: int, health_reason: str) -> str | None:
+    """Post-refresh reasons to apply dead-symbol backoff (no useful ladder published)."""
+    if ok and row_count > 0:
+        return None
+    reason = (health_reason or "").strip().lower()
+    if not ok and row_count <= 0:
+        if "missing_floor" in reason or reason == "strike_refresh_failed":
+            return health_reason or "strike_refresh_failed"
+        return "strike_refresh_failed"
+    if "orderbook" in reason or "stale" in reason:
+        return health_reason
+    return None
+
+
 def _refresh_symbol(
     generators: dict,
     sym: str,
@@ -512,6 +562,21 @@ def _refresh_symbol(
     if not gen:
         return
     now_mono = time.monotonic()
+    dead_last = _last_dead_regen_skip_mono.get(sym)
+    if dead_last is not None and (
+        now_mono - dead_last
+    ) < STRIKE_REGEN_DEAD_SYMBOL_BACKOFF_SEC:
+        return
+    skip = _strike_regen_precheck_skip(gen)
+    if skip:
+        _last_dead_regen_skip_mono[sym] = now_mono
+        logger.debug(
+            "[%s] strike regen skipped (%s); backoff %.1fs",
+            sym,
+            skip,
+            STRIKE_REGEN_DEAD_SYMBOL_BACKOFF_SEC,
+        )
+        return
     last = _last_regen_mono.get(sym)
     if last is not None and (now_mono - last) < STRIKE_REGEN_MIN_INTERVAL_SEC:
         return
@@ -521,8 +586,14 @@ def _refresh_symbol(
     healthy_raw, reason_raw = gen.evaluate_pipeline_health(ok, n)
     if healthy_raw:
         raw_unhealthy_since[sym] = None
+        _last_dead_regen_skip_mono.pop(sym, None)
         healthy, reason = True, "ok"
     else:
+        dead_reason = _strike_regen_dead_backoff_reason(
+            ok=ok, row_count=n, health_reason=reason_raw
+        )
+        if dead_reason:
+            _last_dead_regen_skip_mono[sym] = now_mono
         if raw_unhealthy_since[sym] is None:
             raw_unhealthy_since[sym] = now
         elapsed = now - float(raw_unhealthy_since[sym] or now)
@@ -600,6 +671,7 @@ def run_redis_triggered(
 
     for s in syms:
         _last_regen_mono.pop(s, None)
+        _last_dead_regen_skip_mono.pop(s, None)
         _refresh_symbol(
             generators,
             s,

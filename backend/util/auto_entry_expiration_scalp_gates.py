@@ -16,7 +16,133 @@ production AES when ``verification_period_enabled`` is set on the monitor.
 
 from __future__ import annotations
 
+import os
 from typing import Any, Mapping, Optional, Tuple
+
+
+def ask_dollars_to_cent(ask: Any) -> Optional[str]:
+    """Round ask to 1¢, same grain as tradeflow lane fingerprints."""
+    try:
+        return f"{round(float(ask), 2):.2f}"
+    except (TypeError, ValueError):
+        return None
+
+
+def exp_scalp_flicker_gate_enabled(*, cutout: bool) -> bool:
+    """Default on for BTC 15m Exp Scalp cutout; off elsewhere. Env overrides."""
+    raw = os.getenv("EXP_SCALP_FLICKER_GATE", "").strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    return bool(cutout)
+
+
+def exp_scalp_flicker_step_cents() -> int:
+    """0 = disabled (default). Set EXP_SCALP_FLICKER_STEP_CENTS>=1 to restore drop-step."""
+    raw = os.getenv("EXP_SCALP_FLICKER_STEP_CENTS", "0").strip()
+    if raw == "":
+        return 0
+    try:
+        return max(0, min(int(raw), 20))
+    except (TypeError, ValueError):
+        return 0
+
+
+def exp_scalp_flicker_live_band_enabled() -> bool:
+    v = os.getenv("EXP_SCALP_FLICKER_LIVE_BAND", "1").strip().lower()
+    return v not in ("0", "false", "off", "no")
+
+
+def exp_scalp_busy_book_enabled(*, cutout: bool) -> bool:
+    """Two-way chop pauses verify. Default on for cutout. Env overrides."""
+    raw = os.getenv("EXP_SCALP_BUSY_BOOK", "").strip().lower()
+    if raw in ("0", "false", "off", "no"):
+        return False
+    if raw in ("1", "true", "on", "yes"):
+        return True
+    return bool(cutout)
+
+
+def expiration_scalp_busy_book_gate(
+    *,
+    prior_ask_cent: Optional[str],
+    prior_dir: Optional[int],
+    ask: float,
+) -> Tuple[Optional[str], Optional[int]]:
+    """
+    Pause verify when the in-band ask reverses by ≥1¢.
+
+    One-way grind (only ups, or only downs) does not reset. Flat prints do not.
+    Returns ``(reason_or_None, new_dir)`` where dir is ``1`` up, ``-1`` down, or
+    prior dir if unchanged.
+    """
+    cur = ask_dollars_to_cent(ask)
+    if cur is None:
+        return None, prior_dir
+    if not prior_ask_cent:
+        return None, None
+    try:
+        delta = int(round((float(cur) - float(prior_ask_cent)) * 100.0))
+    except (TypeError, ValueError):
+        return None, prior_dir
+    if delta == 0:
+        return None, prior_dir
+    new_dir = 1 if delta > 0 else -1
+    try:
+        old_dir = int(prior_dir) if prior_dir is not None else 0
+    except (TypeError, ValueError):
+        old_dir = 0
+    if old_dir in (1, -1) and new_dir == -old_dir:
+        return "busy_book_reversal", new_dir
+    return None, new_dir
+
+
+def expiration_scalp_flicker_gate(
+    *,
+    prior_ask_cent: Optional[str],
+    snapshot_ask: float,
+    min_ask: float,
+    max_ask: float,
+    live_ask: Optional[float] = None,
+    step_cents: int = 0,
+) -> Tuple[Optional[str], Optional[str]]:
+    """
+    Stability veto during Exp Scalp verify. Snapshot still owns fire.
+
+    Default (prod-mimic): abort if **live** ask is outside the monitor band while
+    the snapshot is still in-band. Missing/stale ``live_ask`` skips the veto.
+
+    Optional drop-step (off unless ``step_cents >= 1``): reset dwell when snapshot
+    ask dropped vs last verify tick. Not prod behavior.
+    """
+    if live_ask is not None:
+        try:
+            live_f = float(live_ask)
+        except (TypeError, ValueError):
+            live_f = None
+        if live_f is not None and (live_f < float(min_ask) or live_f > float(max_ask)):
+            return "abort", "flicker_live_outside_band"
+
+    try:
+        need = int(step_cents)
+    except (TypeError, ValueError):
+        need = 0
+    if need < 1:
+        return None, None
+
+    cur = ask_dollars_to_cent(snapshot_ask)
+    if cur is None:
+        return None, None
+    if not prior_ask_cent:
+        return None, None
+    try:
+        drop_cents = int(round((float(prior_ask_cent) - float(cur)) * 100.0))
+    except (TypeError, ValueError):
+        return None, None
+    if drop_cents >= need:
+        return "reset", "flicker_ask_step"
+    return None, None
 
 
 def update_expiration_scalp_entry_verification(

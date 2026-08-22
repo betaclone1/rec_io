@@ -121,14 +121,15 @@ def publish_strike_snapshot(
         return False
 
 
-def get_strike_ladder_from_snapshot(
+def get_strike_snapshot_envelope(
     exchange: str,
     market: str,
     symbol: str,
 ) -> Optional[Dict[str, Any]]:
     """
-    Return ladder dict (same shape as fetch_strike_ladder_payload_from_db) or None.
-    None if disabled, Redis down, parse error, or snapshot too stale.
+    Full Redis snapshot envelope, or None if disabled / missing / unreadable.
+
+    Does not apply max-age. Callers decide freshness.
     """
     if not strike_snapshot_read_enabled():
         return None
@@ -141,16 +142,52 @@ def get_strike_ladder_from_snapshot(
         if not raw:
             return None
         env = json.loads(raw)
+        if not isinstance(env, dict):
+            return None
         data = env.get("data")
         if not isinstance(data, dict) or "strikes" not in data:
             return None
-        pub = env.get("published_at")
-        if pub is not None:
-            age = time.time() - float(pub)
-            if age > strike_snapshot_max_age_sec():
-                logger.debug("strike snapshot stale key=%s age=%.2fs", key, age)
-                return None
-        return data
+        return env
     except Exception as e:
-        logger.debug("get_strike_ladder_from_snapshot %s: %s", key, e)
+        logger.debug("get_strike_snapshot_envelope %s: %s", key, e)
         return None
+
+
+def snapshot_envelope_age_sec(env: Dict[str, Any], *, now: Optional[float] = None) -> Optional[float]:
+    pub = env.get("published_at")
+    if pub is None:
+        return None
+    try:
+        return float(now if now is not None else time.time()) - float(pub)
+    except (TypeError, ValueError):
+        return None
+
+
+def get_strike_ladder_from_snapshot(
+    exchange: str,
+    market: str,
+    symbol: str,
+    *,
+    max_age_sec: Optional[float] = None,
+) -> Optional[Dict[str, Any]]:
+    """
+    Return ladder dict (same shape as fetch_strike_ladder_payload_from_db) or None.
+    None if disabled, Redis down, parse error, or snapshot too stale.
+    """
+    env = get_strike_snapshot_envelope(exchange, market, symbol)
+    if env is None:
+        return None
+    limit = strike_snapshot_max_age_sec() if max_age_sec is None else float(max_age_sec)
+    age = snapshot_envelope_age_sec(env)
+    if age is not None and age > limit:
+        logger.debug(
+            "strike snapshot stale key=%s age=%.2fs limit=%.2fs",
+            snapshot_redis_key(exchange, market, symbol),
+            age,
+            limit,
+        )
+        return None
+    data = env.get("data")
+    if not isinstance(data, dict):
+        return None
+    return data

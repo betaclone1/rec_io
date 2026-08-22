@@ -1,0 +1,143 @@
+AUDIT_TIMESTAMP_UTC=2026-08-22T15:29:16Z
+===SECTION:HOST===
+rec-io-server-new-york-1
+Linux rec-io-server-new-york-1 5.15.0-151-generic #161-Ubuntu SMP Tue Jul 22 14:25:40 UTC 2025 x86_64 x86_64 x86_64 GNU/Linux
+ 15:29:16 up 142 days, 20:21,  0 users,  load average: 18.17, 19.14, 20.26
+===SECTION:CPU===
+8
+Architecture:                            x86_64
+CPU(s):                                  8
+Model name:                              DO-Premium-AMD
+Thread(s) per core:                      1
+Core(s) per socket:                      8
+Socket(s):                               1
+model name	: DO-Premium-AMD
+===SECTION:LOAD===
+18.17 19.14 20.26 30/399 108981
+16  0      0 1049844  97220 4046596    0    0    20   108    0    0 58 18 23  0  0
+24  0      0 1044684  97224 4047068    0    0     0   372 6881 22779 65 31  4  0  0
+14  0      0 1046972  97224 4047076    0    0     0   344 7343 24964 69 28  3  0  0
+===SECTION:MEMORY===
+               total        used        free      shared  buff/cache   available
+Mem:            15Gi        10Gi       1.0Gi       154Mi       4.0Gi       4.5Gi
+Swap:             0B          0B          0B
+MemTotal:       16372044 kB
+MemFree:         1046468 kB
+MemAvailable:    4721064 kB
+Cached:          3948404 kB
+Active:          1116932 kB
+Inactive:       13374176 kB
+Active(anon):     152796 kB
+Inactive(anon): 10460060 kB
+Active(file):     964136 kB
+Inactive(file):  2914116 kB
+SwapTotal:             0 kB
+AnonPages:      10475896 kB
+===SECTION:DISK===
+Filesystem     Type  Size  Used Avail Use% Mounted on
+/dev/vda1      ext4  310G   24G  287G   8% /
+/dev/vda1      ext4  310G   24G  287G   8% /
+===SECTION:GIT_DEPLOYED===
+6034c4387050e6685ebe90c5c6499d42aea234f8
+6034c438 Intra Account Transfer patch
+===SECTION:SUPERVISOR===
+active_trade_supervisor_0001                    RUNNING   pid 3041909, uptime 4 days, 15:56:01
+active_trade_supervisor_0001_btc15m_exp_scalp   RUNNING   pid 3041910, uptime 4 days, 15:56:01
+auto_entry_supervisor_0001                      RUNNING   pid 3041911, uptime 4 days, 15:56:01
+auto_entry_supervisor_0001_btc15m_exp_scalp     RUNNING   pid 2028585, uptime 2 days, 22:43:42
+cascading_failure_detector                      RUNNING   pid 3041913, uptime 4 days, 15:56:01
+cfbenchmarks_price_watchdog                     RUNNING   pid 3041914, uptime 4 days, 15:56:01
+cycle_packager                                  RUNNING   pid 3041915, uptime 4 days, 15:56:01
+kalshi_account_sync_0001                        RUNNING   pid 957026, uptime 1 day, 22:11:35
+kalshi_lifecycle_consumer_0001                  RUNNING   pid 3041917, uptime 4 days, 15:56:01
+main_app                                        RUNNING   pid 956805, uptime 1 day, 22:11:36
+market_watchdog_ws_kalshi                       RUNNING   pid 1356295, uptime 13:44:12
+monitor_manager_0001                            RUNNING   pid 3041920, uptime 4 days, 15:56:01
+read_api                                        RUNNING   pid 956616, uptime 1 day, 22:11:37
+redis_switchboard                               RUNNING   pid 390921, uptime 2 days, 14:13:51
+strike_snapshot_publisher                       RUNNING   pid 3041923, uptime 4 days, 15:56:01
+strike_table_generator_ws_15m                   RUNNING   pid 3041924, uptime 4 days, 15:56:01
+strike_table_generator_ws_hourly                RUNNING   pid 3041925, uptime 4 days, 15:56:01
+system_monitor                                  RUNNING   pid 3041926, uptime 4 days, 15:56:01
+trade_executor_0001                             RUNNING   pid 3041927, uptime 4 days, 15:56:01
+trade_manager_0001                              RUNNING   pid 3041928, uptime 4 days, 15:56:01
+===SECTION:SUPERVISOR_CHILDREN===
+active_trade_supervisor_0001           pid=3041909  rss_mb= 2318.4 cpu= 56.1 mem=14.5% etime=4-15:56:01
+active_trade_supervisor_0001_btc15m_exp_scalp pid=3041910  rss_mb= 2237.6 cpu= 14.9 mem=13.9% etime=4-15:56:01
+strike_table_generator_ws_15m          pid=3041924  rss_mb= 2204.0 cpu= 53.0 mem=13.7% etime=4-15:56:01
+strike_table_generator_ws_hourly       pid=3041925  rss_mb= 1917.1 cpu= 61.6 mem=11.9% etime=4-15:56:01
+market_watchdog_ws_kalshi              pid=1356295  rss_mb=  470.8 cpu= 59.6 mem= 2.9% etime=13:44:13
+trade_manager_0001                     pid=3041928  rss_mb=  161.0 cpu=  1.8 mem= 1.0% etime=4-15:56:02
+main_app                               pid=956805   rss_mb=  107.6 cpu=  9.8 mem= 0.6% etime=1-22:11:37
+monitor_manager_0001                   pid=3041920  rss_mb=   92.4 cpu=  0.4 mem= 0.5% etime=4-15:56:01
+read_api                               pid=956616   rss_mb=   92.1 cpu=  0.8 mem= 0.5% etime=1-22:11:38
+auto_entry_supervisor_0001             pid=3041911  rss_mb=   81.5 cpu= 77.4 mem= 0.5% etime=4-15:56:01
+kalshi_account_sync_0001               pid=957026   rss_mb=   80.6 cpu=  0.4 mem= 0.5% etime=1-22:11:35
+cycle_packager                         pid=3041915  rss_mb=   73.2 cpu=  2.3 mem= 0.4% etime=4-15:56:01
+cfbenchmarks_price_watchdog            pid=3041914  rss_mb=   72.3 cpu=  7.2 mem= 0.4% etime=4-15:56:01
+redis_switchboard                      pid=390921   rss_mb=   63.5 cpu= 30.7 mem= 0.3% etime=2-14:13:51
+auto_entry_supervisor_0001_btc15m_exp_scalp pid=2028585  rss_mb=   61.5 cpu=  9.4 mem= 0.3% etime=2-22:43:43
+trade_executor_0001                    pid=3041927  rss_mb=   47.6 cpu=  0.0 mem= 0.2% etime=4-15:56:01
+system_monitor                         pid=3041926  rss_mb=   33.4 cpu=  0.5 mem= 0.2% etime=4-15:56:01
+strike_snapshot_publisher              pid=3041923  rss_mb=   30.0 cpu=  4.3 mem= 0.1% etime=4-15:56:01
+kalshi_lifecycle_consumer_0001         pid=3041917  rss_mb=   26.5 cpu=  0.0 mem= 0.1% etime=4-15:56:01
+cascading_failure_detector             pid=3041913  rss_mb=   20.5 cpu=  0.0 mem= 0.1% etime=4-15:56:01
+===SECTION:BY_SCRIPT===
+active_trade_supervisor.py	active_trade_supervisor_0001	2318.4	56.1	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/active_trade_supervisor.py unified
+active_trade_supervisor.py	active_trade_supervisor_0001_btc15m_exp_scalp	2237.6	14.9	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/active_trade_supervisor.py btc15m_exp_scalp
+auto_entry_supervisor.py	auto_entry_supervisor_0001	81.4	77.4	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/auto_entry_supervisor.py unified
+auto_entry_supervisor.py	auto_entry_supervisor_0001_btc15m_exp_scalp	61.5	9.4	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/auto_entry_supervisor.py btc15m_exp_scalp
+cascading_failure_detector.py	cascading_failure_detector	20.5	0.0	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/cascading_failure_detector.py
+cfbenchmarks_price_watchdog.py	cfbenchmarks_price_watchdog	72.3	7.2	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/cfbenchmarks_price_watchdog.py
+cycle_packager.py	cycle_packager	73.2	2.3	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/cycle_packager.py
+kalshi_account_sync_ws.py	kalshi_account_sync_0001	80.6	0.4	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/kalshi_account_sync_ws.py
+kalshi_lifecycle_trade_consumer.py	kalshi_lifecycle_consumer_0001	26.5	0.0	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/kalshi_lifecycle_trade_consumer.py
+main.py	main_app	107.6	9.8	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/main.py
+market_watchdog_ws.py	market_watchdog_ws_kalshi	470.8	59.6	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/market_watchdog_ws.py --exchange kalshi --market all
+monitor_manager.py	monitor_manager_0001	92.4	0.4	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/monitor_manager.py
+read_api.py	read_api	92.1	0.8	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/read_api.py
+redis_switchboard.py	redis_switchboard	63.5	30.7	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/redis_switchboard.py
+strike_snapshot_publisher.py	strike_snapshot_publisher	30.0	4.3	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/strike_snapshot_publisher.py
+strike_table_generator_ws.py	strike_table_generator_ws_15m	2204.0	53.0	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/strike_table_generator_ws.py --exchange kalshi --market 15m
+strike_table_generator_ws.py	strike_table_generator_ws_hourly	1917.1	61.6	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/strike_table_generator_ws.py --exchange kalshi --market hourly
+system_monitor.py	system_monitor	33.4	0.5	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/system_monitor.py
+trade_executor.py	trade_executor_0001	47.6	0.0	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/trade_executor.py
+trade_manager.py	trade_manager_0001	161.0	1.8	/opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/trade_manager.py
+===SECTION:GROUP_TOTALS===
+market_watchdog_ws rss_mb=474.0 cpu_sum=59.6 count=2
+strike_table_generator_ws rss_mb=4121.1 cpu_sum=114.6 count=2
+symbol_price_watchdog rss_mb=0.8 cpu_sum=0.0 count=1
+python_rec_io_total rss_mb=10211.4 cpu_sum=391.5 count=21
+===SECTION:REDIS===
+used_memory_human:40.35M
+used_memory_rss_human:49.88M
+used_memory_peak_human:50.41M
+total_system_memory_human:15.61G
+mem_fragmentation_ratio:1.24
+797
+===SECTION:POSTGRES===
+PostgreSQL 14.18 (Ubuntu 14.18-0ubuntu0.22.04.1) on x86_64-pc-linux-gnu, compiled by gcc (Ubuntu 11.4.0-1ubuntu1~22.04) 11.4.0, 64-bit
+8
+idle|8
+active|1
+idle in transaction|1
+4428 MB
+postgres_rec_io_backends rss_mb=833.3 count=15
+===SECTION:TOP_CPU===
+    PID   RSS %CPU     ELAPSED COMMAND
+3041911 83408 77.4  4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/auto_entry_supervisor.py unified
+3041925 1963092 61.6 4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/strike_table_generator_ws.py --exchange kalshi --market hourly
+1356295 482144 59.6   13:44:15 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/market_watchdog_ws.py --exchange kalshi --market all
+3041909 2374028 56.1 4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/active_trade_supervisor.py unified
+3041924 2256892 53.0 4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/strike_table_generator_ws.py --exchange kalshi --market 15m
+ 390921 64988 30.7  2-14:13:53 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/redis_switchboard.py
+3041910 2291312 14.9 4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/active_trade_supervisor.py btc15m_exp_scalp
+    856 51072 11.4 142-20:21:31 /usr/bin/redis-server 127.0.0.1:6379
+ 956805 110188 9.8  1-22:11:39 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/main.py
+    929 18960  9.7 142-20:21:31 /usr/lib/postgresql/14/bin/postgres -D /var/lib/postgresql/14/main -c config_file=/etc/postgresql/14/main/postgresql.conf
+1358152 153104 9.6    13:44:07 postgres: 14/main: rec_io_user rec_io_db 165.22.13.146(42696) idle
+2028585 62952  9.4  2-22:43:45 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/auto_entry_supervisor.py btc15m_exp_scalp
+3041914 74052  7.2  4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/cfbenchmarks_price_watchdog.py
+3041923 30700  4.3  4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/strike_snapshot_publisher.py
+3041915 74992  2.3  4-15:56:03 /opt/rec_io_server/venv/bin/python /opt/rec_io_server/backend/cycle_packager.py
+===SECTION:END===

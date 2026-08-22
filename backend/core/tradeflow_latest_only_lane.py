@@ -73,7 +73,15 @@ def decision_generation_id(snap: Dict[str, Any]) -> str:
     Coarser gen: event + bucketed TTC + asks rounded to 1¢ for first N strikes.
 
     Ask flicker below 1¢ within the same TTC bucket does not cancel in-flight eval.
+
+    Exp Scalp 1 Hz snapshots (``rec_snapshot_eval``) use wall-clock second only so
+    in-second book flicker does not cancel or skip the snapshot that was published.
     """
+    if snap.get("rec_snapshot_eval"):
+        try:
+            return f"snap:{int(snap.get('wall_second'))}"
+        except (TypeError, ValueError):
+            pass
     strikes = snap.get("strikes") or []
     if not isinstance(strikes, list):
         strikes = []
@@ -262,6 +270,33 @@ class LatestOnlyLaneHub:
     def ensure_lanes(self) -> None:
         for sym, mkt in self._ladder_keys():
             self.lane(sym, mkt)
+
+    def evaluate_latest_blocking(
+        self,
+        symbol: str,
+        market: str,
+        snap: Optional[Dict[str, Any]] = None,
+    ) -> float:
+        """
+        Publish ``snap`` (or fetch) and evaluate on the caller thread.
+
+        Returns elapsed seconds. ``-1.0`` means no snap. ``0.0`` means same
+        generation as the last eval (duplicate snapshot second) and no work.
+        """
+        sym = (symbol or "").strip().upper()
+        mkt = (market or "").strip().lower()
+        if mkt not in ("hourly", "15m") or not sym:
+            return -1.0
+        payload = snap if snap is not None else self._fetch_snap(sym, mkt)
+        if not payload:
+            return -1.0
+        lane = self.lane(sym, mkt)
+        slot = lane.publish(payload)
+        if slot is None:
+            return 0.0
+        t0 = time.perf_counter()
+        self._eval_worker(lane)
+        return time.perf_counter() - t0
 
     def on_ladder_notify(self, symbol: str, market: str) -> None:
         """Fetch latest, publish to mailbox, schedule eval (or same-gen re-eval)."""
