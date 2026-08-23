@@ -34,7 +34,10 @@ def _sleep_until_next_second_boundary() -> None:
 
 
 def _discover_symbols() -> list[str]:
-    raw = os.getenv("STRIKE_SNAPSHOT_SYMBOLS", "").strip()
+    raw = (
+        os.getenv("STRIKE_SNAPSHOT_SYMBOLS", "").strip()
+        or os.getenv("MARKET_WATCHDOG_SYMBOLS", "").strip()
+    )
     if raw:
         return [s.strip().upper() for s in raw.split(",") if s.strip()]
     try:

@@ -969,14 +969,29 @@ else:
 
 
 def _count_active_trades_across_unified_pool_monitors() -> int:
-    """Rows in unified pool that need the monitoring loop (active, pending, or closing).
+    """Rows in this ATS process's lane that need the monitoring loop.
 
     Returns -1 when the database is unreachable (callers must not treat as zero trades).
+    Cutout vs general pool: only monitors in ``_ats_list_lane_monitor_rows``.
     """
     if _redis_active_trades_on():
         from backend.core import live_state_active_trades as ls_at
 
-        return ls_at.count_tracked(ctx_user())
+        if ATS_UNIFIED_POOL:
+            lane_mids = {
+                str(row.get("monitor_id") or "").strip()
+                for row in _ats_list_lane_monitor_rows()
+                if str(row.get("monitor_id") or "").strip()
+            }
+            if not lane_mids:
+                return 0
+            n = 0
+            for rec in ls_at.list_trades(USER_NUMBER):
+                mid = str(rec.get("monitor_id") or "").strip()
+                if mid in lane_mids:
+                    n += 1
+            return n
+        return ls_at.count_tracked(ctx_user(), monitor_id=ctx_mid())
 
     # Bind explicitly to this worker slot so counts never follow a stray HTTP/API tenant context.
     conn = get_postgresql_connection(tenant_user_no=USER_NUMBER)
@@ -984,6 +999,15 @@ def _count_active_trades_across_unified_pool_monitors() -> int:
         return -1
     try:
         cur = conn.cursor()
+        lane_mids = None
+        if ATS_UNIFIED_POOL:
+            lane_mids = {
+                str(row.get("monitor_id") or "").strip()
+                for row in _ats_list_lane_monitor_rows()
+                if str(row.get("monitor_id") or "").strip()
+            }
+            if not lane_mids:
+                return 0
         if ATS_UNIFIED_ALL:
             total = 0
             wh = effective_tenant_context_for_sql_rewrite().user_no
@@ -996,18 +1020,31 @@ def _count_active_trades_across_unified_pool_monitors() -> int:
                     SELECT COUNT(*) FROM users.{tbl}
                     WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
                         IN ('active', 'pending', 'closing')
-                    """
+                      AND monitor_id::text = ANY(%s)
+                    """,
+                    (list(lane_mids),),
                 )
                 total += int(cur.fetchone()[0])
             return total
         tbl = get_monitor_active_trades_table()
-        cur.execute(
-            f"""
-            SELECT COUNT(*) FROM users.{tbl}
-            WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
-                IN ('active', 'pending', 'closing')
-            """
-        )
+        if lane_mids is not None:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM users.{tbl}
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                    IN ('active', 'pending', 'closing')
+                  AND monitor_id::text = ANY(%s)
+                """,
+                (list(lane_mids),),
+            )
+        else:
+            cur.execute(
+                f"""
+                SELECT COUNT(*) FROM users.{tbl}
+                WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                    IN ('active', 'pending', 'closing')
+                """
+            )
         return int(cur.fetchone()[0])
     finally:
         conn.close()
@@ -1076,9 +1113,9 @@ def _unified_pool_tracked_ids(user_no: str, *, pool_15m: bool) -> set:
 
 def _unified_pool_monitor_bindings_with_tracked_trades() -> List[Tuple[str, str]]:
     """
-    Monitors with active/pending/closing rows — for mark refresh only.
+    Monitors with active/pending/closing rows — mark refresh and ladder gating.
 
-    Auto-stop / lane exit eval uses on_ladder_notify and is unchanged.
+    Scoped to this ATS process's lane (cutout vs general pool), not the whole tenant hash.
     """
     user_no = USER_NUMBER
     seen: set = set()
@@ -1094,33 +1131,41 @@ def _unified_pool_monitor_bindings_with_tracked_trades() -> List[Tuple[str, str]
             if t not in seen:
                 seen.add(t)
                 out.append(t)
-        return out
-    conn = get_postgresql_connection(tenant_user_no=user_no)
-    if not conn:
-        return out
-    try:
-        for tbl in (
-            legacy_active_trades_pool_15m(user_no),
-            legacy_active_trades_pool_hourly(user_no),
-        ):
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"""
-                    SELECT DISTINCT monitor_id FROM users.{tbl}
-                    WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
-                        IN ('active', 'pending', 'closing')
-                    """
-                )
-                for (mid,) in cur.fetchall():
-                    m = str(mid or "").strip()
-                    if not m:
-                        continue
-                    t = (user_no, m)
-                    if t not in seen:
-                        seen.add(t)
-                        out.append(t)
-    finally:
-        conn.close()
+    else:
+        conn = get_postgresql_connection(tenant_user_no=user_no)
+        if not conn:
+            return out
+        try:
+            for tbl in (
+                legacy_active_trades_pool_15m(user_no),
+                legacy_active_trades_pool_hourly(user_no),
+            ):
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        SELECT DISTINCT monitor_id FROM users.{tbl}
+                        WHERE COALESCE(NULLIF(TRIM(LOWER(status::text)), ''), 'active')
+                            IN ('active', 'pending', 'closing')
+                        """
+                    )
+                    for (mid,) in cur.fetchall():
+                        m = str(mid or "").strip()
+                        if not m:
+                            continue
+                        t = (user_no, m)
+                        if t not in seen:
+                            seen.add(t)
+                            out.append(t)
+        finally:
+            conn.close()
+
+    if ATS_UNIFIED_POOL and out:
+        lane_mids = {
+            str(row.get("monitor_id") or "").strip()
+            for row in _ats_list_lane_monitor_rows()
+            if str(row.get("monitor_id") or "").strip()
+        }
+        out = [(u, m) for u, m in out if m in lane_mids]
     return out
 
 
@@ -3822,6 +3867,12 @@ _ATS_FAILSAFE_POLL_SEC = float(
 # Redis failsafe_refresh_all while busy: slow cadence (quiet timeout still refreshes).
 _ATS_FAILSAFE_REDIS_SEC = float(os.getenv("ATS_FAILSAFE_REDIS_SEC", "5"))
 _ats_last_failsafe_mono: float = 0.0
+_ATS_TRACKED_LADDER_CACHE_TTL_SEC = float(
+    os.getenv("ATS_TRACKED_LADDER_CACHE_TTL_SEC", "0.5")
+)
+_ats_tracked_ladder_cache_lock = threading.Lock()
+_ats_tracked_ladder_cache_mono: float = 0.0
+_ats_tracked_ladder_cache_keys: frozenset = frozenset()
 
 
 def _ats_refuse_stale_fire(stage: str) -> bool:
@@ -3922,6 +3973,64 @@ def _ats_lane_keys() -> List[Tuple[str, str]]:
             mkt = "15m" if ATS_UNIFIED_15M else "hourly"
         keys.add((sym, mkt))
     return sorted(keys) if keys else [("BTC", "15m")]
+
+
+def _ats_fallback_market_for_lane() -> str:
+    if ATS_BTC15M_EXP_SCALP or ATS_UNIFIED_15M:
+        return "15m"
+    return "hourly"
+
+
+def _ats_tracked_monitor_ids_for_lane() -> List[str]:
+    """Monitor ids with tracked rows that belong to this ATS process's lane set."""
+    return [mid for _u, mid in _unified_pool_monitor_bindings_with_tracked_trades()]
+
+
+def _ats_ladder_keys_with_tracked_trades() -> List[Tuple[str, str]]:
+    """(symbol, market) ladders that currently have tracked positions on this ATS."""
+    from backend.core.tradeflow_latest_only_lane import ladder_keys_for_tracked_monitors
+
+    if ATS_BTC15M_EXP_SCALP:
+        tracked = _ats_tracked_monitor_ids_for_lane()
+        return [("BTC", "15m")] if tracked else []
+    return ladder_keys_for_tracked_monitors(
+        _ats_list_lane_monitor_rows(),
+        _ats_tracked_monitor_ids_for_lane(),
+        fallback_market=_ats_fallback_market_for_lane(),
+    )
+
+
+def _ats_tracked_ladder_key_set(*, force: bool = False) -> frozenset:
+    """Short-TTL cache of ladders with tracked trades (hot path for ladder notify)."""
+    global _ats_tracked_ladder_cache_mono, _ats_tracked_ladder_cache_keys
+    now = time.monotonic()
+    with _ats_tracked_ladder_cache_lock:
+        if (
+            not force
+            and _ats_tracked_ladder_cache_keys is not None
+            and (now - _ats_tracked_ladder_cache_mono) < _ATS_TRACKED_LADDER_CACHE_TTL_SEC
+        ):
+            return _ats_tracked_ladder_cache_keys
+        keys = frozenset(_ats_ladder_keys_with_tracked_trades())
+        _ats_tracked_ladder_cache_keys = keys
+        _ats_tracked_ladder_cache_mono = now
+        return keys
+
+
+def _ats_ladder_has_tracked_trades(symbol: str, market: str) -> bool:
+    sym = (symbol or "").strip().upper()
+    mkt = (market or "").strip().lower()
+    if not sym or mkt not in ("hourly", "15m"):
+        return False
+    return (sym, mkt) in _ats_tracked_ladder_key_set()
+
+
+def _ats_failsafe_refresh_tracked() -> None:
+    """Failsafe Redis ladder refresh only for ladders with tracked positions."""
+    keys = list(_ats_tracked_ladder_key_set(force=True))
+    if not keys:
+        return
+    _ats_ensure_lane_hub().failsafe_refresh_keys(keys)
 
 
 def _ats_lane_bind_worker(u: str, m: str, slot, lane) -> None:
@@ -4889,7 +4998,7 @@ def start_monitoring_loop():
             mode = "btc15m_exp_scalp_cutout" if ATS_BTC15M_EXP_SCALP else "latest_only_lanes"
             log(f"📊 MONITORING: ATS mode={mode} (mailbox exit eval; cancel in-flight only)")
             try:
-                _ats_ensure_lane_hub().failsafe_refresh_all()
+                _ats_failsafe_refresh_tracked()
             except Exception as _lane_e:
                 log_debug(f"ATS lane initial refresh: {_lane_e}")
         
@@ -5223,7 +5332,7 @@ def start_monitoring_loop():
                             now_mono - _ats_last_failsafe_mono >= _ATS_FAILSAFE_REDIS_SEC
                         )
                         if need_redis:
-                            _ats_ensure_lane_hub().failsafe_refresh_all()
+                            _ats_failsafe_refresh_tracked()
                             _ats_last_failsafe_mono = now_mono
                     except Exception as _lane_e:
                         log_debug(f"ATS lane failsafe: {_lane_e}")
@@ -5310,6 +5419,8 @@ def start_monitoring_loop():
                 def _ats_on_ladder(s: str, m: str) -> None:
                     if _ATS_LANE_EXITS:
                         try:
+                            if not _ats_ladder_has_tracked_trades(s, m):
+                                return
                             _ats_ensure_lane_hub().on_ladder_notify(s, m)
                         except Exception as le:
                             log_debug(f"ATS lane notify failed: {le}")

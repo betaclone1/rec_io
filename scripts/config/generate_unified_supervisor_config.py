@@ -28,6 +28,68 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Optional prod-local overlay (not in git): backend/data/system/kalshi_stream_symbols.env
+# Example: MARKET_WATCHDOG_SYMBOLS=BTC,ETH,SOL
+# Delete the file (or set full symbol list) and regenerate supervisord to restore streams.
+_DEFAULT_CFBENCHMARKS_INDEX_IDS = "BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI,DOGEUSD_RTI"
+_SYMBOL_TO_CFBENCHMARKS_INDEX = {
+    "BTC": "BRTI",
+    "ETH": "ETHUSD_RTI",
+    "SOL": "SOLUSD_RTI",
+    "XRP": "XRPUSD_RTI",
+    "DOGE": "DOGEUSD_RTI",
+}
+_KALSHI_STREAM_OVERLAY_KEYS = (
+    "MARKET_WATCHDOG_SYMBOLS",
+    "STRIKE_TABLE_SYMBOLS",
+    "STRIKE_SNAPSHOT_SYMBOLS",
+    "CFBENCHMARKS_INDEX_IDS",
+    "MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE",
+)
+
+
+def _load_kalshi_stream_symbols_overlay() -> dict:
+    """Load durable stream-symbol overrides. Shell env wins over the overlay file."""
+    out: dict = {}
+    path = project_root / "backend" / "data" / "system" / "kalshi_stream_symbols.env"
+    if path.is_file():
+        try:
+            for raw in path.read_text().splitlines():
+                line = raw.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                key, val = line.split("=", 1)
+                key = key.strip()
+                if key not in _KALSHI_STREAM_OVERLAY_KEYS:
+                    continue
+                out[key] = val.strip().strip('"').strip("'")
+        except OSError as e:
+            logger.warning("kalshi_stream_symbols.env unreadable: %s", e)
+    for key in _KALSHI_STREAM_OVERLAY_KEYS:
+        val = os.getenv(key)
+        if val is not None and str(val).strip():
+            out[key] = str(val).strip()
+    return out
+
+
+def _cfbenchmarks_index_ids_for_symbols(symbols_csv: str) -> str:
+    ids = []
+    for sym in (s.strip().upper() for s in symbols_csv.split(",") if s.strip()):
+        iid = _SYMBOL_TO_CFBENCHMARKS_INDEX.get(sym)
+        if iid and iid not in ids:
+            ids.append(iid)
+    return ",".join(ids) if ids else _DEFAULT_CFBENCHMARKS_INDEX_IDS
+
+
+def _strike_symbols_cli_suffix(overlay: dict) -> str:
+    raw = (overlay.get("STRIKE_TABLE_SYMBOLS") or overlay.get("MARKET_WATCHDOG_SYMBOLS") or "").strip()
+    if not raw:
+        return ""
+    parts = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    if not parts:
+        return ""
+    return " --symbols " + " ".join(parts)
+
 
 def global_core_service_specs():
     """
@@ -446,10 +508,17 @@ class SupervisorConfigGenerator:
             }
         )
         # Crypto spot: single Kalshi cfbenchmarks_value feed (replaces 4× Coinbase symbol_price_watchdog).
+        # Index list follows kalshi_stream_symbols.env / CFBENCHMARKS_INDEX_IDS when set.
+        stream_overlay = _load_kalshi_stream_symbols_overlay()
+        cfb_ids = (stream_overlay.get("CFBENCHMARKS_INDEX_IDS") or "").strip()
+        if not cfb_ids and stream_overlay.get("MARKET_WATCHDOG_SYMBOLS"):
+            cfb_ids = _cfbenchmarks_index_ids_for_symbols(stream_overlay["MARKET_WATCHDOG_SYMBOLS"])
+        if not cfb_ids:
+            cfb_ids = _DEFAULT_CFBENCHMARKS_INDEX_IDS
         cfb_env = (
             env_global
             + ',CFBENCHMARKS_PUBLISH_MODE="live_state"'
-            + ',CFBENCHMARKS_INDEX_IDS="BRTI,ETHUSD_RTI,SOLUSD_RTI,XRPUSD_RTI,DOGEUSD_RTI"'
+            + f',CFBENCHMARKS_INDEX_IDS="{cfb_ids}"'
             + ',CFBENCHMARKS_RING_PG="1"'
         )
         services.append(
@@ -466,7 +535,12 @@ class SupervisorConfigGenerator:
                 "name": "market_watchdog_ws_kalshi",
                 "script": "market_watchdog_ws.py --exchange kalshi --market all",
                 "port": ports.get("market_watchdog_ws_kalshi", 8005),
-                "environment": env_global,
+                "environment": env_global
+                + (
+                    f',MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE="{stream_overlay["MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE"]}"'
+                    if (stream_overlay.get("MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE") or "").strip()
+                    else ""
+                ),
                 "autostart": True,
             }
         )
@@ -648,10 +722,16 @@ class SupervisorConfigGenerator:
                     }
                 )
 
+        stg_sym_suffix = _strike_symbols_cli_suffix(stream_overlay)
+        if stg_sym_suffix:
+            logger.info(
+                "Strike generators restricted via stream overlay:%s",
+                stg_sym_suffix,
+            )
         services.append(
             {
                 "name": "strike_table_generator_ws_hourly",
-                "script": "strike_table_generator_ws.py --exchange kalshi --market hourly",
+                "script": f"strike_table_generator_ws.py --exchange kalshi --market hourly{stg_sym_suffix}",
                 "port": ports.get("strike_table_generator_ws_hourly", 8014),
                 "environment": env_global,
                 "autostart": True,
@@ -660,7 +740,7 @@ class SupervisorConfigGenerator:
         services.append(
             {
                 "name": "strike_table_generator_ws_15m",
-                "script": "strike_table_generator_ws.py --exchange kalshi --market 15m",
+                "script": f"strike_table_generator_ws.py --exchange kalshi --market 15m{stg_sym_suffix}",
                 "port": ports.get("strike_table_generator_ws_15m", 8036),
                 "environment": env_global,
                 "autostart": True,
@@ -989,6 +1069,7 @@ environment={env_vars}
             for _hf_opt in (
                 "MARKET_WATCHDOG_HOT_ORDERBOOK_TICKERS",
                 "MARKET_WATCHDOG_PUBLISH_COALESCE_MS",
+                "MARKET_WATCHDOG_SYMBOLS",
             ):
                 if any(x.startswith(f"{_hf_opt}=") for x in env_vars):
                     continue
@@ -997,6 +1078,42 @@ environment={env_vars}
                     continue
                 esc = str(_hf_val).replace("\\", "\\\\").replace('"', '\\"')
                 env_vars.append(f'{_hf_opt}="{esc}"')
+
+            # Durable stream-symbol overlay (backend/data/system/kalshi_stream_symbols.env).
+            # Shell env already applied above for MARKET_WATCHDOG_*; fill remaining keys from file.
+            # Hourly ATM width is applied only on market_watchdog (not env_global) to avoid
+            # bouncing the whole supervised stack on ATM-only changes.
+            _stream_overlay = _load_kalshi_stream_symbols_overlay()
+            for _sk in (
+                "MARKET_WATCHDOG_SYMBOLS",
+                "STRIKE_TABLE_SYMBOLS",
+                "STRIKE_SNAPSHOT_SYMBOLS",
+            ):
+                if any(x.startswith(f"{_sk}=") for x in env_vars):
+                    continue
+                _sv = _stream_overlay.get(_sk)
+                if not _sv:
+                    continue
+                esc = str(_sv).replace("\\", "\\\\").replace('"', '\\"')
+                env_vars.append(f'{_sk}="{esc}"')
+            if (
+                not any(x.startswith("STRIKE_SNAPSHOT_SYMBOLS=") for x in env_vars)
+                and _stream_overlay.get("MARKET_WATCHDOG_SYMBOLS")
+            ):
+                esc = str(_stream_overlay["MARKET_WATCHDOG_SYMBOLS"]).replace("\\", "\\\\").replace(
+                    '"', '\\"'
+                )
+                env_vars.append(f'STRIKE_SNAPSHOT_SYMBOLS="{esc}"')
+            if _stream_overlay.get("MARKET_WATCHDOG_SYMBOLS"):
+                logger.info(
+                    "Kalshi stream symbols overlay active: %s",
+                    _stream_overlay.get("MARKET_WATCHDOG_SYMBOLS"),
+                )
+            if _stream_overlay.get("MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE"):
+                logger.info(
+                    "Hourly ATM strikes each side overlay: %s",
+                    _stream_overlay.get("MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE"),
+                )
 
             # Stage 0 tradeflow diagnostics (opt-in via shell/env at supervisord generate time).
             for _diag_key in (

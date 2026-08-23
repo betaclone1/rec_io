@@ -548,7 +548,7 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                     data["min_fill_price"] = round(mfp, 4)
             except (TypeError, ValueError):
                 pass
-        # Monitor is authoritative for the slippage gate (enabled range -0.1000..0.0000).
+        # Monitor is authoritative for the slippage gate (enabled range -0.2000..0.0000).
         if min_slippage is not None:
             try:
                 ms = float(min_slippage)
@@ -2130,7 +2130,7 @@ def _min_fill_price_for_db(trade: dict) -> float:
 
 
 def _min_slippage_for_db(trade: dict) -> float:
-    """Snapshot monitor min_slippage on insert; 0.0000 means gate disabled (enabled range -0.1000..0.0000)."""
+    """Snapshot monitor min_slippage on insert; 0.0000 means gate disabled (enabled range -0.2000..0.0000)."""
     raw = trade.get("min_slippage")
     if raw is None:
         return 0.0
@@ -2452,7 +2452,7 @@ def _min_slippage_precheck_message(data: dict, projection: Optional[dict]) -> Op
     trigger/intended price (``buy_price`` on the ticket) — same sign convention as the
     persisted ``slippage`` column (buy_price - initial_price).
 
-    Gate is enabled only when ``min_slippage`` < 0 (0.0000 disables; range -0.1000..0.0000).
+    Gate is enabled only when ``min_slippage`` < 0 (0.0000 disables; range -0.2000..0.0000).
     Returns a rejection detail string when the trade should be deleted without sending to
     the executor (or without paper-open). None = proceed.
     """

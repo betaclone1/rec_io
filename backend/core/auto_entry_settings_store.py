@@ -252,10 +252,10 @@ def apply_auto_entry_settings(
             update_values.append(0.0000)
         else:
             ms = float(ms_raw)
-            if round(ms, 4) < -0.1000 or ms > 0:
+            if round(ms, 4) < -0.2000 or ms > 0:
                 return {
                     "status": "error",
-                    "message": "min_slippage must be between -0.1000 and 0.0000 (0 disables)",
+                    "message": "min_slippage must be between -0.2000 and 0.0000 (0 disables)",
                 }
             update_fields.append("min_slippage = %s")
             update_values.append(round(ms, 4) if ms < 0 else 0.0000)

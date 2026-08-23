@@ -18,11 +18,44 @@ import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
-from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional, Sequence, Set, Tuple
 
 logger = logging.getLogger(__name__)
 
 LadderKey = Tuple[str, str]
+
+
+def ladder_keys_for_tracked_monitors(
+    lane_rows: Sequence[Mapping[str, Any]],
+    tracked_monitor_ids: Iterable[str],
+    *,
+    fallback_market: str = "hourly",
+) -> List[LadderKey]:
+    """
+    Intersect lane monitor rows with monitors that have tracked positions.
+
+    Returns sorted unique (symbol, market) keys for failsafe / notify gating.
+    """
+    mid_to_sm: Dict[str, LadderKey] = {}
+    fb = (fallback_market or "hourly").strip().lower()
+    if fb not in ("hourly", "15m"):
+        fb = "hourly"
+    for row in lane_rows or ():
+        mid = str(row.get("monitor_id") or "").strip()
+        if not mid:
+            continue
+        sym = (row.get("symbol") or "BTC").strip().upper() or "BTC"
+        mkt = (row.get("market") or "").strip().lower()
+        if mkt not in ("hourly", "15m"):
+            mkt = fb
+        mid_to_sm[mid] = (sym, mkt)
+
+    keys: Set[LadderKey] = set()
+    for raw in tracked_monitor_ids or ():
+        mid = str(raw or "").strip()
+        if mid in mid_to_sm:
+            keys.add(mid_to_sm[mid])
+    return sorted(keys)
 
 
 def snap_generation_id(snap: Optional[Dict[str, Any]]) -> str:
@@ -334,6 +367,20 @@ class LatestOnlyLaneHub:
 
     def failsafe_refresh_all(self) -> None:
         for sym, mkt in self._ladder_keys():
+            self.on_ladder_notify(sym, mkt)
+
+    def failsafe_refresh_keys(self, keys: Sequence[LadderKey]) -> None:
+        """Refresh only the given ladders (e.g. those with tracked positions)."""
+        seen: set = set()
+        for raw_sym, raw_mkt in keys or ():
+            sym = (raw_sym or "").strip().upper()
+            mkt = (raw_mkt or "").strip().lower()
+            if mkt not in ("hourly", "15m") or not sym:
+                continue
+            key = (sym, mkt)
+            if key in seen:
+                continue
+            seen.add(key)
             self.on_ladder_notify(sym, mkt)
 
     def _schedule_eval(self, lane: LatestOnlyLadderLane) -> None:

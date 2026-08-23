@@ -10448,7 +10448,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
 | `min_fill_price` | `numeric(6,4)` | YES | - | Minimum estimated taker fill (dollars) before executor sends open order; NULL or 0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
-| `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Minimum acceptable projected entry slippage (est. fill − trigger, dollars); 0.0000 disables, enabled range -0.1000..0.0000. TM rejects opens whose projected slippage is below this. Migration `20260716_1200_min_slippage_gate`. |
+| `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Minimum acceptable projected entry slippage (est. fill − trigger, dollars); 0.0000 disables, enabled range -0.2000..0.0000. TM rejects opens whose projected slippage is below this. Migration `20260716_1200_min_slippage_gate`. |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
 | `loss_prevention_toggle` | `boolean` | YES | true | Master enable for any monitor loss-prevention method. |
 | `loss_prevention_method` | `text` | YES | win_streak | Loss-prevention algorithm: `win_streak` or `time`. |
@@ -10684,7 +10684,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
 | `min_fill_price` | `numeric(6,4)` | YES | - | Monitor-only: minimum estimated taker fill before executor sends open order; NULL/0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
-| `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Monitor-only: minimum acceptable projected entry slippage (est. fill − trigger); 0.0000 disables, enabled range -0.1000..0.0000. TM slippage gate. Migration `20260716_1200_min_slippage_gate`. |
+| `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Monitor-only: minimum acceptable projected entry slippage (est. fill − trigger); 0.0000 disables, enabled range -0.2000..0.0000. TM slippage gate. Migration `20260716_1200_min_slippage_gate`. |
 | `position_size` | `integer(32)` | YES | 1 | |
 | `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
 | `multiplier` | `numeric(3,2)` | YES | 1.00 | |
@@ -10924,7 +10924,7 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `time_in_force` | `text` | YES | - | Snapshot from monitor at open; Kalshi TIF enum string. Migration `20260426_1600_monitor_trades_execution_settings`. |
 | `order_type` | `text` | YES | - | Snapshot `limit` / `market` policy from monitor. Same migration. |
 | `min_fill_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor slippage floor at insert; **0.0000** = gate disabled. Migration `20260715_1200_trades_min_fill_price`. |
-| `min_slippage` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor min_slippage at insert; **0.0000** = gate disabled (enabled range -0.1000..0.0000). Migration `20260716_1200_min_slippage_gate`. |
+| `min_slippage` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor min_slippage at insert; **0.0000** = gate disabled (enabled range -0.2000..0.0000). Migration `20260716_1200_min_slippage_gate`. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |

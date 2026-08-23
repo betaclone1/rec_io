@@ -1451,17 +1451,18 @@
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
     }
 
-    // Min Slippage gate slider (all strategies). Slider int -100..0 == dollars -0.1000..0.0000 (0.001 step).
+    // Min Slippage gate slider (all strategies). Slider int -200..0 == dollars -0.2000..0.0000 (0.001 step).
     const UAT_MIN_SLIPPAGE_SLIDERS = [
       ['autoEntryMinSlippageSlider', 'autoEntryMinSlippageValueDisplay'],
       ['expirationScalpMinSlippageSlider', 'expirationScalpMinSlippageValueDisplay'],
+      ['risingDevilMinSlippageSlider', 'risingDevilMinSlippageValueDisplay'],
       ['msMinSlippageSlider', 'msMinSlippageValueDisplay'],
     ];
     function updateUatMinSlippageBubble(sliderId, displayId, rawValue) {
       const slider = document.getElementById(sliderId);
       const display = document.getElementById(displayId);
       if (!slider || !display) return;
-      const n = Math.min(0, Math.max(-100, parseInt(rawValue, 10) || 0));
+      const n = Math.min(0, Math.max(-200, parseInt(rawValue, 10) || 0));
       display.textContent = (n / 1000).toFixed(4);
       const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
       const percent = (max === min) ? 0 : (n - min) / (max - min);
@@ -1470,7 +1471,7 @@
     function dashboardUatLoadMinSlippage(data) {
       const raw = (data && data.min_slippage !== undefined && data.min_slippage !== null)
         ? parseFloat(data.min_slippage) : 0;
-      const asInt = Math.max(-100, Math.min(0, Math.round((Number.isFinite(raw) ? raw : 0) * 1000)));
+      const asInt = Math.max(-200, Math.min(0, Math.round((Number.isFinite(raw) ? raw : 0) * 1000)));
       UAT_MIN_SLIPPAGE_SLIDERS.forEach(([sid, did]) => {
         const el = document.getElementById(sid);
         if (!el) return;
@@ -1482,10 +1483,11 @@
         }
       });
     }
-    function dashboardUatReadMinSlippage(isMomentumScalp, isExpirationScalp) {
+    function dashboardUatReadMinSlippage(isMomentumScalp, isExpirationScalp, isRisingDevil) {
       let id = 'autoEntryMinSlippageSlider';
       if (isMomentumScalp) id = 'msMinSlippageSlider';
       else if (isExpirationScalp) id = 'expirationScalpMinSlippageSlider';
+      else if (isRisingDevil) id = 'risingDevilMinSlippageSlider';
       const el = document.getElementById(id);
       if (!el) return 0;
       const raw = parseInt(el.value, 10);
@@ -1834,6 +1836,16 @@
 
       const rdRising = document.getElementById('risingDevilMinAskRangeSection');
       if (rdRising) rdRising.style.display = isRisingDevil ? 'block' : 'none';
+      // Rising Devil uses risingDevilMinSlippageSlider; hide the generic HTC copy to avoid duplicates.
+      {
+        const genSlip = document.getElementById('autoEntryMinSlippageSlider');
+        const genLabel = document.querySelector('label[for="autoEntryMinSlippageSlider"]');
+        const genWrap = genSlip && genSlip.closest('.value-bubble-container');
+        const showGenericSlip = !isRisingDevil && !isExpirationScalp;
+        if (genSlip) genSlip.style.display = showGenericSlip ? '' : 'none';
+        if (genLabel) genLabel.style.display = showGenericSlip ? '' : 'none';
+        if (genWrap) genWrap.style.display = showGenericSlip ? '' : 'none';
+      }
       dashboardUatApplyExpirationScalpLayout(isExpirationScalp);
 
       const populate = (data) => {
@@ -2607,7 +2619,7 @@
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
         }
         // Min Slippage gate (all strategies): read from the active strategy section's slider.
-        payload.min_slippage = dashboardUatReadMinSlippage(isMomentumScalp, isExpirationScalp);
+        payload.min_slippage = dashboardUatReadMinSlippage(isMomentumScalp, isExpirationScalp, isRisingDevil);
         Object.assign(payload, uatReadSymbolWideForPayload(isMomentumScalp));
         const stopLossPriceSliderEl = document.getElementById(isMomentumScalp ? 'stopLossPriceSliderMs' : 'stopLossPriceSlider')
           || document.getElementById('stopLossPriceSlider');

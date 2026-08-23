@@ -2,7 +2,7 @@
 
 Projected entry slippage = estimated fill (initial_proj_price) - trigger price (buy_price),
 same sign convention as the persisted ``slippage`` column. Gate enabled only when
-min_slippage < 0 (0.0000 disables; range -0.1000..0.0000).
+min_slippage < 0 (0.0000 disables; range -0.2000..0.0000).
 """
 
 from __future__ import annotations

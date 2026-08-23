@@ -755,10 +755,17 @@ def main() -> None:
 
     if args.symbols:
         syms = tuple(s.strip().upper() for s in args.symbols if s.strip())
-    elif args.market == "hourly":
-        syms = tuple(sorted(KALSHI_HOURLY_SYMBOLS))
     else:
-        syms = fetch_kalshi_15m_symbols_ordered_from_db()
+        env_syms = (
+            os.getenv("STRIKE_TABLE_SYMBOLS", "").strip()
+            or os.getenv("MARKET_WATCHDOG_SYMBOLS", "").strip()
+        )
+        if env_syms:
+            syms = tuple(s.strip().upper() for s in env_syms.split(",") if s.strip())
+        elif args.market == "hourly":
+            syms = tuple(sorted(KALSHI_HOURLY_SYMBOLS))
+        else:
+            syms = fetch_kalshi_15m_symbols_ordered_from_db()
     if args.market == "hourly":
         syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
         if not syms:
