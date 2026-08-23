@@ -1836,15 +1836,12 @@
 
       const rdRising = document.getElementById('risingDevilMinAskRangeSection');
       if (rdRising) rdRising.style.display = isRisingDevil ? 'block' : 'none';
-      // Rising Devil uses risingDevilMinSlippageSlider; hide the generic HTC copy to avoid duplicates.
+      // Rising Devil / Exp Scalp have dedicated min-slippage sliders; hide the generic HTC block.
+      // Hide the section wrapper — label[for] uses display:block !important in uat_slider_spacing.css.
       {
-        const genSlip = document.getElementById('autoEntryMinSlippageSlider');
-        const genLabel = document.querySelector('label[for="autoEntryMinSlippageSlider"]');
-        const genWrap = genSlip && genSlip.closest('.value-bubble-container');
+        const genSec = document.getElementById('uatGenericMinSlippageSection');
         const showGenericSlip = !isRisingDevil && !isExpirationScalp;
-        if (genSlip) genSlip.style.display = showGenericSlip ? '' : 'none';
-        if (genLabel) genLabel.style.display = showGenericSlip ? '' : 'none';
-        if (genWrap) genWrap.style.display = showGenericSlip ? '' : 'none';
+        if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
       }
       dashboardUatApplyExpirationScalpLayout(isExpirationScalp);
 

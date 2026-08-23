@@ -8968,10 +8968,12 @@
           <div id="m_maxDiffVal" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.00</div>
         </div>
 
+        <div id="m_uatGenericMinSlippageSection">
         <label for="m_autoEntryMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_autoEntryMinSlippageSlider" min="-200" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;">
           <div id="m_autoEntryMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
+        </div>
         </div>
 
         <div class="uat-loss-prevention-block" style="margin:16px 0;">
@@ -10898,13 +10900,9 @@
         const mrdSec = document.getElementById('m_risingDevilMinAskRangeSection');
         if (mrdSec) mrdSec.style.display = isRisingDevil ? 'block' : 'none';
         {
-          const genSlip = document.getElementById('m_autoEntryMinSlippageSlider');
-          const genLabel = document.querySelector('label[for="m_autoEntryMinSlippageSlider"]');
-          const genWrap = genSlip && genSlip.closest('.value-bubble-container');
+          const genSec = document.getElementById('m_uatGenericMinSlippageSection');
           const showGenericSlip = !isRisingDevil && !isExpirationScalp;
-          if (genSlip) genSlip.style.display = showGenericSlip ? '' : 'none';
-          if (genLabel) genLabel.style.display = showGenericSlip ? '' : 'none';
-          if (genWrap) genWrap.style.display = showGenericSlip ? '' : 'none';
+          if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
         }
         mobileDashApplyExpirationScalpLayout(isExpirationScalp);
 
