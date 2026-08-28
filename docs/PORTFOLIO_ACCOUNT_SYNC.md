@@ -83,6 +83,7 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 | `REC_BALANCE_UNDERSTATEMENT_MIN_DROP_RATIO` | `0.25` | Min fraction of prior portfolio dropped in one tick to treat as understatement |
 | `REC_BALANCE_UNDERSTATEMENT_MIN_DROP_CENTS` | `10000` | Min absolute portfolio drop ($100) for understatement heuristic |
 | `REC_DRAWDOWN_HALT_CONFIRM_TICKS` | `2` | Consecutive below-threshold portfolio observations before emergency halt (`1` = immediate) |
+| `REC_MTB_HOME_EXCHANGE_INDEX` | `2` (via supervisord) | Kalshi shard where MTB trading cash lives; automatic rake runs `#1→#0` on this shard only |
 
 **Note:** `limit=50` on fills/orders/settlements means long-tail completeness depends on **full reconciliation** (`ACCOUNT_SYNC_FULL_RECONCILE_SEC`, default 900s) and periodic quick syncs.
 

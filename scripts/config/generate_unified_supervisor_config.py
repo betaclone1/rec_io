@@ -1153,6 +1153,17 @@ environment={env_vars}
                 esc_ds = str(rec_default_user_schema).replace("\\", "\\\\").replace('"', '\\"')
                 env_vars.append(f'REC_DEFAULT_USER_SCHEMA="{esc_ds}"')
 
+            # Crypto MTB home shard for automatic rake (#1→#0 within shard). Supervisord does not inherit shell env.
+            if not any(x.startswith("REC_MTB_HOME_EXCHANGE_INDEX=") for x in env_vars):
+                _mtb_home = os.getenv("REC_MTB_HOME_EXCHANGE_INDEX")
+                if _mtb_home is None or str(_mtb_home).strip() == "":
+                    _mtb_home = self.config.get("providers.kalshi.mtb_home_exchange_index", 0)
+                try:
+                    _mtb_home_int = max(0, min(3, int(_mtb_home)))
+                except (TypeError, ValueError):
+                    _mtb_home_int = 0
+                env_vars.append(f'REC_MTB_HOME_EXCHANGE_INDEX="{_mtb_home_int}"')
+
             return ','.join(env_vars)
             
         except Exception as e:

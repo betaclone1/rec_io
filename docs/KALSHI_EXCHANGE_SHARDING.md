@@ -151,7 +151,7 @@ After cutover, **new** crypto markets should report `exchange_index: 2`. Smoke-c
 | Balance poll / `subaccount_balance_*` + `subaccounts_*` shard columns | Migration **`20260813_1448_subaccount_exchange_balances`** + poller writes `exchange_0..3_balance` from matrix API |
 | Address transfer: within-shard + single IAT (`transfer_kalshi_address`) | Done — `backend/bookkeeper/kalshi_subaccount_transfer.py` |
 | Account Manager Initiate Transfer exchange selectors | Done (desktop + mobile) |
-| Automatic rake home shard (`REC_MTB_HOME_EXCHANGE_INDEX`) | Done (default `0`; set `2` at crypto cutover) |
+| Automatic rake home shard (`REC_MTB_HOME_EXCHANGE_INDEX`) | Done — supervisord injects from `providers.kalshi.mtb_home_exchange_index` (default **2** post-cutover) |
 | Docs (this file) | Canonical reference |
 | Multi-shard non-crypto trading | Future — use same matrix; pin or auto-route per product |
 
