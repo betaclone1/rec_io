@@ -52,6 +52,24 @@ def is_paper_trading() -> bool:
     return get_trading_mode() == "paper"
 
 
+def effective_paper_trade(ticket_or_monitor_flag: Any = False) -> bool:
+    """Execution overlay: global paper mode never sends Kalshi orders.
+
+    The dashboard already reports ``paper_trade=True`` for active monitors while
+    :func:`is_paper_trading`. AES and trade_manager must use the same overlay;
+    otherwise a live-flagged monitor inserts a ``pending`` row, the executor
+    rejects it, and the row is never deleted.
+    """
+    flag = ticket_or_monitor_flag
+    if isinstance(flag, str):
+        flag = flag.strip().lower() in ("true", "1", "yes", "on")
+    elif flag is None:
+        flag = False
+    else:
+        flag = bool(flag)
+    return flag or is_paper_trading()
+
+
 def paper_mode_from_client_query(client_trading_mode: Optional[str]) -> Optional[bool]:
     """
     When the UI sends ``trading_mode=paper|live`` on API requests, honor it for **reads** so each

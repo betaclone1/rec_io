@@ -43,6 +43,7 @@ from backend.core.config.database import get_postgresql_connection
 from backend.core.strike_pipeline_health import evaluate_pipeline_gate_conn
 from backend.core.time_eastern import now_est
 from backend.core.kalshi_execution_settings import (
+    format_limit_dollars,
     limit_price_for_executor_payload,
     normalize_time_in_force_loose,
 )
@@ -316,9 +317,43 @@ def _v2_buy_leg_from_legacy_intent_side(intent: str, legacy_side: str) -> str:
     """
     s = "yes" if str(legacy_side).strip().lower() in ("y", "yes") else "no"
     i = str(intent or "open").strip().lower()
-    if i == "close":
+    if i in ("close", "resting_close"):
         return "no" if s == "yes" else "yes"
     return s
+
+
+def kalshi_cancel_hero_order(order_id: str, *, subaccount: int = 1) -> bool:
+    """Cancel a Kalshi order on the hero (AES/TM) subaccount. True if gone or already gone."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return False
+    path = f"/portfolio/events/orders/{oid}"
+    full_path = f"/trade-api/v2{path}"
+    timestamp = str(int(time.time() * 1000))
+    KEY_ID, KEY_PATH = get_current_credentials()
+    if not KEY_ID or not KEY_PATH:
+        log_event("UNKNOWN", f"CANCEL missing credentials order_id={oid}")
+        return False
+    try:
+        signature = generate_kalshi_signature("DELETE", full_path, timestamp, str(KEY_PATH))
+    except Exception as e:
+        log_event("UNKNOWN", f"CANCEL sign failed order_id={oid}: {e}")
+        return False
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "KalshiTradeExec/1.0",
+        "KALSHI-ACCESS-KEY": KEY_ID,
+        "KALSHI-ACCESS-TIMESTAMP": timestamp,
+        "KALSHI-ACCESS-SIGNATURE": signature,
+    }
+    url = f"{get_base_url()}{path}?subaccount={int(subaccount)}"
+    try:
+        resp = requests.delete(url, headers=headers, timeout=5)
+        log_event("UNKNOWN", f"CANCEL {oid} status={resp.status_code} body={resp.text[:400]}")
+        return resp.status_code in (200, 201, 204, 404)
+    except Exception as e:
+        log_event("UNKNOWN", f"CANCEL {oid} failed: {e}")
+        return False
 
 
 def _min_fill_price_gate_message(data: dict) -> Optional[str]:
@@ -378,7 +413,23 @@ def process_trigger_trade_request(data: dict):
     if get_trading_mode() == "paper":
         ticket_id = data.get("ticket_id", "UNKNOWN")
         trade_id = data.get("id")
+        intent = str(data.get("intent", "open")).strip().lower()
         log_event(ticket_id, "REJECTED global paper mode — no Kalshi orders", trade_id=trade_id)
+        if trade_id:
+            status_payload = {
+                "id": trade_id,
+                "status": "error",
+                "error_message": "global_paper_mode",
+                "intent": intent,
+            }
+        else:
+            status_payload = {
+                "ticket_id": ticket_id,
+                "status": "error",
+                "error_message": "global_paper_mode",
+                "intent": intent,
+            }
+        _notify_trade_manager_executor_status(status_payload)
         return {"status": "rejected", "error": "global_paper_mode"}, 403
 
     ticket_id = data.get("ticket_id", "UNKNOWN")
@@ -399,6 +450,22 @@ def process_trigger_trade_request(data: dict):
                 f"market={pipe_mkt} reason={health_reason}"
             )
             log_event(ticket_id, msg, trade_id=trade_id)
+            intent = str(data.get("intent", "open")).strip().lower()
+            if trade_id:
+                status_payload = {
+                    "id": trade_id,
+                    "status": "error",
+                    "error_message": msg,
+                    "intent": intent,
+                }
+            else:
+                status_payload = {
+                    "ticket_id": ticket_id,
+                    "status": "error",
+                    "error_message": msg,
+                    "intent": intent,
+                }
+            _notify_trade_manager_executor_status(status_payload)
             return {"status": "rejected", "error": msg}, 503
     raw_side = data.get("side", "yes")
     side = "yes" if raw_side in ["Y", "yes", "y"] else "no"
@@ -441,6 +508,22 @@ def process_trigger_trade_request(data: dict):
             )
         except ValueError as e:
             msg = f"limit_price_error:{e}"
+            log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
+            if trade_id:
+                status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
+            else:
+                status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+            _notify_trade_manager_executor_status(status_payload)
+            return {"status": "rejected", "error": msg}, 400
+    elif intent == "resting_close":
+        tif = "good_till_canceled"
+        try:
+            lim = format_limit_dollars(float(data.get("buy_price")))
+            px = float(lim)
+            if px <= 0 or px >= 1:
+                raise ValueError("resting_close_limit_out_of_range")
+        except (TypeError, ValueError) as e:
+            msg = f"resting_close_limit_error:{e}"
             log_event(ticket_id, f"❌ REJECTED: {msg}", trade_id=trade_id)
             if trade_id:
                 status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
@@ -565,7 +648,8 @@ def process_trigger_trade_request(data: dict):
         # intent / trade_id already normalized above (do not re-read raw intent here).
 
         # V2 create returns 201 even when IOC fully unfills: fill_count can be 0 — position unchanged on Kalshi.
-        if intent != "open":
+        # Resting GTC close is expected to rest with zero fill.
+        if intent not in ("open", "resting_close"):
             fill_fp = _v2_fill_count_float(response_json)
             if fill_fp < 1e-6:
                 msg = (
@@ -693,6 +777,19 @@ def trigger_trade():
         except Exception:
             log_event("UNKNOWN", f"❌ ERROR: {e}", trade_id=None)
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/cancel_order", methods=["POST"])
+def cancel_order():
+    """Cancel a resting Kalshi order on the hero subaccount."""
+    try:
+        data = request.get_json() or {}
+        oid = str(data.get("order_id") or "").strip()
+        sub = int(data.get("subaccount", 1) or 1)
+        ok = kalshi_cancel_hero_order(oid, subaccount=sub)
+        return jsonify({"ok": ok, "order_id": oid}), (200 if ok else 502)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 # System status endpoint (kept for health monitoring)
 @app.route("/api/system_status")

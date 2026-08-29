@@ -9,6 +9,25 @@
     }
 
     // Normalize monitor id from tile to DB id the API expects
+    function uatIsHighWaterScalp(strategy) {
+      return String(strategy || '').toUpperCase().includes('HIGH WATER SCALP');
+    }
+    function uatIsExpirationScalpEntry(strategy) {
+      const u = String(strategy || '').toUpperCase();
+      return u.includes('EXPIRATION SCALP') || u.includes('HIGH WATER SCALP');
+    }
+    function uatMonitorMarketIs15m(market) {
+      return String(market || '').trim().toLowerCase() === '15m';
+    }
+    function uatTimeWindowMaxSeconds(strategy, market) {
+      if (uatIsHighWaterScalp(strategy)) {
+        return uatMonitorMarketIs15m(market) ? 900 : 3600;
+      }
+      if (uatIsExpirationScalpEntry(strategy)) return 300;
+      if (String(strategy || '').toUpperCase().includes('15M HTC')) return 900;
+      return 3600;
+    }
+
     function normalizeMonitorIdForApi(monitorId){
       if (monitorId == null || monitorId === '') return monitorId;
       const s = String(monitorId).trim();
@@ -1155,7 +1174,7 @@
       document.removeEventListener('touchend', handleDashboardExpirationScalpAskMouseUp);
     }
 
-    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp) {
+    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp) {
       const disp = (on) => (on ? '' : 'none');
       const setForId = (id, visible) => {
         const el = document.getElementById(id);
@@ -1184,18 +1203,35 @@
       if (perfRow && perfRow.parentElement) perfRow.parentElement.style.display = disp(!isExpirationScalp);
       const autoStopSection = document.getElementById('htcAutoStopSection');
       if (autoStopSection) autoStopSection.style.display = '';
+      const showHtcStopExtras = !isExpirationScalp;
       const probabilityAutoStopControls = document.getElementById('htcProbabilityAutoStopControls');
-      if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = disp(!isExpirationScalp);
+      if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = disp(showHtcStopExtras);
       const nonFloorAutoStopControls = document.getElementById('htcNonFloorAutoStopControls');
-      if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(!isExpirationScalp);
+      if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(showHtcStopExtras);
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
-      if (esAsk) esAsk.style.display = isExpirationScalp ? 'block' : 'none';
+      if (esAsk) esAsk.style.display = (isExpirationScalp && !isHighWaterScalp) ? 'block' : 'none';
+      const esFill = document.getElementById('expirationScalpFillGatesSection');
+      if (esFill) esFill.style.display = isExpirationScalp ? 'block' : 'none';
+      const hwsPt = document.getElementById('highWaterScalpPriceTargetSection');
+      if (hwsPt) hwsPt.style.display = isHighWaterScalp ? 'block' : 'none';
       const esMov = document.getElementById('expirationScalpMovementWindowSection');
       if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
       const esNote = document.getElementById('expirationScalpProbMovementNote');
       if (esNote) esNote.style.display = isExpirationScalp ? 'block' : 'none';
       const esVerify = document.getElementById('expirationScalpVerificationSection');
       if (esVerify) esVerify.style.display = isExpirationScalp ? 'block' : 'none';
+      const hwsClose = document.getElementById('highWaterScalpLimitCloseSection');
+      if (hwsClose) hwsClose.style.display = isHighWaterScalp ? 'block' : 'none';
+      const otEl = document.getElementById('uatKalshiOrderType');
+      const tifEl = document.getElementById('uatKalshiTimeInForce');
+      if (otEl) {
+        if (isHighWaterScalp) otEl.value = 'limit';
+        otEl.disabled = !!isHighWaterScalp;
+      }
+      if (tifEl) {
+        if (isHighWaterScalp) tifEl.value = 'immediate_or_cancel';
+        tifEl.disabled = !!isHighWaterScalp;
+      }
       const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');
       if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
     }
@@ -1449,6 +1485,37 @@
       const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
       const percent = (n - min) / (max - min);
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+    }
+    function updateHighWaterScalpPriceTargetBubble(rawValue) {
+      const slider = document.getElementById('highWaterScalpPriceTargetSlider');
+      const display = document.getElementById('highWaterScalpPriceTargetValueDisplay');
+      if (!slider || !display) return;
+      const n = Math.min(99, Math.max(1, parseInt(rawValue, 10) || 90));
+      display.textContent = (n / 100).toFixed(4);
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (n - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+      const lcp = document.getElementById('highWaterScalpLimitCloseSlider');
+      if (lcp && typeof updateHighWaterScalpLimitCloseBubble === 'function') {
+        updateHighWaterScalpLimitCloseBubble(lcp.value);
+      }
+    }
+    function updateHighWaterScalpLimitCloseBubble(rawValue) {
+      const slider = document.getElementById('highWaterScalpLimitCloseSlider');
+      const display = document.getElementById('highWaterScalpLimitCloseValueDisplay');
+      if (!slider || !display) return;
+      const n = Math.min(99, Math.max(1, parseInt(rawValue, 10) || 99));
+      display.textContent = (n / 100).toFixed(4);
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (n - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+      const warn = document.getElementById('highWaterScalpLimitCloseWarn');
+      if (warn) {
+        const lcp = n / 100;
+        const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
+        const pt = ptEl ? (parseInt(ptEl.value, 10) || 0) / 100 : 0;
+        warn.style.display = (lcp > 0 && pt > 0 && lcp <= pt) ? 'block' : 'none';
+      }
     }
 
     // Min Slippage gate slider (all strategies). Slider int -200..0 == dollars -0.2000..0.0000 (0.001 step).
@@ -1749,8 +1816,9 @@
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
       const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
       const isRisingDevil = currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL');
-      const isExpirationScalp = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
-      window.dashboardTimeWindowMaxSeconds = isExpirationScalp ? 300 : (is15mHTC ? 900 : 3600);
+      const isHighWaterScalp = uatIsHighWaterScalp(currentStrategy);
+      const isExpirationScalp = uatIsExpirationScalpEntry(currentStrategy);
+      window.dashboardTimeWindowMaxSeconds = uatTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
 
       // Update modal title with strategy name and show/hide strategy sections
       const modalTitle = document.getElementById('unifiedAutoTradeModalTitle');
@@ -1843,7 +1911,7 @@
         const showGenericSlip = !isRisingDevil && !isExpirationScalp;
         if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
       }
-      dashboardUatApplyExpirationScalpLayout(isExpirationScalp);
+      dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp);
 
       const populate = (data) => {
         const setVal = (id,v) => { 
@@ -1871,10 +1939,15 @@
             const tif = data.time_in_force;
             const otEl = document.getElementById('uatKalshiOrderType');
             const tifEl = document.getElementById('uatKalshiTimeInForce');
-            const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
-            const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
-            if (otEl) otEl.value = validOt;
-            if (tifEl) tifEl.value = validTif;
+            if (isHighWaterScalp) {
+              if (otEl) { otEl.value = 'limit'; otEl.disabled = true; }
+              if (tifEl) { tifEl.value = 'immediate_or_cancel'; tifEl.disabled = true; }
+            } else {
+              const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
+              const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+              if (otEl) { otEl.value = validOt; otEl.disabled = false; }
+              if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
+            }
           }
 
           const regimeCb = document.getElementById('regimeMonitorEnabled');
@@ -1895,8 +1968,9 @@
       const isMomentumContain = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM CONTAIN');
         
         // Common settings (both strategies) — 15m HTC uses 0:00–15:00 (900s)
-        const isExpirationScalpPopulate = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
-        const timeMax = isExpirationScalpPopulate ? 300 : ((currentStrategy && currentStrategy.toUpperCase().includes('15M HTC')) ? 900 : 3600);
+        const isExpirationScalpPopulate = uatIsExpirationScalpEntry(currentStrategy);
+        const timeMax = uatTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
+        window.dashboardTimeWindowMaxSeconds = timeMax;
         // Authoritative only — never invent 0/timeMax here; open() refuses Save until API returns finite times.
         dashboardMinTimeSeconds = Math.max(0, Math.min(timeMax, Number(data.min_time)));
         dashboardMaxTimeSeconds = Math.max(0, Math.min(timeMax, Number(data.max_time)));
@@ -1967,6 +2041,15 @@
           const esMaxAsk = uatFiniteOrNull(data.max_ask);
           if (esMinAsk != null) dashboardExpirationScalpMinAsk = esMinAsk;
           if (esMaxAsk != null) dashboardExpirationScalpMaxAsk = esMaxAsk;
+          const isHwsPopulate = uatIsHighWaterScalp(currentStrategy);
+          if (isHwsPopulate && esMinAsk != null) {
+            const ptSlider = Math.min(99, Math.max(1, Math.round(esMinAsk * 100)));
+            const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
+            if (ptEl) ptEl.value = ptSlider;
+            if (typeof updateHighWaterScalpPriceTargetBubble === 'function') {
+              updateHighWaterScalpPriceTargetBubble(ptSlider);
+            }
+          }
           const mfpRaw = uatFiniteOrNull(data.min_fill_price);
           if (mfpRaw != null) {
             const mfpSlider = Math.min(99, Math.max(0, Math.round(mfpRaw * 100)));
@@ -1976,8 +2059,17 @@
               updateExpirationScalpMinFillPriceBubble(mfpSlider);
             }
           }
+          const lcpRaw = uatFiniteOrNull(data.limit_close_price);
+          if (lcpRaw != null) {
+            const lcpSlider = Math.min(99, Math.max(1, Math.round(lcpRaw * 100)));
+            const lcpEl = document.getElementById('highWaterScalpLimitCloseSlider');
+            if (lcpEl) lcpEl.value = lcpSlider;
+            if (typeof updateHighWaterScalpLimitCloseBubble === 'function') {
+              updateHighWaterScalpLimitCloseBubble(lcpSlider);
+            }
+          }
           const MIN_ASK_SEPARATION = 0.01;
-          if (esMinAsk != null && esMaxAsk != null
+          if (!isHwsPopulate && esMinAsk != null && esMaxAsk != null
               && dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
             if (dashboardExpirationScalpMaxAsk < 1.0) {
               dashboardExpirationScalpMaxAsk = parseFloat((dashboardExpirationScalpMinAsk + MIN_ASK_SEPARATION).toFixed(4));
@@ -2108,7 +2200,7 @@
             setVal('msMomentumScalpProfitTargetSlider', Math.round(profitTarget * 100));
           }
         } else if (isExpirationScalpPopulate) {
-          // Expiration Scalp: entry verification from monitor row only
+          // Expiration Scalp / High Water Scalp: entry verification from monitor row only
           if (data.verification_period_enabled != null) {
             setChk('expirationScalpVerificationEnabled', !!data.verification_period_enabled);
           }
@@ -2394,6 +2486,22 @@
               esMfp.addEventListener('input', function(){ updateExpirationScalpMinFillPriceBubble(this.value); });
             }
           }
+          const hwsPt = document.getElementById('highWaterScalpPriceTargetSlider');
+          if (hwsPt) {
+            updateHighWaterScalpPriceTargetBubble(hwsPt.value);
+            if (!hwsPt._dashUnifiedWired) {
+              hwsPt._dashUnifiedWired = true;
+              hwsPt.addEventListener('input', function(){ updateHighWaterScalpPriceTargetBubble(this.value); });
+            }
+          }
+          const hwsLcp = document.getElementById('highWaterScalpLimitCloseSlider');
+          if (hwsLcp) {
+            updateHighWaterScalpLimitCloseBubble(hwsLcp.value);
+            if (!hwsLcp._dashUnifiedWired) {
+              hwsLcp._dashUnifiedWired = true;
+              hwsLcp.addEventListener('input', function(){ updateHighWaterScalpLimitCloseBubble(this.value); });
+            }
+          }
           UAT_MIN_SLIPPAGE_SLIDERS.forEach(([sid, did]) => {
             const el = document.getElementById(sid);
             if (el) updateUatMinSlippageBubble(sid, did, el.value);
@@ -2445,7 +2553,8 @@
       const isHourlyHTC = currentStrategy && currentStrategy.toUpperCase().includes('HOURLY HTC') && !isReverseHTC;
       const is15mHTC = currentStrategy && currentStrategy.toUpperCase().includes('15M HTC');
       const isRisingDevil = currentStrategy && currentStrategy.toUpperCase().includes('RISING DEVIL');
-      const isExpirationScalp = currentStrategy && currentStrategy.toUpperCase().includes('EXPIRATION SCALP');
+      const isHighWaterScalp = uatIsHighWaterScalp(currentStrategy);
+      const isExpirationScalp = uatIsExpirationScalpEntry(currentStrategy);
         
         const payload = {
           monitor_id: apiId,
@@ -2468,6 +2577,10 @@
           const tif = tifEl && tifEl.value;
           payload.order_type = ot === 'limit' || ot === 'market' ? ot : 'market';
           payload.time_in_force = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+          if (isHighWaterScalp) {
+            payload.order_type = 'limit';
+            payload.time_in_force = 'immediate_or_cancel';
+          }
         }
         
         if (isMomentumScalp) {
@@ -2575,6 +2688,17 @@
           payload.max_movement = parseFloat(parseFloat(dashboardMaxMovement).toFixed(1));
           payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk).toFixed(4));
           payload.max_ask = parseFloat(parseFloat(dashboardExpirationScalpMaxAsk).toFixed(4));
+          if (isHighWaterScalp) {
+            const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
+            const ptRaw = ptEl ? parseInt(ptEl.value, 10) / 100 : NaN;
+            if (!Number.isFinite(ptRaw) || ptRaw <= 0 || ptRaw >= 1) {
+              alert('Active-side price target is required.');
+              return;
+            }
+            const pt = parseFloat(ptRaw.toFixed(4));
+            payload.min_ask = pt;
+            payload.max_ask = pt;
+          }
           const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');
           if (mfpEl) {
             const mfpVal = parseInt(mfpEl.value, 10) / 100;
@@ -2586,6 +2710,13 @@
           let esSec = esVerifySl ? parseInt(esVerifySl.value, 10) : 3;
           if (isNaN(esSec)) esSec = 3;
           payload.verification_period_seconds = Math.min(15, Math.max(0, esSec));
+          if (isHighWaterScalp) {
+            const lcpEl = document.getElementById('highWaterScalpLimitCloseSlider');
+            if (lcpEl) {
+              const lcpVal = parseInt(lcpEl.value, 10) / 100;
+              payload.limit_close_price = parseFloat(lcpVal.toFixed(4));
+            }
+          }
         } else {
           // HOURLY HTC specific fields
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
@@ -2632,7 +2763,7 @@
         } else {
           var probCb = document.getElementById('uatFlipSellProbabilityStop');
           var htcFloorCb = document.getElementById('uatFlipSellStopLossFloor');
-          if (probCb) {
+          if (probCb && !isHighWaterScalp) {
             payload.flip_sell_prob = probCb.checked;
             payload.flip_sell_prob_mult = dashboardUatReadFlipMult('uatFlipSellProbabilityStop');
           }

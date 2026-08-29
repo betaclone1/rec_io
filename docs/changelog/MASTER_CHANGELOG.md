@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-29 — Release v3.12.0: High Water Scalp
+
+**Summary**
+- **Release: v3.12.0**
+- **High Water Scalp:** Expiration Scalp TTC / probability / movement / verification dwell, then a single active-side **price target** (limit IOC at that price when the ask prints it — not an ask window). Resting GTC close at an absolute owned-side `limit_close_price` (default 0.99; opposite-leg rest at `1 − limit_close_price`). Partial close fills update `close_filled_count` on the still-open row. Auto-stop is the stop-loss floor only (no current-win-prob / min-TTC / momentum spike); the GTC is cancelled then remaining is flattened. Time window slider spans the full cycle (15m or 60m). **Paper:** ATS simulates that GTC from the live Redis orderbook (incremental fills at the walked VWAP; no Kalshi rest, no invented prices). Not on the BTC 15m Exp Scalp AES/ATS cutout.
+- **Paper pending cleanup:** Global paper mode overlays `effective_paper_trade()` so AES/TM never send Kalshi opens; executor reject of `global_paper_mode` notifies TM, which deletes the pending row.
+- **Cycle hot OB PG queue:** Bounded orderbook persist queue (`CYCLE_HOT_OB_QUEUE_MAX` / shed) so backlog cannot grow without bound; live Redis OB path is unchanged.
+- **DB:** Migration **`20260828_1635_high_water_scalp`** adds `limit_close_price` (monitor/strategy/trades snapshot) and `close_filled_count` (trades), seeds **High Water Scalp**.
+- **UI:** Desktop + mobile monitor settings: Exp Scalp entry + HTC auto-stop + Limit Close Price.
+- **Docs / tests:** `docs/UNIFIED_AES_TICK_CONTRACT.md`; `tests/unit/test_high_water_scalp.py`; `tests/unit/test_global_paper_pending_cleanup.py`; `tests/unit/test_cycle_hot_ob_queue_bound.py`.
+- **Plans:** No dedicated `.cursor/plans` file; behavior is specified in `docs/UNIFIED_AES_TICK_CONTRACT.md`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260828_1635_high_water_scalp`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Confirm High Water Scalp settings persist price target (`min_ask`=`max_ask`) and `limit_close_price`; Order Type is Limit / IOC
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.0`
+
+---
+
 ## 2026-08-22 — Release v3.11.0: Exp Scalp busy-book gate + Tier-2 CPU hygiene
 
 **Summary**

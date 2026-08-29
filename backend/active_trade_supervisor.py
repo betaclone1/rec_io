@@ -71,6 +71,10 @@ _auto_close_suppress_past_settlement_logged: Set[int] = set()
 _close_volume_retry_active: Set[Tuple[str, str, int]] = set()
 _close_volume_retry_lock = threading.Lock()
 
+# Paper HWS: last seen displayed size at/through the simulated GTC (does not consume the live book).
+_hws_paper_book_avail: Dict[Any, float] = {}
+_hws_paper_book_lock = threading.Lock()
+
 def should_suppress_auto_close_past_kalshi_settlement(
     ticker: Optional[str], trade_id: Optional[int]
 ) -> bool:
@@ -6461,6 +6465,7 @@ def _close_method_for_auto_trigger(trigger_reason: str) -> str:
         "reversal_profit_target": "auto_reversal_profit_target",
         "close_attempt_failed_retry": "auto_close_retry",
         "close_failed_retry": "auto_close_retry",  # legacy trigger_reason only
+        "limit_close": "limit_close",
     }
     return mapped.get(key, f"auto_{key}")
 
@@ -6990,6 +6995,13 @@ def trigger_auto_stop_close(
     tid = trade.get("trade_id")
     if should_suppress_auto_close_past_kalshi_settlement(trade.get("ticker"), tid):
         return False
+
+    from backend.core.high_water_scalp import is_high_water_scalp
+
+    if is_high_water_scalp(get_trade_strategy()):
+        if not _hws_cancel_resting_and_apply_remaining(trade):
+            log(f"[AUTO STOP HWS] skip close trade={tid} remaining=0")
+            return False
 
     conn = None
     try:
@@ -7963,6 +7975,8 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
 
     strategy = get_trade_strategy()
     
+    from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy, is_high_water_scalp
+
     if strategy == "Momentum Scalp":
         check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     elif strategy == "Momentum Reversal":
@@ -7970,11 +7984,233 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
     elif strategy == "Reverse HTC":
         # Reverse HTC uses the same auto-stop logic as Hourly HTC
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
-    elif strategy == "Expiration Scalp":
+    elif is_high_water_scalp(strategy):
+        check_auto_stop_conditions_high_water_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+    elif is_expiration_scalp_entry_strategy(strategy):
         check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     else:
         # Default to Hourly HTC (fallback for any other strategy or missing strategy)
-        check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+        check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades        )
+
+
+def _hws_load_trade_close_state(trade_id) -> dict:
+    """Load remaining close state from tenant trades for High Water Scalp."""
+    out = {
+        "position": None,
+        "close_filled_count": 0.0,
+        "limit_close_price": None,
+        "order_id_close": None,
+        "paper_trade": False,
+        "subaccount": 1,
+        "ticket_id": "",
+        "ticker": None,
+        "side": None,
+    }
+    try:
+        conn = get_postgresql_connection()
+        if not conn:
+            return out
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT position, close_filled_count, limit_close_price, order_id_close,
+                       paper_trade, subaccount, ticket_id, ticker, side
+                FROM {legacy_users_trades(ctx_user())}
+                WHERE id = %s
+                """,
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+        conn.close()
+        if not row:
+            return out
+        out["position"] = row[0]
+        out["close_filled_count"] = row[1] or 0.0
+        out["limit_close_price"] = row[2]
+        out["order_id_close"] = row[3]
+        pt = row[4]
+        if isinstance(pt, str):
+            out["paper_trade"] = pt.lower() in ("true", "1", "yes")
+        else:
+            out["paper_trade"] = bool(pt)
+        out["subaccount"] = int(row[5] or 1)
+        out["ticket_id"] = row[6] or ""
+        out["ticker"] = row[7]
+        out["side"] = row[8]
+    except Exception as e:
+        log(f"[AUTO STOP HWS] load close state failed trade={trade_id}: {e}")
+    return out
+
+
+def _hws_cancel_resting_and_apply_remaining(trade: dict) -> bool:
+    """Cancel working GTC and set trade['position'] to remaining. False if already flat."""
+    from backend.core.high_water_scalp import remaining_contracts
+
+    tid = trade.get("trade_id")
+    st = _hws_load_trade_close_state(tid)
+    rem = remaining_contracts(st.get("position"), st.get("close_filled_count"))
+    oid = str(st.get("order_id_close") or "").strip()
+    if oid and not st.get("paper_trade"):
+        try:
+            resp = requests.post(
+                f"http://localhost:{get_port('trade_executor')}/cancel_order",
+                json={"order_id": oid, "subaccount": int(st.get("subaccount") or 1)},
+                timeout=8,
+            )
+            log(
+                f"[AUTO STOP HWS] cancel GTC trade={tid} oid={oid} status={resp.status_code}"
+            )
+        except Exception as e:
+            log(f"[AUTO STOP HWS] cancel GTC failed trade={tid}: {e}")
+    if rem <= 0:
+        return False
+    trade["position"] = rem
+    return True
+
+
+def _hws_paper_avail_get(trade_id) -> float:
+    with _hws_paper_book_lock:
+        return float(_hws_paper_book_avail.get(trade_id, 0.0) or 0.0)
+
+
+def _hws_paper_avail_set(trade_id, value: Optional[float]) -> None:
+    with _hws_paper_book_lock:
+        if value is None:
+            _hws_paper_book_avail.pop(trade_id, None)
+        else:
+            _hws_paper_book_avail[trade_id] = max(0.0, float(value))
+
+
+def _hws_paper_avail_prune(live_ids: set) -> None:
+    with _hws_paper_book_lock:
+        for key in list(_hws_paper_book_avail):
+            if key not in live_ids:
+                _hws_paper_book_avail.pop(key, None)
+
+
+def _hws_enqueue_paper_resting_fill(trade: dict, st: dict, sim: dict) -> bool:
+    """Persist a paper HWS GTC sim fill via TM (Redis add_trade, HTTP fallback)."""
+    tid = trade.get("trade_id")
+    fill_qty = float(sim.get("fill_qty") or 0.0)
+    sell_px = sim.get("owned_sell_vwap")
+    if fill_qty <= 0 or sell_px is None:
+        return False
+    ticket_id = f"{st.get('ticket_id') or 'TICKET'}:hws_paper:{int(time.time() * 1000)}"
+    payload = {
+        "intent": "paper_hws_resting_fill",
+        "id": tid,
+        "ticket_id": ticket_id,
+        "count": fill_qty,
+        "count_fp": f"{fill_qty:.2f}",
+        "sell_price": float(sell_px),
+        "close_fee": sim.get("close_fee"),
+        "close_method": "limit_close",
+        "ticker": trade.get("ticker") or st.get("ticker"),
+        "monitor": trade.get("monitor"),
+    }
+    try:
+        from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
+
+        if use_trading_redis_comms() and publish_trade_manager_command(
+            "add_trade",
+            payload,
+            "active_trade_supervisor",
+            correlation_id=ticket_id,
+            tenant_user_no=ctx_user(),
+        ):
+            log(
+                f"[AUTO STOP HWS] paper resting fill enqueued (Redis) trade={tid} "
+                f"qty={fill_qty} sell={sell_px}"
+            )
+            return True
+        if not ATS_HTTP_FALLBACK_ENABLED:
+            log(
+                f"[AUTO STOP HWS] paper resting fill Redis unavailable trade={tid}; "
+                "ATS_HTTP_FALLBACK_ENABLED=0 so HTTP fallback is disabled"
+            )
+            return False
+        tm_port = scoped_trade_manager_http_port()
+        url = get_service_url(tm_port) + "/trades"
+        resp = requests.post(url, json=payload, timeout=10)
+        if resp.status_code in (200, 201):
+            log(
+                f"[AUTO STOP HWS] paper resting fill HTTP trade={tid} qty={fill_qty} sell={sell_px}"
+            )
+            return True
+        log(
+            f"[AUTO STOP HWS] paper resting fill HTTP {resp.status_code} trade={tid} "
+            f"body={getattr(resp, 'text', '')[:300]!r}"
+        )
+        return False
+    except Exception as e:
+        log(f"[AUTO STOP HWS] paper resting fill enqueue failed trade={tid}: {e}")
+        return False
+
+
+def check_auto_stop_conditions_high_water_scalp(
+    active_trades, auto_stop_triggered_trades, verification_pending_trades
+):
+    """Floor stop only (no min-TTC, probability, or momentum), plus paper GTC book sim.
+
+    Cancels the resting close before flattening remaining size.
+    Paper cannot rest a Kalshi GTC; ATS walks the live Redis book and fills incrementally.
+    """
+    from backend.core.high_water_scalp import parse_limit_close_price, remaining_contracts
+    from backend.core.high_water_scalp_paper import evaluate_paper_resting_gtc
+
+    stop_floor = get_stop_loss_price()
+
+    _hws_paper_avail_prune({t.get("trade_id") for t in active_trades})
+
+    for trade in list(active_trades):
+        trade_id = trade.get("trade_id")
+        if trade_id in auto_stop_triggered_trades:
+            continue
+        st = _hws_load_trade_close_state(trade_id)
+        rem = remaining_contracts(st.get("position"), st.get("close_filled_count"))
+        if rem <= 0:
+            _hws_paper_avail_set(trade_id, None)
+            continue
+        trade["position"] = rem
+
+        lcp = parse_limit_close_price(st.get("limit_close_price"))
+        if st.get("paper_trade") and lcp is not None:
+            ticker = trade.get("ticker") or st.get("ticker")
+            side = trade.get("side") or st.get("side")
+            sim = evaluate_paper_resting_gtc(
+                ticker, side, lcp, rem, _hws_paper_avail_get(trade_id)
+            )
+            if sim.get("available") is not None:
+                if sim.get("reset_last"):
+                    _hws_paper_avail_set(trade_id, 0.0)
+                else:
+                    _hws_paper_avail_set(trade_id, float(sim["available"]))
+            fill_qty = float(sim.get("fill_qty") or 0.0)
+            if fill_qty > 0 and sim.get("owned_sell_vwap") is not None:
+                if _hws_enqueue_paper_resting_fill(trade, st, sim):
+                    new_rem = remaining_contracts(
+                        st.get("position"),
+                        float(st.get("close_filled_count") or 0.0) + fill_qty,
+                    )
+                    if new_rem <= 0:
+                        auto_stop_triggered_trades.add(trade_id)
+                        _hws_paper_avail_set(trade_id, None)
+                        continue
+                    trade["position"] = new_rem
+                    rem = new_rem
+                else:
+                    continue
+
+        if _try_stop_loss_ask_floor(
+            trade,
+            stop_floor,
+            auto_stop_triggered_trades,
+            verification_pending_trades,
+            0,
+            0,
+            check_probability_divergence=False,
+        ):
+            continue
 
 
 def check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades):

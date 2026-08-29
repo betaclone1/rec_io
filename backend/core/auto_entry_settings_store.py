@@ -259,6 +259,20 @@ def apply_auto_entry_settings(
                 }
             update_fields.append("min_slippage = %s")
             update_values.append(round(ms, 4) if ms < 0 else 0.0000)
+    if "limit_close_price" in data:
+        lcp_raw = data["limit_close_price"]
+        if lcp_raw is None or lcp_raw == "":
+            update_fields.append("limit_close_price = %s")
+            update_values.append(0.0000)
+        else:
+            lcp = float(lcp_raw)
+            if lcp <= 0.0 or lcp >= 1.0:
+                return {
+                    "status": "error",
+                    "message": "limit_close_price must be between 0.0001 and 0.9999 (0 disables)",
+                }
+            update_fields.append("limit_close_price = %s")
+            update_values.append(round(lcp, 4))
     def _boolish(v):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
@@ -482,7 +496,8 @@ def apply_auto_entry_settings(
                min_volume, win_streak_threshold, performance_based_allocation,
                momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                regime_monitor_enabled, regime_window, stop_loss_price,
-               time_in_force, order_type, symbol_wide_loss_prevention
+               time_in_force, order_type, symbol_wide_loss_prevention,
+               limit_close_price
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -526,12 +541,13 @@ def apply_auto_entry_settings(
         "time_in_force": str(updated_result[24]) if updated_result[24] is not None else "fill_or_kill",
         "order_type": str(updated_result[25]) if updated_result[25] is not None else "market",
         "symbol_wide_loss_prevention": bool(updated_result[26]) if updated_result[26] is not None else False,
+        "limit_close_price": float(updated_result[27]) if updated_result[27] is not None else 0.0,
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[27]) if updated_result[27] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[28]) if updated_result[28] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[29]) if updated_result[29] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[30]) if updated_result[30] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[28]) if updated_result[28] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[29]) if updated_result[29] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[30]) if updated_result[30] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[31]) if updated_result[31] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None

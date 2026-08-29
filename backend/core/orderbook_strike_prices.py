@@ -159,11 +159,41 @@ def _normalize_side(side_val: object) -> Optional[str]:
     return None
 
 
+def load_fresh_orderbook_levels(
+    market_ticker: str,
+    *,
+    max_age_sec: Optional[float] = None,
+) -> tuple[Optional[dict], Optional[dict], str]:
+    """Load Redis yes/no bid maps if the snapshot is present, valid, and fresh.
+
+    Returns ``(yes_levels, no_levels, reason)``. Both maps are None on failure.
+    Missing/stale book is a miss — callers must not invent prices.
+    """
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None, None, "missing_ticker"
+    snap = load_orderbook_snapshot_from_redis(mt)
+    if not snap:
+        return None, None, "orderbook_miss"
+    if snap.get("valid") is False:
+        return None, None, "orderbook_invalid"
+    age_limit = float(max_age_sec if max_age_sec is not None else orderbook_max_age_sec())
+    age_sec = _snapshot_age_sec(snap)
+    if age_sec is None:
+        return None, None, "orderbook_no_timestamp"
+    if age_sec > age_limit:
+        return None, None, f"orderbook_stale:{age_sec:.1f}s>{age_limit:.1f}s"
+    yes_levels, no_levels = _levels_from_snapshot(snap)
+    if not yes_levels and not no_levels:
+        return None, None, "orderbook_empty"
+    return yes_levels, no_levels, "ok"
+
+
 def project_taker_buy_from_levels(
     yes_levels: Dict[Any, Any],
     no_levels: Dict[Any, Any],
     side: str,
-    position: int,
+    position,
     *,
     limit_price: Optional[float] = None,
 ) -> dict[str, Any]:
@@ -173,7 +203,7 @@ def project_taker_buy_from_levels(
     ``limit_price`` set → IOC-style: only take levels with ask <= limit.
     ``limit_price`` None → market-style full depth up to ``position``.
 
-    Returns: ok, reason, filled, initial_proj_price, initial_proj_fees, available_contracts.
+    Returns: ok, reason, filled, filled_fp, initial_proj_price, initial_proj_fees, available_contracts.
     """
     import math
 
@@ -181,12 +211,17 @@ def project_taker_buy_from_levels(
         "ok": False,
         "reason": "projection_failed",
         "filled": 0,
+        "filled_fp": 0.0,
         "initial_proj_price": None,
         "initial_proj_fees": None,
         "available_contracts": None,
     }
     side_n = _normalize_side(side)
-    if not side_n or not position or int(position) <= 0:
+    try:
+        pos_f = float(position)
+    except (TypeError, ValueError):
+        pos_f = 0.0
+    if not side_n or pos_f <= 0:
         result["reason"] = "missing_projection_inputs"
         return result
 
@@ -220,7 +255,7 @@ def project_taker_buy_from_levels(
     else:
         available = sum(q for px, q in asks if px <= lim + 1e-12)
 
-    remaining = float(position)
+    remaining = pos_f
     filled = 0.0
     notional = 0.0
     for px, qty in asks:
@@ -236,6 +271,7 @@ def project_taker_buy_from_levels(
         remaining -= take
 
     result["available_contracts"] = round(available, 2)
+    result["filled_fp"] = round(filled, 2)
     result["filled"] = int(round(filled))
     if filled <= 0:
         result["reason"] = "no_fill_at_limit" if lim is not None else "no_resting_volume"

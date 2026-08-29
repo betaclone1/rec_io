@@ -1658,6 +1658,8 @@ def update_auto_entry_status_in_db(status):
 def determine_auto_entry_status():
     """Determine the current auto entry status based on conditions - routes to strategy-specific logic"""
     try:
+        from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
         strategy = get_trade_strategy()
         
         if strategy == "Momentum Scalp":
@@ -1670,7 +1672,7 @@ def determine_auto_entry_status():
             return determine_auto_entry_status_momentum_breakout()
         elif strategy == "Momentum Contain":
             return determine_auto_entry_status_momentum_contain()
-        elif strategy == "Expiration Scalp":
+        elif is_expiration_scalp_entry_strategy(strategy):
             return determine_auto_entry_status_expiration_scalp()
         else:
             # Default to Hourly HTC (including fallback)
@@ -2850,6 +2852,12 @@ def trigger_auto_entry_trade(strike_data):
             strike_data = apply_reverse_to_strike_data(
                 strike_data, strike_table_data, reverse=True
             )
+            elp = strike_data.get("entry_limit_price")
+            if elp is not None:
+                try:
+                    strike_data["buy_price"] = float(elp)
+                except (TypeError, ValueError):
+                    pass
             log(
                 f"[AUTO ENTRY] REVERSE mode — dispatch opposite side "
                 f"{orig_side} → {strike_data.get('side')} @ {strike_data.get('buy_price')}"
@@ -2913,6 +2921,9 @@ def trigger_auto_entry_trade(strike_data):
             conn.close()
         except Exception as e:
             log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade/min_slippage setting: {e}, defaulting to False/0.0000")
+        from backend.trading_mode import effective_paper_trade
+
+        paper_trade = effective_paper_trade(paper_trade)
         
         # Market interval must travel with the ticket so TM pipeline gate keys the
         # matching strike_pipeline_health row (15m must never consult hourly).
@@ -3238,7 +3249,7 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
 def is_strike_already_traded(strike_data):
     """Check if we already have an in-flight trade on this Kalshi market ticker (same monitor + side).
 
-    Statuses counted as blocking: open, pending, closing (anything not yet terminal).
+    Statuses counted as blocking: open, pending, partial, closing (anything not yet terminal).
     Side comparison is canonicalized so DB ``Y`` matches strike_data ``yes`` (prior bug: never matched).
     """
     try:
@@ -3264,7 +3275,7 @@ def is_strike_already_traded(strike_data):
             f"""
             SELECT id, ticker, side, status
             FROM {_aes_trades_table()}
-            WHERE status IN ('open', 'pending', 'closing')
+            WHERE status IN ('open', 'pending', 'partial', 'closing')
               AND monitor = %s
             """,
             (current_monitor,),
@@ -3302,7 +3313,7 @@ def _aes_prime_open_ticker_sides_cache() -> None:
                     f"""
                     SELECT ticker, side
                     FROM {_aes_trades_table()}
-                    WHERE status IN ('open', 'pending', 'closing')
+                    WHERE status IN ('open', 'pending', 'partial', 'closing')
                       AND monitor = %s
                     """,
                     (current_monitor,),
@@ -3416,7 +3427,7 @@ def _momentum_contain_open_auto_entry_legs(
                 f"""
                 SELECT side
                 FROM {_aes_trades_table()}
-                WHERE status IN ('open', 'pending', 'closing')
+                WHERE status IN ('open', 'pending', 'partial', 'closing')
                   AND monitor = %s
                   AND contract = %s
                   AND entry_method = 'auto_entry'
@@ -3981,6 +3992,8 @@ def check_auto_entry_conditions():
 def _check_auto_entry_conditions_impl():
     """Single-monitor check (or one bound monitor inside the 15m pool)."""
     try:
+        from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
         strategy = get_trade_strategy()
         # Simulated model-probe path: hourly and 15m monitors with auto_trade (Breakout/Contain excluded)
         try:
@@ -3991,7 +4004,10 @@ def _check_auto_entry_conditions_impl():
             is_15m = mkt_l == "15m"
             auto_on = is_auto_trade_enabled()
             # Simulated 15m: exclude Momentum Breakout/Contain for testing; may re-include later
-            skip_sim = strategy in ("Momentum Breakout", "Momentum Contain", "Expiration Scalp")
+            skip_sim = strategy in (
+                "Momentum Breakout",
+                "Momentum Contain",
+            ) or is_expiration_scalp_entry_strategy(strategy)
             if (is_hourly or is_15m) and auto_on and not skip_sim:
                 if not hasattr(check_auto_entry_conditions, "_sim_log_ts"):
                     check_auto_entry_conditions._sim_log_ts = 0
@@ -4032,7 +4048,7 @@ def _check_auto_entry_conditions_impl():
             check_auto_entry_conditions_momentum_contain()
         elif strategy == "Rising Devil":
             check_auto_entry_conditions_rising_devil()
-        elif strategy == "Expiration Scalp":
+        elif is_expiration_scalp_entry_strategy(strategy):
             check_auto_entry_conditions_expiration_scalp()
         else:
             # Default to Hourly HTC (including fallback)
@@ -4518,6 +4534,12 @@ def check_auto_entry_conditions_expiration_scalp():
             log(f"{log_tag} ❌ Missing required settings: {missing_settings}")
             return
 
+        from backend.core.high_water_scalp import (
+            ask_hits_price_target,
+            is_high_water_scalp,
+            parse_limit_close_price,
+        )
+
         min_time = settings["min_time"]
         max_time = settings["max_time"]
         min_probability = float(settings["min_probability"])
@@ -4526,6 +4548,11 @@ def check_auto_entry_conditions_expiration_scalp():
         max_ask = float(settings["max_ask"])
         min_movement = float(settings["min_movement"])
         max_movement = float(settings["max_movement"])
+        hws = is_high_water_scalp(get_trade_strategy())
+        hws_target = parse_limit_close_price(min_ask) if hws else None
+        if hws and hws_target is None:
+            log(f"{log_tag} ❌ High Water Scalp missing active-side price target (min_ask)")
+            return
         verify_enabled = bool(settings["verification_period_enabled"])
         try:
             verify_seconds = int(settings["verification_period_seconds"])
@@ -4650,7 +4677,21 @@ def check_auto_entry_conditions_expiration_scalp():
                         )
                         continue
                     ask_price = float(ask_dollars)
-                    if ask_price < min_ask or ask_price > max_ask:
+                    if hws:
+                        if not ask_hits_price_target(ask_price, hws_target):
+                            _exp_scalp_verify_abort(
+                                verify_bucket,
+                                dedupe_key,
+                                now_ts=now_ts,
+                                need_s=verify_seconds,
+                                reason="ask_misses_price_target",
+                                strike_key=strike_key,
+                                side_key=side_key,
+                                log_tag=log_tag,
+                                extra=f"ask=${ask_price:.4f} target=${hws_target:.4f}",
+                            )
+                            continue
+                    elif ask_price < min_ask or ask_price > max_ask:
                         _exp_scalp_verify_abort(
                             verify_bucket,
                             dedupe_key,
@@ -4731,8 +4772,8 @@ def check_auto_entry_conditions_expiration_scalp():
                             if prior_state
                             else None,
                             snapshot_ask=ask_price,
-                            min_ask=min_ask,
-                            max_ask=max_ask,
+                            min_ask=hws_target if hws else min_ask,
+                            max_ask=hws_target if hws else max_ask,
                             live_ask=live_ask,
                             step_cents=exp_scalp_flicker_step_cents(),
                         )
@@ -4830,6 +4871,7 @@ def check_auto_entry_conditions_expiration_scalp():
                         continue
 
                     diff = strike.get("yes_diff") if side_key == "yes" else strike.get("no_diff")
+                    entry_limit = hws_target if hws else ask_price
                     strike_data = {
                         "strike": format_trade_strike_label(
                             strike.get("strike"),
@@ -4838,7 +4880,8 @@ def check_auto_entry_conditions_expiration_scalp():
                         ),
                         "side": side_key,
                         "ticker": strike.get("ticker"),
-                        "buy_price": ask_price,
+                        "buy_price": entry_limit,
+                        "entry_limit_price": entry_limit if hws else None,
                         "probability": prob_f,
                         "diff": diff,
                         "half_size": size_mode == "half",

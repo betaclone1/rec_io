@@ -8088,7 +8088,7 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Purpose:** Rows moved from `users.trades_0001` when a monitor is archived (`POST /api/monitor/archive` or backfill script). Contains only trades that had `paper_trade = false` (or null treated as live at archive time) for that monitor. Same column set as `users.trades_0001` at migration time, **plus** `archived_at TIMESTAMPTZ NOT NULL DEFAULT NOW()`. **No** `rec_io_db_notify` trigger.
 
-**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`**; `20260403_2330_archive_trades_monitor_confirm_detail` adds **`monitor_confirm_detail`** when the master table gains that column so `union_trades_with_archives_select` stays valid; `20260416_1810_archive_trades_win_loss_confirmed_match_master` adds **`win_loss_confirmed`** on all `archive.trades_archive_{live|paper}_*` tables so GET `/trades` can select it in the union (parity with `users.trades_*` after `20260328_1500`); `20260420_1800_archive_trades_initial_price_slippage_initial_count` adds **`initial_price`**, **`slippage`**, **`initial_count`** on every `archive.trades_archive_{live|paper}_[0-9]{4}` so the master ∪ archive UNION stays valid after tenant `trades_*` gained those columns (`20260420_1230_trades_initial_price_slippage_initial_count`); `20260425_1610_archive_trades_union_parity_proj_prices` adds **`initial_proj_price`**, **`initial_proj_fees`** and widens **`buy_price`** / **`sell_price`** to `NUMERIC(12,6)` on every matching archive table so full-column unions (e.g. `POST /api/trades/history/insights`) stay valid after `20260425_1425_trades_initial_proj_price_fees` and `20260425_1438_trades_buy_sell_price_6dp` on tenant `trades_*`. Tenant **`time_in_force`** / **`order_type`**: migration **`20260426_1600_monitor_trades_execution_settings`**. Archive parity for those two columns: **`20260426_1600_kalshi_execution_monitor_trades_archive`** (archive tables only). **`pnl`:** **`20260503_1500_trades_pnl_numeric_6dp`** sets **`NUMERIC(12,6)`** on archive `trades_archive_{live|paper}_*` to match tenant trades. **`subaccount`**, **`min_fill_price`**, **`min_slippage`**: **`20260730_1415_archive_trades_union_parity_subaccount_min_gates`** adds all three (nullable — rows archived before these gates existed have no recorded value) on every `archive.trades_archive_{live|paper}_[0-9]{4}` so unions selecting them stay valid and `archive_trades_for_monitor` (which copies every master column) does not fail after `20260525_0855_trades_subaccount_column` / `20260715_1200_trades_min_fill_price`. **`order_ids_open`**, **`order_ids_close`**: **`20260731_0025_trades_order_ids_open_close_arrays`** adds both on tenant `trades_*` / `trades_simulated_*` and matching archive live/paper tables (backfill from scalars when present).
+**Creation:** Migration `20260327_2200_archive_trades_live_paper_0001` (`CREATE TABLE ... (LIKE users.trades_0001 INCLUDING CONSTRAINTS INCLUDING INDEXES EXCLUDING DEFAULTS)` then `archived_at` and dedicated `id` sequence in schema `archive`). Follow-on: `20260402_2320_archive_trades_ats_updated` adds **`ats_updated`**; `20260403_2330_archive_trades_monitor_confirm_detail` adds **`monitor_confirm_detail`** when the master table gains that column so `union_trades_with_archives_select` stays valid; `20260416_1810_archive_trades_win_loss_confirmed_match_master` adds **`win_loss_confirmed`** on all `archive.trades_archive_{live|paper}_*` tables so GET `/trades` can select it in the union (parity with `users.trades_*` after `20260328_1500`); `20260420_1800_archive_trades_initial_price_slippage_initial_count` adds **`initial_price`**, **`slippage`**, **`initial_count`** on every `archive.trades_archive_{live|paper}_[0-9]{4}` so the master ∪ archive UNION stays valid after tenant `trades_*` gained those columns (`20260420_1230_trades_initial_price_slippage_initial_count`); `20260425_1610_archive_trades_union_parity_proj_prices` adds **`initial_proj_price`**, **`initial_proj_fees`** and widens **`buy_price`** / **`sell_price`** to `NUMERIC(12,6)` on every matching archive table so full-column unions (e.g. `POST /api/trades/history/insights`) stay valid after `20260425_1425_trades_initial_proj_price_fees` and `20260425_1438_trades_buy_sell_price_6dp` on tenant `trades_*`. Tenant **`time_in_force`** / **`order_type`**: migration **`20260426_1600_monitor_trades_execution_settings`**. Archive parity for those two columns: **`20260426_1600_kalshi_execution_monitor_trades_archive`** (archive tables only). **`pnl`:** **`20260503_1500_trades_pnl_numeric_6dp`** sets **`NUMERIC(12,6)`** on archive `trades_archive_{live|paper}_*` to match tenant trades. **`subaccount`**, **`min_fill_price`**, **`min_slippage`**: **`20260730_1415_archive_trades_union_parity_subaccount_min_gates`** adds all three (nullable — rows archived before these gates existed have no recorded value) on every `archive.trades_archive_{live|paper}_[0-9]{4}` so unions selecting them stay valid and `archive_trades_for_monitor` (which copies every master column) does not fail after `20260525_0855_trades_subaccount_column` / `20260715_1200_trades_min_fill_price`. **`order_ids_open`**, **`order_ids_close`**: **`20260731_0025_trades_order_ids_open_close_arrays`** adds both on tenant `trades_*` / `trades_simulated_*` and matching archive live/paper tables (backfill from scalars when present). **`limit_close_price`**, **`close_filled_count`**: **`20260828_1635_high_water_scalp`** (nullable on archive).
 
 **Application:** `backend.util.trade_log_archivist.archive_trades_for_monitor`; read paths union this table with the master log and `archive.trades_archive_paper_0001`.
 
@@ -9410,7 +9410,7 @@ Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and
 
 ### Table: `system.strategy_list_default`
 
-Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
 
 ---
 
@@ -10445,8 +10445,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_trailing_stop_amount` | `numeric(5,2)` | YES | 0.10 | |
 | `momentum_scalp_profit_target` | `numeric(5,2)` | YES | 0.99 | |
-| `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
-| `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
+| `min_ask` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp: active-side entry price target (also written to `max_ask` as the same value). Other strategies: ask-window floor. |
+| `max_ask` | `numeric(6,4)` | YES | 0.9800 | High Water Scalp: same as `min_ask` (single price). Other strategies: ask-window ceiling. |
 | `min_fill_price` | `numeric(6,4)` | YES | - | Minimum estimated taker fill (dollars) before executor sends open order; NULL or 0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
 | `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Minimum acceptable projected entry slippage (est. fill − trigger, dollars); 0.0000 disables, enabled range -0.2000..0.0000. TM rejects opens whose projected slippage is below this. Migration `20260716_1200_min_slippage_gate`. |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
@@ -10455,6 +10455,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `max_probability` | `numeric(5,2)` | YES | 100.00 | |
 | `min_movement` | `numeric(5,2)` | YES | 0.00 | Expiration Scalp Movement Window min vs ladder `movement_percentile` (0–100). Migration `20260803_1400_monitor_movement_window`. |
 | `max_movement` | `numeric(5,2)` | YES | 100.00 | Expiration Scalp Movement Window max vs ladder `movement_percentile` (0–100). Migration `20260803_1400_monitor_movement_window`. |
+| `limit_close_price` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp: owned-side GTC close target (e.g. 0.99). 0 disables. Opposite-leg rest price is `1 − limit_close_price`. Migration `20260828_1635_high_water_scalp`. |
 | `current_contract` | `text` | YES | - | |
 | `current_weekly_cycle` | `smallint(16)` | YES | - | |
 | `current_performance_modifier` | `numeric(10,2)` | YES | 1.00 | |
@@ -10681,9 +10682,10 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `max_price_spread` | `numeric(6,4)` | YES | 0.0300 | |
 | `paper_trade` | `boolean` | YES | false | |
 | `prob_adj` | `numeric(5,2)` | YES | 5.00 | |
-| `min_ask` | `numeric(6,4)` | YES | 0.0000 | |
+| `min_ask` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp: default entry price target (copied to monitor `min_ask`/`max_ask`). |
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
 | `min_fill_price` | `numeric(6,4)` | YES | - | Monitor-only: minimum estimated taker fill before executor sends open order; NULL/0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
+| `limit_close_price` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp default for new monitors: owned-side GTC close target. Migration `20260828_1635_high_water_scalp`. |
 | `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Monitor-only: minimum acceptable projected entry slippage (est. fill − trigger); 0.0000 disables, enabled range -0.2000..0.0000. TM slippage gate. Migration `20260716_1200_min_slippage_gate`. |
 | `position_size` | `integer(32)` | YES | 1 | |
 | `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
@@ -10925,6 +10927,8 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `order_type` | `text` | YES | - | Snapshot `limit` / `market` policy from monitor. Same migration. |
 | `min_fill_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor slippage floor at insert; **0.0000** = gate disabled. Migration `20260715_1200_trades_min_fill_price`. |
 | `min_slippage` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor min_slippage at insert; **0.0000** = gate disabled (enabled range -0.2000..0.0000). Migration `20260716_1200_min_slippage_gate`. |
+| `limit_close_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Scalp close target at insert; **0.0000** = not used. Migration `20260828_1635_high_water_scalp`. |
+| `close_filled_count` | `numeric(12,2)` | NO | 0.00 | Cumulative close-leg fills while the row is still open. Remaining = `position − close_filled_count`. Same migration. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |
@@ -11123,6 +11127,8 @@ Same column set as `users.trades_0001` (see that table for column descriptions).
 | `volatility` | numeric(10,4) |
 | `movement` | numeric(10,4) |
 | `movement_percentile` | numeric(5,1) |
+| `limit_close_price` | numeric(6,4) |
+| `close_filled_count` | numeric(12,2) |
 
 #### Constraints
 

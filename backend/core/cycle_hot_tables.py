@@ -22,6 +22,9 @@ Env:
     ``TESTING_BTC15M_ORDERBOOK_CYCLE_PG``.
   CYCLE_HOT_SYMBOLS — comma list (default ``BTC,ETH``).
   CYCLE_SERIES_MAP — optional ``SYM:SERIES,...`` override (else built-in defaults).
+  CYCLE_HOT_OB_QUEUE_MAX — bounded OB PG queue (default ``20000``). On full, shed
+    deltas / drop rather than grow without bound (protects live Redis OB path).
+  CYCLE_HOT_OB_QUEUE_SHED — depth that triggers proactive shed (default ``15000``).
 """
 
 from __future__ import annotations
@@ -133,12 +136,19 @@ _sc_q: Optional[queue.Queue] = None
 _sc_drain_done = threading.Event()
 
 _enqueued = 0
+_ob_dropped = 0
+_ob_shed_count = 0
 _last_depth_log_mono = 0.0
+_last_shed_mono = 0.0
 
 _DEFAULT_BATCH_SIZE = 200
 _DEFAULT_BATCH_MS = 50.0
 _DEFAULT_DRAIN_TIMEOUT_SEC = 120.0
 _DEPTH_WARN = 5_000
+_DEFAULT_OB_QUEUE_MAX = 20_000
+_DEFAULT_OB_QUEUE_SHED = 15_000
+_FLUSH_FAIL_BUDGET = 40
+_SNAPSHOT_REQUEUE_MAX = 2
 
 
 def _env_first(*names: str, default: str = "") -> str:
@@ -515,7 +525,125 @@ def _maybe_log_depth(q: Optional[queue.Queue], label: str) -> None:
     if now - _last_depth_log_mono < 5.0:
         return
     _last_depth_log_mono = now
-    logger.warning("%s queue depth high qsize=%s", label, qsize)
+    logger.warning(
+        "%s queue depth high qsize=%s dropped=%s shed=%s",
+        label,
+        qsize,
+        _ob_dropped,
+        _ob_shed_count,
+    )
+
+
+def _ob_queue_max() -> int:
+    try:
+        return max(1_000, int(_env_first("CYCLE_HOT_OB_QUEUE_MAX", default=str(_DEFAULT_OB_QUEUE_MAX))))
+    except (TypeError, ValueError):
+        return _DEFAULT_OB_QUEUE_MAX
+
+
+def _ob_queue_shed_at() -> int:
+    try:
+        n = int(_env_first("CYCLE_HOT_OB_QUEUE_SHED", default=str(_DEFAULT_OB_QUEUE_SHED)))
+    except (TypeError, ValueError):
+        n = _DEFAULT_OB_QUEUE_SHED
+    return max(500, min(n, _ob_queue_max()))
+
+
+def _shed_ob_queue_items(items: List[Tuple[Any, ...]]) -> List[Tuple[Any, ...]]:
+    """Keep latest snapshot per ticker; drop deltas/stops. Live Redis is unaffected."""
+    snapshots: Dict[str, Tuple[Any, ...]] = {}
+    for kind, payload in items:
+        if kind == "snapshot" and isinstance(payload, tuple) and payload:
+            mt = str(payload[0] or "").strip().upper()
+            if mt:
+                snapshots[mt] = (kind, payload)
+    return list(snapshots.values())
+
+
+def _drain_queue_to_list(q: queue.Queue) -> List[Tuple[Any, ...]]:
+    out: List[Tuple[Any, ...]] = []
+    while True:
+        try:
+            out.append(q.get_nowait())
+        except queue.Empty:
+            break
+    return out
+
+
+def shed_ob_cycle_queue(*, reason: str = "") -> int:
+    """Discard backlog (keep one snapshot/ticker). Returns items removed."""
+    global _ob_shed_count, _last_shed_mono
+    with _ob_lock:
+        q = _ob_q
+        if q is None:
+            return 0
+        items = _drain_queue_to_list(q)
+        kept = _shed_ob_queue_items(items)
+        for item in kept:
+            try:
+                q.put_nowait(item)
+            except queue.Full:
+                break
+        removed = max(0, len(items) - len(kept))
+        if removed:
+            _ob_shed_count += 1
+            _last_shed_mono = time.monotonic()
+            logger.warning(
+                "OB cycle queue shed reason=%s removed=%s kept_snapshots=%s",
+                reason or "depth",
+                removed,
+                len(kept),
+            )
+        return removed
+
+
+def reset_ob_cycle_queue(*, reason: str = "") -> int:
+    """Drop all pending OB cycle PG jobs (live Redis path unchanged)."""
+    global _ob_shed_count, _last_shed_mono
+    with _ob_lock:
+        q = _ob_q
+        if q is None:
+            return 0
+        items = _drain_queue_to_list(q)
+        n = len(items)
+        if n:
+            _ob_shed_count += 1
+            _last_shed_mono = time.monotonic()
+            logger.warning(
+                "OB cycle queue reset reason=%s discarded=%s",
+                reason or "reset",
+                n,
+            )
+        return n
+
+
+def _ob_put(item: Tuple[Any, ...]) -> bool:
+    """Non-blocking enqueue; shed/drop under pressure so MW never blocks on PG archive."""
+    global _enqueued, _ob_dropped
+    q = _get_ob_queue()
+    try:
+        q.put_nowait(item)
+        _enqueued += 1
+        _maybe_log_depth(q, "OB cycle")
+        if q.qsize() >= _ob_queue_shed_at():
+            now = time.monotonic()
+            if now - _last_shed_mono >= 2.0:
+                shed_ob_cycle_queue(reason="proactive_depth")
+        return True
+    except queue.Full:
+        shed_ob_cycle_queue(reason="queue_full")
+        try:
+            q.put_nowait(item)
+            _enqueued += 1
+            return True
+        except queue.Full:
+            _ob_dropped += 1
+            if _ob_dropped == 1 or _ob_dropped % 500 == 0:
+                logger.warning(
+                    "OB cycle enqueue dropped (queue full) total_dropped=%s",
+                    _ob_dropped,
+                )
+            return False
 
 
 # ---------------------------------------------------------------------------
@@ -828,7 +956,7 @@ def _get_ob_queue() -> queue.Queue:
     global _ob_q, _ob_thread
     with _ob_lock:
         if _ob_q is None:
-            _ob_q = queue.Queue()
+            _ob_q = queue.Queue(maxsize=_ob_queue_max())
         if _ob_thread is None or not _ob_thread.is_alive():
             _ob_stop.clear()
             _ob_drain_done.clear()
@@ -982,12 +1110,9 @@ def enqueue_snapshot(
     with _snapshot_seq_lock:
         _last_snapshot_seq[mt.upper()] = seq_i
     try:
-        _get_ob_queue().put(
+        _ob_put(
             ("snapshot", (mt, dict(yes or {}), dict(no or {}), seq_i, reason, received_at))
         )
-        global _enqueued
-        _enqueued += 1
-        _maybe_log_depth(_ob_q, "OB cycle")
     except Exception as e:
         logger.warning("OB cycle snapshot enqueue failed %s: %s", mt, e)
 
@@ -1024,12 +1149,7 @@ def enqueue_delta(
     with _snapshot_seq_lock:
         snap_seq = _last_snapshot_seq.get(mt.upper())
     try:
-        _get_ob_queue().put(
-            ("delta", (mt, side_l, p, d, seq_i, snap_seq, received_at))
-        )
-        global _enqueued
-        _enqueued += 1
-        _maybe_log_depth(_ob_q, "OB cycle")
+        _ob_put(("delta", (mt, side_l, p, d, seq_i, snap_seq, received_at)))
     except Exception as e:
         logger.warning("OB cycle delta enqueue failed %s: %s", mt, e)
 
@@ -1357,20 +1477,32 @@ def _ob_writer_loop() -> None:
             time.sleep(0.25)
             return False
 
+    def _flush_or_drop() -> None:
+        nonlocal pending
+        for _ in range(_FLUSH_FAIL_BUDGET):
+            if _flush():
+                return
+        if pending:
+            logger.warning(
+                "OB cycle dropping %s pending deltas after flush budget",
+                len(pending),
+            )
+            pending = []
+
     def _handle_snapshot(payload: Tuple[Any, ...]) -> None:
-        while not _flush():
-            pass
-        mt = payload[0] if payload else ""
+        _flush_or_drop()
+        write_payload = payload[:6] if len(payload) > 6 else payload
+        mt = write_payload[0] if write_payload else ""
         if _should_skip_ob_ticker(str(mt)):
             return
         c = _conn()
         if c is None:
-            if q is not None:
-                q.put(("snapshot", payload))
+            # Do not requeue forever — archive miss is preferable to queue bomb.
+            logger.warning("OB cycle snapshot skipped (no PG conn) %s", mt)
             time.sleep(0.25)
             return
         try:
-            _write_snapshot(c, *payload)
+            _write_snapshot(c, *write_payload)
         except Exception as e:
             try:
                 c.rollback()
@@ -1383,7 +1515,7 @@ def _ob_writer_loop() -> None:
                     return
                 try:
                     ensure_cycle_tables(str(mt), c, force=True)
-                    _write_snapshot(c, *payload)
+                    _write_snapshot(c, *write_payload)
                     return
                 except Exception as e2:
                     try:
@@ -1394,10 +1526,16 @@ def _ob_writer_loop() -> None:
                         _mark_ob_skip_ticker(str(mt), f"snapshot still missing: {e2}")
                         return
                     e = e2
-            logger.warning("OB cycle snapshot write failed %s: %s", payload[0], e)
+            logger.warning("OB cycle snapshot write failed %s: %s", mt, e)
             _close_conn()
-            if q is not None:
-                q.put(("snapshot", payload))
+            attempts = 0
+            if len(payload) >= 7:
+                try:
+                    attempts = int(payload[6])
+                except (TypeError, ValueError):
+                    attempts = 0
+            if attempts < _SNAPSHOT_REQUEUE_MAX and q is not None:
+                _ob_put(("snapshot", tuple(write_payload) + (attempts + 1,)))
             time.sleep(0.25)
 
     def _handle_item(kind: str, payload: Any) -> None:

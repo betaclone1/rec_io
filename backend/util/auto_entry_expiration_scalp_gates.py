@@ -261,12 +261,14 @@ def evaluate_expiration_scalp_entry(
     ask_dollars: Optional[float],
     probability: Optional[float],
     movement_percentile: Optional[float] = None,
+    high_water_scalp: bool = False,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """
     Pure Exp Scalp entry gate for one side of one contract.
 
     Returns (strike_data_dict, None) on pass, or (None, reason) on reject.
-    ``buy_price`` is the ladder ask (live ticket price before executor VWAP/min_fill).
+    ``buy_price`` is the ladder ask for Expiration Scalp, or the configured
+    price target for High Water Scalp (limit IOC at that price).
 
     Prob+movement joint gate: see ``classify_expiration_scalp_prob_movement``.
     Passed dict may include ``half_size`` True for out-of-prob / in-movement rescues.
@@ -292,8 +294,19 @@ def evaluate_expiration_scalp_entry(
         ask_price = float(ask_dollars)
     except (TypeError, ValueError):
         return None, "bad_ask"
-    if ask_price < min_ask or ask_price > max_ask:
-        return None, "ask_outside_band"
+    if high_water_scalp:
+        from backend.core.high_water_scalp import ask_hits_price_target, parse_limit_close_price
+
+        target = parse_limit_close_price(min_ask)
+        if target is None:
+            return None, "missing_price_target"
+        if not ask_hits_price_target(ask_price, target):
+            return None, "ask_misses_price_target"
+        buy_price = target
+    else:
+        if ask_price < min_ask or ask_price > max_ask:
+            return None, "ask_outside_band"
+        buy_price = ask_price
 
     if probability is None:
         return None, "missing_probability"
@@ -324,7 +337,8 @@ def evaluate_expiration_scalp_entry(
     return (
         {
             "side": side_l,
-            "buy_price": ask_price,
+            "buy_price": buy_price,
+            "entry_limit_price": buy_price if high_water_scalp else None,
             "probability": prob,
             "ttc_seconds": int(ttc_seconds),
             "movement_percentile": float(movement_percentile)

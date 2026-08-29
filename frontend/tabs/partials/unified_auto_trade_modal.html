@@ -477,6 +477,13 @@
         </div>
         </div>
 
+        <div id="highWaterScalpPriceTargetSection" style="display:none;">
+        <label for="highWaterScalpPriceTargetSlider" style="font-size:14px; color:#333; font-weight:500;">Active-Side Price Target:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="highWaterScalpPriceTargetSlider" min="1" max="99" step="1" value="90" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="highWaterScalpPriceTargetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9000</div>
+        </div>
+        </div>
         <div id="expirationScalpAskWindowSection" style="display:none;">
         <label for="expirationScalpAskWindowSliderContainer" style="font-size:14px; color:#333; font-weight:500;">Active-Side Ask Window:</label>
         <div class="value-bubble-container uat-dual-range" style="position:relative; width:100%;">
@@ -488,6 +495,8 @@
             <div id="expirationScalpAskWindowMaxDisplay" style="position:absolute; top:-28px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9900</div>
           </div>
         </div>
+        </div>
+        <div id="expirationScalpFillGatesSection" style="display:none;">
         <label for="expirationScalpMinFillPriceSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Fill Price:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="expirationScalpMinFillPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -498,6 +507,14 @@
           <input type="range" id="expirationScalpMinSlippageSlider" min="-200" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="expirationScalpMinSlippageValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
+        </div>
+        <div id="highWaterScalpLimitCloseSection" style="display:none;">
+        <label for="highWaterScalpLimitCloseSlider" style="font-size:14px; color:#333; font-weight:500;">Limit Close Price:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="highWaterScalpLimitCloseSlider" min="1" max="99" step="1" value="99" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="highWaterScalpLimitCloseValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9900</div>
+        </div>
+        <div id="highWaterScalpLimitCloseWarn" style="display:none; font-size:11px; color:#b45309; margin:4px 0 8px 0; line-height:1.35;">Limit close price should be above the price target so the GTC is a take-profit, not an immediate fill.</div>
         </div>
 
         <div id="uatNonExpirationScalpAutoEntry">

@@ -2504,6 +2504,7 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "flip_sell_floor_mult": result[50],
         "min_fill_price": None,
         "min_slippage": None,
+        "limit_close_price": _f(result[51]) if len(result) > 51 else None,
     }
 
 
@@ -2533,7 +2534,8 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             regime_monitor_enabled, regime_window,
             time_in_force, order_type,
             simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
-            flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
+            flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult,
+            limit_close_price
         FROM {}
         WHERE name = %s
         """
@@ -2563,7 +2565,8 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             regime_monitor_enabled, regime_window,
             time_in_force, order_type,
             simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
-            flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult
+            flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult,
+            limit_close_price
         FROM {}
         WHERE LOWER(name) = LOWER(%s)
         """
@@ -2898,12 +2901,12 @@ def create_monitor():
                  simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
                  original_loss_prevention_cooldown_start_time, loss_prevention_cooldown_loss_count,
                  live_loss_prevention_cooldown_start_time,
-                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price, min_slippage)
+                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price, min_slippage, limit_close_price)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -2989,6 +2992,7 @@ def create_monitor():
                 strategy_defaults.get('flip_sell_floor_mult'),
                 strategy_defaults.get('min_fill_price'),
                 strategy_defaults.get('min_slippage', 0.0000),
+                float(strategy_defaults.get('limit_close_price') or 0.0),
                 ),
             )
 

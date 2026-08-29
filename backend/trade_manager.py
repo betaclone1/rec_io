@@ -523,7 +523,7 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
         with pg.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT time_in_force, order_type, min_fill_price, min_slippage
+                SELECT time_in_force, order_type, min_fill_price, min_slippage, limit_close_price
                 FROM {_tm_monitor_list_table()}
                 WHERE id = %s
                 """,
@@ -536,11 +536,24 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 detail="monitor_not_found_for_execution_fields",
             )
         tif, ot, min_fill_price, min_slippage = row[0], row[1], row[2], row[3]
+        if len(row) > 4 and row[4] is not None:
+            try:
+                lcp = float(row[4])
+                if lcp > 0:
+                    data["limit_close_price"] = round(lcp, 4)
+            except (TypeError, ValueError):
+                pass
+
         ok, err = validate_execution_fields(str(tif), str(ot))
         if not ok:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err or "invalid_execution_fields")
         data["time_in_force"] = str(tif).strip().lower()
         data["order_type"] = str(ot).strip().lower()
+        from backend.core.high_water_scalp import is_high_water_scalp
+
+        if is_high_water_scalp(data.get("trade_strategy")):
+            data["order_type"] = "limit"
+            data["time_in_force"] = "immediate_or_cancel"
         if min_fill_price is not None:
             try:
                 mfp = float(min_fill_price)
@@ -2143,6 +2156,14 @@ def _min_slippage_for_db(trade: dict) -> float:
     return round(ms, 4)
 
 
+def _limit_close_price_for_db(trade: dict) -> float:
+    """Snapshot monitor High Water Scalp close target; 0.0000 means unused."""
+    from backend.core.high_water_scalp import parse_limit_close_price
+
+    parsed = parse_limit_close_price(trade.get("limit_close_price"))
+    return parsed if parsed is not None else 0.0
+
+
 def _format_diff_from_prob_and_buy(prob_value: object, buy_price: object) -> Optional[str]:
     """Return diff text (+/- integer cents) from prob(percent) and buy_price(decimal)."""
     try:
@@ -2807,6 +2828,384 @@ def send_trigger_to_executor(payload: dict) -> None:
         log(f"EXECUTOR HTTP ERROR: {e}")
 
 
+def cancel_hero_kalshi_order(order_id: str, *, subaccount: int = 1) -> bool:
+    """Cancel a resting hero-path Kalshi order via trade_executor."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return False
+    try:
+        executor_port = get_executor_port()
+        resp = requests.post(
+            f"http://localhost:{executor_port}/cancel_order",
+            json={"order_id": oid, "subaccount": int(subaccount)},
+            timeout=8,
+        )
+        if resp.status_code in (200, 201, 204):
+            body = resp.json() if resp.content else {}
+            return bool(body.get("ok", True))
+        return False
+    except Exception as e:
+        log(f"CANCEL ORDER HTTP ERROR: {e}")
+        return False
+
+
+def _maybe_place_high_water_resting_close(trade_id: int, ticket_id: str) -> None:
+    """After an open/partial confirm, rest the High Water Scalp GTC close for remaining size."""
+    from backend.core.high_water_scalp import (
+        complement_limit_price,
+        is_high_water_scalp,
+        parse_limit_close_price,
+        remaining_contracts,
+    )
+
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT trade_strategy, position, close_filled_count, limit_close_price,
+                       ticker, side, paper_trade, order_id_close, status, monitor, subaccount
+                FROM {_tm_trades_table()}
+                WHERE id = %s
+                """,
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+    if not row:
+        return
+    (
+        trade_strategy,
+        position,
+        close_filled,
+        limit_close_raw,
+        ticker,
+        side,
+        paper_trade,
+        order_id_close,
+        status,
+        monitor,
+        subaccount,
+    ) = row
+    if not is_high_water_scalp(trade_strategy):
+        return
+    if status not in ("open", "partial"):
+        return
+    if isinstance(paper_trade, str):
+        paper_trade = paper_trade.lower() in ("true", "1", "yes")
+    if paper_trade:
+        log_event(
+            ticket_id,
+            "MANAGER: High Water Scalp paper — Kalshi GTC skipped; ATS simulates fills from live orderbook",
+        )
+        return
+    lcp = parse_limit_close_price(limit_close_raw)
+    if lcp is None:
+        log_event(ticket_id, "MANAGER: High Water Scalp missing limit_close_price — cannot rest GTC")
+        return
+    desired = remaining_contracts(position, close_filled)
+    if desired <= 0:
+        return
+    opp_limit = complement_limit_price(lcp)
+    existing = str(order_id_close or "").strip()
+    if existing:
+        order_rec = _fetch_kalshi_order_for_confirm(existing)
+        if order_rec:
+            rem_working = _order_count_val(None, order_rec.get("remaining_count_fp"))
+            st = str(order_rec.get("status") or "").lower()
+            if st in ("resting", "open", "pending") and abs(float(rem_working) - float(desired)) < 0.02:
+                return
+            cancel_hero_kalshi_order(existing, subaccount=int(subaccount or 1))
+    payload = {
+        "id": int(trade_id),
+        "ticket_id": ticket_id,
+        "intent": "resting_close",
+        "ticker": ticker,
+        "side": side,
+        "count": desired,
+        "count_fp": f"{desired:.2f}",
+        "buy_price": opp_limit,
+        "order_type": "limit",
+        "time_in_force": "good_till_canceled",
+        "monitor": monitor,
+        "subaccount": int(subaccount or 1),
+    }
+    log_event(
+        ticket_id,
+        f"MANAGER: RESTING CLOSE GTC qty={desired} opp_limit={opp_limit} owned_target={lcp}",
+        trade_id=trade_id,
+    )
+    send_trigger_to_executor(payload)
+
+
+def _apply_high_water_partial_close(
+    trade_id: int,
+    ticket_id: str,
+    *,
+    fill_val: float,
+    remaining_val: float,
+    order_rec: dict,
+) -> None:
+    """Update close_filled_count / sell VWAP / fees / pnl while the trade stays open."""
+    from backend.core.high_water_scalp import remaining_contracts
+
+    close_fill_cost_dollars = order_rec.get("taker_fill_cost_dollars")
+    total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+    if total_close_cost_usd is None or fill_val <= 0:
+        log_event(ticket_id, "MANAGER: partial close fill missing cost — leaving sell/pnl NULL")
+        pg = get_postgresql_connection()
+        if pg:
+            try:
+                with pg.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE {_tm_trades_table()} SET close_filled_count = %s WHERE id = %s",
+                        (_trade_position_for_db(fill_val), trade_id),
+                    )
+                pg.commit()
+            finally:
+                pg.close()
+        return
+    sell_price = 1.0 - (total_close_cost_usd / fill_val)
+    taker_fees_usd = _parse_dollars(order_rec.get("taker_fees_dollars")) or 0.0
+    maker_fees_usd = _parse_dollars(order_rec.get("maker_fees_dollars")) or 0.0
+    close_fees = taker_fees_usd + maker_fees_usd
+    pg = get_postgresql_connection()
+    if not pg:
+        return
+    try:
+        with pg.cursor() as cur:
+            cur.execute(
+                f"SELECT buy_price, position FROM {_tm_trades_table()} WHERE id = %s",
+                (trade_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return
+            buy_price = float(row[0] or 0.0)
+            position = float(row[1] or 0.0)
+            filled = _trade_position_for_db(fill_val)
+            realized_pnl = round((sell_price - buy_price) * filled - close_fees, 6)
+            cur.execute(
+                f"""
+                UPDATE {_tm_trades_table()}
+                SET close_filled_count = %s,
+                    sell_price = %s,
+                    pnl = %s
+                WHERE id = %s AND status IN ('open', 'partial')
+                """,
+                (filled, sell_price, realized_pnl, trade_id),
+            )
+        pg.commit()
+        rem = remaining_contracts(position, filled)
+        log_event(
+            ticket_id,
+            f"MANAGER: PARTIAL CLOSE fill={filled} remaining={rem} sell={sell_price:.4f} pnl={realized_pnl}",
+            trade_id=trade_id,
+        )
+        notify_frontend_trade_change()
+        notify_strike_table_trade_change(trade_id, "open")
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
+def apply_paper_high_water_resting_fill(data: dict) -> dict:
+    """Apply a paper HWS resting-GTC sim fill. Requires an explicit sell_price from the book walk.
+
+    Partial: increment close_filled_count / blend sell VWAP. Full remaining: finalize
+    with close_method=limit_close. Does not walk the book again (no market close).
+    """
+    from backend.core.high_water_scalp import is_high_water_scalp, remaining_contracts
+
+    trade_id = data.get("id")
+    ticket_id = data.get("ticket_id") or ""
+    if trade_id is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="id required")
+    try:
+        fill_qty = round(float(data.get("count") if data.get("count") is not None else data.get("count_fp")), 2)
+    except (TypeError, ValueError):
+        fill_qty = 0.0
+    try:
+        sell_px = float(data.get("sell_price"))
+    except (TypeError, ValueError):
+        sell_px = None
+    if fill_qty <= 0 or sell_px is None or sell_px <= 0 or sell_px >= 1:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="paper_hws_resting_fill requires count and sell_price from the live book",
+        )
+    close_fee_in = data.get("close_fee")
+    try:
+        slice_close_fee = float(close_fee_in) if close_fee_in is not None else None
+    except (TypeError, ValueError):
+        slice_close_fee = None
+    if slice_close_fee is None:
+        opp_px = 1.0 - sell_px
+        slice_close_fee = estimate_kalshi_taker_fee(fill_qty, opp_px) if 0 < opp_px < 1 else 0.0
+
+    pg = get_postgresql_connection()
+    if not pg:
+        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail="Database unavailable")
+    try:
+        with pg.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT trade_strategy, status, paper_trade, buy_price, position,
+                       close_filled_count, sell_price, fees, bankroll, mtb_base_value, symbol
+                FROM {_tm_trades_table()}
+                WHERE id = %s
+                """,
+                (trade_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Trade not found")
+            (
+                trade_strategy,
+                status,
+                paper_trade,
+                buy_price,
+                position,
+                close_filled,
+                old_sell,
+                existing_fees,
+                bankroll,
+                mtb_base,
+                symbol,
+            ) = row
+            if not is_high_water_scalp(trade_strategy):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not_high_water_scalp")
+            if isinstance(paper_trade, str):
+                paper_trade = paper_trade.lower() in ("true", "1", "yes")
+            if not paper_trade:
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not_paper_trade")
+            if status not in ("open", "partial"):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail=f"Trade {trade_id} is not open (status: {status})",
+                )
+            rem = remaining_contracts(position, close_filled)
+            if fill_qty > rem + 0.02:
+                fill_qty = rem
+            if fill_qty <= 0:
+                return {"message": "paper_hws_resting_fill_noop", "id": trade_id, "closed": False}
+
+            old_filled = _trade_position_for_db(close_filled or 0.0)
+            new_filled = _trade_position_for_db(old_filled + fill_qty)
+            pos_f = _trade_position_for_db(position)
+            if old_filled <= 0 or old_sell is None:
+                blended_sell = sell_px
+            else:
+                blended_sell = (float(old_sell) * old_filled + sell_px * fill_qty) / new_filled
+            blended_sell = round(float(blended_sell), 8)
+            open_fees = float(existing_fees) if existing_fees is not None else 0.0
+            total_fees_so_far = round(open_fees + float(slice_close_fee), 2)
+            buy_pf = float(buy_price) if buy_price is not None else 0.0
+            realized_pnl = round((blended_sell - buy_pf) * new_filled - total_fees_so_far, 6)
+            close_method = data.get("close_method") or "limit_close"
+
+            still_open = remaining_contracts(pos_f, new_filled) > 0
+            if still_open:
+                cur.execute(
+                    f"""
+                    UPDATE {_tm_trades_table()}
+                    SET close_filled_count = %s,
+                        sell_price = %s,
+                        pnl = %s,
+                        fees = %s
+                    WHERE id = %s AND status IN ('open', 'partial')
+                    """,
+                    (new_filled, blended_sell, realized_pnl, total_fees_so_far, trade_id),
+                )
+                pg.commit()
+                log_event(
+                    ticket_id,
+                    f"MANAGER: PAPER HWS RESTING FILL fill={fill_qty} remaining="
+                    f"{remaining_contracts(pos_f, new_filled)} sell={blended_sell:.4f}",
+                    trade_id=trade_id,
+                )
+                notify_frontend_trade_change()
+                notify_strike_table_trade_change(trade_id, "open")
+                return {"message": "paper_hws_resting_fill_applied", "id": trade_id, "closed": False}
+
+            symbol_close = _symbol_close_for_early_close(symbol, datetime.now(EST_ZONE))
+            now_est = datetime.now(ZoneInfo("America/New_York"))
+            closed_at = now_est.strftime("%H:%M:%S")
+            bankroll_f = float(bankroll) if bankroll is not None else 0.0
+            mtb_base_f = float(mtb_base) if mtb_base is not None else 0.0
+            buy_value = buy_pf * pos_f
+            sell_value = blended_sell * pos_f
+            pnl = round(sell_value - buy_value - total_fees_so_far, 6)
+            win_loss = "W" if pnl > 0 else "L" if pnl < 0 else "D"
+            ret_pct = round((pnl / (bankroll_f / 100.0)) * 100, 5) if bankroll_f > 0 else None
+            ret_pct_base = round((pnl / (mtb_base_f / 100.0)) * 100, 5) if mtb_base_f > 0 else None
+            roi_pct = round((pnl / buy_value) * 100.0, 5) if buy_value > 0 else None
+            high_price, low_price = get_high_low_prices_from_active_trades(trade_id)
+            cur.execute(
+                f"""
+                UPDATE {_tm_trades_table()}
+                SET close_filled_count = %s, sell_price = %s, fees = %s,
+                    status = 'closing', close_method = %s, symbol_close = %s
+                WHERE id = %s AND status IN ('open', 'partial')
+                """,
+                (new_filled, blended_sell, total_fees_so_far, close_method, symbol_close, trade_id),
+            )
+            pg.commit()
+        notify_active_trade_supervisor_direct(trade_id, ticket_id, "closing")
+        update_trade_status_with_ret_pct(
+            trade_id,
+            "closed",
+            closed_at,
+            blended_sell,
+            symbol_close,
+            win_loss,
+            pnl,
+            close_method,
+            total_fees_so_far,
+            roi_pct,
+            ret_pct,
+            ret_pct_base,
+            high_price,
+            low_price,
+        )
+        pg_null = get_postgresql_connection()
+        if pg_null:
+            try:
+                with pg_null.cursor() as cur_null:
+                    cur_null.execute(
+                        f"UPDATE {_tm_trades_table()} SET order_id_close = NULL WHERE id = %s",
+                        (trade_id,),
+                    )
+                    pg_null.commit()
+            finally:
+                pg_null.close()
+        log(
+            f"PAPER HWS LIMIT CLOSE: Trade {trade_id}, PnL=${pnl}, W/L={win_loss}, Fees=${total_fees_so_far}"
+        )
+        log_event(
+            ticket_id,
+            f"MANAGER: PAPER HWS LIMIT CLOSE PnL=${pnl} W/L={win_loss} Fees=${total_fees_so_far}",
+            trade_id=trade_id,
+        )
+        notify_active_trade_supervisor_direct(trade_id, ticket_id, "closed")
+        notify_strike_table_trade_change(trade_id, "closed")
+        _paper_ledger_on_close(buy_pf, pos_f, pnl)
+        return {"message": "paper_hws_resting_fill_applied", "id": trade_id, "closed": True}
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
 def _fanout_active_trades_change_via_redis_or_http(broadcast_payload: dict) -> None:
     try:
         from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
@@ -3168,6 +3567,7 @@ def insert_trade(trade):
                 slippage_for_db = _entry_slippage_value(trade.get("buy_price"), initial_price_for_db)
                 min_fill_price_for_db = _min_fill_price_for_db(trade)
                 min_slippage_for_db = _min_slippage_for_db(trade)
+                limit_close_price_for_db = _limit_close_price_for_db(trade)
 
                 # Live active-row dedupe (same keys as simulated duplicate guard): second INSERT path
                 # returns the existing row when pending/open already exists for this monitor/strike.
@@ -3269,9 +3669,10 @@ def insert_trade(trade):
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         time_in_force, order_type, min_fill_price, min_slippage,
+                        limit_close_price, close_filled_count,
                         subaccount,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -3306,6 +3707,8 @@ def insert_trade(trade):
                     trade.get("order_type"),
                     min_fill_price_for_db,
                     min_slippage_for_db,
+                    limit_close_price_for_db,
+                    0.00,
                     int(trade.get("subaccount", 1)),
                 ))
                 last_id = cursor.fetchone()[0]
@@ -3631,7 +4034,7 @@ def confirm_close_trade_for_order_id(order_id: str) -> None:
             cursor.execute(
                 f"""
                 SELECT id, ticket_id FROM {_tm_trades_table()}
-                WHERE order_id_close = %s AND status = 'closing'
+                WHERE order_id_close = %s AND status IN ('open', 'partial', 'closing')
                 """,
                 (oid,),
             )
@@ -3936,6 +4339,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             f"MANAGER: IOC fill — status={next_st} pos={position_for_db} price={buy_price:.4f} fees=${total_fees_dollars:.4f}",
                         )
                         notify_strike_table_trade_change(id, next_st)
+                        _maybe_place_high_water_resting_close(id, ticket_id)
                         ioc_handled = True
                         break
 
@@ -4129,6 +4533,7 @@ def confirm_open_trade(id: int, ticket_id: str) -> None:
                             log_event(ticket_id, f"MANAGER: OPEN TRADE CONFIRMED via order hot state — pos={position_for_db}, price={buy_price:.4f}, fees=${total_fees_dollars:.4f}, diff={diff_formatted}")
                             # Notify strike table for display update (lowest priority)
                             notify_strike_table_trade_change(id, "open")
+                            _maybe_place_high_water_resting_close(id, ticket_id)
                             break
                         else:
                             log_event(ticket_id, f"MANAGER: Trade status is not pending (current: {current_status}) - skipping confirmation")
@@ -4173,7 +4578,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute(f"SELECT ticker, symbol, order_id_close FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                cursor.execute(f"SELECT ticker, symbol, order_id_close, trade_strategy, status, close_method FROM {_tm_trades_table()} WHERE id = %s", (id,))
                 row = cursor.fetchone()
             pg_conn.close()
         else:
@@ -4187,6 +4592,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         expected_ticker = row[0]
         symbol = row[1]
         stored_order_id_close = row[2]
+        trade_strategy = row[3] if len(row) > 3 else None
+        row_status = row[4] if len(row) > 4 else None
+        existing_close_method = row[5] if len(row) > 5 else None
         
         if not stored_order_id_close:
             log_event(ticket_id, f"MANAGER: No order_id_close stored for trade ID {id} - cannot confirm via order hot state")
@@ -4208,7 +4616,10 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     log_event(ticket_id, f"MANAGER: Close order {stored_order_id_close} status: {order_status}, remaining: {remaining_val}, filled: {fill_val}")
                 
                     # Check if close order is completely filled (remaining = 0) and executed
-                    if order_status == "executed" and remaining_val == 0 and fill_val > 0:
+                    if remaining_val == 0 and fill_val > 0 and str(order_status or "").lower() in (
+                        "executed",
+                        "canceled",
+                    ):
                         log_event(ticket_id, f"MANAGER: CLOSE ORDER COMPLETELY FILLED - Trade {id} confirmed closed")
                         log(f"CLOSE ORDER COMPLETELY FILLED: {expected_ticker}")
                     
@@ -4242,6 +4653,36 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                             sell_price = total_close_cost_usd / close_fill_val
                             sell_price = 1 - sell_price
                             log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
+                            try:
+                                pg_blend = get_postgresql_connection()
+                                if pg_blend:
+                                    with pg_blend.cursor() as cur_b:
+                                        cur_b.execute(
+                                            f"SELECT close_filled_count, sell_price, position FROM {_tm_trades_table()} WHERE id = %s",
+                                            (id,),
+                                        )
+                                        br = cur_b.fetchone()
+                                    pg_blend.close()
+                                    if br:
+                                        prior_filled = float(br[0] or 0.0)
+                                        prior_sell = float(br[1]) if br[1] is not None else None
+                                        pos_all = float(br[2] or 0.0)
+                                        if (
+                                            prior_filled > 0.02
+                                            and prior_sell is not None
+                                            and close_fill_val + 0.02 < pos_all
+                                        ):
+                                            total_closed = prior_filled + close_fill_val
+                                            if total_closed > 0:
+                                                sell_price = (
+                                                    prior_sell * prior_filled + sell_price * close_fill_val
+                                                ) / total_closed
+                                                log_event(
+                                                    ticket_id,
+                                                    f"MANAGER: blended sell_price={sell_price} prior={prior_filled}@{prior_sell} plus {close_fill_val}",
+                                                )
+                            except Exception as blend_err:
+                                log_event(ticket_id, f"MANAGER: sell blend skipped: {blend_err}")
                         else:
                             sell_price = None
                             log_event(ticket_id, f"MANAGER: Could not get close order data for sell price calculation")
@@ -4272,6 +4713,13 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     
                         if trade_data and sell_price is not None:
                             buy_price, position, close_method, existing_fees = trade_data
+                            if not close_method:
+                                from backend.core.high_water_scalp import is_high_water_scalp
+
+                                if is_high_water_scalp(trade_strategy) and row_status in ("open", "partial"):
+                                    close_method = "limit_close"
+                                else:
+                                    close_method = existing_close_method or "manual"
                             close_method = close_method or "manual"
                             existing_fees = existing_fees or 0.0
                             try:
@@ -4391,6 +4839,19 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         notify_strike_table_trade_change(id, "closed")
                     
                         return
+                    elif fill_val > 0:
+                        from backend.core.high_water_scalp import is_high_water_scalp
+
+                        if is_high_water_scalp(trade_strategy) and row_status in ("open", "partial"):
+                            _apply_high_water_partial_close(
+                                id,
+                                ticket_id,
+                                fill_val=fill_val,
+                                remaining_val=remaining_val,
+                                order_rec=order_rec,
+                            )
+                        else:
+                            log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
                     else:
                         log_event(ticket_id, f"MANAGER: Close order not yet completely filled - status: {order_status}, remaining: {remaining_val}")
                 else:
@@ -6138,6 +6599,9 @@ async def add_trade(request: Request):
     """Create a new trade - handles both open and close intents"""
     data = await request.json()
     intent = data.get("intent", "open").lower()
+
+    if intent == "paper_hws_resting_fill":
+        return apply_paper_high_water_resting_fill(data)
     
     if intent == "close":
         log(f"CLOSE TICKET RECEIVED")
@@ -6159,7 +6623,7 @@ async def add_trade(request: Request):
             else:
                 row = None
             
-            if row and row[1] == "open":
+            if row and row[1] in ("open", "partial"):
                 verified_ticker = row[0]
                 paper_trade = row[2] if len(row) > 2 else False
                 trade_side = _normalize_trade_side(row[3]) if len(row) > 3 else None
@@ -6429,7 +6893,7 @@ async def add_trade(request: Request):
             else:
                 if row:
                     log(
-                        f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open)"
+                        f"TRADE {trade_id} EXISTS BUT STATUS IS: {row[1]} (expected: open or partial)"
                     )
                     raise HTTPException(
                         status_code=status.HTTP_400_BAD_REQUEST,
@@ -6508,11 +6972,9 @@ async def add_trade(request: Request):
     # for the trade's own market interval only (15m must not consult hourly health, and vice versa).
     # Paper/simulated paths are allowed to continue for diagnostics/backtesting.
     try:
-        _paper_raw = data.get("paper_trade", False)
-        if isinstance(_paper_raw, str):
-            _paper_for_gate = _paper_raw.strip().lower() in ("true", "1", "yes", "on")
-        else:
-            _paper_for_gate = bool(_paper_raw)
+        from backend.trading_mode import effective_paper_trade
+
+        _paper_for_gate = effective_paper_trade(data.get("paper_trade", False))
         if not simulated and not _paper_for_gate:
             symbol_for_gate = str(data.get("symbol") or "").strip().upper()
             market_for_gate = _normalize_kalshi_market_interval(data.get("market")) or _resolved_mkt
@@ -6575,12 +7037,11 @@ async def add_trade(request: Request):
     now_est = datetime.now(ZoneInfo("America/New_York"))
     data["time"] = now_est.strftime("%H:%M:%S")
 
-    # Check if this is a paper trade
-    paper_trade = data.get('paper_trade', False)
-    if isinstance(paper_trade, str):
-        paper_trade = paper_trade.lower() in ('true', '1', 'yes')
-    elif paper_trade is None:
-        paper_trade = False
+    # Check if this is a paper trade (global paper mode overlays live-flagged monitors)
+    from backend.trading_mode import effective_paper_trade
+
+    paper_trade = effective_paper_trade(data.get("paper_trade", False))
+    data["paper_trade"] = paper_trade
 
     proj_side = _normalize_trade_side(data.get("side"))
     proj_position = None
@@ -6615,7 +7076,7 @@ async def add_trade(request: Request):
                 with pg_mon.cursor() as _c_mon:
                     mst = _fetch_monitor_state(_c_mon, monitor_key_open)
                 if mst and _normalize_boolean_flag(mst.get("test_filter")):
-                    paper_trade = True
+                    paper_trade = effective_paper_trade(True)
                     data["paper_trade"] = True
         except Exception as e:
             log_debug(f"add_trade test_filter monitor check: {e}")
@@ -7009,6 +7470,8 @@ async def add_trade(request: Request):
                 log(f"ERROR in paper-trade background notify: {e}")
         t = threading.Thread(target=_paper_notify_background, daemon=True)
         t.start()
+
+        _maybe_place_high_water_resting_close(trade_id, ticket_id_val)
 
         return {"id": trade_id}
     else:
@@ -7407,7 +7870,7 @@ def apply_update_trade_status_payload(data: dict):
         # Store the order_id in the database if provided
         if order_id:
             # Determine which order_id field to update based on intent
-            if intent == "close":
+            if intent in ("close", "resting_close"):
                 order_id_field = "order_id_close"
                 log_type = "CLOSING"
             else:
@@ -7431,7 +7894,7 @@ def apply_update_trade_status_payload(data: dict):
                     
                     if intent == "open" and order_id:
                         wake_confirm_open_for_order(order_id)
-                    elif intent == "close" and order_id:
+                    elif intent in ("close", "resting_close") and order_id:
                         wake_confirm_close_for_order(order_id)
                 else:
                     log(f"FAILED TO STORE {log_type} ORDER_ID - NO DATABASE CONNECTION")
@@ -7450,7 +7913,12 @@ def apply_update_trade_status_payload(data: dict):
         intent = data.get("intent", "open")  # Get the original intent
         
         # Check if it's a close order failure
-        if intent == "close":
+        if intent in ("close", "resting_close"):
+            if intent == "resting_close":
+                log(f"RESTING CLOSE ORDER FAILED: {error_message} — trade remains open")
+                if ticket_id:
+                    log_event(ticket_id, f"MANAGER: RESTING CLOSE FAILED — {error_message}")
+                return ({"message": "Resting close failed - trade remains open for retry", "id": id}, None)
             return (_mark_close_trade_failed(id, ticket_id, error_message), None)
         
         # Check if it's an insufficient volume or insufficient balance error for OPEN orders
@@ -7464,6 +7932,12 @@ def apply_update_trade_status_payload(data: dict):
             if ticket_id:
                 log_event(ticket_id, f"MANAGER: SLIPPAGE FAILURE — {error_message}")
             return (_delete_pending_trade_for_rejection(id, ticket_id, "SLIPPAGE FAILURE"), None)
+        elif (
+            "global_paper_mode" in error_message.lower()
+            or "pipeline health" in error_message.lower()
+            or "pipeline_health" in error_message.lower()
+        ):
+            return (_delete_pending_trade_for_rejection(id, ticket_id, "EXECUTOR REJECT"), None)
         else:
             # Handle other errors normally
             update_trade_status(id, "error")
@@ -7497,8 +7971,7 @@ def apply_positions_updated_payload(data: dict) -> dict:
         if order_id and db_name in ("orders", "fills", "executor"):
             log(f"[🔔 PORTFOLIO {db_name.upper()}] confirm open wake order_id={order_id}")
             wake_confirm_open_for_order(order_id)
-        if order_id and db_name == "orders":
-            log(f"[🔔 PORTFOLIO ORDERS] confirm close wake order_id={order_id}")
+            log(f"[🔔 PORTFOLIO {db_name.upper()}] confirm close wake order_id={order_id}")
             wake_confirm_close_for_order(order_id)
 
         return {"message": f"{db_name}_updated received"}
@@ -7901,6 +8374,9 @@ def check_expired_trades():
         # Step 1: Delete trades with status ERROR
         delete_error_trades()
 
+        # Never-posted pending must not survive the contract (IOC reject, missed executor notify).
+        _delete_unfilled_pending_past_expiry(sweep_start_est, scheduled_minute)
+
         # Early-closed trades: fill symbol_expiration once contract end has passed (same 1m avg @ expiration tick).
         _backfill_symbol_expiration_past_due_closed(sweep_start_est)
 
@@ -7957,6 +8433,23 @@ def check_expired_trades():
         if trades_to_process:
             expiration_price_cache = {}
             for trade_id, ticker, symbol, trade_strategy, contract, trade_date, _trade_mkt in trades_to_process:
+                try:
+                    pg_cxl = get_postgresql_connection()
+                    if pg_cxl:
+                        with pg_cxl.cursor() as cur_cxl:
+                            cur_cxl.execute(
+                                f"SELECT order_id_close, subaccount FROM {_tm_trades_table()} WHERE id = %s",
+                                (trade_id,),
+                            )
+                            cxl_row = cur_cxl.fetchone()
+                        pg_cxl.close()
+                        if cxl_row and cxl_row[0]:
+                            cancel_hero_kalshi_order(
+                                str(cxl_row[0]),
+                                subaccount=int(cxl_row[1] or 1),
+                            )
+                except Exception as cxl_err:
+                    log(f"[15-MIN CHECK] cancel resting close failed trade={trade_id}: {cxl_err}")
                 expiration_est = _contract_expiration_est(trade_date, contract, now_est)
                 cache_key = (symbol, expiration_est.replace(tzinfo=None))
                 if cache_key not in expiration_price_cache:
@@ -8153,6 +8646,73 @@ def check_expired_trades():
 
     except Exception as e:
         log(f"[15-MIN CHECK] Error during expiry sweep: {e}")
+
+def _delete_unfilled_pending_past_expiry(now_est, scheduled_minute) -> None:
+    """Delete never-posted ``pending`` rows after the contract expires.
+
+    Pending is not a held position. Expiring it as open would invent W/L.
+    Cycle-end must clear the row the same way IOC zero-fill / executor reject does.
+    """
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, ticker, symbol, trade_strategy, contract, date, market,
+                       order_id_open, ticket_id, subaccount
+                FROM {_tm_trades_table()}
+                WHERE status = 'pending'
+                """
+            )
+            pending = cursor.fetchall()
+    except Exception as e:
+        log(f"[15-MIN CHECK] pending expiry select failed: {e}")
+        return
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+
+    if not pending:
+        return
+
+    rows7 = [r[:7] for r in pending]
+    extra = {int(r[0]): r for r in pending}
+    if scheduled_minute == 0:
+        candidates = rows7
+    else:
+        candidates = [
+            row for row in rows7 if _trade_eligible_for_quarter_hour_expiry(row[6])
+        ]
+    past = _filter_trades_past_contract_expiration(candidates, now_est)
+    for row in past:
+        trade_id = int(row[0])
+        full = extra.get(trade_id)
+        if not full:
+            continue
+        order_id_open = full[7]
+        ticket_id = full[8]
+        subaccount = full[9]
+        if order_id_open:
+            try:
+                cancel_hero_kalshi_order(
+                    str(order_id_open),
+                    subaccount=int(subaccount or 1),
+                )
+            except Exception as cxl_err:
+                log(
+                    f"[15-MIN CHECK] cancel pending open order failed "
+                    f"trade={trade_id}: {cxl_err}"
+                )
+        _delete_pending_trade_for_rejection(
+            trade_id,
+            ticket_id,
+            "CYCLE_EXPIRED_UNFILLED",
+        )
+
 
 def delete_error_trades():
     """Delete trades with status ERROR from PostgreSQL database"""
