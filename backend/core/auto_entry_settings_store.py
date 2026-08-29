@@ -154,6 +154,20 @@ def apply_auto_entry_settings(
     if "max_movement" in data:
         update_fields.append("max_movement = %s")
         update_values.append(float(data["max_movement"]))
+    if "min_buffer_pct" in data:
+        mbp_raw = data["min_buffer_pct"]
+        if mbp_raw is None or mbp_raw == "":
+            update_fields.append("min_buffer_pct = %s")
+            update_values.append(0.0)
+        else:
+            mbp = float(mbp_raw)
+            if mbp < 0 or mbp > 0.025:
+                return {
+                    "status": "error",
+                    "message": "min_buffer_pct must be between 0.000000 and 0.025000 (0 disables)",
+                }
+            update_fields.append("min_buffer_pct = %s")
+            update_values.append(round(mbp, 6))
     if "min_differential" in data:
         update_fields.append("min_differential = %s")
         update_values.append(float(data["min_differential"]))
@@ -273,6 +287,24 @@ def apply_auto_entry_settings(
                 }
             update_fields.append("limit_close_price = %s")
             update_values.append(round(lcp, 4))
+    if "stop_verification_period_enabled" in data:
+        update_fields.append("stop_verification_period_enabled = %s")
+        update_values.append(bool(data["stop_verification_period_enabled"]))
+    if "stop_verification_period_seconds" in data:
+        try:
+            stop_sec = int(data["stop_verification_period_seconds"])
+        except (TypeError, ValueError):
+            return {
+                "status": "error",
+                "message": "stop_verification_period_seconds must be an integer 0-60",
+            }
+        if stop_sec < 0 or stop_sec > 60:
+            return {
+                "status": "error",
+                "message": "stop_verification_period_seconds must be between 0 and 60",
+            }
+        update_fields.append("stop_verification_period_seconds = %s")
+        update_values.append(stop_sec)
     def _boolish(v):
         if isinstance(v, str):
             return v.lower() in ("true", "1", "yes")
@@ -497,7 +529,8 @@ def apply_auto_entry_settings(
                momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                regime_monitor_enabled, regime_window, stop_loss_price,
                time_in_force, order_type, symbol_wide_loss_prevention,
-               limit_close_price
+               limit_close_price, stop_verification_period_enabled,
+               stop_verification_period_seconds
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -542,12 +575,14 @@ def apply_auto_entry_settings(
         "order_type": str(updated_result[25]) if updated_result[25] is not None else "market",
         "symbol_wide_loss_prevention": bool(updated_result[26]) if updated_result[26] is not None else False,
         "limit_close_price": float(updated_result[27]) if updated_result[27] is not None else 0.0,
+        "stop_verification_period_enabled": bool(updated_result[28]) if updated_result[28] is not None else False,
+        "stop_verification_period_seconds": int(updated_result[29]) if updated_result[29] is not None else None,
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[28]) if updated_result[28] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[29]) if updated_result[29] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[30]) if updated_result[30] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[31]) if updated_result[31] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[30]) if updated_result[30] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[31]) if updated_result[31] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[32]) if updated_result[32] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[33]) if updated_result[33] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None

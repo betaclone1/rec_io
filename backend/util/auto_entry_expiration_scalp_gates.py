@@ -253,6 +253,45 @@ def classify_expiration_scalp_prob_movement(
     return "block", "out_of_probability_and_movement"
 
 
+def parse_min_buffer_pct(settings: Mapping[str, Any]) -> float:
+    """Monitor ``min_buffer_pct``; missing/invalid/≤0 → 0 (gate disabled)."""
+    raw = settings.get("min_buffer_pct") if settings is not None else None
+    if raw is None or raw == "":
+        return 0.0
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if v <= 0:
+        return 0.0
+    return v
+
+
+def expiration_scalp_min_buffer_pct_gate(
+    *,
+    buffer_pct: Optional[float],
+    min_buffer_pct: float,
+) -> Optional[str]:
+    """
+    Reject when ladder ``buffer_pct`` is below the configured floor.
+
+    ``min_buffer_pct <= 0`` disables. Same units as hot-path ``buffer_pct``
+    (percent of spot). Missing/bad buffer_pct fails closed when gate is on.
+    """
+    floor = float(min_buffer_pct or 0.0)
+    if floor <= 0:
+        return None
+    if buffer_pct is None:
+        return "missing_buffer_pct"
+    try:
+        bp = float(buffer_pct)
+    except (TypeError, ValueError):
+        return "bad_buffer_pct"
+    if bp < floor:
+        return "buffer_pct_below_min"
+    return None
+
+
 def evaluate_expiration_scalp_entry(
     settings: Mapping[str, Any],
     *,
@@ -261,6 +300,7 @@ def evaluate_expiration_scalp_entry(
     ask_dollars: Optional[float],
     probability: Optional[float],
     movement_percentile: Optional[float] = None,
+    buffer_pct: Optional[float] = None,
     high_water_scalp: bool = False,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """
@@ -271,6 +311,7 @@ def evaluate_expiration_scalp_entry(
     price target for High Water Scalp (limit IOC at that price).
 
     Prob+movement joint gate: see ``classify_expiration_scalp_prob_movement``.
+    ``min_buffer_pct`` (when > 0) requires ladder ``buffer_pct`` ≥ floor.
     Passed dict may include ``half_size`` True for out-of-prob / in-movement rescues.
     """
     try:
@@ -326,6 +367,14 @@ def evaluate_expiration_scalp_entry(
     if size_mode == "block":
         return None, size_reason
 
+    min_buf = parse_min_buffer_pct(settings)
+    buf_reject = expiration_scalp_min_buffer_pct_gate(
+        buffer_pct=buffer_pct,
+        min_buffer_pct=min_buf,
+    )
+    if buf_reject:
+        return None, buf_reject
+
     side_l = (side or "").strip().lower()
     if side_l in ("y", "yes"):
         side_l = "yes"
@@ -344,6 +393,7 @@ def evaluate_expiration_scalp_entry(
             "movement_percentile": float(movement_percentile)
             if movement_percentile is not None
             else None,
+            "buffer_pct": float(buffer_pct) if buffer_pct is not None else None,
             "half_size": size_mode == "half",
             "size_mode": size_mode,
             "size_reason": size_reason,

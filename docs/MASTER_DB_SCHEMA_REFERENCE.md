@@ -9410,7 +9410,7 @@ Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and
 
 ### Table: `system.strategy_list_default`
 
-Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
 
 ---
 
@@ -10434,8 +10434,10 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
 | `user_id_strategy` | `character varying(10)` | YES | '0001'::character varying | |
-| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp: entry dwell (defaults true/3s) |
+| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp / High Water Scalp: **entry** dwell (defaults true/3s) |
 | `verification_period_seconds` | `integer(32)` | YES | 15 | See verification_period_enabled |
+| `stop_verification_period_enabled` | `boolean` | YES | false | High Water Scalp: dwell before floor auto-stop. Distinct from `verification_period_*`. Migration `20260829_1815_hws_stop_verification`. |
+| `stop_verification_period_seconds` | `integer(32)` | YES | 1 | High Water Scalp floor auto-stop dwell seconds (0–60). 0 = immediate. Migration `20260829_1815_hws_stop_verification`. |
 | `min_volume` | `integer(32)` | YES | 1000 | | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `win_streak` | `integer(32)` | YES | 0 | |
@@ -10449,6 +10451,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | High Water Scalp: same as `min_ask` (single price). Other strategies: ask-window ceiling. |
 | `min_fill_price` | `numeric(6,4)` | YES | - | Minimum estimated taker fill (dollars) before executor sends open order; NULL or 0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
 | `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Minimum acceptable projected entry slippage (est. fill − trigger, dollars); 0.0000 disables, enabled range -0.2000..0.0000. TM rejects opens whose projected slippage is below this. Migration `20260716_1200_min_slippage_gate`. |
+| `min_buffer_pct` | `numeric(12,6)` | YES | 0.000000 | Expiration Scalp: minimum strike `buffer_pct` (percent of spot, same units as live strike ladder). 0.000000 disables. AES rejects entry when ladder `buffer_pct` is below this. Migration `20260829_1056_min_buffer_pct`. |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
 | `loss_prevention_toggle` | `boolean` | YES | true | Master enable for any monitor loss-prevention method. |
 | `loss_prevention_method` | `text` | YES | win_streak | Loss-prevention algorithm: `win_streak` or `time`. |
@@ -10667,8 +10670,10 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
 | `user_id` | `character varying(10)` | YES | '0001'::character varying | |
-| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp: entry dwell (defaults true/3s) |
+| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp / High Water Scalp: **entry** dwell (defaults true/3s) |
 | `verification_period_seconds` | `integer(32)` | YES | 15 | See verification_period_enabled |
+| `stop_verification_period_enabled` | `boolean` | YES | false | High Water Scalp: dwell before floor auto-stop. Distinct from `verification_period_*`. Migration `20260829_1815_hws_stop_verification`. |
+| `stop_verification_period_seconds` | `integer(32)` | YES | 1 | High Water Scalp floor auto-stop dwell seconds (0–60). 0 = immediate. Migration `20260829_1815_hws_stop_verification`. |
 | `min_volume` | `integer(32)` | YES | 1000 | | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |

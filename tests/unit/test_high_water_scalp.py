@@ -255,7 +255,9 @@ def test_ats_hws_stop_cancels_then_flattens_without_entry_dwell():
     hws_end = ats_src.index("def check_auto_stop_conditions_expiration_scalp")
     hws_src = ats_src[hws_start:hws_end]
     assert "get_verification_period" not in hws_src
-    assert "verification_period" not in hws_src
+    assert "get_stop_verification_period_enabled" in hws_src
+    assert "get_stop_verification_period_seconds" in hws_src
+    assert "floor_stop_verify_allows_fire" in hws_src
     assert "if is_high_water_scalp(get_trade_strategy()):" in ats_src
     assert "_hws_cancel_resting_and_apply_remaining(trade)" in ats_src
     assert "check_auto_stop_conditions_high_water_scalp" in ats_src
@@ -266,10 +268,36 @@ def test_ats_hws_stop_cancels_then_flattens_without_entry_dwell():
     hws_end = ats_src.index("def check_auto_stop_conditions_expiration_scalp")
     hws_src = ats_src[hws_start:hws_end]
     assert 'trigger_reason="limit_close"' not in hws_src
-    assert "current_close_price" not in hws_src
     assert "probability_auto_stop" not in hws_src
     assert "get_min_ttc_seconds" not in hws_src
     assert "check_probability_divergence=False" in hws_src
+
+
+def test_hws_floor_stop_verify_allows_fire():
+    from backend.core.high_water_scalp import floor_is_past, floor_stop_verify_allows_fire
+
+    assert floor_is_past(0.11, 0.90) is True
+    assert floor_is_past(0.09, 0.90) is False
+    assert floor_is_past(None, 0.90) is False
+    assert floor_is_past(0.50, 0) is False
+
+    may, until = floor_stop_verify_allows_fire(False, True, 1, 100.0, 101.0)
+    assert may is False and until is None
+
+    may, until = floor_stop_verify_allows_fire(True, False, 1, 100.0, None)
+    assert may is True and until is None
+
+    may, until = floor_stop_verify_allows_fire(True, True, 0, 100.0, None)
+    assert may is True and until is None
+
+    may, until = floor_stop_verify_allows_fire(True, True, 1, 100.0, None)
+    assert may is False and until == 101.0
+
+    may, until = floor_stop_verify_allows_fire(True, True, 1, 100.5, 101.0)
+    assert may is False and until == 101.0
+
+    may, until = floor_stop_verify_allows_fire(True, True, 1, 101.0, 101.0)
+    assert may is True and until is None
 
 
 def test_hws_modal_full_cycle_time_window_hides_stop_extras():
@@ -282,10 +310,14 @@ def test_hws_modal_full_cycle_time_window_hides_stop_extras():
     assert "function uatTimeWindowMaxSeconds" in js
     assert "return uatMonitorMarketIs15m(market) ? 900 : 3600;" in js
     assert "const showHtcStopExtras = !isExpirationScalp;" in js
+    assert "function uatApplyRangeMinMaxValue" in js
+    assert "const showStopVerify = showHtcStopExtras || !!isHighWaterScalp;" in js
     assert "payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider')" in js
     save_idx = js.index("payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk)")
     save_hws = js[save_idx : js.index("} else {\n          // HOURLY HTC", save_idx)]
     assert "limit_close_price" in save_hws
+    assert "stop_verification_period_enabled" in save_hws
+    assert "stop_verification_period_seconds" in save_hws
     assert "current_probability" not in save_hws
     assert "min_ttc_seconds" not in save_hws
     assert "payload.min_ask = pt" in save_hws
@@ -310,6 +342,17 @@ def test_hws_modal_full_cycle_time_window_hides_stop_extras():
     ask_end = html.index('id="expirationScalpFillGatesSection"')
     assert "highWaterScalpLimitCloseSection" not in html[ask_start:ask_end]
     assert 'id="highWaterScalpLimitCloseSection"' in html
+    assert 'id="htcAutoStopVerificationControls"' in html
+    assert 'id="verificationPeriodSlider" min="1" max="60"' in html
+    mobile = (
+        Path(__file__).resolve().parents[2]
+        / "frontend"
+        / "mobile"
+        / "dashboard_mobile.html"
+    ).read_text()
+    assert "const showStopVerify = showHtcStopExtras || !!isHighWaterScalp;" in mobile
+    assert 'id="m_htcAutoStopVerificationControls"' in mobile
+    assert "stop_verification_period_enabled" in mobile
 
 
 def test_settings_store_limit_close_price_round_trip_and_reject():
@@ -332,8 +375,8 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
                 return (1,)
             if "SELECT id FROM" in self.last.replace("\n", " "):
                 return (1,)
-            # apply() SELECT after update: 28 base cols then optional flip
-            row = [None] * 32
+            # apply() SELECT after update: 30 base cols then optional flip
+            row = [None] * 36
             row[1] = 0.25
             row[16] = 22
             row[23] = 0.0
@@ -341,6 +384,8 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
             row[25] = "market"
             row[26] = False
             row[27] = 0.99
+            row[28] = False
+            row[29] = 1
             return tuple(row)
 
     bad = apply_auto_entry_settings(
@@ -364,6 +409,64 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
     assert ok["limit_close_price"] == 0.99
     assert ok_cur.updated is not None
     assert 0.99 in ok_cur.updated
+
+
+def test_settings_store_stop_verification_round_trip_and_reject():
+    from backend.core.auto_entry_settings_store import apply_auto_entry_settings
+
+    ctx = TenantContext.from_schema("users_0001")
+
+    class Cur:
+        def __init__(self):
+            self.last = ""
+            self.updated = None
+
+        def execute(self, q, params=None):
+            self.last = q
+            if "UPDATE" in q and params:
+                self.updated = params
+
+        def fetchone(self):
+            if "information_schema" in self.last:
+                return (1,)
+            if "SELECT id FROM" in self.last.replace("\n", " "):
+                return (1,)
+            row = [None] * 36
+            row[1] = 0.25
+            row[16] = 22
+            row[23] = 0.0
+            row[24] = "fill_or_kill"
+            row[25] = "market"
+            row[26] = False
+            row[27] = 0.99
+            row[28] = True
+            row[29] = 1
+            return tuple(row)
+
+    bad = apply_auto_entry_settings(
+        Cur(), "1", {"stop_verification_period_seconds": 61}, tenant_context=ctx
+    )
+    assert bad["status"] == "error"
+
+    ok_cur = Cur()
+    with patch(
+        "backend.core.time_based_loss_prevention.sync_simulated_trade_after_monitor_settings_save"
+    ):
+        ok = apply_auto_entry_settings(
+            ok_cur,
+            "1",
+            {
+                "stop_verification_period_enabled": True,
+                "stop_verification_period_seconds": 1,
+            },
+            tenant_context=ctx,
+        )
+    assert ok["status"] == "ok"
+    assert ok["stop_verification_period_enabled"] is True
+    assert ok["stop_verification_period_seconds"] == 1
+    assert ok_cur.updated is not None
+    assert True in ok_cur.updated
+    assert 1 in ok_cur.updated
 
 
 def test_paper_resting_fill_increment_first_touch_and_increase():

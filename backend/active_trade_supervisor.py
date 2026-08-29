@@ -74,6 +74,8 @@ _close_volume_retry_lock = threading.Lock()
 # Paper HWS: last seen displayed size at/through the simulated GTC (does not consume the live book).
 _hws_paper_book_avail: Dict[Any, float] = {}
 _hws_paper_book_lock = threading.Lock()
+# HWS floor auto-stop dwell (trade_id → unix time when verify completes). Not HTC verification_pending_trades.
+_hws_floor_verify_until: Dict[Any, float] = {}
 
 def should_suppress_auto_close_past_kalshi_settlement(
     ticker: Optional[str], trade_id: Optional[int]
@@ -7790,6 +7792,45 @@ def get_verification_period_seconds():
         log(f"[AUTO STOP] Error reading verification_period_seconds from strategy: {e}")
         return 15
 
+
+def get_stop_verification_period_enabled():
+    """High Water Scalp floor auto-stop dwell enabled. Missing/NULL → False."""
+    try:
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT stop_verification_period_enabled FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            result = cursor.fetchone()
+        conn.close()
+        if result and result[0] is not None:
+            return bool(result[0])
+        return False
+    except Exception as e:
+        log(f"[AUTO STOP] Error reading stop_verification_period_enabled: {e}")
+        return False
+
+
+def get_stop_verification_period_seconds():
+    """High Water Scalp floor auto-stop dwell seconds. Missing/NULL → 0 (immediate)."""
+    try:
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT stop_verification_period_seconds FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            result = cursor.fetchone()
+        conn.close()
+        if result and result[0] is not None:
+            return int(result[0])
+        return 0
+    except Exception as e:
+        log(f"[AUTO STOP] Error reading stop_verification_period_seconds: {e}")
+        return 0
+
+
 def get_stop_loss_price():
     """Opposite-side ask stop floor in contract dollars; 0.0000 means disabled (never triggers)."""
     try:
@@ -8086,6 +8127,9 @@ def _hws_paper_avail_prune(live_ids: set) -> None:
         for key in list(_hws_paper_book_avail):
             if key not in live_ids:
                 _hws_paper_book_avail.pop(key, None)
+    for key in list(_hws_floor_verify_until):
+        if key not in live_ids:
+            _hws_floor_verify_until.pop(key, None)
 
 
 def _hws_enqueue_paper_resting_fill(trade: dict, st: dict, sim: dict) -> bool:
@@ -8152,13 +8196,22 @@ def check_auto_stop_conditions_high_water_scalp(
 ):
     """Floor stop only (no min-TTC, probability, or momentum), plus paper GTC book sim.
 
-    Cancels the resting close before flattening remaining size.
+    Optional ``stop_verification_period_*`` dwell before flatten (not entry
+    ``verification_period_*``). Cancels the resting close before flattening remaining size.
     Paper cannot rest a Kalshi GTC; ATS walks the live Redis book and fills incrementally.
     """
-    from backend.core.high_water_scalp import parse_limit_close_price, remaining_contracts
+    from backend.core.high_water_scalp import (
+        floor_is_past,
+        floor_stop_verify_allows_fire,
+        parse_limit_close_price,
+        remaining_contracts,
+    )
     from backend.core.high_water_scalp_paper import evaluate_paper_resting_gtc
 
     stop_floor = get_stop_loss_price()
+    verify_enabled = get_stop_verification_period_enabled()
+    verify_seconds = get_stop_verification_period_seconds()
+    now = time.time()
 
     _hws_paper_avail_prune({t.get("trade_id") for t in active_trades})
 
@@ -8170,6 +8223,7 @@ def check_auto_stop_conditions_high_water_scalp(
         rem = remaining_contracts(st.get("position"), st.get("close_filled_count"))
         if rem <= 0:
             _hws_paper_avail_set(trade_id, None)
+            _hws_floor_verify_until.pop(trade_id, None)
             continue
         trade["position"] = rem
 
@@ -8195,11 +8249,29 @@ def check_auto_stop_conditions_high_water_scalp(
                     if new_rem <= 0:
                         auto_stop_triggered_trades.add(trade_id)
                         _hws_paper_avail_set(trade_id, None)
+                        _hws_floor_verify_until.pop(trade_id, None)
                         continue
                     trade["position"] = new_rem
                     rem = new_rem
                 else:
                     continue
+
+        past = floor_is_past(trade.get("current_close_price"), stop_floor)
+        prev_until = _hws_floor_verify_until.get(trade_id)
+        may_fire, new_until = floor_stop_verify_allows_fire(
+            past, verify_enabled, verify_seconds, now, prev_until
+        )
+        if new_until is None:
+            _hws_floor_verify_until.pop(trade_id, None)
+        else:
+            if prev_until is None:
+                log(
+                    f"[AUTO STOP HWS] floor verify armed trade={trade_id} "
+                    f"duration_s={verify_seconds} opp_ask={trade.get('current_close_price')}"
+                )
+            _hws_floor_verify_until[trade_id] = new_until
+        if not may_fire:
+            continue
 
         if _try_stop_loss_ask_floor(
             trade,
@@ -8210,6 +8282,7 @@ def check_auto_stop_conditions_high_water_scalp(
             0,
             check_probability_divergence=False,
         ):
+            _hws_floor_verify_until.pop(trade_id, None)
             continue
 
 

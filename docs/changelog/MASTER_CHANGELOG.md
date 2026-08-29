@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-29 — Release v3.12.1: Exp Scalp min buffer % + HWS stop verification
+
+**Summary**
+- **Release: v3.12.1**
+- **Expiration Scalp `min_buffer_pct`:** Monitor setting (`NUMERIC(12,6)`, same units as live strike-ladder `buffer_pct` — percent of spot). `0.000000` disables. When set (UI 0–0.0250%), AES rejects the strike if ladder `buffer_pct` is below the floor (blocks ATM-too-tight entries that still clear probability). Shared gate in `auto_entry_expiration_scalp_gates`; desktop + mobile slider in Exp Scalp fill-gates section.
+- **High Water Scalp stop verification:** New monitor/strategy columns `stop_verification_period_enabled` / `stop_verification_period_seconds` (distinct from entry `verification_period_*`). ATS floor auto-stop optionally dwells before cancel+flatten. UI on HWS modal (desktop + mobile).
+- **DB:** Migrations **`20260829_1056_min_buffer_pct`** and **`20260829_1815_hws_stop_verification`**.
+- **Docs / tests:** `docs/UNIFIED_AES_TICK_CONTRACT.md`; `docs/MASTER_DB_SCHEMA_REFERENCE.md`; `tests/unit/test_expiration_scalp_min_buffer_pct.py`; `tests/unit/test_high_water_scalp.py`.
+- **Plans:** No dedicated plan file for this batch.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260829_1056_min_buffer_pct`
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260829_1815_hws_stop_verification`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: Exp Scalp settings save `min_buffer_pct`; HWS settings save stop verification; AES/ATS healthy
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.1`
+
+---
+
 ## 2026-08-29 — Release v3.12.0: High Water Scalp
 
 **Summary**

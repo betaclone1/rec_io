@@ -1208,6 +1208,13 @@
       if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = disp(showHtcStopExtras);
       const nonFloorAutoStopControls = document.getElementById('htcNonFloorAutoStopControls');
       if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = disp(showHtcStopExtras);
+      const showStopVerify = showHtcStopExtras || !!isHighWaterScalp;
+      const stopVerifyControls = document.getElementById('htcAutoStopVerificationControls');
+      if (stopVerifyControls) stopVerifyControls.style.display = disp(showStopVerify);
+      const vpSlider = document.getElementById('verificationPeriodSlider');
+      if (vpSlider) {
+        uatApplyRangeMinMaxValue(vpSlider, isHighWaterScalp ? 1 : 5, 60, vpSlider.value);
+      }
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
       if (esAsk) esAsk.style.display = (isExpirationScalp && !isHighWaterScalp) ? 'block' : 'none';
       const esFill = document.getElementById('expirationScalpFillGatesSection');
@@ -1305,6 +1312,22 @@
       const sr = slider.getBoundingClientRect();
       const cr = container.getBoundingClientRect();
       return sr.left - cr.left + along;
+    }
+
+    function uatApplyRangeMinMaxValue(slider, min, max, value) {
+      if (!slider) return;
+      if (min != null) slider.min = String(min);
+      if (max != null) slider.max = String(max);
+      const minN = parseFloat(slider.min);
+      const maxN = parseFloat(slider.max);
+      let n = parseFloat(value);
+      if (!Number.isFinite(n)) n = minN;
+      if (Number.isFinite(minN) && n < minN) n = minN;
+      if (Number.isFinite(maxN) && n > maxN) n = maxN;
+      const next = String(n);
+      slider.value = next;
+      void slider.offsetWidth;
+      slider.value = next;
     }
 
     // UI value-bubble update functions (same behavior as trade_monitor)
@@ -1442,7 +1465,8 @@
       if (!display || !slider) return;
       display.textContent = value;
       const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
-      const percent = (value - min) / (max - min);
+      const span = max - min;
+      const percent = span === 0 ? 0 : (Number(value) - min) / span;
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
     }
     function updateExpirationScalpVerificationDisplay(value){
@@ -1482,6 +1506,16 @@
       if (!slider || !display) return;
       const n = Math.min(99, Math.max(0, parseInt(rawValue, 10) || 0));
       display.textContent = (n / 100).toFixed(4);
+      const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+      const percent = (n - min) / (max - min);
+      display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
+    }
+    function updateExpirationScalpMinBufferPctBubble(rawValue) {
+      const slider = document.getElementById('expirationScalpMinBufferPctSlider');
+      const display = document.getElementById('expirationScalpMinBufferPctValueDisplay');
+      if (!slider || !display) return;
+      const n = Math.min(250, Math.max(0, parseInt(rawValue, 10) || 0));
+      display.textContent = (n / 10000).toFixed(4) + '%';
       const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
       const percent = (n - min) / (max - min);
       display.style.left = uatRangeBubbleLeftPx(slider, percent) + 'px';
@@ -2059,6 +2093,15 @@
               updateExpirationScalpMinFillPriceBubble(mfpSlider);
             }
           }
+          const mbpRaw = uatFiniteOrNull(data.min_buffer_pct);
+          if (mbpRaw != null) {
+            const mbpSlider = Math.min(250, Math.max(0, Math.round(mbpRaw * 10000)));
+            const mbpEl = document.getElementById('expirationScalpMinBufferPctSlider');
+            if (mbpEl) mbpEl.value = mbpSlider;
+            if (typeof updateExpirationScalpMinBufferPctBubble === 'function') {
+              updateExpirationScalpMinBufferPctBubble(mbpSlider);
+            }
+          }
           const lcpRaw = uatFiniteOrNull(data.limit_close_price);
           if (lcpRaw != null) {
             const lcpSlider = Math.min(99, Math.max(1, Math.round(lcpRaw * 100)));
@@ -2207,6 +2250,18 @@
           const esVerifySec = uatFiniteOrNull(data.verification_period_seconds);
           if (esVerifySec != null) {
             setVal('expirationScalpVerificationSlider', Math.min(15, Math.max(0, Math.trunc(esVerifySec))));
+          }
+          if (uatIsHighWaterScalp(currentStrategy)) {
+            if (data.stop_verification_period_enabled != null) {
+              setChk('verificationPeriodEnabled', !!data.stop_verification_period_enabled);
+            }
+            const stopVerifySec = uatFiniteOrNull(data.stop_verification_period_seconds);
+            const sl = document.getElementById('verificationPeriodSlider');
+            if (sl) {
+              const next = stopVerifySec != null ? Math.trunc(stopVerifySec) : parseInt(sl.value, 10);
+              uatApplyRangeMinMaxValue(sl, 1, 60, next);
+              updateVerificationPeriodDisplay(sl.value);
+            }
           }
         } else {
           // HOURLY HTC settings — monitor row only
@@ -2368,6 +2423,15 @@
             }
             const esVerifySlider = document.getElementById('expirationScalpVerificationSlider');
             if (esVerifySlider) updateExpirationScalpVerificationDisplay(esVerifySlider.value);
+            if (uatIsHighWaterScalp(currentStrategy)) {
+              const vpSlider = document.getElementById('verificationPeriodSlider');
+              if (vpSlider) {
+                requestAnimationFrame(function() {
+                  uatApplyRangeMinMaxValue(vpSlider, 1, 60, vpSlider.value);
+                  updateVerificationPeriodDisplay(vpSlider.value);
+                });
+              }
+            }
           } else {
             // HOURLY HTC value bubbles
         updateAutoEntryMinVolumeDisplay(document.getElementById('autoEntryMinVolumeSlider').value);
@@ -2457,8 +2521,7 @@
           ['spikeAlertTimeSlider', updateSpikeAlertTimeDisplay],
           ['probAdjSlider', updateProbAdjDisplay],
           ['autoStopProbabilitySlider', updateSliderDisplay],
-          ['momentumSpikeThresholdSlider', updateMomentumSpikeThresholdDisplay],
-          ['verificationPeriodSlider', updateVerificationPeriodDisplay]
+          ['momentumSpikeThresholdSlider', updateMomentumSpikeThresholdDisplay]
         ];
         pairs.forEach(([id, fn]) => {
           const el = document.getElementById(id);
@@ -2467,6 +2530,13 @@
             el.addEventListener('input', function(){ fn(this.value); });
           }
         });
+          }
+          {
+            const vpEl = document.getElementById('verificationPeriodSlider');
+            if (vpEl && !vpEl._dashUnifiedWired) {
+              vpEl._dashUnifiedWired = true;
+              vpEl.addEventListener('input', function(){ updateVerificationPeriodDisplay(this.value); });
+            }
           }
           ['stopLossPriceSlider', 'stopLossPriceSliderMs'].forEach(function(sid) {
             const sl = document.getElementById(sid);
@@ -2484,6 +2554,14 @@
             if (!esMfp._dashUnifiedWired) {
               esMfp._dashUnifiedWired = true;
               esMfp.addEventListener('input', function(){ updateExpirationScalpMinFillPriceBubble(this.value); });
+            }
+          }
+          const esMbp = document.getElementById('expirationScalpMinBufferPctSlider');
+          if (esMbp) {
+            updateExpirationScalpMinBufferPctBubble(esMbp.value);
+            if (!esMbp._dashUnifiedWired) {
+              esMbp._dashUnifiedWired = true;
+              esMbp.addEventListener('input', function(){ updateExpirationScalpMinBufferPctBubble(this.value); });
             }
           }
           const hwsPt = document.getElementById('highWaterScalpPriceTargetSlider');
@@ -2704,6 +2782,11 @@
             const mfpVal = parseInt(mfpEl.value, 10) / 100;
             payload.min_fill_price = mfpVal > 0 ? parseFloat(mfpVal.toFixed(4)) : 0;
           }
+          const mbpEl = document.getElementById('expirationScalpMinBufferPctSlider');
+          if (mbpEl) {
+            const mbpVal = parseInt(mbpEl.value, 10) / 10000;
+            payload.min_buffer_pct = mbpVal > 0 ? parseFloat(mbpVal.toFixed(6)) : 0;
+          }
           const esVerifyCb = document.getElementById('expirationScalpVerificationEnabled');
           const esVerifySl = document.getElementById('expirationScalpVerificationSlider');
           payload.verification_period_enabled = esVerifyCb ? !!esVerifyCb.checked : true;
@@ -2716,6 +2799,12 @@
               const lcpVal = parseInt(lcpEl.value, 10) / 100;
               payload.limit_close_price = parseFloat(lcpVal.toFixed(4));
             }
+            const stopCb = document.getElementById('verificationPeriodEnabled');
+            const stopSl = document.getElementById('verificationPeriodSlider');
+            payload.stop_verification_period_enabled = stopCb ? !!stopCb.checked : false;
+            let stopSec = stopSl ? parseInt(stopSl.value, 10) : 1;
+            if (isNaN(stopSec)) stopSec = 1;
+            payload.stop_verification_period_seconds = Math.min(60, Math.max(1, stopSec));
           }
         } else {
           // HOURLY HTC specific fields

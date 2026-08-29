@@ -502,6 +502,11 @@
           <input type="range" id="expirationScalpMinFillPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="expirationScalpMinFillPriceValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000</div>
         </div>
+        <label for="expirationScalpMinBufferPctSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Buffer Percent:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="expirationScalpMinBufferPctSlider" min="0" max="250" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="expirationScalpMinBufferPctValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000%</div>
+        </div>
         <label for="expirationScalpMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="expirationScalpMinSlippageSlider" min="-200" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -725,7 +730,9 @@
           <input type="range" id="momentumSpikeThresholdSlider" min="10" max="100" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="momentumSpikeThresholdValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
+        </div>
 
+        <div id="htcAutoStopVerificationControls">
         <div style="position:relative; margin-bottom:24px; width:100%;">
           <input type="checkbox" id="verificationPeriodEnabled" style="width:16px; height:16px; margin-right:8px; accent-color:#007bff;" />
           <span style="font-size:13px; color:#666;">Enable verification period before auto-stop</span>
@@ -733,7 +740,7 @@
 
         <label for="verificationPeriodSlider" style="font-size:14px; color:#333; font-weight:500;">Verification Duration (seconds):</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
-          <input type="range" id="verificationPeriodSlider" min="5" max="60" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <input type="range" id="verificationPeriodSlider" min="1" max="60" value="1" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="verificationPeriodValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">Loading...</div>
         </div>
         </div>

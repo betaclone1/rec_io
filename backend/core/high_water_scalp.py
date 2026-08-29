@@ -4,7 +4,8 @@ Entry is a single active-side price target (``min_ask``): fire when the
 ladder ask prints that cent, then send a limit IOC at that price. TTC,
 probability, movement, and verification dwell still follow Expiration Scalp.
 Close rests a GTC opposite-leg buy at ``1 - limit_close_price``
-(e.g. 0.99 owned-side → 0.01 opposite).
+(e.g. 0.99 owned-side → 0.01 opposite). Optional floor auto-stop dwell uses
+``stop_verification_period_*`` (not entry ``verification_period_*``).
 Paper trades cannot rest on Kalshi; ``simulate_paper_resting_gtc`` walks the
 live Redis book the same way a GTC would lift opposite asks at/through that limit.
 """
@@ -61,6 +62,47 @@ def parse_limit_close_price(raw: Any) -> Optional[float]:
 def complement_limit_price(limit_close_price: float) -> float:
     """Opposite-leg GTC buy price for an owned-side close target."""
     return round(1.0 - float(limit_close_price), 4)
+
+
+def floor_is_past(current_close_price: Any, stop_floor: Any) -> bool:
+    """True when opposite ask (current_close_price) is strictly above (1 - stop_floor)."""
+    try:
+        sf = float(stop_floor)
+        opp = float(current_close_price)
+    except (TypeError, ValueError):
+        return False
+    if sf <= 0.0:
+        return False
+    return opp > (1.0 - sf)
+
+
+def floor_stop_verify_allows_fire(
+    past: bool,
+    enabled: bool,
+    seconds: Any,
+    now: float,
+    pending_until: Optional[float],
+) -> tuple[bool, Optional[float]]:
+    """HWS floor auto-stop dwell. Returns (may_fire, new_pending_until).
+
+    When the floor is not past, pending is cleared. Disabled or seconds <= 0
+    fires immediately. Otherwise arm ``now + seconds`` and fire only after that.
+    """
+    if not past:
+        return False, None
+    if not enabled:
+        return True, None
+    try:
+        sec = int(seconds)
+    except (TypeError, ValueError):
+        sec = 0
+    if sec <= 0:
+        return True, None
+    if pending_until is None:
+        return False, float(now) + float(sec)
+    if float(now) + 1e-9 < float(pending_until):
+        return False, float(pending_until)
+    return True, None
 
 
 def remaining_contracts(position: Any, close_filled_count: Any) -> float:

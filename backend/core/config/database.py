@@ -2290,6 +2290,8 @@ def init_database():
                 flip_sell_prob_mult VARCHAR(32),
                 flip_sell_floor_mult VARCHAR(32),
                 limit_close_price NUMERIC(6,4) DEFAULT 0.0000,
+                stop_verification_period_enabled BOOLEAN DEFAULT FALSE,
+                stop_verification_period_seconds INTEGER DEFAULT 1,
                 CONSTRAINT strategy_list_0001_time_in_force_chk CHECK (time_in_force IN ('fill_or_kill', 'immediate_or_cancel', 'good_till_canceled')),
                 CONSTRAINT strategy_list_0001_order_type_chk CHECK (order_type IN ('limit', 'market'))
             );

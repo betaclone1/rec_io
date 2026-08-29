@@ -2254,7 +2254,8 @@ def get_auto_entry_settings():
                            min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
                            min_cooldown_timer, max_cooldown_timer, min_ask_range,
                            min_movement, max_movement,
-                           verification_period_enabled, verification_period_seconds
+                           verification_period_enabled, verification_period_seconds,
+                           min_buffer_pct
                     """
                     + (sel_flip if has_flip else "")
                     + f"""
@@ -2300,8 +2301,9 @@ def get_auto_entry_settings():
                         "max_movement": _f(strategy_result[21]),
                         "verification_period_enabled": _b(strategy_result[22]),
                         "verification_period_seconds": _i(strategy_result[23]),
+                        "min_buffer_pct": _f(strategy_result[24]),
                     }
-                    flip_base = 24
+                    flip_base = 25
                     if has_flip:
                         settings["flip_sell_prob"] = _b(strategy_result[flip_base])
                         settings["flip_sell_prob_mult"] = strategy_result[flip_base + 1]
@@ -4539,6 +4541,7 @@ def check_auto_entry_conditions_expiration_scalp():
             is_high_water_scalp,
             parse_limit_close_price,
         )
+        from backend.util.auto_entry_expiration_scalp_gates import parse_min_buffer_pct
 
         min_time = settings["min_time"]
         max_time = settings["max_time"]
@@ -4548,6 +4551,7 @@ def check_auto_entry_conditions_expiration_scalp():
         max_ask = float(settings["max_ask"])
         min_movement = float(settings["min_movement"])
         max_movement = float(settings["max_movement"])
+        min_buffer_pct = parse_min_buffer_pct(settings)
         hws = is_high_water_scalp(get_trade_strategy())
         hws_target = parse_limit_close_price(min_ask) if hws else None
         if hws and hws_target is None:
@@ -4617,6 +4621,7 @@ def check_auto_entry_conditions_expiration_scalp():
             exp_scalp_flicker_step_cents,
             expiration_scalp_busy_book_gate,
             expiration_scalp_flicker_gate,
+            expiration_scalp_min_buffer_pct_gate,
             update_expiration_scalp_entry_verification,
         )
 
@@ -4756,6 +4761,32 @@ def check_auto_entry_conditions_expiration_scalp():
                             extra=(
                                 f"prob={prob_f}% move={movement_pct_f} "
                                 f"({size_reason})"
+                            ),
+                        )
+                        continue
+
+                    raw_buf = strike.get("buffer_pct")
+                    try:
+                        buffer_pct_f = float(raw_buf) if raw_buf is not None else None
+                    except (TypeError, ValueError):
+                        buffer_pct_f = None
+                    buf_reject = expiration_scalp_min_buffer_pct_gate(
+                        buffer_pct=buffer_pct_f,
+                        min_buffer_pct=min_buffer_pct,
+                    )
+                    if buf_reject:
+                        _exp_scalp_verify_abort(
+                            verify_bucket,
+                            dedupe_key,
+                            now_ts=now_ts,
+                            need_s=verify_seconds,
+                            reason=buf_reject,
+                            strike_key=strike_key,
+                            side_key=side_key,
+                            log_tag=log_tag,
+                            extra=(
+                                f"buffer_pct={buffer_pct_f} "
+                                f"min_buffer_pct={min_buffer_pct}"
                             ),
                         )
                         continue
