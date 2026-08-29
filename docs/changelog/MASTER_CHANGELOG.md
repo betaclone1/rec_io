@@ -17,15 +17,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** No dedicated plan file for this batch.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations:
+- [x] Apply migrations:
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260829_1056_min_buffer_pct`
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260829_1815_hws_stop_verification`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: Exp Scalp settings save `min_buffer_pct`; HWS settings save stop verification; AES/ATS healthy
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.1`
+- [x] Verify: Exp Scalp settings save `min_buffer_pct`; HWS settings save stop verification; AES/ATS healthy
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.1`
 
 ---
 
