@@ -19,13 +19,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Plans:** No dedicated `.cursor/plans` file; behavior is specified in `docs/UNIFIED_AES_TICK_CONTRACT.md`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260828_1635_high_water_scalp`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260828_1635_high_water_scalp`
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Confirm High Water Scalp settings persist price target (`min_ask`=`max_ask`) and `limit_close_price`; Order Type is Limit / IOC
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.0`
+- [x] Confirm High Water Scalp settings persist price target (`min_ask`=`max_ask`) and `limit_close_price`; Order Type is Limit / IOC
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.0`
 
 ---
 
