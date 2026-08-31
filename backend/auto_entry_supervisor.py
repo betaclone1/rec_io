@@ -2254,7 +2254,7 @@ def get_auto_entry_settings():
                            min_volume, momentum_scalp_entry_threshold, min_ask, max_ask, max_price_spread, prob_adj,
                            min_cooldown_timer, max_cooldown_timer, min_ask_range,
                            min_movement, max_movement,
-                           verification_period_enabled, verification_period_seconds,
+                           entry_verification_period_enabled, entry_verification_period_seconds,
                            min_buffer_pct
                     """
                     + (sel_flip if has_flip else "")
@@ -2299,8 +2299,8 @@ def get_auto_entry_settings():
                         "min_ask_range": _f(strategy_result[19]),
                         "min_movement": _f(strategy_result[20]),
                         "max_movement": _f(strategy_result[21]),
-                        "verification_period_enabled": _b(strategy_result[22]),
-                        "verification_period_seconds": _i(strategy_result[23]),
+                        "entry_verification_period_enabled": _b(strategy_result[22]),
+                        "entry_verification_period_seconds": _i(strategy_result[23]),
                         "min_buffer_pct": _f(strategy_result[24]),
                     }
                     flip_base = 25
@@ -4526,8 +4526,8 @@ def check_auto_entry_conditions_expiration_scalp():
             "max_ask",
             "min_movement",
             "max_movement",
-            "verification_period_enabled",
-            "verification_period_seconds",
+            "entry_verification_period_enabled",
+            "entry_verification_period_seconds",
         ]
         missing_settings = [
             s for s in required_settings if s not in settings or settings.get(s) is None
@@ -4557,11 +4557,11 @@ def check_auto_entry_conditions_expiration_scalp():
         if hws and hws_target is None:
             log(f"{log_tag} ❌ High Water Scalp missing active-side price target (min_ask)")
             return
-        verify_enabled = bool(settings["verification_period_enabled"])
+        verify_enabled = bool(settings["entry_verification_period_enabled"])
         try:
-            verify_seconds = int(settings["verification_period_seconds"])
+            verify_seconds = int(settings["entry_verification_period_seconds"])
         except (TypeError, ValueError):
-            log(f"{log_tag} ❌ Invalid verification_period_seconds on monitor row")
+            log(f"{log_tag} ❌ Invalid entry_verification_period_seconds on monitor row")
             return
         verify_seconds = max(0, min(15, verify_seconds))
 

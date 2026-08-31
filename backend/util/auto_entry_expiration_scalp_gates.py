@@ -11,7 +11,7 @@ Does not handle cooldown, DB duplicate checks, spike alerts, or AES service heal
 Callers supply TTC and market asks/probs for a single ticker (or ladder row).
 
 Entry verification dwell (``update_expiration_scalp_entry_verification``) is used by
-production AES when ``verification_period_enabled`` is set on the monitor.
+production AES when ``entry_verification_period_enabled`` is set on the monitor.
 """
 
 from __future__ import annotations

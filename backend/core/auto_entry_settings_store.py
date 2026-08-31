@@ -216,12 +216,12 @@ def apply_auto_entry_settings(
     if "momentum_spike_threshold" in data:
         update_fields.append("momentum_spike_threshold = %s")
         update_values.append(int(data["momentum_spike_threshold"]))
-    if "verification_period_enabled" in data:
-        update_fields.append("verification_period_enabled = %s")
-        update_values.append(bool(data["verification_period_enabled"]))
-    if "verification_period_seconds" in data:
-        update_fields.append("verification_period_seconds = %s")
-        update_values.append(int(data["verification_period_seconds"]))
+    if "entry_verification_period_enabled" in data:
+        update_fields.append("entry_verification_period_enabled = %s")
+        update_values.append(bool(data["entry_verification_period_enabled"]))
+    if "entry_verification_period_seconds" in data:
+        update_fields.append("entry_verification_period_seconds = %s")
+        update_values.append(int(data["entry_verification_period_seconds"]))
     if "performance_based_allocation" in data:
         update_fields.append("performance_based_allocation = %s")
         update_values.append(bool(data["performance_based_allocation"]))
@@ -524,7 +524,7 @@ def apply_auto_entry_settings(
                spike_alert_enabled, spike_alert_momentum_threshold,
                spike_alert_cooldown_threshold, spike_alert_cooldown_minutes,
                current_probability, min_ttc_seconds, momentum_spike_enabled,
-               momentum_spike_threshold, verification_period_enabled, verification_period_seconds,
+               momentum_spike_threshold, entry_verification_period_enabled, entry_verification_period_seconds,
                min_volume, win_streak_threshold, performance_based_allocation,
                momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                regime_monitor_enabled, regime_window, stop_loss_price,
@@ -560,8 +560,8 @@ def apply_auto_entry_settings(
         "min_ttc_seconds": updated_result[10],
         "momentum_spike_enabled": updated_result[11],
         "momentum_spike_threshold": updated_result[12],
-        "verification_period_enabled": updated_result[13],
-        "verification_period_seconds": updated_result[14],
+        "entry_verification_period_enabled": updated_result[13],
+        "entry_verification_period_seconds": updated_result[14],
         "min_volume": updated_result[15],
         "win_streak_threshold": updated_result[16],
         "performance_based_allocation": updated_result[17],

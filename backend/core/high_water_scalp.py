@@ -5,9 +5,11 @@ ladder ask prints that cent, then send a limit IOC at that price. TTC,
 probability, movement, and verification dwell still follow Expiration Scalp.
 Close rests a GTC opposite-leg buy at ``1 - limit_close_price``
 (e.g. 0.99 owned-side → 0.01 opposite). Optional floor auto-stop dwell uses
-``stop_verification_period_*`` (not entry ``verification_period_*``).
+``stop_verification_period_*`` (not entry ``entry_verification_period_*``).
 Paper trades cannot rest on Kalshi; ``simulate_paper_resting_gtc`` walks the
 live Redis book the same way a GTC would lift opposite asks at/through that limit.
+Paper GTC fills are maker rests: close fee is ``0`` (Kalshi does not charge maker
+on these orders). Stop-flatten remaining is still a taker close.
 """
 
 from __future__ import annotations
@@ -118,6 +120,50 @@ def remaining_contracts(position: Any, close_filled_count: Any) -> float:
     return rem if rem > 0 else 0.0
 
 
+def two_leg_close_totals(
+    *,
+    buy_price: Any,
+    position: Any,
+    filled_qty: Any,
+    filled_sell: Any,
+    remainder_sell: Any,
+    total_fees: Any,
+) -> Optional[dict[str, float]]:
+    """PnL / blended sell for a live HWS row closed in two legs.
+
+    ``filled_sell`` is the VWAP of already-closed contracts (GTC or prior close).
+    ``remainder_sell`` is the leftover: expiry 0/1 or stop-flatten VWAP.
+    Never invents a fill price — callers must pass real venue values.
+    """
+    try:
+        pos = float(position)
+        buy = float(buy_price)
+        filled = float(filled_qty)
+        gtc_sell = float(filled_sell)
+        rem_sell = float(remainder_sell)
+        fees = float(total_fees or 0.0)
+    except (TypeError, ValueError):
+        return None
+    if pos <= 0:
+        return None
+    filled = min(max(filled, 0.0), pos)
+    rem = round(pos - filled, 2)
+    if rem < 0:
+        rem = 0.0
+    buy_value = buy * pos
+    sell_value = (gtc_sell * filled) + (rem_sell * rem)
+    blended_sell = sell_value / pos
+    pnl = round(sell_value - buy_value - fees, 6)
+    return {
+        "blended_sell": blended_sell,
+        "pnl": pnl,
+        "buy_value": buy_value,
+        "sell_value": sell_value,
+        "filled_qty": filled,
+        "remainder_qty": rem,
+    }
+
+
 def normalize_yes_no(side: Optional[str]) -> Optional[str]:
     raw = str(side or "").strip().lower()
     if raw in ("yes", "y"):
@@ -173,6 +219,7 @@ def simulate_paper_resting_gtc(
     """Walk opposite asks <= 1 - limit_close_price. Never invent a fill price.
 
     Returns ok, reason, available, fill_qty, opp_vwap, owned_sell_vwap, close_fee.
+    ``close_fee`` is 0 on a fill (paper GTC is a maker rest).
     available is None only when the walk itself cannot run (bad inputs).
     """
     from backend.core.orderbook_strike_prices import project_taker_buy_from_levels
@@ -236,7 +283,5 @@ def simulate_paper_resting_gtc(
     out["fill_qty"] = round(filled, 2)
     out["opp_vwap"] = float(opp_vwap)
     out["owned_sell_vwap"] = owned_sell_from_opposite_vwap(float(opp_vwap))
-    close_fee = walk.get("initial_proj_fees")
-    if close_fee is not None:
-        out["close_fee"] = float(close_fee)
+    out["close_fee"] = 0.0
     return out

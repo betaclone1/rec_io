@@ -2261,8 +2261,8 @@ def init_database():
                 min_ttc_seconds INTEGER,
                 momentum_spike_enabled BOOLEAN DEFAULT FALSE,
                 momentum_spike_threshold INTEGER,
-                verification_period_enabled BOOLEAN DEFAULT FALSE,
-                verification_period_seconds INTEGER,
+                entry_verification_period_enabled BOOLEAN DEFAULT FALSE,
+                entry_verification_period_seconds INTEGER,
                 min_volume INTEGER,
                 momentum_scalp_entry_threshold NUMERIC(5,2),
                 momentum_scalp_trailing_stop_amount NUMERIC(5,2) DEFAULT 0.10,
@@ -2537,18 +2537,18 @@ def init_database():
                     SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'users'
                       AND table_name = 'strategy_list_0001'
-                      AND column_name = 'verification_period_enabled'
+                      AND column_name = 'entry_verification_period_enabled'
                 ) THEN
-                    ALTER TABLE users.strategy_list_0001 ADD COLUMN verification_period_enabled BOOLEAN DEFAULT FALSE;
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN entry_verification_period_enabled BOOLEAN DEFAULT FALSE;
                 END IF;
                 
                 IF NOT EXISTS (
                     SELECT 1 FROM information_schema.columns
                     WHERE table_schema = 'users'
                       AND table_name = 'strategy_list_0001'
-                      AND column_name = 'verification_period_seconds'
+                      AND column_name = 'entry_verification_period_seconds'
                 ) THEN
-                    ALTER TABLE users.strategy_list_0001 ADD COLUMN verification_period_seconds INTEGER;
+                    ALTER TABLE users.strategy_list_0001 ADD COLUMN entry_verification_period_seconds INTEGER;
                 END IF;
                 
                 IF NOT EXISTS (

@@ -82,7 +82,7 @@ def run_exact_hourly_cycle_aes_replay(
             SELECT min_probability, max_probability, min_differential, max_differential,
                    min_time, max_time, allow_re_entry, min_volume, max_ask, max_price_spread,
                    prob_adj, current_probability, stop_loss_price, min_ttc_seconds,
-                   verification_period_enabled, verification_period_seconds
+                   stop_verification_period_enabled, stop_verification_period_seconds
             FROM users_0001.{monitor_table}
             WHERE id = %s
             """,
@@ -106,8 +106,8 @@ def run_exact_hourly_cycle_aes_replay(
         "current_probability": float(row[11]) if row[11] is not None else 40.0,
         "stop_loss_price": float(row[12]) if row[12] is not None else 0.0,
         "min_ttc_seconds": int(row[13]) if row[13] is not None else 0,
-        "verification_period_enabled": bool(row[14]) if row[14] is not None else False,
-        "verification_period_seconds": int(row[15]) if row[15] is not None else 60,
+        "stop_verification_period_enabled": bool(row[14]) if row[14] is not None else False,
+        "stop_verification_period_seconds": int(row[15]) if row[15] is not None else 60,
     }
 
     with conn.cursor() as cur:
@@ -158,8 +158,8 @@ def run_exact_hourly_cycle_aes_replay(
     stop_prob_threshold = float(settings.get("current_probability", 40.0))
     stop_floor = max(0.0, min(float(settings.get("stop_loss_price", 0.0)), 0.99))
     min_ttc_stop = int(settings.get("min_ttc_seconds", 0))
-    verification_enabled = bool(settings.get("verification_period_enabled", False))
-    verification_seconds = int(settings.get("verification_period_seconds", 60))
+    verification_enabled = bool(settings.get("stop_verification_period_enabled", False))
+    verification_seconds = int(settings.get("stop_verification_period_seconds", 60))
     equity = float(bankroll)
     entries = exits = wins = losses = 0
     sum_pnl = 0.0

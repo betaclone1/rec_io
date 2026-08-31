@@ -10434,10 +10434,10 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
 | `user_id_strategy` | `character varying(10)` | YES | '0001'::character varying | |
-| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp / High Water Scalp: **entry** dwell (defaults true/3s) |
-| `verification_period_seconds` | `integer(32)` | YES | 15 | See verification_period_enabled |
-| `stop_verification_period_enabled` | `boolean` | YES | false | High Water Scalp: dwell before floor auto-stop. Distinct from `verification_period_*`. Migration `20260829_1815_hws_stop_verification`. |
-| `stop_verification_period_seconds` | `integer(32)` | YES | 1 | High Water Scalp floor auto-stop dwell seconds (0–60). 0 = immediate. Migration `20260829_1815_hws_stop_verification`. |
+| `entry_verification_period_enabled` | `boolean` | YES | false | Entry dwell (Expiration Scalp / High Water Scalp). Migration `20260829_2105_entry_stop_verification_align` (renamed from overloaded `verification_period_*`). |
+| `entry_verification_period_seconds` | `integer(32)` | YES |  | Entry dwell seconds. |
+| `stop_verification_period_enabled` | `boolean` | YES | false | Auto-stop dwell (HTC / Momentum / High Water Scalp floor). Same meaning for all strategies. |
+| `stop_verification_period_seconds` | `integer(32)` | YES | 1 | Auto-stop dwell seconds (0–60). 0 = immediate. |
 | `min_volume` | `integer(32)` | YES | 1000 | | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `win_streak` | `integer(32)` | YES | 0 | |
@@ -10670,10 +10670,10 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `momentum_spike_enabled` | `boolean` | YES | true | |
 | `momentum_spike_threshold` | `integer(32)` | YES | 36 | |
 | `user_id` | `character varying(10)` | YES | '0001'::character varying | |
-| `verification_period_enabled` | `boolean` | YES | false | HTC: auto-stop dwell. Expiration Scalp / High Water Scalp: **entry** dwell (defaults true/3s) |
-| `verification_period_seconds` | `integer(32)` | YES | 15 | See verification_period_enabled |
-| `stop_verification_period_enabled` | `boolean` | YES | false | High Water Scalp: dwell before floor auto-stop. Distinct from `verification_period_*`. Migration `20260829_1815_hws_stop_verification`. |
-| `stop_verification_period_seconds` | `integer(32)` | YES | 1 | High Water Scalp floor auto-stop dwell seconds (0–60). 0 = immediate. Migration `20260829_1815_hws_stop_verification`. |
+| `entry_verification_period_enabled` | `boolean` | YES | false | Entry dwell (Expiration Scalp / High Water Scalp). Migration `20260829_2105_entry_stop_verification_align` (renamed from overloaded `verification_period_*`). |
+| `entry_verification_period_seconds` | `integer(32)` | YES |  | Entry dwell seconds. |
+| `stop_verification_period_enabled` | `boolean` | YES | false | Auto-stop dwell (HTC / Momentum / High Water Scalp floor). Same meaning for all strategies. |
+| `stop_verification_period_seconds` | `integer(32)` | YES | 1 | Auto-stop dwell seconds (0–60). 0 = immediate. |
 | `min_volume` | `integer(32)` | YES | 1000 | | |
 | `max_differential` | `numeric(5,2)` | YES | NULL::numeric | |
 | `momentum_scalp_entry_threshold` | `numeric(5,2)` | YES | NULL::numeric | |
@@ -10933,7 +10933,7 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `min_fill_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor slippage floor at insert; **0.0000** = gate disabled. Migration `20260715_1200_trades_min_fill_price`. |
 | `min_slippage` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor min_slippage at insert; **0.0000** = gate disabled (enabled range -0.2000..0.0000). Migration `20260716_1200_min_slippage_gate`. |
 | `limit_close_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Scalp close target at insert; **0.0000** = not used. Migration `20260828_1635_high_water_scalp`. |
-| `close_filled_count` | `numeric(12,2)` | NO | 0.00 | Cumulative close-leg fills while the row is still open. Remaining = `position − close_filled_count`. Same migration. |
+| `close_filled_count` | `numeric(12,2)` | NO | 0.00 | Cumulative close-leg fills while the row is still open. Remaining = `position − close_filled_count`. Live High Water Scalp: a GTC slice plus leftover expiry/stop is recorded as mixed PnL using this count plus remainder settlement or flatten; fully flattened live rows set this to `position`. Migration `20260828_1635_high_water_scalp`. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `hour_idx` | `smallint(16)` | YES | - | Hour of contract (1–24). |

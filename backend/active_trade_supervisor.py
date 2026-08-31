@@ -5105,8 +5105,8 @@ def start_monitoring_loop():
                                 # Only proceed if momentum spike is enabled
                                 if momentum_spike_enabled:
                                     # Get verification settings (same as probability-based auto stop)
-                                    verification_enabled = get_verification_period_enabled()
-                                    verification_seconds = get_verification_period_seconds()
+                                    verification_enabled = get_stop_verification_period_enabled()
+                                    verification_seconds = get_stop_verification_period_seconds()
                                     current_time = time.time()
                             
                                     # Get current momentum (use 5s average from live price log to smooth noise)
@@ -7714,87 +7714,10 @@ def get_min_ttc_seconds():
         log(f"[AUTO STOP] Error reading min_ttc_seconds from strategy: {e}")
         return 60
 
-def get_verification_period_enabled():
-    """Get the verification period enabled setting from monitor's assigned strategy"""
-    try:
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            # First get the strategy name for this monitor
-            cursor.execute(f"""
-                SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
-            """, (ctx_mid(),))
-            monitor_result = cursor.fetchone()
-            
-            if not monitor_result:
-                log_debug(f"No monitor found with ID {ctx_mid()}")
-                return False
-            
-            strategy_name = monitor_result[0]
-            if not strategy_name:
-                log_debug(f"No strategy assigned to monitor {ctx_mid()}")
-                return False
-            
-            # Get the verification_period_enabled from the monitor
-            cursor.execute(f"""
-                SELECT verification_period_enabled FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
-            """, (ctx_mid(),))
-            result = cursor.fetchone()
-            
-            conn.close()
-            
-            if result:
-                enabled = result[0]
-                return enabled
-            else:
-                log_debug(f"No strategy found with name: {strategy_name}")
-                return False
-                
-    except Exception as e:
-        log(f"[AUTO STOP] Error reading verification_period_enabled from strategy: {e}")
-        return False
-
-def get_verification_period_seconds():
-    """Get the verification period seconds setting from monitor's assigned strategy"""
-    try:
-        conn = get_postgresql_connection()
-        with conn.cursor() as cursor:
-            # First get the strategy name for this monitor
-            cursor.execute(f"""
-                SELECT strategy FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
-            """, (ctx_mid(),))
-            monitor_result = cursor.fetchone()
-            
-            if not monitor_result:
-                log_debug(f"No monitor found with ID {ctx_mid()}")
-                return 15
-            
-            strategy_name = monitor_result[0]
-            if not strategy_name:
-                log_debug(f"No strategy assigned to monitor {ctx_mid()}")
-                return 15
-            
-            # Get the verification_period_seconds from the monitor
-            cursor.execute(f"""
-                SELECT verification_period_seconds FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s
-            """, (ctx_mid(),))
-            result = cursor.fetchone()
-            
-            conn.close()
-            
-            if result:
-                seconds = result[0]
-                return seconds
-            else:
-                log_debug(f"No strategy found with name: {strategy_name}")
-                return 15
-                
-    except Exception as e:
-        log(f"[AUTO STOP] Error reading verification_period_seconds from strategy: {e}")
-        return 15
 
 
 def get_stop_verification_period_enabled():
-    """High Water Scalp floor auto-stop dwell enabled. Missing/NULL → False."""
+    """Auto-stop dwell enabled (HTC / Momentum / HWS floor). Missing/NULL → False."""
     try:
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
@@ -7813,7 +7736,7 @@ def get_stop_verification_period_enabled():
 
 
 def get_stop_verification_period_seconds():
-    """High Water Scalp floor auto-stop dwell seconds. Missing/NULL → 0 (immediate)."""
+    """Auto-stop dwell seconds (HTC / Momentum / HWS floor). Missing/NULL → 0 (immediate)."""
     try:
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
@@ -8147,7 +8070,7 @@ def _hws_enqueue_paper_resting_fill(trade: dict, st: dict, sim: dict) -> bool:
         "count": fill_qty,
         "count_fp": f"{fill_qty:.2f}",
         "sell_price": float(sell_px),
-        "close_fee": sim.get("close_fee"),
+        "close_fee": 0.0,
         "close_method": "limit_close",
         "ticker": trade.get("ticker") or st.get("ticker"),
         "monitor": trade.get("monitor"),
@@ -8197,7 +8120,7 @@ def check_auto_stop_conditions_high_water_scalp(
     """Floor stop only (no min-TTC, probability, or momentum), plus paper GTC book sim.
 
     Optional ``stop_verification_period_*`` dwell before flatten (not entry
-    ``verification_period_*``). Cancels the resting close before flattening remaining size.
+    ``entry_verification_period_*``). Cancels the resting close before flattening remaining size.
     Paper cannot rest a Kalshi GTC; ATS walks the live Redis book and fills incrementally.
     """
     from backend.core.high_water_scalp import (
@@ -8314,8 +8237,8 @@ def check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_tra
     """
     threshold = get_auto_stop_threshold()
     min_ttc_seconds = get_min_ttc_seconds()
-    verification_enabled = get_verification_period_enabled()
-    verification_seconds = get_verification_period_seconds()
+    verification_enabled = get_stop_verification_period_enabled()
+    verification_seconds = get_stop_verification_period_seconds()
     current_time = time.time()
     stop_floor = get_stop_loss_price()
     

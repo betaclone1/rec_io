@@ -2,7 +2,8 @@
 
 Paper cannot rest a Kalshi GTC. ATS walks the same Redis orderbook used for
 paper IOC and estimates fills at ``1 - limit_close_price``. Missing/stale
-book → skip (no invented price).
+book → skip (no invented price). Simulated GTC fills carry ``close_fee=0``
+(maker rest).
 """
 
 from __future__ import annotations

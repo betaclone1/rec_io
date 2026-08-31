@@ -2111,6 +2111,52 @@ def _parse_dollars(value):
         return None
 
 
+def _paper_trade_flag_is_true(paper_trade) -> bool:
+    if isinstance(paper_trade, str):
+        return paper_trade.lower() in ("true", "1", "yes")
+    return bool(paper_trade)
+
+
+def _hws_kalshi_order_close_slice(order_id: str) -> Optional[Dict[str, Any]]:
+    """Fill qty / owned-side sell VWAP / Kalshi fees for one close-leg order. None if missing."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return None
+    rec = _fetch_kalshi_order_for_confirm(oid)
+    if not rec:
+        return None
+    fill_val = _order_count_val(None, rec.get("fill_count_fp"))
+    cost = _parse_dollars(rec.get("taker_fill_cost_dollars"))
+    taker = _parse_dollars(rec.get("taker_fees_dollars")) or 0.0
+    maker = _parse_dollars(rec.get("maker_fees_dollars")) or 0.0
+    sell = None
+    if cost is not None and fill_val > 0:
+        sell = 1.0 - (cost / fill_val)
+    return {
+        "order_id": oid,
+        "fill_qty": float(fill_val or 0.0),
+        "sell_price": sell,
+        "fees": float(taker) + float(maker),
+    }
+
+
+def _hws_sum_kalshi_close_fees(order_ids: List[str], *, exclude: Optional[str] = None) -> float:
+    """Sum Kalshi taker+maker on prior close-leg orders. Missing Redis rows contribute 0."""
+    skip = str(exclude or "").strip()
+    seen: set[str] = set()
+    total = 0.0
+    for raw in order_ids or []:
+        oid = str(raw or "").strip()
+        if not oid or oid == skip or oid in seen:
+            continue
+        seen.add(oid)
+        slice_rec = _hws_kalshi_order_close_slice(oid)
+        if slice_rec is None:
+            continue
+        total += float(slice_rec.get("fees") or 0.0)
+    return total
+
+
 def _entry_slippage_value(buy_price: object, initial_price: object):
     """Entry slippage = fill buy_price minus intended initial_price (0 if initial is missing). Matches DB: buy_price - COALESCE(initial_price, buy_price)."""
     if buy_price is None:
@@ -2991,15 +3037,23 @@ def _apply_high_water_partial_close(
             position = float(row[1] or 0.0)
             filled = _trade_position_for_db(fill_val)
             realized_pnl = round((sell_price - buy_price) * filled - close_fees, 6)
+            oid = str(order_rec.get("order_id") or "").strip()
+            append_sql = ""
+            append_params: list = [filled, sell_price, realized_pnl]
+            if oid:
+                append_sql = ", " + sql_append_order_id_if_absent("order_ids_close")
+                append_params.extend([oid, oid])
+            append_params.append(trade_id)
             cur.execute(
                 f"""
                 UPDATE {_tm_trades_table()}
                 SET close_filled_count = %s,
                     sell_price = %s,
                     pnl = %s
+                    {append_sql}
                 WHERE id = %s AND status IN ('open', 'partial')
                 """,
-                (filled, sell_price, realized_pnl, trade_id),
+                tuple(append_params),
             )
         pg.commit()
         rem = remaining_contracts(position, filled)
@@ -3022,6 +3076,7 @@ def apply_paper_high_water_resting_fill(data: dict) -> dict:
 
     Partial: increment close_filled_count / blend sell VWAP. Full remaining: finalize
     with close_method=limit_close. Does not walk the book again (no market close).
+    Close fee on these fills is 0 (maker rest; Kalshi does not charge maker here).
     """
     from backend.core.high_water_scalp import is_high_water_scalp, remaining_contracts
 
@@ -3042,14 +3097,8 @@ def apply_paper_high_water_resting_fill(data: dict) -> dict:
             status_code=status.HTTP_400_BAD_REQUEST,
             detail="paper_hws_resting_fill requires count and sell_price from the live book",
         )
-    close_fee_in = data.get("close_fee")
-    try:
-        slice_close_fee = float(close_fee_in) if close_fee_in is not None else None
-    except (TypeError, ValueError):
-        slice_close_fee = None
-    if slice_close_fee is None:
-        opp_px = 1.0 - sell_px
-        slice_close_fee = estimate_kalshi_taker_fee(fill_qty, opp_px) if 0 < opp_px < 1 else 0.0
+    # Paper GTC rest is maker. Kalshi does not charge maker on these orders.
+    slice_close_fee = 0.0
 
     pg = get_postgresql_connection()
     if not pg:
@@ -4578,7 +4627,14 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         pg_conn = get_postgresql_connection()
         if pg_conn:
             with pg_conn.cursor() as cursor:
-                cursor.execute(f"SELECT ticker, symbol, order_id_close, trade_strategy, status, close_method FROM {_tm_trades_table()} WHERE id = %s", (id,))
+                cursor.execute(
+                    f"""
+                    SELECT ticker, symbol, order_id_close, trade_strategy, status, close_method,
+                           order_ids_close
+                    FROM {_tm_trades_table()} WHERE id = %s
+                    """,
+                    (id,),
+                )
                 row = cursor.fetchone()
             pg_conn.close()
         else:
@@ -4595,6 +4651,7 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
         trade_strategy = row[3] if len(row) > 3 else None
         row_status = row[4] if len(row) > 4 else None
         existing_close_method = row[5] if len(row) > 5 else None
+        prior_close_order_ids = row[6] if len(row) > 6 else None
         
         if not stored_order_id_close:
             log_event(ticket_id, f"MANAGER: No order_id_close stored for trade ID {id} - cannot confirm via order hot state")
@@ -4641,14 +4698,33 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         taker_fees_usd = _parse_dollars(taker_fees_dollars)
                         maker_fees_usd = _parse_dollars(maker_fees_dollars)
                         close_order_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
-                        total_fees_paid = existing_fees + close_order_fees_dollars
+                        prior_close_fees = 0.0
+                        from backend.core.high_water_scalp import is_high_water_scalp
+                        from backend.core.trade_order_ids import trade_associated_order_ids
+
+                        if is_high_water_scalp(trade_strategy):
+                            prior_close_fees = _hws_sum_kalshi_close_fees(
+                                trade_associated_order_ids(
+                                    {"order_ids_close": prior_close_order_ids}
+                                )["close"],
+                                exclude=str(stored_order_id_close or ""),
+                            )
+                        total_fees_paid = (
+                            (existing_fees or 0.0) + prior_close_fees + close_order_fees_dollars
+                        )
                     
-                        log_event(ticket_id, f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, close order: ${close_order_fees_dollars}, total: ${total_fees_paid}")
+                        log_event(
+                            ticket_id,
+                            f"MANAGER: SIMPLE fee calc - existing: ${existing_fees}, "
+                            f"prior close legs: ${prior_close_fees}, "
+                            f"close order: ${close_order_fees_dollars}, total: ${total_fees_paid}",
+                        )
                     
                         close_fill_cost_dollars = order_rec.get("taker_fill_cost_dollars")
                         close_fill_count_fp = order_rec.get("fill_count_fp")
                         close_fill_val = _order_count_val(None, close_fill_count_fp)
                         total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+                        hws_close_filled_final = None
                         if total_close_cost_usd is not None and close_fill_val > 0:
                             sell_price = total_close_cost_usd / close_fill_val
                             sell_price = 1 - sell_price
@@ -4667,20 +4743,48 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                         prior_filled = float(br[0] or 0.0)
                                         prior_sell = float(br[1]) if br[1] is not None else None
                                         pos_all = float(br[2] or 0.0)
-                                        if (
-                                            prior_filled > 0.02
-                                            and prior_sell is not None
-                                            and close_fill_val + 0.02 < pos_all
-                                        ):
-                                            total_closed = prior_filled + close_fill_val
-                                            if total_closed > 0:
-                                                sell_price = (
-                                                    prior_sell * prior_filled + sell_price * close_fill_val
-                                                ) / total_closed
+                                        if is_high_water_scalp(trade_strategy) and pos_all > 0:
+                                            hws_close_filled_final = _trade_position_for_db(pos_all)
+                                        if is_high_water_scalp(trade_strategy) and prior_filled > 0.02:
+                                            if prior_sell is None:
+                                                for oid in trade_associated_order_ids(
+                                                    {"order_ids_close": prior_close_order_ids}
+                                                )["close"]:
+                                                    if oid == str(stored_order_id_close or "").strip():
+                                                        continue
+                                                    recovered = _hws_kalshi_order_close_slice(oid)
+                                                    if recovered and recovered.get("sell_price") is not None:
+                                                        prior_sell = recovered["sell_price"]
+                                                        rec_qty = float(recovered.get("fill_qty") or 0.0)
+                                                        if rec_qty > 0.02:
+                                                            prior_filled = rec_qty
+                                                        break
+                                            if prior_sell is None:
+                                                sell_price = None
                                                 log_event(
                                                     ticket_id,
-                                                    f"MANAGER: blended sell_price={sell_price} prior={prior_filled}@{prior_sell} plus {close_fill_val}",
+                                                    "MANAGER: HWS prior close slice unpriced — "
+                                                    "not applying flatten sell across full position",
                                                 )
+                                            else:
+                                                from backend.core.high_water_scalp import two_leg_close_totals
+
+                                                flatten_sell = sell_price
+                                                totals = two_leg_close_totals(
+                                                    buy_price=0.0,
+                                                    position=pos_all,
+                                                    filled_qty=prior_filled,
+                                                    filled_sell=prior_sell,
+                                                    remainder_sell=flatten_sell,
+                                                    total_fees=0.0,
+                                                )
+                                                if totals:
+                                                    sell_price = totals["blended_sell"]
+                                                    log_event(
+                                                        ticket_id,
+                                                        f"MANAGER: blended sell_price={sell_price} "
+                                                        f"prior={prior_filled}@{prior_sell} plus {close_fill_val}",
+                                                    )
                             except Exception as blend_err:
                                 log_event(ticket_id, f"MANAGER: sell blend skipped: {blend_err}")
                         else:
@@ -4824,6 +4928,26 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                     f"MANAGER: close order_ids_close append failed: {e_oids}",
                                 )
                             update_trade_status_with_ret_pct(id, "closed", closed_at, sell_price, symbol_close, win_loss, pnl, close_method, total_fees, roi_pct, ret_pct, ret_pct_base, high_price, low_price)
+                            if hws_close_filled_final is not None:
+                                try:
+                                    pg_cf = get_postgresql_connection()
+                                    if pg_cf:
+                                        with pg_cf.cursor() as cur_cf:
+                                            cur_cf.execute(
+                                                f"""
+                                                UPDATE {_tm_trades_table()}
+                                                SET close_filled_count = %s
+                                                WHERE id = %s
+                                                """,
+                                                (hws_close_filled_final, id),
+                                            )
+                                        pg_cf.commit()
+                                        pg_cf.close()
+                                except Exception as e_cf:
+                                    log_event(
+                                        ticket_id,
+                                        f"MANAGER: close_filled_count finalize failed: {e_cf}",
+                                    )
                         
                             log_event(ticket_id, f"MANAGER: CLOSE TRADE CONFIRMED - PnL: ${pnl}, W/L: {win_loss}, Fees: ${total_fees}")
                             log(f"CLOSE TRADE CONFIRMED: {expected_ticker}, PnL=${pnl}, W/L={win_loss}")
@@ -7885,7 +8009,34 @@ def apply_update_trade_status_payload(data: dict):
                 pg_conn = get_postgresql_connection()
                 if pg_conn:
                     with pg_conn.cursor() as cursor:
-                        cursor.execute(f"UPDATE {_tm_trades_table()} SET {order_id_field} = %s WHERE id = %s", (order_id, id))
+                        if intent in ("close", "resting_close"):
+                            cursor.execute(
+                                f"""
+                                UPDATE {_tm_trades_table()}
+                                SET order_ids_close = CASE
+                                    WHEN order_id_close IS NOT NULL
+                                         AND BTRIM(order_id_close) <> ''
+                                         AND BTRIM(order_id_close) <> %s
+                                         AND NOT (
+                                             COALESCE(order_ids_close, '{{}}'::text[])
+                                             @> ARRAY[BTRIM(order_id_close)]::text[]
+                                         )
+                                    THEN array_append(
+                                        COALESCE(order_ids_close, '{{}}'::text[]),
+                                        BTRIM(order_id_close)
+                                    )
+                                    ELSE COALESCE(order_ids_close, '{{}}'::text[])
+                                END,
+                                order_id_close = %s
+                                WHERE id = %s
+                                """,
+                                (order_id, order_id, id),
+                            )
+                        else:
+                            cursor.execute(
+                                f"UPDATE {_tm_trades_table()} SET {order_id_field} = %s WHERE id = %s",
+                                (order_id, id),
+                            )
                         pg_conn.commit()
                         log(f"{log_type} ORDER_ID STORED SUCCESSFULLY")
                         if ticket_id:
@@ -8018,7 +8169,13 @@ async def manual_settlement_poll():
 # ---------- EXPIRATION FUNCTIONS ----------------------------------------------------
 
 def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
-    """Promote ``expired`` → ``closed`` using venue ``market_result`` + ``side`` (held to expiration). Idempotent."""
+    """Promote ``expired`` → ``closed`` from venue ``market_result`` + ``side``.
+
+    Full hold: leftover (or entire) position settles 1.00/0.00. Live High Water Scalp
+    with a GTC close slice mixes that slice's venue VWAP with remainder settlement
+    and adds Kalshi GTC fees. Paper HWS still assumes a full simulated GTC close.
+    Idempotent.
+    """
     from backend.core.kalshi_lifecycle_trade_outcome import expiry_win_loss_from_market_result
 
     if _trade_manager_scheduler_shutdown.is_set():
@@ -8033,7 +8190,8 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
             cursor.execute(
                 f"""
                 SELECT status, market_result, side, buy_price, position, fees, bankroll, mtb_base_value,
-                       symbol_close, high_price, low_price, closed_at, ticker, paper_trade, contract, date
+                       symbol_close, high_price, low_price, closed_at, ticker, paper_trade, contract, date,
+                       close_filled_count, sell_price, trade_strategy, order_id_close
                 FROM {_tm_trades_table()}
                 WHERE id = %s
                 """,
@@ -8068,6 +8226,10 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         paper_trade,
         contract,
         trade_date,
+        close_filled_count,
+        row_sell_price,
+        trade_strategy,
+        order_id_close,
     ) = row
 
     if status != "expired":
@@ -8083,8 +8245,54 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         )
         return False
 
-    sell_price = 1.0 if win_loss == "W" else 0.0
+    remainder_sell = 1.0 if win_loss == "W" else 0.0
+    sell_price = remainder_sell
     existing_fees_f = float(existing_fees) if existing_fees is not None else 0.0
+    total_fees_f = existing_fees_f
+
+    from backend.core.high_water_scalp import is_high_water_scalp, two_leg_close_totals
+
+    live_hws = is_high_water_scalp(trade_strategy) and not _paper_trade_flag_is_true(paper_trade)
+    try:
+        filled_qty = float(close_filled_count or 0.0)
+    except (TypeError, ValueError):
+        filled_qty = 0.0
+    if live_hws and filled_qty > 0.02:
+        slice_qty = filled_qty
+        slice_sell = float(row_sell_price) if row_sell_price is not None else None
+        gtc_fees = 0.0
+        kalshi_slice = _hws_kalshi_order_close_slice(str(order_id_close or ""))
+        if kalshi_slice and kalshi_slice.get("sell_price") is not None and kalshi_slice.get("fill_qty", 0) > 0:
+            slice_qty = float(kalshi_slice["fill_qty"])
+            slice_sell = float(kalshi_slice["sell_price"])
+            gtc_fees = float(kalshi_slice.get("fees") or 0.0)
+        elif kalshi_slice:
+            gtc_fees = float(kalshi_slice.get("fees") or 0.0)
+        if slice_sell is None:
+            log(
+                f"⚠️ finalize_expired_trade_from_market_result: live HWS trade_id={trade_id} "
+                f"has close_filled_count={filled_qty} but no GTC sell price — waiting"
+            )
+            return False
+        total_fees_f = round(existing_fees_f + gtc_fees, 6)
+        totals = two_leg_close_totals(
+            buy_price=buy_price,
+            position=position,
+            filled_qty=slice_qty,
+            filled_sell=slice_sell,
+            remainder_sell=remainder_sell,
+            total_fees=total_fees_f,
+        )
+        if totals is None:
+            return False
+        sell_price = totals["blended_sell"]
+        # Mixed close: recorded W/L is net PnL, not leftover-only venue hold.
+        mixed_pnl = totals["pnl"]
+        win_loss = "W" if mixed_pnl > 0 else "L" if mixed_pnl < 0 else "D"
+        log(
+            f"📝 EXPIRED MIXED HWS (live): trade {trade_id} gtc={slice_qty}@{slice_sell} "
+            f"remainder@{remainder_sell} blended_sell={sell_price} fees={total_fees_f}"
+        )
 
     pnl = None
     ret_pct = None
@@ -8096,7 +8304,7 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         pos_f = float(position)
         buy_value = bp_f * pos_f
         sell_value = float(sell_price) * pos_f
-        pnl = round(sell_value - buy_value - existing_fees_f, 6)
+        pnl = round(sell_value - buy_value - total_fees_f, 6)
         if bankroll is not None and float(bankroll) > 0 and pnl is not None:
             ret_pct = round((pnl / (float(bankroll) / 100.0)) * 100, 5)
         if mtb_base is not None and float(mtb_base) > 0 and pnl is not None:
@@ -8117,7 +8325,7 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
         win_loss=win_loss,
         pnl=pnl,
         close_method="expired",
-        fees=existing_fees_f,
+        fees=total_fees_f,
         roi_pct=roi_pct,
         ret_pct=ret_pct,
         ret_pct_base=ret_pct_base,
@@ -8159,7 +8367,7 @@ def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
     """
     cursor.execute(
         f"""
-        SELECT side, win_loss, status, market_result
+        SELECT side, win_loss, status, market_result, close_method, close_filled_count
         FROM {_tm_trades_table()} WHERE id = %s
         """,
         (trade_id,),
@@ -8167,10 +8375,18 @@ def _finalize_closed_trade_win_loss_confirmed(cursor, trade_id: int) -> None:
     row = cursor.fetchone()
     if not row:
         return
-    side, win_loss, row_status, market_result = row
+    side, win_loss, row_status, market_result, close_method, close_filled_count = row
     if row_status != "closed":
         return
     if market_result is None:
+        return
+    try:
+        filled = float(close_filled_count or 0.0)
+    except (TypeError, ValueError):
+        filled = 0.0
+    # Mixed live HWS: leftover expired after a GTC slice. Recorded W/L is net PnL,
+    # not held-to-expiration binary — do not confirm against market_result.
+    if str(close_method or "") == "expired" and filled > 0.02:
         return
     mr = str(market_result).strip().lower()
     if mr not in ("yes", "no"):

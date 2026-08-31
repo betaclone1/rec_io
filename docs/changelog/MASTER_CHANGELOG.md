@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-08-31 — Release v3.12.2: Live HWS mixed close + entry/stop verification columns
+
+**Summary**
+- **Release: v3.12.2**
+- **Live High Water Scalp mixed close:** If a resting GTC only partially fills and leftover expires or hits the floor stop, the trade log blends the GTC slice VWAP with remainder settlement (expiry 0/1) or stop-flatten VWAP. PnL, fees, `ret_pct`, `roi_pct`, and W/L follow that net. Kalshi GTC fees are included. GTC order ids stay on `order_ids_close` when a flatten replaces `order_id_close`. If the GTC printed size but has no venue cost yet, expiry finalize waits (row stays `expired`). Paper still assumes a full simulated GTC / full hold at expiry.
+- **Entry vs stop verification columns:** Rename overloaded `verification_period_*` → `entry_verification_period_*` (Exp Scalp / HWS entry dwell). HTC / Momentum / HWS floor stop dwell uses `stop_verification_period_*`. Settings store, AES, ATS, monitor create, desktop + mobile modals persist the split columns.
+- **DB:** Migration **`20260829_2105_entry_stop_verification_align`** (applied locally). No new trades columns.
+- **Docs / tests:** `docs/UNIFIED_AES_TICK_CONTRACT.md`; `docs/MASTER_DB_SCHEMA_REFERENCE.md`; `tests/unit/test_high_water_scalp.py`; `tests/unit/test_trade_expiry_quarter_hour.py`; `tests/unit/test_market_result_outcome_backfill.py`.
+- **Plans:** No dedicated plan file for this batch.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-08-31`**. Code: `git revert` this commit + `scripts/MASTER_RESTART.sh`. Schema: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260829_2105_entry_stop_verification_align`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260829_2105_entry_stop_verification_align`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; TM/ATS/AES running; HWS settings save `entry_verification_period_*` and `stop_verification_period_*`; mixed-close helpers present in trade_manager
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.2`
+
+---
+
 ## 2026-08-29 — Release v3.12.1: Exp Scalp min buffer % + HWS stop verification
 
 **Summary**

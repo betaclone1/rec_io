@@ -7,6 +7,8 @@ import inspect
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from backend.core.aes_btc15m_exp_scalp_cutout import is_btc15m_exp_scalp_cutout_row
 from backend.core.high_water_scalp import (
     complement_limit_price,
@@ -14,6 +16,7 @@ from backend.core.high_water_scalp import (
     is_high_water_scalp,
     parse_limit_close_price,
     remaining_contracts,
+    two_leg_close_totals,
 )
 from backend.core.tenant_context import TenantContext
 from backend.core.tenant_strategy_list import FALLBACK_STRATEGY_NAMES
@@ -237,14 +240,61 @@ def test_partial_close_updates_remaining_without_finalize(monkeypatch):
     assert "'closed'" not in sql
 
 
+def test_two_leg_close_totals_gtc_then_expiry():
+    win = two_leg_close_totals(
+        buy_price=0.90,
+        position=2500,
+        filled_qty=400,
+        filled_sell=0.99,
+        remainder_sell=1.0,
+        total_fees=5.0,
+    )
+    assert win is not None
+    assert win["remainder_qty"] == 2100.0
+    assert win["sell_value"] == 2496.0
+    assert win["pnl"] == 241.0
+    assert win["blended_sell"] == pytest.approx(2496.0 / 2500.0)
+
+    lose = two_leg_close_totals(
+        buy_price=0.90,
+        position=2500,
+        filled_qty=400,
+        filled_sell=0.99,
+        remainder_sell=0.0,
+        total_fees=5.0,
+    )
+    assert lose is not None
+    assert lose["sell_value"] == 396.0
+    assert lose["pnl"] == -1859.0
+
+
+def test_two_leg_close_totals_stop_flatten_remaining():
+    out = two_leg_close_totals(
+        buy_price=0.90,
+        position=100,
+        filled_qty=40,
+        filled_sell=0.99,
+        remainder_sell=0.20,
+        total_fees=1.5,
+    )
+    assert out is not None
+    assert out["sell_value"] == pytest.approx(40 * 0.99 + 60 * 0.20)
+    assert out["blended_sell"] == pytest.approx((40 * 0.99 + 60 * 0.20) / 100)
+    assert out["pnl"] == round(out["sell_value"] - 90.0 - 1.5, 6)
+
+
 def test_confirm_close_matches_open_partial_and_fills_wake():
     import backend.trade_manager as tm
 
     close_src = inspect.getsource(tm.confirm_close_trade_for_order_id)
     wake_src = inspect.getsource(tm.apply_positions_updated_payload)
+    confirm_src = inspect.getsource(tm.confirm_close_trade)
     assert "open" in close_src and "partial" in close_src
     assert "fills" in wake_src
     assert "wake_confirm_close_for_order" in wake_src
+    assert "two_leg_close_totals" in confirm_src
+    assert "_hws_sum_kalshi_close_fees" in confirm_src
+    assert "close_fill_val + 0.02 < pos_all" not in confirm_src
 
 
 def test_ats_hws_stop_cancels_then_flattens_without_entry_dwell():
@@ -254,9 +304,10 @@ def test_ats_hws_stop_cancels_then_flattens_without_entry_dwell():
     hws_start = ats_src.index("def check_auto_stop_conditions_high_water_scalp")
     hws_end = ats_src.index("def check_auto_stop_conditions_expiration_scalp")
     hws_src = ats_src[hws_start:hws_end]
-    assert "get_verification_period" not in hws_src
     assert "get_stop_verification_period_enabled" in hws_src
     assert "get_stop_verification_period_seconds" in hws_src
+    assert "get_verification_period_enabled()" not in hws_src
+    assert "get_verification_period_seconds()" not in hws_src
     assert "floor_stop_verify_allows_fire" in hws_src
     assert "if is_high_water_scalp(get_trade_strategy()):" in ats_src
     assert "_hws_cancel_resting_and_apply_remaining(trade)" in ats_src
@@ -264,6 +315,9 @@ def test_ats_hws_stop_cancels_then_flattens_without_entry_dwell():
     assert "evaluate_paper_resting_gtc" in ats_src
     assert "paper_hws_resting_fill" in ats_src
     assert "paper_touch" not in ats_src
+    enq_start = ats_src.index("def _hws_enqueue_paper_resting_fill")
+    enq_end = ats_src.index("def check_auto_stop_conditions_high_water_scalp")
+    assert '"close_fee": 0.0' in ats_src[enq_start:enq_end]
     hws_start = ats_src.index("def check_auto_stop_conditions_high_water_scalp")
     hws_end = ats_src.index("def check_auto_stop_conditions_expiration_scalp")
     hws_src = ats_src[hws_start:hws_end]
@@ -316,6 +370,8 @@ def test_hws_modal_full_cycle_time_window_hides_stop_extras():
     save_idx = js.index("payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk)")
     save_hws = js[save_idx : js.index("} else {\n          // HOURLY HTC", save_idx)]
     assert "limit_close_price" in save_hws
+    assert "entry_verification_period_enabled" in save_hws
+    assert "entry_verification_period_seconds" in save_hws
     assert "stop_verification_period_enabled" in save_hws
     assert "stop_verification_period_seconds" in save_hws
     assert "current_probability" not in save_hws
@@ -494,6 +550,7 @@ def test_paper_resting_gtc_walk_at_and_through_limit():
     # VWAP of NO buys: 80 @ 0.01 + 20 @ 0.005 = 0.009; owned sell = 0.991
     assert abs(first["opp_vwap"] - 0.009) < 1e-6
     assert abs(first["owned_sell_vwap"] - 0.991) < 1e-6
+    assert first["close_fee"] == 0.0
 
     same = simulate_paper_resting_gtc(yes, no, "yes", 0.99, 2400.0, 100.0)
     assert same["fill_qty"] == 0.0
@@ -605,6 +662,9 @@ def test_paper_hws_partial_fill_does_not_finalize(monkeypatch):
     assert "close_filled_count" in sql
     assert "status = 'closing'" not in sql
     assert "status = 'closed'" not in sql
+    # Payload close_fee is ignored; paper GTC is $0 maker. Open fee 1.50 stays.
+    assert any(params is not None and 1.5 in params for _, params in captured)
+    assert not any(params is not None and 1.6 in params for _, params in captured)
 
 
 def test_paper_hws_full_remaining_finalizes(monkeypatch):
@@ -682,6 +742,9 @@ def test_paper_hws_full_remaining_finalizes(monkeypatch):
         params is not None and "limit_close" in str(params)
         for _, params in captured
     )
+    # Open fee 0.50 unchanged (no taker close fee on paper GTC).
+    assert any(params is not None and 0.5 in params for _, params in captured)
+    assert not any(params is not None and 0.55 in params for _, params in captured)
 
 
 def test_create_monitor_insert_placeholders_match_columns():

@@ -2244,10 +2244,10 @@
           }
         } else if (isExpirationScalpPopulate) {
           // Expiration Scalp / High Water Scalp: entry verification from monitor row only
-          if (data.verification_period_enabled != null) {
-            setChk('expirationScalpVerificationEnabled', !!data.verification_period_enabled);
+          if (data.entry_verification_period_enabled != null) {
+            setChk('expirationScalpVerificationEnabled', !!data.entry_verification_period_enabled);
           }
-          const esVerifySec = uatFiniteOrNull(data.verification_period_seconds);
+          const esVerifySec = uatFiniteOrNull(data.entry_verification_period_seconds);
           if (esVerifySec != null) {
             setVal('expirationScalpVerificationSlider', Math.min(15, Math.max(0, Math.trunc(esVerifySec))));
           }
@@ -2331,8 +2331,8 @@
         if (data.momentum_spike_enabled != null) setChk('momentumSpikeEnabled', !!data.momentum_spike_enabled);
         const momSpikeTh = uatFiniteOrNull(data.momentum_spike_threshold);
         if (momSpikeTh != null) setVal('momentumSpikeThresholdSlider', momSpikeTh);
-        if (data.verification_period_enabled != null) setChk('verificationPeriodEnabled', !!data.verification_period_enabled);
-        const verifySec = uatFiniteOrNull(data.verification_period_seconds);
+        if (data.stop_verification_period_enabled != null) setChk('verificationPeriodEnabled', !!data.stop_verification_period_enabled);
+        const verifySec = uatFiniteOrNull(data.stop_verification_period_seconds);
         if (verifySec != null) setVal('verificationPeriodSlider', verifySec);
         if (data.performance_based_allocation != null) setChk('performanceBasedAllocation', !!data.performance_based_allocation);
         }
@@ -2730,8 +2730,8 @@
           payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60',10);
           payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
           payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10);
-          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
-          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
+          payload.stop_verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.stop_verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
           // Performance Based Allocation (same as Hourly HTC)
           payload.performance_based_allocation = document.getElementById('performanceBasedAllocation').checked;
         } else if (isRisingDevil) {
@@ -2751,8 +2751,8 @@
           payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60',10);
           payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
           payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10);
-          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
-          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
+          payload.stop_verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.stop_verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
           payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
           payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value,10);
           payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value,10);
@@ -2789,10 +2789,10 @@
           }
           const esVerifyCb = document.getElementById('expirationScalpVerificationEnabled');
           const esVerifySl = document.getElementById('expirationScalpVerificationSlider');
-          payload.verification_period_enabled = esVerifyCb ? !!esVerifyCb.checked : true;
+          payload.entry_verification_period_enabled = esVerifyCb ? !!esVerifyCb.checked : true;
           let esSec = esVerifySl ? parseInt(esVerifySl.value, 10) : 3;
           if (isNaN(esSec)) esSec = 3;
-          payload.verification_period_seconds = Math.min(15, Math.max(0, esSec));
+          payload.entry_verification_period_seconds = Math.min(15, Math.max(0, esSec));
           if (isHighWaterScalp) {
             const lcpEl = document.getElementById('highWaterScalpLimitCloseSlider');
             if (lcpEl) {
@@ -2823,8 +2823,8 @@
           payload.min_ttc_seconds = parseInt(document.getElementById('autoStopMinTTCInput') ? document.getElementById('autoStopMinTTCInput').value : '60',10);
           payload.momentum_spike_enabled = document.getElementById('momentumSpikeEnabled').checked;
           payload.momentum_spike_threshold = parseInt(document.getElementById('momentumSpikeThresholdSlider').value,10);
-          payload.verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
-          payload.verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
+          payload.stop_verification_period_enabled = document.getElementById('verificationPeriodEnabled').checked;
+          payload.stop_verification_period_seconds = parseInt(document.getElementById('verificationPeriodSlider').value,10);
           payload.spike_alert_enabled = document.getElementById('spikeAlertEnabled').checked;
           payload.spike_alert_momentum_threshold = parseInt(document.getElementById('spikeAlertMomentumSlider').value,10);
           payload.spike_alert_cooldown_threshold = parseInt(document.getElementById('spikeAlertCooldownSlider').value,10);

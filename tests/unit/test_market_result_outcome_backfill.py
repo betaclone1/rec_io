@@ -19,7 +19,7 @@ def test_finalize_closed_wlc_skips_without_market_result():
     import backend.trade_manager as tm
 
     cursor = MagicMock()
-    cursor.fetchone.return_value = ("N", "L", "closed", None)
+    cursor.fetchone.return_value = ("N", "L", "closed", None, "manual", 0)
 
     tm._finalize_closed_trade_win_loss_confirmed(cursor, 26406)
 
@@ -31,7 +31,7 @@ def test_finalize_closed_wlc_uses_venue_result():
     import backend.trade_manager as tm
 
     cursor = MagicMock()
-    cursor.fetchone.return_value = ("N", "L", "closed", "no")
+    cursor.fetchone.return_value = ("N", "L", "closed", "no", "manual", 0)
 
     tm._finalize_closed_trade_win_loss_confirmed(cursor, 26406)
 
@@ -39,6 +39,17 @@ def test_finalize_closed_wlc_uses_venue_result():
     update_sql, update_args = cursor.execute.call_args_list[1][0]
     assert "win_loss_confirmed" in update_sql
     assert update_args == (False, 26406)
+
+
+def test_finalize_closed_wlc_skips_mixed_hws_expiry():
+    import backend.trade_manager as tm
+
+    cursor = MagicMock()
+    cursor.fetchone.return_value = ("yes", "W", "closed", "yes", "expired", 400)
+
+    tm._finalize_closed_trade_win_loss_confirmed(cursor, 7)
+
+    cursor.execute.assert_called_once()
 
 
 @patch("backend.trade_manager.get_postgresql_connection")
