@@ -306,11 +306,15 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
                 f"{self.pipeline_health_market}/{self.symbol.upper()}"
             )
         market_data = self._market_data_from_cache_snapshot(mkt_data)
-        price = sym_data.get("price") or sym_data.get("one_minute_avg")
+        spot = sym_data.get("price")
+        avg_60s = sym_data.get("one_minute_avg")
+        price = spot or avg_60s
         if price is None:
             raise ValueError(f"live_state symbol cache has no price for {self.symbol.upper()}")
+        avg_60s_price = float(avg_60s) if avg_60s is not None else None
         return {
             "current_price": float(price),
+            "avg_60s_price": avg_60s_price,
             "momentum_score": float(sym_data.get("momentum") or 0.0),
             "momentum_percentile": float(sym_data.get("momentum_percentile") or 0.0),
             "volatility": sym_data.get("volatility"),
@@ -333,6 +337,7 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
     ):
         return {
             "current_price": current_price,
+            "avg_60s_price": None,
             "momentum_score": momentum_score,
             "momentum_percentile": momentum_percentile,
             "volatility": volatility,

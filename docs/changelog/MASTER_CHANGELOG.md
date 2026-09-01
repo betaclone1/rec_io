@@ -17,14 +17,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-01`**. Code: `git revert` this commit + `scripts/MASTER_RESTART.sh`. Schema: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260831_1430_monitor_weekend_adjustment`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration:
+- [x] Apply migration:
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260831_1430_monitor_weekend_adjustment`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; monitor settings save `weekend_adjustment`; MM weekend scheduler running
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.3`
+- [x] Verify: health 3000/8001; monitor settings save `weekend_adjustment`; MM weekend scheduler running
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.3`
 
 ---
 

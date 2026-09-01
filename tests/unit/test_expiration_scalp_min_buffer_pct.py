@@ -35,17 +35,41 @@ def test_min_buffer_pct_gate_trade_47329_style():
         == "buffer_pct_below_min"
     )
     assert (
-        expiration_scalp_min_buffer_pct_gate(buffer_pct=0.0055, min_buffer_pct=0.0055)
+        expiration_scalp_min_buffer_pct_gate(
+            buffer_pct=0.0055,
+            avg_60s_buffer_pct=0.0055,
+            min_buffer_pct=0.0055,
+        )
         is None
     )
     assert (
-        expiration_scalp_min_buffer_pct_gate(buffer_pct=0.01, min_buffer_pct=0.0055)
+        expiration_scalp_min_buffer_pct_gate(
+            buffer_pct=0.01,
+            avg_60s_buffer_pct=0.01,
+            min_buffer_pct=0.0055,
+        )
         is None
     )
     assert expiration_scalp_min_buffer_pct_gate(buffer_pct=0.001, min_buffer_pct=0) is None
     assert (
         expiration_scalp_min_buffer_pct_gate(buffer_pct=None, min_buffer_pct=0.0055)
         == "missing_buffer_pct"
+    )
+    assert (
+        expiration_scalp_min_buffer_pct_gate(
+            buffer_pct=0.01,
+            avg_60s_buffer_pct=0.004,
+            min_buffer_pct=0.0055,
+        )
+        == "60s_avg_buffer_pct_below_min"
+    )
+    assert (
+        expiration_scalp_min_buffer_pct_gate(
+            buffer_pct=0.01,
+            avg_60s_buffer_pct=None,
+            min_buffer_pct=0.0055,
+        )
+        == "missing_60s_avg_buffer_pct"
     )
 
 
@@ -58,9 +82,22 @@ def test_evaluate_expiration_scalp_entry_min_buffer_pct():
         ask_dollars=0.989,
         probability=55.35,
         buffer_pct=0.0046,
+        avg_60s_buffer_pct=0.0060,
     )
     assert blocked is None
     assert reason == "buffer_pct_below_min"
+
+    blocked_60s, reason_60s = evaluate_expiration_scalp_entry(
+        settings,
+        ttc_seconds=30,
+        side="no",
+        ask_dollars=0.989,
+        probability=55.35,
+        buffer_pct=0.0060,
+        avg_60s_buffer_pct=0.0046,
+    )
+    assert blocked_60s is None
+    assert reason_60s == "60s_avg_buffer_pct_below_min"
 
     passed, reason_ok = evaluate_expiration_scalp_entry(
         settings,
@@ -69,6 +106,7 @@ def test_evaluate_expiration_scalp_entry_min_buffer_pct():
         ask_dollars=0.989,
         probability=55.35,
         buffer_pct=0.0060,
+        avg_60s_buffer_pct=0.0060,
     )
     assert reason_ok is None
     assert passed is not None
@@ -82,6 +120,7 @@ def test_evaluate_expiration_scalp_entry_min_buffer_pct():
         ask_dollars=0.95,
         probability=90.0,
         buffer_pct=None,
+        avg_60s_buffer_pct=None,
     )
     assert reason_off is None
     assert off is not None

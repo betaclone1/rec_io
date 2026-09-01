@@ -4770,8 +4770,16 @@ def check_auto_entry_conditions_expiration_scalp():
                         buffer_pct_f = float(raw_buf) if raw_buf is not None else None
                     except (TypeError, ValueError):
                         buffer_pct_f = None
+                    raw_avg_buf = strike.get("60s_avg_buffer_pct")
+                    try:
+                        avg_60s_buffer_pct_f = (
+                            float(raw_avg_buf) if raw_avg_buf is not None else None
+                        )
+                    except (TypeError, ValueError):
+                        avg_60s_buffer_pct_f = None
                     buf_reject = expiration_scalp_min_buffer_pct_gate(
                         buffer_pct=buffer_pct_f,
+                        avg_60s_buffer_pct=avg_60s_buffer_pct_f,
                         min_buffer_pct=min_buffer_pct,
                     )
                     if buf_reject:
@@ -4786,6 +4794,7 @@ def check_auto_entry_conditions_expiration_scalp():
                             log_tag=log_tag,
                             extra=(
                                 f"buffer_pct={buffer_pct_f} "
+                                f"60s_avg_buffer_pct={avg_60s_buffer_pct_f} "
                                 f"min_buffer_pct={min_buffer_pct}"
                             ),
                         )

@@ -267,28 +267,64 @@ def parse_min_buffer_pct(settings: Mapping[str, Any]) -> float:
     return v
 
 
+def _buffer_pct_meets_floor(
+    buffer_pct: Optional[float],
+    floor: float,
+    *,
+    missing_reason: str,
+    bad_reason: str,
+    below_reason: str,
+) -> Optional[str]:
+    if buffer_pct is None:
+        return missing_reason
+    try:
+        bp = float(buffer_pct)
+    except (TypeError, ValueError):
+        return bad_reason
+    if bp < floor:
+        return below_reason
+    return None
+
+
 def expiration_scalp_min_buffer_pct_gate(
     *,
     buffer_pct: Optional[float],
     min_buffer_pct: float,
+    avg_60s_buffer_pct: Optional[float] = None,
 ) -> Optional[str]:
     """
-    Reject when ladder ``buffer_pct`` is below the configured floor.
+    Reject when ladder spot or 60s-avg buffer_pct is below the configured floor.
 
-    ``min_buffer_pct <= 0`` disables. Same units as hot-path ``buffer_pct``
-    (percent of spot). Missing/bad buffer_pct fails closed when gate is on.
+    ``min_buffer_pct <= 0`` disables. Same units as hot-path ``buffer_pct`` /
+    ``60s_avg_buffer_pct`` (percent of reference price). Missing/bad values fail
+    closed when gate is on. Both legs must pass when enabled.
     """
     floor = float(min_buffer_pct or 0.0)
     if floor <= 0:
         return None
-    if buffer_pct is None:
-        return "missing_buffer_pct"
-    try:
-        bp = float(buffer_pct)
-    except (TypeError, ValueError):
-        return "bad_buffer_pct"
-    if bp < floor:
-        return "buffer_pct_below_min"
+    for bp, missing, bad, below in (
+        (
+            buffer_pct,
+            "missing_buffer_pct",
+            "bad_buffer_pct",
+            "buffer_pct_below_min",
+        ),
+        (
+            avg_60s_buffer_pct,
+            "missing_60s_avg_buffer_pct",
+            "bad_60s_avg_buffer_pct",
+            "60s_avg_buffer_pct_below_min",
+        ),
+    ):
+        reject = _buffer_pct_meets_floor(
+            bp,
+            floor,
+            missing_reason=missing,
+            bad_reason=bad,
+            below_reason=below,
+        )
+        if reject:
+            return reject
     return None
 
 
@@ -301,6 +337,7 @@ def evaluate_expiration_scalp_entry(
     probability: Optional[float],
     movement_percentile: Optional[float] = None,
     buffer_pct: Optional[float] = None,
+    avg_60s_buffer_pct: Optional[float] = None,
     high_water_scalp: bool = False,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """
@@ -311,7 +348,8 @@ def evaluate_expiration_scalp_entry(
     price target for High Water Scalp (limit IOC at that price).
 
     Prob+movement joint gate: see ``classify_expiration_scalp_prob_movement``.
-    ``min_buffer_pct`` (when > 0) requires ladder ``buffer_pct`` ≥ floor.
+    ``min_buffer_pct`` (when > 0) requires ladder ``buffer_pct`` and
+    ``60s_avg_buffer_pct`` ≥ floor.
     Passed dict may include ``half_size`` True for out-of-prob / in-movement rescues.
     """
     try:
@@ -370,6 +408,7 @@ def evaluate_expiration_scalp_entry(
     min_buf = parse_min_buffer_pct(settings)
     buf_reject = expiration_scalp_min_buffer_pct_gate(
         buffer_pct=buffer_pct,
+        avg_60s_buffer_pct=avg_60s_buffer_pct,
         min_buffer_pct=min_buf,
     )
     if buf_reject:

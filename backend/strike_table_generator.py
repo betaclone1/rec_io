@@ -130,6 +130,26 @@ def round_price_buffer(val: float) -> float:
     return round(float(val), PRICE_BUFFER_DECIMAL_PLACES)
 
 
+def strike_buffer_fields(
+    reference_price: float,
+    strike: float,
+    symbol: str,
+) -> tuple[float, Optional[float]]:
+    """Absolute buffer and buffer_pct from reference price to strike (hot-path units)."""
+    raw_buf = abs(float(reference_price) - float(strike))
+    buffer = (
+        round_price_buffer(raw_buf)
+        if uses_high_precision_price(symbol)
+        else raw_buf
+    )
+    buffer_pct = (
+        (float(buffer) / float(reference_price)) * 100 if reference_price else None
+    )
+    if buffer_pct is not None and uses_high_precision_price(symbol):
+        buffer_pct = round(float(buffer_pct), BUFFER_PCT_DECIMAL_PLACES_ALT)
+    return buffer, buffer_pct
+
+
 def strikes_equivalent(symbol: str, a: float, b: float) -> bool:
     """Match Kalshi floor strike to row strike; alt coins use 5dp equality."""
     if uses_high_precision_price(symbol):
@@ -1104,7 +1124,7 @@ class StrikeTableGenerator:
             cursor = conn.cursor()
             
             cursor.execute(f"""
-            SELECT price, momentum, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
+            SELECT price, one_minute_avg, momentum, momentum_percentile, volatility, volatility_percentile, movement, movement_percentile
             FROM live_data.live_price_log_1s_{self.symbol}
             ORDER BY timestamp DESC
             LIMIT 1
@@ -1115,12 +1135,13 @@ class StrikeTableGenerator:
                 raise ValueError(f"No price data found in live_data.live_price_log_1s_{self.symbol}")
             
             current_price = float(result[0])
-            momentum_score = float(result[1]) if result[1] is not None else 0.0
-            momentum_percentile = float(result[2]) if result[2] is not None else 0.0
-            volatility = float(result[3]) if result[3] is not None else None
-            volatility_percentile = float(result[4]) if result[4] is not None else None
-            movement = float(result[5]) if result[5] is not None else None
-            movement_percentile = float(result[6]) if result[6] is not None else None
+            avg_60s_price = float(result[1]) if result[1] is not None else None
+            momentum_score = float(result[2]) if result[2] is not None else 0.0
+            momentum_percentile = float(result[3]) if result[3] is not None else 0.0
+            volatility = float(result[4]) if result[4] is not None else None
+            volatility_percentile = float(result[5]) if result[5] is not None else None
+            movement = float(result[6]) if result[6] is not None else None
+            movement_percentile = float(result[7]) if result[7] is not None else None
             
             conn.close()
             
@@ -1129,6 +1150,7 @@ class StrikeTableGenerator:
             
             return {
                 "current_price": current_price,
+                "avg_60s_price": avg_60s_price,
                 "momentum_score": momentum_score,
                 "momentum_percentile": momentum_percentile,
                 "volatility": volatility,
@@ -1489,6 +1511,9 @@ class StrikeTableGenerator:
             logger.debug("Getting current market data")
             market_info = self.get_current_market_data()
             current_price = market_info["current_price"]
+            avg_60s_price = market_info.get("avg_60s_price")
+            if avg_60s_price is not None:
+                avg_60s_price = float(avg_60s_price)
             momentum_score = market_info["momentum_score"]
             momentum_percentile = market_info["momentum_percentile"]
             volatility = market_info.get("volatility")
@@ -1669,19 +1694,15 @@ class StrikeTableGenerator:
                     ob_row = ob_by_strike.get(float(strike))
                     if not ob_row:
                         continue
-                    # Calculate buffer and probability
-                    raw_buf = abs(float(current_price) - float(strike))
-                    buffer = (
-                        round_price_buffer(raw_buf)
-                        if uses_high_precision_price(self.symbol)
-                        else raw_buf
+                    buffer, buffer_pct = strike_buffer_fields(
+                        current_price, strike, self.symbol
                     )
-                    buffer_pct = (float(buffer) / float(current_price)) * 100 if current_price else None
-                    if (
-                        buffer_pct is not None
-                        and uses_high_precision_price(self.symbol)
-                    ):
-                        buffer_pct = round(float(buffer_pct), BUFFER_PCT_DECIMAL_PLACES_ALT)
+                    avg_60s_buffer = None
+                    avg_60s_buffer_pct = None
+                    if avg_60s_price is not None:
+                        avg_60s_buffer, avg_60s_buffer_pct = strike_buffer_fields(
+                            avg_60s_price, strike, self.symbol
+                        )
                     
                     # Probability lookups: hourly uses both TTCs; 15m uses only ttc_15m (same as probability_15m).
                     pos_prob, neg_prob = self.calculator.get_probability(
@@ -1866,6 +1887,12 @@ class StrikeTableGenerator:
                                 "strike": _strike_out,
                                 "buffer": float(buffer),
                                 "buffer_pct": float(buffer_pct) if buffer_pct is not None else None,
+                                "60s_avg_buffer": float(avg_60s_buffer)
+                                if avg_60s_buffer is not None
+                                else None,
+                                "60s_avg_buffer_pct": float(avg_60s_buffer_pct)
+                                if avg_60s_buffer_pct is not None
+                                else None,
                                 "probability": float(prob_out) if prob_out is not None else float(probability),
                                 "fair_price": fair_price_store,
                                 "yes_prob_hourly": float(yes_prob_hourly_store)
@@ -2032,6 +2059,9 @@ class StrikeTableGenerator:
                         ladder_json = {
                             "symbol": self.symbol.upper(),
                             "current_price": float(current_price),
+                            "one_minute_avg": float(avg_60s_price)
+                            if avg_60s_price is not None
+                            else None,
                             "ttc": ttc_out,
                             "ttc_15m": int(ttc_15m_seconds)
                             if ttc_15m_seconds is not None
