@@ -1983,6 +1983,16 @@
               if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
             }
           }
+          {
+            const waEl = document.getElementById('uatWeekendAdjustment');
+            const wa = data.weekend_adjustment;
+            const validWa = (
+              wa === 'none' || wa === 'paper_only' ||
+              wa === 'reduce_position_50' || wa === 'reduce_position_25' ||
+              wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
+            ) ? wa : 'none';
+            if (waEl) waEl.value = validWa;
+          }
 
           const regimeCb = document.getElementById('regimeMonitorEnabled');
           const regimeSel = document.getElementById('regimeWindowSelect');
@@ -2659,6 +2669,15 @@
             payload.order_type = 'limit';
             payload.time_in_force = 'immediate_or_cancel';
           }
+        }
+        {
+          const waEl = document.getElementById('uatWeekendAdjustment');
+          const wa = waEl && waEl.value;
+          payload.weekend_adjustment = (
+            wa === 'none' || wa === 'paper_only' ||
+            wa === 'reduce_position_50' || wa === 'reduce_position_25' ||
+            wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
+          ) ? wa : 'none';
         }
         
         if (isMomentumScalp) {

@@ -8811,7 +8811,7 @@
           </div>
         </div>
       </div>
-      <div class="uat-kalshi-order-row" style="display:flex; flex-wrap:wrap; gap:12px 16px; align-items:flex-end; margin-bottom:16px;">
+      <div class="uat-kalshi-order-row" style="display:flex; flex-wrap:wrap; gap:12px 16px; align-items:flex-end; margin-bottom:8px;">
         <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
           <label for="m_uatKalshiOrderType" style="font-size:12px; color:#9ca3af; font-weight:600;">Order Type</label>
           <select id="m_uatKalshiOrderType" aria-label="Order type" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
@@ -8827,6 +8827,18 @@
             <option value="good_till_canceled">Good Till Canceled</option>
           </select>
         </div>
+      </div>
+      <div class="uat-weekend-adjustment-row" style="display:flex; flex-direction:column; gap:4px; margin-bottom:16px; max-width:420px;">
+        <label for="m_uatWeekendAdjustment" style="font-size:12px; color:#9ca3af; font-weight:600;">Weekend Adjustment</label>
+        <select id="m_uatWeekendAdjustment" aria-label="Weekend adjustment" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+          <option value="none">None</option>
+          <option value="paper_only">Paper only</option>
+          <option value="reduce_position_50">Reduce position 50%</option>
+          <option value="reduce_position_25">Reduce position 25%</option>
+          <option value="probability_adjustment_10">Raise min probability +10</option>
+          <option value="probability_adjustment_25">Raise min probability +25</option>
+        </select>
+        <span style="font-size:11px; color:#9ca3af; line-height:1.35;">Applies Sat 00:00:30 ET; reverts Mon 00:00:20 ET. Weekday originals restored from snapshot.</span>
       </div>
       <div class="uat-modal-body">
 
@@ -11083,6 +11095,16 @@
             if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
           }
         }
+        {
+          const waEl = document.getElementById('m_uatWeekendAdjustment');
+          const wa = data.weekend_adjustment;
+          const validWa = (
+            wa === 'none' || wa === 'paper_only' ||
+            wa === 'reduce_position_50' || wa === 'reduce_position_25' ||
+            wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
+          ) ? wa : 'none';
+          if (waEl) waEl.value = validWa;
+        }
 
 
         function uatMobileFiniteOrNull(v) {
@@ -11491,6 +11513,15 @@
                 payload.order_type = 'limit';
                 payload.time_in_force = 'immediate_or_cancel';
               }
+            }
+            {
+              const waEl = document.getElementById('m_uatWeekendAdjustment');
+              const wa = waEl && waEl.value;
+              payload.weekend_adjustment = (
+                wa === 'none' || wa === 'paper_only' ||
+                wa === 'reduce_position_50' || wa === 'reduce_position_25' ||
+                wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
+              ) ? wa : 'none';
             }
             
             // Determine strategy for save (reuse variables from outer scope, but need local copies for Breakout/Contain)

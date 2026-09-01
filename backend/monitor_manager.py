@@ -200,6 +200,11 @@ class MonitorManager:
         self.last_cleanup_date = None
         self.cleanup_thread = None
         self.cleanup_running = False
+
+        # Weekend adjustment scheduler (Sat apply / Mon revert + catch-up)
+        self.weekend_adjustment_thread = None
+        self.weekend_adjustment_running = False
+        self._weekend_adjustment_last_reconcile_key = None
         
     def get_database_connection(self):
         """
@@ -2190,6 +2195,136 @@ environment={env_vars}
             self.cleanup_thread.start()
             _logger.debug("Daily cleanup scheduler started")
 
+    def start_weekend_adjustment_scheduler(self):
+        """Start ET weekend apply/revert reconciler (60s poll + startup catch-up)."""
+        if not self.weekend_adjustment_running:
+            self.weekend_adjustment_running = True
+            self.weekend_adjustment_thread = threading.Thread(
+                target=self._weekend_adjustment_loop, daemon=True, name="weekend-adjustment"
+            )
+            self.weekend_adjustment_thread.start()
+            _logger.debug("Weekend adjustment scheduler started")
+
+    def reconcile_weekend_adjustments_now(self) -> Dict[str, Any]:
+        """Apply or revert weekend_adjustment for this tenant's monitor_list (catch-up safe)."""
+        from backend.core.weekend_adjustment import reconcile_weekend_adjustments
+
+        conn = None
+        try:
+            un = _mm_worker_slot()
+            ml_sql = monitor_list_fqn(un)
+            now = now_est()
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                result = reconcile_weekend_adjustments(cursor, ml_sql, now)
+            conn.commit()
+
+            pos_ids = result.get("position_recalc_ids") or []
+            if pos_ids:
+                recalc = self.recalculate_monitor_total_positions()
+                result["position_recalc"] = recalc
+
+            if result.get("applied") or result.get("reverted"):
+                self._notify_frontend_monitor_list_updated(
+                    f"Weekend adjustment reconcile applied={result.get('applied')} "
+                    f"reverted={result.get('reverted')}"
+                )
+                self.log_event(
+                    "WEEKEND_ADJUSTMENT",
+                    f"reconcile active={result.get('active_period')} "
+                    f"applied={result.get('applied')} reverted={result.get('reverted')} "
+                    f"skipped={result.get('skipped')} examined={result.get('examined')}",
+                )
+            return result
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            _logger.error("Weekend adjustment reconcile failed: %s", e)
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def apply_weekend_adjustment_for_monitor_if_needed(self, monitor_id: int) -> Dict[str, Any]:
+        """After create: apply weekend mode once if currently in the ET weekend window."""
+        from backend.core.weekend_adjustment import (
+            apply_weekend_adjustment_to_row,
+            is_weekend_adjustment_active_period,
+        )
+
+        now = now_est()
+        if not is_weekend_adjustment_active_period(now):
+            return {"status": "ok", "applied": False, "reason": "not_weekend_period"}
+
+        conn = None
+        try:
+            un = _mm_worker_slot()
+            ml_sql = monitor_list_fqn(un)
+            conn = self.get_database_connection()
+            with conn.cursor() as cursor:
+                result = apply_weekend_adjustment_to_row(
+                    cursor, ml_sql, int(monitor_id), now_et=now
+                )
+            conn.commit()
+            if result.get("needs_position_recalc"):
+                self.recalculate_monitor_total_positions()
+            if result.get("applied"):
+                self._notify_frontend_monitor_list_updated(
+                    f"Weekend adjustment applied on create monitor_id={monitor_id}"
+                )
+                self.log_event(
+                    "WEEKEND_ADJUSTMENT",
+                    f"create-apply monitor_id={monitor_id} mode={result.get('mode')}",
+                )
+            return result
+        except Exception as e:
+            if conn:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+            _logger.error(
+                "Weekend adjustment create-apply failed monitor_id=%s: %s", monitor_id, e
+            )
+            return {"status": "error", "message": str(e)}
+        finally:
+            if conn:
+                conn.close()
+
+    def _weekend_adjustment_loop(self):
+        """Poll every 60s; reconcile when entering Sat apply / Mon revert windows or catch-up."""
+        # Immediate catch-up on start (process downtime / missed clocks).
+        try:
+            self.reconcile_weekend_adjustments_now()
+        except Exception as e:
+            _logger.error("Weekend adjustment startup reconcile error: %s", e)
+
+        while self.weekend_adjustment_running:
+            try:
+                now = now_est()
+                from backend.core.weekend_adjustment import is_weekend_adjustment_active_period
+
+                active = is_weekend_adjustment_active_period(now)
+                key = f"{today_est().isoformat()}:{'on' if active else 'off'}"
+                # Always reconcile (idempotent); catch-up for new monitors / missed clocks.
+                result = self.reconcile_weekend_adjustments_now()
+                if key != self._weekend_adjustment_last_reconcile_key:
+                    self._weekend_adjustment_last_reconcile_key = key
+                    if isinstance(result, dict) and result.get("status") == "ok":
+                        _logger.debug(
+                            "Weekend adjustment period key=%s applied=%s reverted=%s",
+                            key,
+                            result.get("applied"),
+                            result.get("reverted"),
+                        )
+                time.sleep(60)
+            except Exception as e:
+                _logger.error("Error in weekend adjustment scheduler: %s", e)
+                time.sleep(300)
+
     def start_total_position_refresher(self, interval_seconds: int = 30):
         """Start a lightweight background loop that periodically validates/recalculates total_position.
 
@@ -3054,6 +3189,13 @@ def create_monitor():
             message = f"Monitor {monitor_name} created successfully"
         
         monitor_manager._notify_frontend_monitor_list_updated("Monitor created")
+        try:
+            monitor_manager.apply_weekend_adjustment_for_monitor_if_needed(int(monitor_id))
+        except Exception as wa_err:
+            monitor_manager.log_event(
+                "WEEKEND_ADJUSTMENT",
+                f"create-time weekend apply skipped monitor_id={monitor_id}: {wa_err}",
+            )
         return jsonify({
             "status": "ok" if spawn_ok else "partial",
             "message": message,
@@ -3358,6 +3500,9 @@ start_status_watcher()
 
 # Start the daily cleanup scheduler
 monitor_manager.start_daily_cleanup_scheduler()
+
+# Weekend adjustment: Sat 00:00:30 ET apply / Mon 00:00:20 ET revert (+ catch-up)
+monitor_manager.start_weekend_adjustment_scheduler()
 
 # Temporary safety net: periodically validate/recalculate total_position for all active monitors.
 # Long term this will be replaced by the Redis-backed position sizing pipeline.

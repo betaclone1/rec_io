@@ -63,7 +63,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                          COALESCE(symbol_wide_loss_prevention, FALSE),
                          min_slippage, min_movement, max_movement, limit_close_price,
                          min_buffer_pct, stop_verification_period_enabled,
-                         stop_verification_period_seconds
+                         stop_verification_period_seconds, weekend_adjustment
             """
                 + f"""
                 FROM {ml} WHERE id = %s
@@ -174,6 +174,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 row["stop_verification_period_enabled"] = _b(result[_sw_i + 10])
                 svs = result[_sw_i + 11]
                 row["stop_verification_period_seconds"] = int(svs) if svs is not None else None
+                row["weekend_adjustment"] = _s(result[_sw_i + 12]) or "none"
                 st_start_iso = (
                     timestamptz_wire_iso_et(st_start)
                     if hasattr(st_start, "isoformat")

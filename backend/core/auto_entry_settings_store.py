@@ -435,6 +435,15 @@ def apply_auto_entry_settings(
         update_fields.append("order_type = %s")
         update_values.append(ot)
 
+    if "weekend_adjustment" in data:
+        from backend.core.weekend_adjustment import normalize_weekend_adjustment
+
+        wa = normalize_weekend_adjustment(data["weekend_adjustment"])
+        if wa is None:
+            return {"status": "error", "message": "invalid_weekend_adjustment"}
+        update_fields.append("weekend_adjustment = %s")
+        update_values.append(wa)
+
     flip_cur = None
     if has_flip_cols and any(
         k in data
@@ -530,7 +539,7 @@ def apply_auto_entry_settings(
                regime_monitor_enabled, regime_window, stop_loss_price,
                time_in_force, order_type, symbol_wide_loss_prevention,
                limit_close_price, stop_verification_period_enabled,
-               stop_verification_period_seconds
+               stop_verification_period_seconds, weekend_adjustment
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -577,12 +586,13 @@ def apply_auto_entry_settings(
         "limit_close_price": float(updated_result[27]) if updated_result[27] is not None else 0.0,
         "stop_verification_period_enabled": bool(updated_result[28]) if updated_result[28] is not None else False,
         "stop_verification_period_seconds": int(updated_result[29]) if updated_result[29] is not None else None,
+        "weekend_adjustment": str(updated_result[30]) if updated_result[30] is not None else "none",
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[30]) if updated_result[30] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[31]) if updated_result[31] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[32]) if updated_result[32] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[33]) if updated_result[33] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[31]) if updated_result[31] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[32]) if updated_result[32] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[33]) if updated_result[33] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[34]) if updated_result[34] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None

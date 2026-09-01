@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-01 — Release v3.12.3: Weekend monitor adjustment
+
+**Summary**
+- **Release: v3.12.3**
+- **Weekend adjustment:** Per-monitor `weekend_adjustment` setting (`none`, `paper_only`, `reduce_position_50`, `reduce_position_25`, `probability_adjustment_10`, `probability_adjustment_25`) with JSON snapshot column for weekday restore. `monitor_manager` applies Sat 00:00:30 ET and reverts Mon 00:00:20 ET (plus startup catch-up). Desktop + mobile settings dropdown below Order Type/TIF.
+- **DB:** Migration **`20260831_1430_monitor_weekend_adjustment`** adds `weekend_adjustment` + `weekend_adjustment_snapshot` on all tenant `monitor_list_*`.
+- **Docs / tests:** `docs/MASTER_DB_SCHEMA_REFERENCE.md`; `tests/unit/test_weekend_adjustment.py`.
+- **Plans:** Weekend adjustment feature (`.cursor/plans/weekend_adjustment_feature_a3c65f00.plan.md`).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-01`**. Code: `git revert` this commit + `scripts/MASTER_RESTART.sh`. Schema: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260831_1430_monitor_weekend_adjustment`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260831_1430_monitor_weekend_adjustment`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; monitor settings save `weekend_adjustment`; MM weekend scheduler running
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.3`
+
+---
+
 ## 2026-08-31 — Release v3.12.2: Live HWS mixed close + entry/stop verification columns
 
 **Summary**
