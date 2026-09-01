@@ -1820,8 +1820,147 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    let uatDupePairingWired = false;
+
+    function uatDupePairingMonitorNumber(monitor) {
+      if (!monitor) return null;
+      const candidates = [monitor.id, monitor.name, monitor.num];
+      for (let i = 0; i < candidates.length; i += 1) {
+        const raw = candidates[i];
+        if (raw == null || raw === '') continue;
+        const s = String(raw).trim();
+        const monMatch = /^mon_\d+_(\d+)$/i.exec(s);
+        if (monMatch) return parseInt(monMatch[1], 10);
+        if (/^\d+$/.test(s)) return parseInt(s, 10);
+      }
+      return null;
+    }
+
+    function uatFormatDupePairingMonitorLabel(monitor) {
+      const idPart = uatDupePairingMonitorNumber(monitor);
+      const sym = monitor && (monitor.symbol || '').trim();
+      const strat = monitor && (monitor.strategy || '').trim();
+      if (idPart != null && sym && strat) return String(idPart) + ' - ' + sym + ' ' + strat;
+      if (idPart != null) return String(idPart);
+      return (monitor && monitor.name) || '?';
+    }
+
+    function uatUpdateDupePairingButtonText() {
+      const btn = document.getElementById('uatDupePairingBtn');
+      const host = document.getElementById('uatDupePairingCheckboxes');
+      if (!btn || !host) return;
+      const boxes = host.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]');
+      const checked = Array.from(boxes).filter(function (cb) { return cb.checked; });
+      if (!boxes.length) btn.textContent = 'No monitors';
+      else if (checked.length === 0) btn.textContent = 'None selected';
+      else if (checked.length === boxes.length) btn.textContent = 'All monitors';
+      else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-dupe-label') || '1 selected';
+      else btn.textContent = String(checked.length) + ' selected';
+    }
+
+    async function uatLoadDupePairingMonitors(currentApiId, selectedIds) {
+      const host = document.getElementById('uatDupePairingCheckboxes');
+      if (!host) return;
+      const selSet = new Set(
+        (selectedIds || [])
+          .map(function (x) { return parseInt(x, 10); })
+          .filter(function (n) { return Number.isFinite(n); })
+      );
+      host.innerHTML = '';
+      try {
+        const r = await fetch('/api/monitors?t=' + Date.now());
+        const data = await r.json();
+        const monitors = Array.isArray(data) ? data : (data.monitors || []);
+        const curId = parseInt(String(currentApiId), 10);
+        monitors
+          .filter(function (m) {
+            const st = String(m.status || 'active').trim().toLowerCase();
+            return st === 'active';
+          })
+          .filter(function (m) {
+            const mid = uatDupePairingMonitorNumber(m);
+            return mid != null && mid !== curId;
+          })
+          .sort(function (a, b) {
+            return uatDupePairingMonitorNumber(a) - uatDupePairingMonitorNumber(b);
+          })
+          .forEach(function (monitor) {
+            const mid = uatDupePairingMonitorNumber(monitor);
+            if (mid == null) return;
+            const labelText = uatFormatDupePairingMonitorLabel(monitor);
+            const label = document.createElement('label');
+            label.style.cssText = 'display:flex;align-items:center;gap:5px;padding:4px 8px;font-size:12px;cursor:pointer;border-bottom:1px solid #4a5568;color:#e2e8f0;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.setAttribute('data-dupe-monitor-id', String(mid));
+            cb.setAttribute('data-dupe-label', labelText);
+            cb.checked = selSet.has(mid);
+            cb.style.cssText = 'width:14px;height:14px;';
+            cb.addEventListener('change', uatUpdateDupePairingButtonText);
+            const span = document.createElement('span');
+            span.textContent = labelText;
+            label.appendChild(cb);
+            label.appendChild(span);
+            host.appendChild(label);
+          });
+      } catch (e) {
+        console.error('uatLoadDupePairingMonitors failed', e);
+      }
+      uatUpdateDupePairingButtonText();
+    }
+
+    function uatSelectedDupePairingIds() {
+      const host = document.getElementById('uatDupePairingCheckboxes');
+      if (!host) return [];
+      return Array.from(host.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]:checked'))
+        .map(function (cb) { return parseInt(cb.getAttribute('data-dupe-monitor-id'), 10); })
+        .filter(function (n) { return Number.isFinite(n); });
+    }
+
+    function uatInitDupePairingDropdown() {
+      if (uatDupePairingWired) return;
+      const btn = document.getElementById('uatDupePairingBtn');
+      const menu = document.getElementById('uatDupePairingMenu');
+      const allLink = document.getElementById('uatDupePairingAll');
+      const noneLink = document.getElementById('uatDupePairingNone');
+      if (!btn || !menu) return;
+      uatDupePairingWired = true;
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const open = menu.style.display === 'block';
+        menu.style.display = open ? 'none' : 'block';
+        btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+      });
+      document.addEventListener('click', function (e) {
+        if (!menu || menu.style.display !== 'block') return;
+        if (btn.contains(e.target) || menu.contains(e.target)) return;
+        menu.style.display = 'none';
+        btn.setAttribute('aria-expanded', 'false');
+      });
+      if (allLink) {
+        allLink.addEventListener('click', function (e) {
+          e.preventDefault();
+          menu.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]').forEach(function (cb) {
+            cb.checked = true;
+          });
+          uatUpdateDupePairingButtonText();
+        });
+      }
+      if (noneLink) {
+        noneLink.addEventListener('click', function (e) {
+          e.preventDefault();
+          menu.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]').forEach(function (cb) {
+            cb.checked = false;
+          });
+          uatUpdateDupePairingButtonText();
+        });
+      }
+    }
+
     async function openUnifiedAutoTradeSettings(tileId){
       await ensureUnifiedAutoTradeModalMounted();
+      uatInitDupePairingDropdown();
       const apiId = normalizeMonitorIdForApi(tileId);
       const modal = document.getElementById('unifiedAutoTradeModal');
       if (!modal) {
@@ -1993,6 +2132,7 @@
             ) ? wa : 'none';
             if (waEl) waEl.value = validWa;
           }
+          void uatLoadDupePairingMonitors(apiId, data.monitor_dupe_pairing);
 
           const regimeCb = document.getElementById('regimeMonitorEnabled');
           const regimeSel = document.getElementById('regimeWindowSelect');
@@ -2679,6 +2819,7 @@
             wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
           ) ? wa : 'none';
         }
+        payload.monitor_dupe_pairing = uatSelectedDupePairingIds();
         
         if (isMomentumScalp) {
           // MOMENTUM SCALP specific fields

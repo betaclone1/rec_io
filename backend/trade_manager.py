@@ -497,6 +497,48 @@ def _fetch_monitor_state(cursor, monitor_key):
         return None
 
 
+def _apply_monitor_dupe_pairing_for_open(data: dict) -> None:
+    """Cap or block open size when paired monitors already hold the same ticker+side."""
+    mk = data.get("monitor")
+    if not mk or not _monitor_key_matches_worker(mk):
+        return
+    slot, mid = _monitor_slot_and_id(mk)
+    if not slot or not mid:
+        return
+    from backend.core.monitor_dupe_pairing import apply_monitor_dupe_pairing_position_cap
+
+    pg = get_postgresql_connection()
+    if not pg:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database_unavailable",
+        )
+    try:
+        with pg.cursor() as cursor:
+            allowed, detail = apply_monitor_dupe_pairing_position_cap(
+                data,
+                cursor=cursor,
+                monitor_list_table=_tm_monitor_list_table(),
+                trades_table=_tm_trades_table(),
+                user_slot=slot,
+                monitor_id=int(mid),
+                normalize_side_fn=_normalize_trade_side,
+                log_fn=log,
+            )
+        if detail:
+            log_event(data.get("ticket_id", "UNKNOWN"), f"MANAGER: {detail}")
+        if not allowed:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="monitor_dupe_pairing_fully_allocated",
+            )
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
 def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
     """Set ``time_in_force`` and ``order_type`` (limit|market) from monitor_list; validate."""
     mk = data.get("monitor")
@@ -7213,6 +7255,28 @@ async def add_trade(request: Request):
 
     if monitor_key_open:
         _enrich_open_trade_execution_from_monitor(data)
+        _apply_monitor_dupe_pairing_for_open(data)
+        try:
+            proj_position = int(float(data.get("position")))
+        except (TypeError, ValueError):
+            proj_position = None
+        if ticker_for_projection and proj_side and proj_position and proj_position > 0:
+            projection = _project_orderbook_entry(
+                ticker_for_projection, proj_side, proj_position
+            )
+            if projection.get("initial_proj_price") is not None:
+                data["initial_proj_price"] = projection.get("initial_proj_price")
+            if projection.get("initial_proj_fees") is not None:
+                data["initial_proj_fees"] = projection.get("initial_proj_fees")
+            log_event(
+                data.get("ticket_id", "UNKNOWN"),
+                "MANAGER: ORDERBOOK PROJECTION (post dupe pairing) "
+                f"ticker={ticker_for_projection} side={proj_side} position={proj_position} "
+                f"initial_proj_price={projection.get('initial_proj_price')} "
+                f"initial_proj_fees={projection.get('initial_proj_fees')} "
+                f"available_contracts={projection.get('available_contracts')} "
+                f"reason={projection.get('reason')}",
+            )
 
     # Early min_fill gate (paper + live): reuse projection already computed above.
     # Same delete path as executor SLIPPAGE FAILURE; skips executor / paper-open.

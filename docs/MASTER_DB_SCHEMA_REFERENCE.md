@@ -10479,6 +10479,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `order_type` | `text` | NO | market | Execution pricing policy `limit` or `market` (Kalshi request still uses limit pricing where applicable). Same migration. |
 | `weekend_adjustment` | `text` | NO | none | Weekend trading preference: `none`, `paper_only`, `reduce_position_50`, `reduce_position_25`, `probability_adjustment_10`, `probability_adjustment_25`. Applied Sat 00:00:30 ET / reverted Mon 00:00:20 ET by `monitor_manager`. Migration `20260831_1430_monitor_weekend_adjustment`. |
 | `weekend_adjustment_snapshot` | `jsonb` | YES | - | Weekday originals for fields mutated by the active weekend mode (`paper_trade` / `position_size` / `min_probability` plus `mode` / `applied_at`). NULL when not applied. Same migration. |
+| `monitor_dupe_pairing` | `integer[]` | NO | `{}` | Peer monitor ids for cross-monitor dupe pairing. TM caps new open size on same ticker+side by summed peer exposure. Migration `20260901_1030_monitor_dupe_pairing`. |
 | `simulated_trade_loss_prevention` | `boolean` | YES | false | Time-method option for including simulated trades in LP tiering. |
 | `symbol_wide_loss_prevention` | `boolean` | YES | false | When true, monitor effective LP state follows `live_data.live_symbol_status` for its symbol whenever the symbol-wide state is not `off`. |
 | `loss_prevention_duration` | `integer(32)` | YES | 4 | Time-method cooldown duration in hours. |

@@ -444,6 +444,16 @@ def apply_auto_entry_settings(
         update_fields.append("weekend_adjustment = %s")
         update_values.append(wa)
 
+    if "monitor_dupe_pairing" in data:
+        from backend.core.monitor_dupe_pairing import normalize_monitor_dupe_pairing
+
+        paired = normalize_monitor_dupe_pairing(
+            data["monitor_dupe_pairing"],
+            self_monitor_id=int(monitor_id),
+        )
+        update_fields.append("monitor_dupe_pairing = %s")
+        update_values.append(paired)
+
     flip_cur = None
     if has_flip_cols and any(
         k in data
@@ -539,7 +549,7 @@ def apply_auto_entry_settings(
                regime_monitor_enabled, regime_window, stop_loss_price,
                time_in_force, order_type, symbol_wide_loss_prevention,
                limit_close_price, stop_verification_period_enabled,
-               stop_verification_period_seconds, weekend_adjustment
+               stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -587,12 +597,13 @@ def apply_auto_entry_settings(
         "stop_verification_period_enabled": bool(updated_result[28]) if updated_result[28] is not None else False,
         "stop_verification_period_seconds": int(updated_result[29]) if updated_result[29] is not None else None,
         "weekend_adjustment": str(updated_result[30]) if updated_result[30] is not None else "none",
+        "monitor_dupe_pairing": list(updated_result[31]) if updated_result[31] else [],
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[31]) if updated_result[31] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[32]) if updated_result[32] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[33]) if updated_result[33] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[34]) if updated_result[34] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[32]) if updated_result[32] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[33]) if updated_result[33] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[34]) if updated_result[34] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[35]) if updated_result[35] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None

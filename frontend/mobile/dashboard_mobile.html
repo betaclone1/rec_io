@@ -8278,6 +8278,122 @@
       });
     }
 
+    let mobileDupePairingWired = false;
+    function mobileDupePairingMonitorNumber(monitor) {
+      if (!monitor) return null;
+      const candidates = [monitor.id, monitor.name, monitor.num];
+      for (let i = 0; i < candidates.length; i += 1) {
+        const raw = candidates[i];
+        if (raw == null || raw === '') continue;
+        const s = String(raw).trim();
+        const monMatch = /^mon_\d+_(\d+)$/i.exec(s);
+        if (monMatch) return parseInt(monMatch[1], 10);
+        if (/^\d+$/.test(s)) return parseInt(s, 10);
+      }
+      return null;
+    }
+    function mobileFormatDupePairingLabel(monitor) {
+      const idPart = mobileDupePairingMonitorNumber(monitor);
+      const sym = monitor && (monitor.symbol || '').trim();
+      const strat = monitor && (monitor.strategy || '').trim();
+      if (idPart != null && sym && strat) return String(idPart) + ' - ' + sym + ' ' + strat;
+      if (idPart != null) return String(idPart);
+      return '?';
+    }
+    function mobileUpdateDupePairingButtonText() {
+      const btn = document.getElementById('m_uatDupePairingBtn');
+      const host = document.getElementById('m_uatDupePairingCheckboxes');
+      if (!btn || !host) return;
+      const boxes = host.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]');
+      const checked = Array.from(boxes).filter(function (cb) { return cb.checked; });
+      if (!boxes.length) btn.textContent = 'No monitors';
+      else if (!checked.length) btn.textContent = 'None selected';
+      else if (checked.length === boxes.length) btn.textContent = 'All monitors';
+      else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-dupe-label') || '1 selected';
+      else btn.textContent = String(checked.length) + ' selected';
+    }
+    async function mobileLoadDupePairingMonitors(currentApiId, selectedIds) {
+      const host = document.getElementById('m_uatDupePairingCheckboxes');
+      if (!host) return;
+      const selSet = new Set((selectedIds || []).map(function (x) { return parseInt(x, 10); }).filter(function (n) { return Number.isFinite(n); }));
+      host.innerHTML = '';
+      try {
+        const r = await fetch('/api/monitors?t=' + Date.now());
+        const data = await r.json();
+        const monitors = Array.isArray(data) ? data : (data.monitors || []);
+        const curId = parseInt(String(currentApiId), 10);
+        monitors.filter(function (m) { return String(m.status || 'active').toLowerCase() === 'active'; })
+          .filter(function (m) {
+            const mid = mobileDupePairingMonitorNumber(m);
+            return mid != null && mid !== curId;
+          })
+          .sort(function (a, b) {
+            return mobileDupePairingMonitorNumber(a) - mobileDupePairingMonitorNumber(b);
+          })
+          .forEach(function (monitor) {
+            const mid = mobileDupePairingMonitorNumber(monitor);
+            if (mid == null) return;
+            const labelText = mobileFormatDupePairingLabel(monitor);
+            const label = document.createElement('label');
+            label.style.cssText = 'display:flex;align-items:center;gap:5px;padding:4px 8px;font-size:12px;cursor:pointer;border-bottom:1px solid #4a5568;color:#e2e8f0;';
+            const cb = document.createElement('input');
+            cb.type = 'checkbox';
+            cb.setAttribute('data-dupe-monitor-id', String(mid));
+            cb.setAttribute('data-dupe-label', labelText);
+            cb.checked = selSet.has(mid);
+            cb.style.cssText = 'width:14px;height:14px;';
+            cb.addEventListener('change', mobileUpdateDupePairingButtonText);
+            const span = document.createElement('span');
+            span.textContent = labelText;
+            label.appendChild(cb);
+            label.appendChild(span);
+            host.appendChild(label);
+          });
+      } catch (e) {
+        console.error('mobileLoadDupePairingMonitors failed', e);
+      }
+      mobileUpdateDupePairingButtonText();
+    }
+    function mobileSelectedDupePairingIds() {
+      const host = document.getElementById('m_uatDupePairingCheckboxes');
+      if (!host) return [];
+      return Array.from(host.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]:checked'))
+        .map(function (cb) { return parseInt(cb.getAttribute('data-dupe-monitor-id'), 10); })
+        .filter(function (n) { return Number.isFinite(n); });
+    }
+    function mobileInitDupePairingDropdown() {
+      if (mobileDupePairingWired) return;
+      const btn = document.getElementById('m_uatDupePairingBtn');
+      const menu = document.getElementById('m_uatDupePairingMenu');
+      const allLink = document.getElementById('m_uatDupePairingAll');
+      const noneLink = document.getElementById('m_uatDupePairingNone');
+      if (!btn || !menu) return;
+      mobileDupePairingWired = true;
+      btn.addEventListener('click', function (e) {
+        e.preventDefault();
+        e.stopPropagation();
+        const open = menu.style.display === 'block';
+        menu.style.display = open ? 'none' : 'block';
+        btn.setAttribute('aria-expanded', open ? 'false' : 'true');
+      });
+      document.addEventListener('click', function (e) {
+        if (!menu || menu.style.display !== 'block') return;
+        if (btn.contains(e.target) || menu.contains(e.target)) return;
+        menu.style.display = 'none';
+        btn.setAttribute('aria-expanded', 'false');
+      });
+      if (allLink) allLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        menu.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]').forEach(function (cb) { cb.checked = true; });
+        mobileUpdateDupePairingButtonText();
+      });
+      if (noneLink) noneLink.addEventListener('click', function (e) {
+        e.preventDefault();
+        menu.querySelectorAll('input[type="checkbox"][data-dupe-monitor-id]').forEach(function (cb) { cb.checked = false; });
+        mobileUpdateDupePairingButtonText();
+      });
+    }
+
     async function mobileFetchSettings(apiId){
       try{
         const r = await fetch('/api/get_auto_entry_settings?monitor_id=' + apiId);
@@ -8839,6 +8955,21 @@
           <option value="probability_adjustment_25">Raise min probability +25</option>
         </select>
         <span style="font-size:11px; color:#9ca3af; line-height:1.35;">Applies Sat 00:00:30 ET; reverts Mon 00:00:20 ET. Weekday originals restored from snapshot.</span>
+      </div>
+      <div class="uat-dupe-pairing-row" style="display:flex; flex-direction:column; gap:4px; margin-bottom:16px; max-width:420px;">
+        <label for="m_uatDupePairingBtn" style="font-size:12px; color:#9ca3af; font-weight:600;">Monitor Dupe Pairing</label>
+        <div style="position:relative;">
+          <button type="button" id="m_uatDupePairingBtn" aria-haspopup="listbox" aria-expanded="false" style="width:100%; padding:6px 8px; font-size:14px; background:#2a3441; border:1px solid #4a5568; color:#e2e8f0; border-radius:4px; text-align:left; cursor:pointer;">None selected</button>
+          <div id="m_uatDupePairingMenu" style="display:none; position:absolute; top:100%; left:0; width:100%; background:#2a3441; border:1px solid #4a5568; border-radius:4px; z-index:10001; max-height:180px; overflow-y:auto; margin-top:2px;">
+            <div style="display:flex; gap:8px; padding:6px 8px; border-bottom:1px solid #4a5568; font-size:11px;">
+              <a href="#" id="m_uatDupePairingAll" style="color:#93c5fd; text-decoration:none;">All</a>
+              <span style="color:#6b7280;">|</span>
+              <a href="#" id="m_uatDupePairingNone" style="color:#93c5fd; text-decoration:none;">None</a>
+            </div>
+            <div id="m_uatDupePairingCheckboxes"></div>
+          </div>
+        </div>
+        <span style="font-size:11px; color:#9ca3af; line-height:1.35;">Linked monitors share ticker+side exposure; new entries are capped by peer open size.</span>
       </div>
       <div class="uat-modal-body">
 
@@ -10909,6 +11040,7 @@
       async function openModal(tileId) {
         const apiId = mobileNormalizeMonitorId(tileId);
         const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+        mobileInitDupePairingDropdown();
 
         modal.style.display = 'flex';
         document.body.style.overflow = 'hidden';
@@ -11105,6 +11237,7 @@
           ) ? wa : 'none';
           if (waEl) waEl.value = validWa;
         }
+        void mobileLoadDupePairingMonitors(apiId, data.monitor_dupe_pairing);
 
 
         function uatMobileFiniteOrNull(v) {
@@ -11523,6 +11656,7 @@
                 wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
               ) ? wa : 'none';
             }
+            payload.monitor_dupe_pairing = mobileSelectedDupePairingIds();
             
             // Determine strategy for save (reuse variables from outer scope, but need local copies for Breakout/Contain)
             const saveIsMB = currentStrategy && currentStrategy.toUpperCase().includes('MOMENTUM BREAKOUT');

@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-01 — Release v3.12.4: 60s buffer gate + monitor dupe pairing
+
+**Summary**
+- **Release: v3.12.4**
+- **60s avg buffer (hot path):** STG publishes per-strike `60s_avg_buffer` / `60s_avg_buffer_pct` from `one_minute_avg`. Exp Scalp / HWS AES `min_buffer_pct` gate requires **both** spot `buffer_pct` and `60s_avg_buffer_pct` when enabled.
+- **Monitor dupe pairing:** Per-monitor `monitor_dupe_pairing` integer array links peer monitors. Settings modal multi-select (desktop + mobile). TM caps new open size on same ticker+side by summed peer exposure (`requested − paired_open`; block at zero).
+- **DB:** Migration **`20260901_1030_monitor_dupe_pairing`** adds `monitor_dupe_pairing INTEGER[]` on all tenant `monitor_list_*`.
+- **Docs / tests:** `docs/UNIFIED_AES_TICK_CONTRACT.md`; `docs/MASTER_DB_SCHEMA_REFERENCE.md`; `tests/unit/test_expiration_scalp_min_buffer_pct.py`; `tests/unit/test_monitor_dupe_pairing.py`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-01`**. Code: `git revert` this commit + `scripts/MASTER_RESTART.sh`. Schema: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260901_1030_monitor_dupe_pairing`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260901_1030_monitor_dupe_pairing`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; ladder rows include `60s_avg_buffer_pct`; monitor settings save `monitor_dupe_pairing`; TM dupe cap on paired monitors
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.4`
+
+---
+
 ## 2026-09-01 — Release v3.12.3: Weekend monitor adjustment
 
 **Summary**
