@@ -13,9 +13,14 @@ from backend.core.aes_btc15m_exp_scalp_cutout import is_btc15m_exp_scalp_cutout_
 from backend.core.high_water_scalp import (
     complement_limit_price,
     is_expiration_scalp_entry_strategy,
+    is_high_water_family,
     is_high_water_scalp,
+    is_high_water_test_1,
+    owned_close_target_from_offset,
+    parse_limit_close_offset,
     parse_limit_close_price,
     remaining_contracts,
+    resolve_owned_close_target,
     two_leg_close_totals,
 )
 from backend.core.tenant_context import TenantContext
@@ -26,10 +31,41 @@ def test_identity_and_reverse_prefix():
     assert is_high_water_scalp("High Water Scalp")
     assert is_high_water_scalp("Reverse High Water Scalp")
     assert not is_high_water_scalp("Expiration Scalp")
+    assert is_high_water_test_1("High Water Test 1")
+    assert is_high_water_test_1("Reverse High Water Test 1")
+    assert not is_high_water_test_1("High Water Scalp")
+    assert is_high_water_family("High Water Test 1")
     assert is_expiration_scalp_entry_strategy("High Water Scalp")
+    assert is_expiration_scalp_entry_strategy("High Water Test 1")
     assert is_expiration_scalp_entry_strategy("Expiration Scalp")
     assert is_expiration_scalp_entry_strategy("Reverse High Water Scalp")
     assert "High Water Scalp" in FALLBACK_STRATEGY_NAMES
+    assert "High Water Test 1" in FALLBACK_STRATEGY_NAMES
+
+
+def test_owned_close_target_from_offset():
+    assert owned_close_target_from_offset(0.90, 0.01) == 0.91
+    assert owned_close_target_from_offset(0.975, 0.02) == 0.995
+    assert owned_close_target_from_offset(0.975, 0.025) is None
+    assert owned_close_target_from_offset(0.90, None) is None
+    assert resolve_owned_close_target("High Water Test 1", 0.92, 0, 0.01) == 0.93
+    assert resolve_owned_close_target("High Water Scalp", 0.92, 0.99, 0.01) == 0.99
+    assert parse_limit_close_offset(0.025) == 0.025
+
+
+def test_owned_stop_floor_from_offset():
+    from backend.core.high_water_scalp import (
+        owned_stop_floor_from_offset,
+        parse_stop_loss_offset,
+        resolve_owned_stop_floor,
+    )
+
+    assert owned_stop_floor_from_offset(0.90, 0.10) == 0.80
+    assert owned_stop_floor_from_offset(0.90, 0.25) == 0.65
+    assert owned_stop_floor_from_offset(0.05, 0.10) is None
+    assert resolve_owned_stop_floor("High Water Test 1", 0.92, 0, 0.10) == 0.82
+    assert resolve_owned_stop_floor("High Water Scalp", 0.92, 0.85, 0.10) == 0.85
+    assert parse_stop_loss_offset(0.10) == 0.10
 
 
 def test_ask_hits_price_target_one_cent():
@@ -160,10 +196,15 @@ def test_tm_places_gtc_at_complement_for_fill_count(monkeypatch):
     )
 
     class Cur:
-        def execute(self, *a, **k):
-            return None
+        def __init__(self):
+            self.last_q = ""
+
+        def execute(self, q, *a, **k):
+            self.last_q = q or ""
 
         def fetchone(self):
+            if "buy_price, limit_close_price, limit_close_offset" in self.last_q:
+                return ("High Water Scalp", 0.90, 0.99, 0.0)
             return row
 
         def __enter__(self):
@@ -177,6 +218,9 @@ def test_tm_places_gtc_at_complement_for_fill_count(monkeypatch):
             return Cur()
 
         def close(self):
+            return None
+
+        def commit(self):
             return None
 
     monkeypatch.setattr(tm, "get_postgresql_connection", lambda: Conn())
@@ -309,7 +353,7 @@ def test_ats_hws_stop_cancels_then_flattens_without_entry_dwell():
     assert "get_verification_period_enabled()" not in hws_src
     assert "get_verification_period_seconds()" not in hws_src
     assert "floor_stop_verify_allows_fire" in hws_src
-    assert "if is_high_water_scalp(get_trade_strategy()):" in ats_src
+    assert "if is_high_water_family(get_trade_strategy()):" in ats_src
     assert "_hws_cancel_resting_and_apply_remaining(trade)" in ats_src
     assert "check_auto_stop_conditions_high_water_scalp" in ats_src
     assert "evaluate_paper_resting_gtc" in ats_src
@@ -365,7 +409,7 @@ def test_hws_modal_full_cycle_time_window_hides_stop_extras():
     assert "return uatMonitorMarketIs15m(market) ? 900 : 3600;" in js
     assert "const showHtcStopExtras = !isExpirationScalp;" in js
     assert "function uatApplyRangeMinMaxValue" in js
-    assert "const showStopVerify = showHtcStopExtras || !!isHighWaterScalp;" in js
+    assert "const showStopVerify = showHtcStopExtras || !!isHighWaterFamily;" in js
     assert "payload.current_probability = parseInt(document.getElementById('autoStopProbabilitySlider')" in js
     save_idx = js.index("payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk)")
     save_hws = js[save_idx : js.index("} else {\n          // HOURLY HTC", save_idx)]
@@ -406,7 +450,7 @@ def test_hws_modal_full_cycle_time_window_hides_stop_extras():
         / "mobile"
         / "dashboard_mobile.html"
     ).read_text()
-    assert "const showStopVerify = showHtcStopExtras || !!isHighWaterScalp;" in mobile
+    assert "const showStopVerify = showHtcStopExtras || !!isHighWaterFamily;" in mobile
     assert 'id="m_htcAutoStopVerificationControls"' in mobile
     assert "stop_verification_period_enabled" in mobile
 
@@ -432,7 +476,7 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
             if "SELECT id FROM" in self.last.replace("\n", " "):
                 return (1,)
             # apply() SELECT after update: 30 base cols then optional flip
-            row = [None] * 36
+            row = [None] * 38
             row[1] = 0.25
             row[16] = 22
             row[23] = 0.0
@@ -440,8 +484,10 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
             row[25] = "market"
             row[26] = False
             row[27] = 0.99
-            row[28] = False
-            row[29] = 1
+            row[28] = 0.0
+            row[29] = 0.0
+            row[30] = False
+            row[31] = 1
             return tuple(row)
 
     bad = apply_auto_entry_settings(
@@ -449,10 +495,16 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
     )
     assert bad["status"] == "error"
 
-    zero = apply_auto_entry_settings(
-        Cur(), "1", {"limit_close_price": 0}, tenant_context=ctx
-    )
-    assert zero["status"] == "error"
+    zero_cur = Cur()
+    with patch(
+        "backend.core.time_based_loss_prevention.sync_simulated_trade_after_monitor_settings_save"
+    ):
+        zero = apply_auto_entry_settings(
+            zero_cur, "1", {"limit_close_price": 0}, tenant_context=ctx
+        )
+    assert zero["status"] == "ok"
+    assert zero_cur.updated is not None
+    assert 0.0 in zero_cur.updated
 
     ok_cur = Cur()
     with patch(
@@ -465,6 +517,62 @@ def test_settings_store_limit_close_price_round_trip_and_reject():
     assert ok["limit_close_price"] == 0.99
     assert ok_cur.updated is not None
     assert 0.99 in ok_cur.updated
+
+
+def test_settings_store_high_water_test_1_offset_save_accepts_zero_limit_close_price():
+    from backend.core.auto_entry_settings_store import apply_auto_entry_settings
+
+    ctx = TenantContext.from_schema("users_0001")
+
+    class Cur:
+        def __init__(self):
+            self.last = ""
+            self.updated = None
+
+        def execute(self, q, params=None):
+            self.last = q
+            if "UPDATE" in q and params:
+                self.updated = params
+
+        def fetchone(self):
+            if "information_schema" in self.last:
+                return (1,)
+            if "SELECT id FROM" in self.last.replace("\n", " "):
+                return (99024,)
+            row = [None] * 38
+            row[1] = 0.25
+            row[16] = 22
+            row[23] = 0.0
+            row[24] = "fill_or_kill"
+            row[25] = "market"
+            row[26] = False
+            row[27] = 0.0
+            row[28] = 0.01
+            row[29] = 0.1
+            return tuple(row)
+
+    ok_cur = Cur()
+    with patch(
+        "backend.core.time_based_loss_prevention.sync_simulated_trade_after_monitor_settings_save"
+    ):
+        ok = apply_auto_entry_settings(
+            ok_cur,
+            "99024",
+            {
+                "limit_close_offset": 0.01,
+                "limit_close_price": 0,
+                "stop_loss_offset": 0.1,
+                "stop_loss_price": 0,
+            },
+            tenant_context=ctx,
+        )
+    assert ok["status"] == "ok"
+    assert ok["limit_close_offset"] == 0.01
+    assert ok["limit_close_price"] == 0.0
+    assert ok["stop_loss_offset"] == 0.1
+    assert ok_cur.updated is not None
+    assert 0.0 in ok_cur.updated
+    assert 0.01 in ok_cur.updated
 
 
 def test_settings_store_stop_verification_round_trip_and_reject():
@@ -487,7 +595,7 @@ def test_settings_store_stop_verification_round_trip_and_reject():
                 return (1,)
             if "SELECT id FROM" in self.last.replace("\n", " "):
                 return (1,)
-            row = [None] * 36
+            row = [None] * 38
             row[1] = 0.25
             row[16] = 22
             row[23] = 0.0
@@ -495,8 +603,10 @@ def test_settings_store_stop_verification_round_trip_and_reject():
             row[25] = "market"
             row[26] = False
             row[27] = 0.99
-            row[28] = True
-            row[29] = 1
+            row[28] = 0.0
+            row[29] = 0.0
+            row[30] = True
+            row[31] = 1
             return tuple(row)
 
     bad = apply_auto_entry_settings(
@@ -761,6 +871,56 @@ def test_create_monitor_insert_placeholders_match_columns():
     assert "limit_close_price" in inner
     assert "NOW()" in insert.split("VALUES", 1)[1]
     assert n_ph == n_cols - 1
+
+
+def test_hws_kalshi_close_slice_uses_maker_fill_cost(monkeypatch):
+    import backend.trade_manager as tm
+
+    monkeypatch.setattr(
+        tm,
+        "_fetch_kalshi_order_for_confirm",
+        lambda _oid: {
+            "fill_count_fp": "1121.00",
+            "taker_fill_cost_dollars": "0.000000",
+            "maker_fill_cost_dollars": "11.210000",
+            "taker_fees_dollars": "0.000000",
+            "maker_fees_dollars": "0.000000",
+        },
+    )
+    rec = tm._hws_kalshi_order_close_slice("oid")
+    assert rec is not None
+    assert rec["fill_qty"] == 1121.0
+    assert rec["sell_price"] == pytest.approx(0.99)
+
+
+def test_order_fill_cost_dollars_prefers_maker_when_taker_zero():
+    import backend.trade_manager as tm
+
+    assert tm._order_fill_cost_dollars(
+        {
+            "taker_fill_cost_dollars": "0.000000",
+            "maker_fill_cost_dollars": "11.210000",
+        }
+    ) == pytest.approx(11.21)
+    assert (
+        tm._order_fill_cost_dollars(
+            {
+                "taker_fill_cost_dollars": "0.000000",
+                "maker_fill_cost_dollars": "0.000000",
+            }
+        )
+        is None
+    )
+
+
+def test_create_monitor_defaults_paper_trade_true():
+    mm_src = (
+        Path(__file__).resolve().parents[2] / "backend" / "monitor_manager.py"
+    ).read_text()
+    start = mm_src.index("@app.route('/api/monitor/create'")
+    fn = mm_src[start : mm_src.index("@app.route('/health'")]
+    assert "create_paper_trade = True" in fn
+    assert "create_paper_trade," in fn
 
 
 def test_tm_add_trade_routes_paper_hws_intent():

@@ -10459,6 +10459,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_movement` | `numeric(5,2)` | YES | 0.00 | Expiration Scalp Movement Window min vs ladder `movement_percentile` (0–100). Migration `20260803_1400_monitor_movement_window`. |
 | `max_movement` | `numeric(5,2)` | YES | 100.00 | Expiration Scalp Movement Window max vs ladder `movement_percentile` (0–100). Migration `20260803_1400_monitor_movement_window`. |
 | `limit_close_price` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp: owned-side GTC close target (e.g. 0.99). 0 disables. Opposite-leg rest price is `1 − limit_close_price`. Migration `20260828_1635_high_water_scalp`. |
+| `limit_close_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1: owned-side GTC offset from fill (e.g. 0.0100). Persisted `limit_close_price` on the trade row is `buy_price + offset` after open confirm. Migration `20260901_1200_high_water_test_1`. |
+| `stop_loss_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1: owned-side stop floor offset below fill (e.g. 0.1000). ATS uses `buy_price - offset` per trade. Migration `20260901_1400_high_water_test_1_stop_loss_offset`. |
 | `current_contract` | `text` | YES | - | |
 | `current_weekly_cycle` | `smallint(16)` | YES | - | |
 | `current_performance_modifier` | `numeric(10,2)` | YES | 1.00 | |
@@ -10695,6 +10697,8 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `max_ask` | `numeric(6,4)` | YES | 0.9800 | |
 | `min_fill_price` | `numeric(6,4)` | YES | - | Monitor-only: minimum estimated taker fill before executor sends open order; NULL/0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
 | `limit_close_price` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp default for new monitors: owned-side GTC close target. Migration `20260828_1635_high_water_scalp`. |
+| `limit_close_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1 default for new monitors: owned-side GTC offset from fill. Migration `20260901_1200_high_water_test_1`. |
+| `stop_loss_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1 default for new monitors: owned-side stop floor offset below fill. Migration `20260901_1400_high_water_test_1_stop_loss_offset`. |
 | `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Monitor-only: minimum acceptable projected entry slippage (est. fill − trigger); 0.0000 disables, enabled range -0.2000..0.0000. TM slippage gate. Migration `20260716_1200_min_slippage_gate`. |
 | `position_size` | `integer(32)` | YES | 1 | |
 | `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
@@ -10936,7 +10940,9 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `order_type` | `text` | YES | - | Snapshot `limit` / `market` policy from monitor. Same migration. |
 | `min_fill_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor slippage floor at insert; **0.0000** = gate disabled. Migration `20260715_1200_trades_min_fill_price`. |
 | `min_slippage` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor min_slippage at insert; **0.0000** = gate disabled (enabled range -0.2000..0.0000). Migration `20260716_1200_min_slippage_gate`. |
-| `limit_close_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Scalp close target at insert; **0.0000** = not used. Migration `20260828_1635_high_water_scalp`. |
+| `limit_close_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Scalp close target at insert; **0.0000** = not used until fill confirm for offset strategies. Migration `20260828_1635_high_water_scalp`. |
+| `limit_close_offset` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Test 1 offset at insert. Migration `20260901_1200_high_water_test_1`. |
+| `stop_loss_offset` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Test 1 stop offset at insert. Migration `20260901_1400_high_water_test_1_stop_loss_offset`. |
 | `close_filled_count` | `numeric(12,2)` | NO | 0.00 | Cumulative close-leg fills while the row is still open. Remaining = `position − close_filled_count`. Live High Water Scalp: a GTC slice plus leftover expiry/stop is recorded as mixed PnL using this count plus remainder settlement or flatten; fully flattened live rows set this to `position`. Migration `20260828_1635_high_water_scalp`. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |

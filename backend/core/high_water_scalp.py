@@ -17,23 +17,36 @@ from __future__ import annotations
 from typing import Any, Optional
 
 STRATEGY_NAME = "High Water Scalp"
+STRATEGY_NAME_TEST_1 = "High Water Test 1"
+
+
+def _strategy_base_name(strategy: Optional[str]) -> str:
+    raw = str(strategy or "").strip()
+    if raw.startswith("Reverse "):
+        raw = raw[len("Reverse ") :].strip()
+    return raw
 
 
 def is_high_water_scalp(strategy: Optional[str]) -> bool:
-    raw = str(strategy or "").strip()
-    if not raw:
-        return False
-    if raw.startswith("Reverse "):
-        raw = raw[len("Reverse ") :].strip()
-    return raw == STRATEGY_NAME
+    return _strategy_base_name(strategy) == STRATEGY_NAME
+
+
+def is_high_water_test_1(strategy: Optional[str]) -> bool:
+    return _strategy_base_name(strategy) == STRATEGY_NAME_TEST_1
+
+
+def is_high_water_family(strategy: Optional[str]) -> bool:
+    base = _strategy_base_name(strategy)
+    return base in (STRATEGY_NAME, STRATEGY_NAME_TEST_1)
 
 
 def is_expiration_scalp_entry_strategy(strategy: Optional[str]) -> bool:
-    """Expiration Scalp or High Water Scalp (same AES entry path)."""
-    raw = str(strategy or "").strip()
-    if raw.startswith("Reverse "):
-        raw = raw[len("Reverse ") :].strip()
-    return raw in ("Expiration Scalp", STRATEGY_NAME)
+    """Expiration Scalp or High Water family (same AES entry path)."""
+    return _strategy_base_name(strategy) in (
+        "Expiration Scalp",
+        STRATEGY_NAME,
+        STRATEGY_NAME_TEST_1,
+    )
 
 
 def ask_hits_price_target(ask: Any, target: float) -> bool:
@@ -59,6 +72,95 @@ def parse_limit_close_price(raw: Any) -> Optional[float]:
     if px <= 0.0 or px >= 1.0:
         return None
     return round(px, 4)
+
+
+def parse_limit_close_offset(raw: Any) -> Optional[float]:
+    """Owned-side offset from fill in (0, 1). None if missing or invalid. Never invent."""
+    if raw is None or raw == "":
+        return None
+    try:
+        off = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if off <= 0.0 or off >= 1.0:
+        return None
+    return round(off, 4)
+
+
+def owned_close_target_from_offset(buy_price: Any, offset: Any) -> Optional[float]:
+    """High Water Test 1: owned-side GTC target = fill + offset, capped below 1.0."""
+    off = parse_limit_close_offset(offset)
+    try:
+        bp = float(buy_price)
+    except (TypeError, ValueError):
+        return None
+    if off is None or bp <= 0.0 or bp >= 1.0:
+        return None
+    target = round(bp + off, 4)
+    if target <= 0.0 or target >= 1.0:
+        return None
+    return target
+
+
+def resolve_owned_close_target(
+    strategy: Optional[str],
+    buy_price: Any,
+    limit_close_price: Any,
+    limit_close_offset: Any,
+) -> Optional[float]:
+    """Resolve owned-side GTC target for High Water family strategies."""
+    if is_high_water_test_1(strategy):
+        return owned_close_target_from_offset(buy_price, limit_close_offset)
+    if is_high_water_scalp(strategy):
+        return parse_limit_close_price(limit_close_price)
+    return None
+
+
+def parse_stop_floor_price(raw: Any) -> Optional[float]:
+    """Owned-side stop floor in (0, 1). None if missing, invalid, or disabled (0)."""
+    if raw is None or raw == "":
+        return None
+    try:
+        px = float(raw)
+    except (TypeError, ValueError):
+        return None
+    if px <= 0.0 or px >= 1.0:
+        return None
+    return round(px, 4)
+
+
+def parse_stop_loss_offset(raw: Any) -> Optional[float]:
+    """Owned-side distance below fill in (0, 1). None if missing or invalid."""
+    return parse_limit_close_offset(raw)
+
+
+def owned_stop_floor_from_offset(buy_price: Any, offset: Any) -> Optional[float]:
+    """High Water Test 1: owned-side stop floor = fill - offset."""
+    off = parse_stop_loss_offset(offset)
+    try:
+        bp = float(buy_price)
+    except (TypeError, ValueError):
+        return None
+    if off is None or bp <= 0.0 or bp >= 1.0:
+        return None
+    floor = round(bp - off, 4)
+    if floor <= 0.0 or floor >= 1.0:
+        return None
+    return floor
+
+
+def resolve_owned_stop_floor(
+    strategy: Optional[str],
+    buy_price: Any,
+    stop_loss_price: Any,
+    stop_loss_offset: Any,
+) -> Optional[float]:
+    """Resolve owned-side auto-stop floor for High Water family strategies."""
+    if is_high_water_test_1(strategy):
+        return owned_stop_floor_from_offset(buy_price, stop_loss_offset)
+    if is_high_water_scalp(strategy):
+        return parse_stop_floor_price(stop_loss_price)
+    return None
 
 
 def complement_limit_price(limit_close_price: float) -> float:

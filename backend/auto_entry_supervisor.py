@@ -4538,7 +4538,7 @@ def check_auto_entry_conditions_expiration_scalp():
 
         from backend.core.high_water_scalp import (
             ask_hits_price_target,
-            is_high_water_scalp,
+            is_high_water_family,
             parse_limit_close_price,
         )
         from backend.util.auto_entry_expiration_scalp_gates import parse_min_buffer_pct
@@ -4552,10 +4552,10 @@ def check_auto_entry_conditions_expiration_scalp():
         min_movement = float(settings["min_movement"])
         max_movement = float(settings["max_movement"])
         min_buffer_pct = parse_min_buffer_pct(settings)
-        hws = is_high_water_scalp(get_trade_strategy())
-        hws_target = parse_limit_close_price(min_ask) if hws else None
-        if hws and hws_target is None:
-            log(f"{log_tag} ❌ High Water Scalp missing active-side price target (min_ask)")
+        hws_family = is_high_water_family(get_trade_strategy())
+        hws_target = parse_limit_close_price(min_ask) if hws_family else None
+        if hws_family and hws_target is None:
+            log(f"{log_tag} ❌ High Water missing active-side price target (min_ask)")
             return
         verify_enabled = bool(settings["entry_verification_period_enabled"])
         try:
@@ -4682,7 +4682,7 @@ def check_auto_entry_conditions_expiration_scalp():
                         )
                         continue
                     ask_price = float(ask_dollars)
-                    if hws:
+                    if hws_family:
                         if not ask_hits_price_target(ask_price, hws_target):
                             _exp_scalp_verify_abort(
                                 verify_bucket,
@@ -4812,8 +4812,8 @@ def check_auto_entry_conditions_expiration_scalp():
                             if prior_state
                             else None,
                             snapshot_ask=ask_price,
-                            min_ask=hws_target if hws else min_ask,
-                            max_ask=hws_target if hws else max_ask,
+                            min_ask=hws_target if hws_family else min_ask,
+                            max_ask=hws_target if hws_family else max_ask,
                             live_ask=live_ask,
                             step_cents=exp_scalp_flicker_step_cents(),
                         )
@@ -4911,7 +4911,7 @@ def check_auto_entry_conditions_expiration_scalp():
                         continue
 
                     diff = strike.get("yes_diff") if side_key == "yes" else strike.get("no_diff")
-                    entry_limit = hws_target if hws else ask_price
+                    entry_limit = hws_target if hws_family else ask_price
                     strike_data = {
                         "strike": format_trade_strike_label(
                             strike.get("strike"),
@@ -4921,7 +4921,7 @@ def check_auto_entry_conditions_expiration_scalp():
                         "side": side_key,
                         "ticker": strike.get("ticker"),
                         "buy_price": entry_limit,
-                        "entry_limit_price": entry_limit if hws else None,
+                        "entry_limit_price": entry_limit if hws_family else None,
                         "probability": prob_f,
                         "diff": diff,
                         "half_size": size_mode == "half",

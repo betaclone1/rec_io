@@ -34,6 +34,7 @@ FALLBACK_STRATEGY_NAMES: Tuple[str, ...] = (
     "Rising Devil",
     "Expiration Scalp",
     "High Water Scalp",
+    "High Water Test 1",
     "Test Strategy",
     "Daily HTC",
     "Scalp Strategy",

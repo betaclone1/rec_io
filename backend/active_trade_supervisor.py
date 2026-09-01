@@ -6998,9 +6998,9 @@ def trigger_auto_stop_close(
     if should_suppress_auto_close_past_kalshi_settlement(trade.get("ticker"), tid):
         return False
 
-    from backend.core.high_water_scalp import is_high_water_scalp
+    from backend.core.high_water_scalp import is_high_water_family
 
-    if is_high_water_scalp(get_trade_strategy()):
+    if is_high_water_family(get_trade_strategy()):
         if not _hws_cancel_resting_and_apply_remaining(trade):
             log(f"[AUTO STOP HWS] skip close trade={tid} remaining=0")
             return False
@@ -7939,7 +7939,7 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
 
     strategy = get_trade_strategy()
     
-    from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy, is_high_water_scalp
+    from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy, is_high_water_family
 
     if strategy == "Momentum Scalp":
         check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
@@ -7948,13 +7948,29 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
     elif strategy == "Reverse HTC":
         # Reverse HTC uses the same auto-stop logic as Hourly HTC
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
-    elif is_high_water_scalp(strategy):
+    elif is_high_water_family(strategy):
         check_auto_stop_conditions_high_water_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     elif is_expiration_scalp_entry_strategy(strategy):
         check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     else:
         # Default to Hourly HTC (fallback for any other strategy or missing strategy)
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades        )
+
+
+def _hws_stop_floor_for_trade(st: dict) -> float:
+    """Owned-side stop floor for High Water family (per-trade for Test 1)."""
+    from backend.core.high_water_scalp import is_high_water_test_1, resolve_owned_stop_floor
+
+    strategy = st.get("trade_strategy")
+    if is_high_water_test_1(strategy):
+        resolved = resolve_owned_stop_floor(
+            strategy,
+            st.get("buy_price"),
+            None,
+            st.get("stop_loss_offset"),
+        )
+        return resolved if resolved is not None else 0.0
+    return get_stop_loss_price()
 
 
 def _hws_load_trade_close_state(trade_id) -> dict:
@@ -7969,6 +7985,9 @@ def _hws_load_trade_close_state(trade_id) -> dict:
         "ticket_id": "",
         "ticker": None,
         "side": None,
+        "trade_strategy": None,
+        "buy_price": None,
+        "stop_loss_offset": None,
     }
     try:
         conn = get_postgresql_connection()
@@ -7978,7 +7997,8 @@ def _hws_load_trade_close_state(trade_id) -> dict:
             cursor.execute(
                 f"""
                 SELECT position, close_filled_count, limit_close_price, order_id_close,
-                       paper_trade, subaccount, ticket_id, ticker, side
+                       paper_trade, subaccount, ticket_id, ticker, side,
+                       trade_strategy, buy_price, stop_loss_offset
                 FROM {legacy_users_trades(ctx_user())}
                 WHERE id = %s
                 """,
@@ -8001,6 +8021,9 @@ def _hws_load_trade_close_state(trade_id) -> dict:
         out["ticket_id"] = row[6] or ""
         out["ticker"] = row[7]
         out["side"] = row[8]
+        out["trade_strategy"] = row[9]
+        out["buy_price"] = row[10]
+        out["stop_loss_offset"] = row[11]
     except Exception as e:
         log(f"[AUTO STOP HWS] load close state failed trade={trade_id}: {e}")
     return out
@@ -8131,7 +8154,6 @@ def check_auto_stop_conditions_high_water_scalp(
     )
     from backend.core.high_water_scalp_paper import evaluate_paper_resting_gtc
 
-    stop_floor = get_stop_loss_price()
     verify_enabled = get_stop_verification_period_enabled()
     verify_seconds = get_stop_verification_period_seconds()
     now = time.time()
@@ -8143,6 +8165,7 @@ def check_auto_stop_conditions_high_water_scalp(
         if trade_id in auto_stop_triggered_trades:
             continue
         st = _hws_load_trade_close_state(trade_id)
+        stop_floor = _hws_stop_floor_for_trade(st)
         rem = remaining_contracts(st.get("position"), st.get("close_filled_count"))
         if rem <= 0:
             _hws_paper_avail_set(trade_id, None)

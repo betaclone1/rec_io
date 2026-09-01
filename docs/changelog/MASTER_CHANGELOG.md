@@ -6,6 +6,31 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-01 — Release v3.12.5: High Water Test 1 + HWS close pricing fixes
+
+**Summary**
+- **Release: v3.12.5**
+- **High Water Test 1 strategy:** Offset-based profit target (`limit_close_offset` → owned GTC at fill+offset) and stop floor (`stop_loss_offset` → buy−offset per trade). Desktop + mobile settings sliders; AES/ATS/TM routing; strategy list seed.
+- **Settings save fix:** `apply_auto_entry_settings` accepts explicit `limit_close_price: 0` when Test 1 uses offset mode (was rejecting saves).
+- **Monitor create:** New dashboard/mobile monitors default `paper_trade=true`.
+- **Live HWS close pricing:** `trade_manager` uses maker+taker fill cost for GTC close sell VWAP (resting GTC fills are maker; was reading taker-only → sell_price 1.00).
+- **DB:** Migrations **`20260901_1200_high_water_test_1`** (`limit_close_offset` on monitor/trades/strategy) and **`20260901_1400_high_water_test_1_stop_loss_offset`** (`stop_loss_offset`).
+- **Docs / tests:** `docs/MASTER_DB_SCHEMA_REFERENCE.md`; `tests/unit/test_high_water_scalp.py` (31 tests).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-01`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20260901_1400_high_water_test_1_stop_loss_offset` then `down 20260901_1200_high_water_test_1`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260901_1200_high_water_test_1`
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260901_1400_high_water_test_1_stop_loss_offset`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; High Water Test 1 monitor settings save; new monitor defaults paper; HWS limit_close closes record sell ~0.99 not 1.00
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.5`
+
+---
+
 ## 2026-09-01 — Release v3.12.4: 60s buffer gate + monitor dupe pairing
 
 **Summary**
@@ -17,14 +42,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-01`**. Code: `git revert` this commit + `scripts/MASTER_RESTART.sh`. Schema: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py down 20260901_1030_monitor_dupe_pairing`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration:
+- [x] Apply migration:
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260901_1030_monitor_dupe_pairing`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; ladder rows include `60s_avg_buffer_pct`; monitor settings save `monitor_dupe_pairing`; TM dupe cap on paired monitors
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.4`
+- [x] Verify: health 3000/8001; ladder rows include `60s_avg_buffer_pct`; monitor settings save `monitor_dupe_pairing`; TM dupe cap on paired monitors
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.4`
 
 ---
 

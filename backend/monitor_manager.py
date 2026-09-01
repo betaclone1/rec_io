@@ -2640,8 +2640,10 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "min_fill_price": None,
         "min_slippage": None,
         "limit_close_price": _f(result[51]) if len(result) > 51 else None,
-        "stop_verification_period_enabled": _b(result[52]) if len(result) > 52 else None,
-        "stop_verification_period_seconds": _i(result[53]) if len(result) > 53 else None,
+        "limit_close_offset": _f(result[52]) if len(result) > 52 else None,
+        "stop_loss_offset": _f(result[53]) if len(result) > 53 else None,
+        "stop_verification_period_enabled": _b(result[54]) if len(result) > 54 else None,
+        "stop_verification_period_seconds": _i(result[55]) if len(result) > 55 else None,
     }
 
 
@@ -2672,7 +2674,7 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             time_in_force, order_type,
             simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult,
-            limit_close_price, stop_verification_period_enabled, stop_verification_period_seconds
+            limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled, stop_verification_period_seconds
         FROM {}
         WHERE name = %s
         """
@@ -2703,7 +2705,7 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             time_in_force, order_type,
             simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult,
-            limit_close_price, stop_verification_period_enabled, stop_verification_period_seconds
+            limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled, stop_verification_period_seconds
         FROM {}
         WHERE LOWER(name) = LOWER(%s)
         """
@@ -2954,6 +2956,15 @@ def create_monitor():
         user_id = data.get("user_id", "user_0001")
         raw_market = data.get("market", "hourly")
         market = "15m" if (raw_market and str(raw_market).strip().lower() == "15m") else "hourly"
+        # Dashboard create path: new monitors default to paper unless caller overrides.
+        if "paper_trade" in data:
+            pt_raw = data["paper_trade"]
+            if isinstance(pt_raw, str):
+                create_paper_trade = pt_raw.lower() in ("true", "1", "yes")
+            else:
+                create_paper_trade = bool(pt_raw)
+        else:
+            create_paper_trade = True
         
         if not symbol or not strategy:
             return jsonify({"status": "error", "message": "Missing symbol or strategy parameter"}), 400
@@ -3038,13 +3049,13 @@ def create_monitor():
                  simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
                  original_loss_prevention_cooldown_start_time, loss_prevention_cooldown_loss_count,
                  live_loss_prevention_cooldown_start_time,
-                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price, min_slippage, limit_close_price,
+                 flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price, min_slippage, limit_close_price, limit_close_offset, stop_loss_offset,
                  stop_verification_period_enabled, stop_verification_period_seconds)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -3079,7 +3090,7 @@ def create_monitor():
                 strategy_defaults.get('loss_prevention_method') or 'win_streak',
                 strategy_defaults.get('performance_based_allocation', False),
                 strategy_defaults.get('max_price_spread', 0.0300),
-                bool(strategy_defaults.get('paper_trade', False)),
+                create_paper_trade,
                 strategy_defaults.get('prob_adj', 5.00),
                 # Strategy default auto trade settings (from strategy_list)
                 # Use values directly from strategy_defaults - they should all be present if strategy was found
@@ -3131,6 +3142,8 @@ def create_monitor():
                 strategy_defaults.get('min_fill_price'),
                 strategy_defaults.get('min_slippage', 0.0000),
                 float(strategy_defaults.get('limit_close_price') or 0.0),
+                float(strategy_defaults.get('limit_close_offset') or 0.0),
+                float(strategy_defaults.get('stop_loss_offset') or 0.0),
                 bool(strategy_defaults.get('stop_verification_period_enabled', False)),
                 (
                     int(strategy_defaults.get('stop_verification_period_seconds'))

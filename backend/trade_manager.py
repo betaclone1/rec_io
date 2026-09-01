@@ -565,7 +565,8 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
         with pg.cursor() as cursor:
             cursor.execute(
                 f"""
-                SELECT time_in_force, order_type, min_fill_price, min_slippage, limit_close_price
+                SELECT time_in_force, order_type, min_fill_price, min_slippage,
+                       limit_close_price, limit_close_offset, stop_loss_offset
                 FROM {_tm_monitor_list_table()}
                 WHERE id = %s
                 """,
@@ -578,22 +579,37 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 detail="monitor_not_found_for_execution_fields",
             )
         tif, ot, min_fill_price, min_slippage = row[0], row[1], row[2], row[3]
-        if len(row) > 4 and row[4] is not None:
+        from backend.core.high_water_scalp import (
+            is_high_water_family,
+            is_high_water_scalp,
+            is_high_water_test_1,
+            parse_limit_close_offset,
+            parse_stop_loss_offset,
+        )
+
+        if is_high_water_scalp(data.get("trade_strategy")) and len(row) > 4 and row[4] is not None:
             try:
                 lcp = float(row[4])
                 if lcp > 0:
                     data["limit_close_price"] = round(lcp, 4)
             except (TypeError, ValueError):
                 pass
+        if is_high_water_test_1(data.get("trade_strategy")) and len(row) > 5 and row[5] is not None:
+            off = parse_limit_close_offset(row[5])
+            if off is not None:
+                data["limit_close_offset"] = off
+        if is_high_water_test_1(data.get("trade_strategy")) and len(row) > 6 and row[6] is not None:
+            slo = parse_stop_loss_offset(row[6])
+            if slo is not None:
+                data["stop_loss_offset"] = slo
 
         ok, err = validate_execution_fields(str(tif), str(ot))
         if not ok:
             raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=err or "invalid_execution_fields")
         data["time_in_force"] = str(tif).strip().lower()
         data["order_type"] = str(ot).strip().lower()
-        from backend.core.high_water_scalp import is_high_water_scalp
 
-        if is_high_water_scalp(data.get("trade_strategy")):
+        if is_high_water_family(data.get("trade_strategy")):
             data["order_type"] = "limit"
             data["time_in_force"] = "immediate_or_cancel"
         if min_fill_price is not None:
@@ -2153,6 +2169,29 @@ def _parse_dollars(value):
         return None
 
 
+def _order_fill_cost_dollars(order_rec: Optional[dict]) -> Optional[float]:
+    """Kalshi order leg total fill cost in USD (maker + taker; resting GTC uses maker)."""
+    if not order_rec:
+        return None
+    taker = _parse_dollars(order_rec.get("taker_fill_cost_dollars")) or 0.0
+    maker = _parse_dollars(order_rec.get("maker_fill_cost_dollars")) or 0.0
+    total = taker + maker
+    return total if total > 0 else None
+
+
+def _owned_side_sell_from_close_order(order_rec: Optional[dict]) -> Optional[float]:
+    """Owned-side sell VWAP from an opposite-leg close order (maker or taker fill cost)."""
+    if not order_rec:
+        return None
+    fill_val = _order_count_val(None, order_rec.get("fill_count_fp"))
+    if fill_val <= 0:
+        return None
+    total_cost = _order_fill_cost_dollars(order_rec)
+    if total_cost is None:
+        return None
+    return 1.0 - (total_cost / fill_val)
+
+
 def _paper_trade_flag_is_true(paper_trade) -> bool:
     if isinstance(paper_trade, str):
         return paper_trade.lower() in ("true", "1", "yes")
@@ -2168,7 +2207,7 @@ def _hws_kalshi_order_close_slice(order_id: str) -> Optional[Dict[str, Any]]:
     if not rec:
         return None
     fill_val = _order_count_val(None, rec.get("fill_count_fp"))
-    cost = _parse_dollars(rec.get("taker_fill_cost_dollars"))
+    cost = _order_fill_cost_dollars(rec)
     taker = _parse_dollars(rec.get("taker_fees_dollars")) or 0.0
     maker = _parse_dollars(rec.get("maker_fees_dollars")) or 0.0
     sell = None
@@ -2245,10 +2284,26 @@ def _min_slippage_for_db(trade: dict) -> float:
 
 
 def _limit_close_price_for_db(trade: dict) -> float:
-    """Snapshot monitor High Water Scalp close target; 0.0000 means unused."""
-    from backend.core.high_water_scalp import parse_limit_close_price
+    """Snapshot owned-side GTC target; 0 until fill confirm for offset strategies."""
+    from backend.core.high_water_scalp import is_high_water_test_1, parse_limit_close_price
 
+    if is_high_water_test_1(trade.get("trade_strategy")):
+        return 0.0
     parsed = parse_limit_close_price(trade.get("limit_close_price"))
+    return parsed if parsed is not None else 0.0
+
+
+def _stop_loss_offset_for_db(trade: dict) -> float:
+    from backend.core.high_water_scalp import parse_stop_loss_offset
+
+    parsed = parse_stop_loss_offset(trade.get("stop_loss_offset"))
+    return parsed if parsed is not None else 0.0
+
+
+def _limit_close_offset_for_db(trade: dict) -> float:
+    from backend.core.high_water_scalp import parse_limit_close_offset
+
+    parsed = parse_limit_close_offset(trade.get("limit_close_offset"))
     return parsed if parsed is not None else 0.0
 
 
@@ -2937,14 +2992,75 @@ def cancel_hero_kalshi_order(order_id: str, *, subaccount: int = 1) -> bool:
         return False
 
 
+def _persist_owned_close_target_if_needed(trade_id: int, ticket_id: str) -> Optional[float]:
+    """Resolve owned-side GTC target from fill + offset (Test 1) or snapshot price (Scalp)."""
+    from backend.core.high_water_scalp import (
+        is_high_water_family,
+        is_high_water_test_1,
+        parse_limit_close_price,
+        resolve_owned_close_target,
+    )
+
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return None
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT trade_strategy, buy_price, limit_close_price, limit_close_offset
+                FROM {_tm_trades_table()}
+                WHERE id = %s
+                """,
+                (trade_id,),
+            )
+            row = cursor.fetchone()
+            if not row:
+                return None
+            trade_strategy, buy_price, limit_close_raw, offset_raw = row
+            if not is_high_water_family(trade_strategy):
+                return None
+            lcp = resolve_owned_close_target(
+                trade_strategy, buy_price, limit_close_raw, offset_raw
+            )
+            if lcp is None:
+                return None
+            stored = parse_limit_close_price(limit_close_raw)
+            if is_high_water_test_1(trade_strategy) or stored != lcp:
+                cursor.execute(
+                    f"""
+                    UPDATE {_tm_trades_table()}
+                    SET limit_close_price = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (lcp, trade_id),
+                )
+                pg_conn.commit()
+                log_event(
+                    ticket_id,
+                    f"MANAGER: owned close target persisted limit_close_price={lcp:.4f}",
+                    trade_id=trade_id,
+                )
+            return lcp
+    except Exception as e:
+        log(f"owned close target persist failed id={trade_id}: {e}")
+        return None
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+
+
 def _maybe_place_high_water_resting_close(trade_id: int, ticket_id: str) -> None:
-    """After an open/partial confirm, rest the High Water Scalp GTC close for remaining size."""
+    """After an open/partial confirm, rest the High Water family GTC close for remaining size."""
     from backend.core.high_water_scalp import (
         complement_limit_price,
-        is_high_water_scalp,
-        parse_limit_close_price,
+        is_high_water_family,
         remaining_contracts,
     )
+
+    lcp = _persist_owned_close_target_if_needed(trade_id, ticket_id)
 
     pg_conn = get_postgresql_connection()
     if not pg_conn:
@@ -2981,7 +3097,7 @@ def _maybe_place_high_water_resting_close(trade_id: int, ticket_id: str) -> None
         monitor,
         subaccount,
     ) = row
-    if not is_high_water_scalp(trade_strategy):
+    if not is_high_water_family(trade_strategy):
         return
     if status not in ("open", "partial"):
         return
@@ -2990,12 +3106,11 @@ def _maybe_place_high_water_resting_close(trade_id: int, ticket_id: str) -> None
     if paper_trade:
         log_event(
             ticket_id,
-            "MANAGER: High Water Scalp paper — Kalshi GTC skipped; ATS simulates fills from live orderbook",
+            "MANAGER: High Water paper — Kalshi GTC skipped; ATS simulates fills from live orderbook",
         )
         return
-    lcp = parse_limit_close_price(limit_close_raw)
     if lcp is None:
-        log_event(ticket_id, "MANAGER: High Water Scalp missing limit_close_price — cannot rest GTC")
+        log_event(ticket_id, "MANAGER: High Water missing owned close target — cannot rest GTC")
         return
     desired = remaining_contracts(position, close_filled)
     if desired <= 0:
@@ -3043,8 +3158,7 @@ def _apply_high_water_partial_close(
     """Update close_filled_count / sell VWAP / fees / pnl while the trade stays open."""
     from backend.core.high_water_scalp import remaining_contracts
 
-    close_fill_cost_dollars = order_rec.get("taker_fill_cost_dollars")
-    total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+    total_close_cost_usd = _order_fill_cost_dollars(order_rec)
     if total_close_cost_usd is None or fill_val <= 0:
         log_event(ticket_id, "MANAGER: partial close fill missing cost — leaving sell/pnl NULL")
         pg = get_postgresql_connection()
@@ -3120,7 +3234,7 @@ def apply_paper_high_water_resting_fill(data: dict) -> dict:
     with close_method=limit_close. Does not walk the book again (no market close).
     Close fee on these fills is 0 (maker rest; Kalshi does not charge maker here).
     """
-    from backend.core.high_water_scalp import is_high_water_scalp, remaining_contracts
+    from backend.core.high_water_scalp import is_high_water_family, remaining_contracts
 
     trade_id = data.get("id")
     ticket_id = data.get("ticket_id") or ""
@@ -3172,8 +3286,8 @@ def apply_paper_high_water_resting_fill(data: dict) -> dict:
                 mtb_base,
                 symbol,
             ) = row
-            if not is_high_water_scalp(trade_strategy):
-                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not_high_water_scalp")
+            if not is_high_water_family(trade_strategy):
+                raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="not_high_water_family")
             if isinstance(paper_trade, str):
                 paper_trade = paper_trade.lower() in ("true", "1", "yes")
             if not paper_trade:
@@ -3659,6 +3773,8 @@ def insert_trade(trade):
                 min_fill_price_for_db = _min_fill_price_for_db(trade)
                 min_slippage_for_db = _min_slippage_for_db(trade)
                 limit_close_price_for_db = _limit_close_price_for_db(trade)
+                limit_close_offset_for_db = _limit_close_offset_for_db(trade)
+                stop_loss_offset_for_db = _stop_loss_offset_for_db(trade)
 
                 # Live active-row dedupe (same keys as simulated duplicate guard): second INSERT path
                 # returns the existing row when pending/open already exists for this monitor/strike.
@@ -3760,10 +3876,10 @@ def insert_trade(trade):
                         yes_ask_range_15m, no_ask_range_15m,
                         paper_trade, cooldown_timer, test_filter,
                         time_in_force, order_type, min_fill_price, min_slippage,
-                        limit_close_price, close_filled_count,
+                        limit_close_price, limit_close_offset, stop_loss_offset, close_filled_count,
                         subaccount,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -3799,6 +3915,8 @@ def insert_trade(trade):
                     min_fill_price_for_db,
                     min_slippage_for_db,
                     limit_close_price_for_db,
+                    limit_close_offset_for_db,
+                    stop_loss_offset_for_db,
                     0.00,
                     int(trade.get("subaccount", 1)),
                 ))
@@ -4741,10 +4859,10 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         maker_fees_usd = _parse_dollars(maker_fees_dollars)
                         close_order_fees_dollars = (taker_fees_usd or 0.0) + (maker_fees_usd or 0.0)
                         prior_close_fees = 0.0
-                        from backend.core.high_water_scalp import is_high_water_scalp
+                        from backend.core.high_water_scalp import is_high_water_family
                         from backend.core.trade_order_ids import trade_associated_order_ids
 
-                        if is_high_water_scalp(trade_strategy):
+                        if is_high_water_family(trade_strategy):
                             prior_close_fees = _hws_sum_kalshi_close_fees(
                                 trade_associated_order_ids(
                                     {"order_ids_close": prior_close_order_ids}
@@ -4762,14 +4880,12 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                             f"close order: ${close_order_fees_dollars}, total: ${total_fees_paid}",
                         )
                     
-                        close_fill_cost_dollars = order_rec.get("taker_fill_cost_dollars")
                         close_fill_count_fp = order_rec.get("fill_count_fp")
                         close_fill_val = _order_count_val(None, close_fill_count_fp)
-                        total_close_cost_usd = _parse_dollars(close_fill_cost_dollars)
+                        total_close_cost_usd = _order_fill_cost_dollars(order_rec)
                         hws_close_filled_final = None
                         if total_close_cost_usd is not None and close_fill_val > 0:
-                            sell_price = total_close_cost_usd / close_fill_val
-                            sell_price = 1 - sell_price
+                            sell_price = 1.0 - (total_close_cost_usd / close_fill_val)
                             log_event(ticket_id, f"MANAGER: Calculated sell_price from close order: {sell_price}")
                             try:
                                 pg_blend = get_postgresql_connection()
@@ -4785,9 +4901,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                                         prior_filled = float(br[0] or 0.0)
                                         prior_sell = float(br[1]) if br[1] is not None else None
                                         pos_all = float(br[2] or 0.0)
-                                        if is_high_water_scalp(trade_strategy) and pos_all > 0:
+                                        if is_high_water_family(trade_strategy) and pos_all > 0:
                                             hws_close_filled_final = _trade_position_for_db(pos_all)
-                                        if is_high_water_scalp(trade_strategy) and prior_filled > 0.02:
+                                        if is_high_water_family(trade_strategy) and prior_filled > 0.02:
                                             if prior_sell is None:
                                                 for oid in trade_associated_order_ids(
                                                     {"order_ids_close": prior_close_order_ids}
@@ -4860,9 +4976,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                         if trade_data and sell_price is not None:
                             buy_price, position, close_method, existing_fees = trade_data
                             if not close_method:
-                                from backend.core.high_water_scalp import is_high_water_scalp
+                                from backend.core.high_water_scalp import is_high_water_family
 
-                                if is_high_water_scalp(trade_strategy) and row_status in ("open", "partial"):
+                                if is_high_water_family(trade_strategy) and row_status in ("open", "partial"):
                                     close_method = "limit_close"
                                 else:
                                     close_method = existing_close_method or "manual"
@@ -5006,9 +5122,9 @@ def confirm_close_trade(id: int, ticket_id: str) -> None:
                     
                         return
                     elif fill_val > 0:
-                        from backend.core.high_water_scalp import is_high_water_scalp
+                        from backend.core.high_water_scalp import is_high_water_family
 
-                        if is_high_water_scalp(trade_strategy) and row_status in ("open", "partial"):
+                        if is_high_water_family(trade_strategy) and row_status in ("open", "partial"):
                             _apply_high_water_partial_close(
                                 id,
                                 ticket_id,
@@ -8314,9 +8430,9 @@ def finalize_expired_trade_from_market_result(trade_id: int) -> bool:
     existing_fees_f = float(existing_fees) if existing_fees is not None else 0.0
     total_fees_f = existing_fees_f
 
-    from backend.core.high_water_scalp import is_high_water_scalp, two_leg_close_totals
+    from backend.core.high_water_scalp import is_high_water_family, two_leg_close_totals
 
-    live_hws = is_high_water_scalp(trade_strategy) and not _paper_trade_flag_is_true(paper_trade)
+    live_hws = is_high_water_family(trade_strategy) and not _paper_trade_flag_is_true(paper_trade)
     try:
         filled_qty = float(close_filled_count or 0.0)
     except (TypeError, ValueError):

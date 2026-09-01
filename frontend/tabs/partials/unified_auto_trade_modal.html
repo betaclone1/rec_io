@@ -548,6 +548,13 @@
         </div>
         <div id="highWaterScalpLimitCloseWarn" style="display:none; font-size:11px; color:#b45309; margin:4px 0 8px 0; line-height:1.35;">Limit close price should be above the price target so the GTC is a take-profit, not an immediate fill.</div>
         </div>
+        <div id="highWaterTest1LimitCloseOffsetSection" style="display:none;">
+        <label for="highWaterTest1LimitCloseOffsetSlider" style="font-size:14px; color:#333; font-weight:500;">Limit Close Offset:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="highWaterTest1LimitCloseOffsetSlider" min="1" max="50" step="1" value="1" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="highWaterTest1LimitCloseOffsetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">+0.0100</div>
+        </div>
+        </div>
 
         <div id="uatNonExpirationScalpAutoEntry">
         <label for="autoEntryDifferentialSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Differential:</label>
@@ -712,6 +719,7 @@
         </div>
         </div>
 
+        <div id="highWaterScalpStopLossPriceSection">
         <label for="stopLossPriceSlider" style="font-size:14px; color:#333; font-weight:500;">Stop Loss Price:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
           <input type="range" id="stopLossPriceSlider" min="0" max="99" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -733,6 +741,14 @@
               <button type="button" class="uat-flip-multiplier-btn" data-uat-mult="3">3x</button>
             </div>
           </div>
+        </div>
+        </div>
+        <div id="highWaterTest1StopLossOffsetSection" style="display:none;">
+        <label for="highWaterTest1StopLossOffsetSlider" style="font-size:14px; color:#333; font-weight:500;">Stop Loss Offset:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%;">
+          <input type="range" id="highWaterTest1StopLossOffsetSlider" min="1" max="99" step="1" value="10" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="highWaterTest1StopLossOffsetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">-0.1000</div>
+        </div>
         </div>
 
         <div id="htcNonFloorAutoStopControls">

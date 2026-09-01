@@ -280,13 +280,36 @@ def apply_auto_entry_settings(
             update_values.append(0.0000)
         else:
             lcp = float(lcp_raw)
-            if lcp <= 0.0 or lcp >= 1.0:
+            if lcp < 0.0:
                 return {
                     "status": "error",
                     "message": "limit_close_price must be between 0.0001 and 0.9999 (0 disables)",
                 }
-            update_fields.append("limit_close_price = %s")
-            update_values.append(round(lcp, 4))
+            if lcp == 0.0:
+                update_fields.append("limit_close_price = %s")
+                update_values.append(0.0000)
+            elif lcp >= 1.0 or lcp < 0.0001:
+                return {
+                    "status": "error",
+                    "message": "limit_close_price must be between 0.0001 and 0.9999 (0 disables)",
+                }
+            else:
+                update_fields.append("limit_close_price = %s")
+                update_values.append(round(lcp, 4))
+    if "limit_close_offset" in data:
+        lco_raw = data["limit_close_offset"]
+        if lco_raw is None or lco_raw == "":
+            update_fields.append("limit_close_offset = %s")
+            update_values.append(0.0000)
+        else:
+            lco = float(lco_raw)
+            if lco <= 0.0 or lco >= 1.0:
+                return {
+                    "status": "error",
+                    "message": "limit_close_offset must be between 0.0001 and 0.9999 (0 disables)",
+                }
+            update_fields.append("limit_close_offset = %s")
+            update_values.append(round(lco, 4))
     if "stop_verification_period_enabled" in data:
         update_fields.append("stop_verification_period_enabled = %s")
         update_values.append(bool(data["stop_verification_period_enabled"]))
@@ -379,6 +402,20 @@ def apply_auto_entry_settings(
         update_values.append(
             int(data["max_cooldown_timer"]) if data["max_cooldown_timer"] is not None else None
         )
+    if "stop_loss_offset" in data:
+        slo_raw = data["stop_loss_offset"]
+        if slo_raw is None or slo_raw == "":
+            update_fields.append("stop_loss_offset = %s")
+            update_values.append(0.0000)
+        else:
+            slo = float(slo_raw)
+            if slo <= 0.0 or slo >= 1.0:
+                return {
+                    "status": "error",
+                    "message": "stop_loss_offset must be between 0.0001 and 0.9999 (0 disables)",
+                }
+            update_fields.append("stop_loss_offset = %s")
+            update_values.append(round(slo, 4))
     if "stop_loss_price" in data:
         slp = float(data["stop_loss_price"])
         if slp < 0 or round(slp, 4) > 0.99:
@@ -548,7 +585,7 @@ def apply_auto_entry_settings(
                momentum_scalp_entry_threshold, momentum_scalp_trailing_stop_amount, momentum_scalp_profit_target,
                regime_monitor_enabled, regime_window, stop_loss_price,
                time_in_force, order_type, symbol_wide_loss_prevention,
-               limit_close_price, stop_verification_period_enabled,
+               limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled,
                stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing
     """
     sel_flip = """
@@ -594,16 +631,18 @@ def apply_auto_entry_settings(
         "order_type": str(updated_result[25]) if updated_result[25] is not None else "market",
         "symbol_wide_loss_prevention": bool(updated_result[26]) if updated_result[26] is not None else False,
         "limit_close_price": float(updated_result[27]) if updated_result[27] is not None else 0.0,
-        "stop_verification_period_enabled": bool(updated_result[28]) if updated_result[28] is not None else False,
-        "stop_verification_period_seconds": int(updated_result[29]) if updated_result[29] is not None else None,
-        "weekend_adjustment": str(updated_result[30]) if updated_result[30] is not None else "none",
-        "monitor_dupe_pairing": list(updated_result[31]) if updated_result[31] else [],
+        "limit_close_offset": float(updated_result[28]) if updated_result[28] is not None else 0.0,
+        "stop_loss_offset": float(updated_result[29]) if updated_result[29] is not None else 0.0,
+        "stop_verification_period_enabled": bool(updated_result[30]) if updated_result[30] is not None else False,
+        "stop_verification_period_seconds": int(updated_result[31]) if updated_result[31] is not None else None,
+        "weekend_adjustment": str(updated_result[32]) if updated_result[32] is not None else "none",
+        "monitor_dupe_pairing": list(updated_result[33]) if updated_result[33] else [],
     }
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[32]) if updated_result[32] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[33]) if updated_result[33] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[34]) if updated_result[34] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[35]) if updated_result[35] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[34]) if updated_result[34] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[35]) if updated_result[35] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[36]) if updated_result[36] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[37]) if updated_result[37] is not None else None
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None
