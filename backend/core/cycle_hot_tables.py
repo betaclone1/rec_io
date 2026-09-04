@@ -22,9 +22,11 @@ Env:
     ``TESTING_BTC15M_ORDERBOOK_CYCLE_PG``.
   CYCLE_HOT_SYMBOLS — comma list (default ``BTC,ETH``).
   CYCLE_SERIES_MAP — optional ``SYM:SERIES,...`` override (else built-in defaults).
-  CYCLE_HOT_OB_QUEUE_MAX — bounded OB PG queue (default ``20000``). On full, shed
-    deltas / drop rather than grow without bound (protects live Redis OB path).
-  CYCLE_HOT_OB_QUEUE_SHED — depth that triggers proactive shed (default ``15000``).
+  CYCLE_HOT_OB_QUEUE_MAX — bounded OB PG queue (default ``20000``). On full,
+    enqueue drops the item (never blocks MW). Does not shed on the ingest path.
+  CYCLE_HOT_OB_QUEUE_SHED — depth that triggers proactive shed on the OB PG
+    writer thread only (default ``15000``). Keeps latest snapshot per ticker;
+    drops queued deltas. Live Redis apply/flush must not wait on this.
 """
 
 from __future__ import annotations
@@ -571,30 +573,34 @@ def _drain_queue_to_list(q: queue.Queue) -> List[Tuple[Any, ...]]:
 
 
 def shed_ob_cycle_queue(*, reason: str = "") -> int:
-    """Discard backlog (keep one snapshot/ticker). Returns items removed."""
+    """Discard backlog (keep one snapshot/ticker). Returns items removed.
+
+    Must not run on the WS/ingest path. Drain does not hold ``_ob_lock`` so
+    concurrent ``_ob_put`` (``put_nowait``) is never stalled by shed work.
+    """
     global _ob_shed_count, _last_shed_mono
     with _ob_lock:
         q = _ob_q
-        if q is None:
-            return 0
-        items = _drain_queue_to_list(q)
-        kept = _shed_ob_queue_items(items)
-        for item in kept:
-            try:
-                q.put_nowait(item)
-            except queue.Full:
-                break
-        removed = max(0, len(items) - len(kept))
-        if removed:
-            _ob_shed_count += 1
-            _last_shed_mono = time.monotonic()
-            logger.warning(
-                "OB cycle queue shed reason=%s removed=%s kept_snapshots=%s",
-                reason or "depth",
-                removed,
-                len(kept),
-            )
-        return removed
+    if q is None:
+        return 0
+    items = _drain_queue_to_list(q)
+    kept = _shed_ob_queue_items(items)
+    for item in kept:
+        try:
+            q.put_nowait(item)
+        except queue.Full:
+            break
+    removed = max(0, len(items) - len(kept))
+    if removed:
+        _ob_shed_count += 1
+        _last_shed_mono = time.monotonic()
+        logger.warning(
+            "OB cycle queue shed reason=%s removed=%s kept_snapshots=%s",
+            reason or "depth",
+            removed,
+            len(kept),
+        )
+    return removed
 
 
 def reset_ob_cycle_queue(*, reason: str = "") -> int:
@@ -602,48 +608,55 @@ def reset_ob_cycle_queue(*, reason: str = "") -> int:
     global _ob_shed_count, _last_shed_mono
     with _ob_lock:
         q = _ob_q
-        if q is None:
-            return 0
-        items = _drain_queue_to_list(q)
-        n = len(items)
-        if n:
-            _ob_shed_count += 1
-            _last_shed_mono = time.monotonic()
-            logger.warning(
-                "OB cycle queue reset reason=%s discarded=%s",
-                reason or "reset",
-                n,
-            )
-        return n
+    if q is None:
+        return 0
+    items = _drain_queue_to_list(q)
+    n = len(items)
+    if n:
+        _ob_shed_count += 1
+        _last_shed_mono = time.monotonic()
+        logger.warning(
+            "OB cycle queue reset reason=%s discarded=%s",
+            reason or "reset",
+            n,
+        )
+    return n
+
+
+def _maybe_shed_ob_backlog_on_writer() -> None:
+    """Proactive shed from the OB PG writer only (never from ingest)."""
+    q = _ob_q
+    if q is None:
+        return
+    if q.qsize() < _ob_queue_shed_at():
+        return
+    now = time.monotonic()
+    if now - _last_shed_mono < 2.0:
+        return
+    shed_ob_cycle_queue(reason="proactive_depth_writer")
 
 
 def _ob_put(item: Tuple[Any, ...]) -> bool:
-    """Non-blocking enqueue; shed/drop under pressure so MW never blocks on PG archive."""
+    """Non-blocking enqueue only — never shed/drain on the caller thread.
+
+    On full queue, drop the item. Archive backlog pressure is handled by
+    ``_maybe_shed_ob_backlog_on_writer`` so MW Redis apply/flush stays live.
+    """
     global _enqueued, _ob_dropped
     q = _get_ob_queue()
     try:
         q.put_nowait(item)
         _enqueued += 1
         _maybe_log_depth(q, "OB cycle")
-        if q.qsize() >= _ob_queue_shed_at():
-            now = time.monotonic()
-            if now - _last_shed_mono >= 2.0:
-                shed_ob_cycle_queue(reason="proactive_depth")
         return True
     except queue.Full:
-        shed_ob_cycle_queue(reason="queue_full")
-        try:
-            q.put_nowait(item)
-            _enqueued += 1
-            return True
-        except queue.Full:
-            _ob_dropped += 1
-            if _ob_dropped == 1 or _ob_dropped % 500 == 0:
-                logger.warning(
-                    "OB cycle enqueue dropped (queue full) total_dropped=%s",
-                    _ob_dropped,
-                )
-            return False
+        _ob_dropped += 1
+        if _ob_dropped == 1 or _ob_dropped % 500 == 0:
+            logger.warning(
+                "OB cycle enqueue dropped (queue full) total_dropped=%s",
+                _ob_dropped,
+            )
+        return False
 
 
 # ---------------------------------------------------------------------------
@@ -1558,6 +1571,8 @@ def _ob_writer_loop() -> None:
     try:
         while True:
             draining = stop_seen or _ob_stop.is_set()
+            if not draining:
+                _maybe_shed_ob_backlog_on_writer()
             if draining:
                 qsize = q.qsize() if q is not None else 0
                 if qsize == 0 and not pending:
