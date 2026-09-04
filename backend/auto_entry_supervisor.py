@@ -1151,6 +1151,11 @@ def _aes_indicator_bucket() -> dict:
 previous_settings = None
 # Per-monitor: unified pool must not share one global (false STATUS CHANGE spam across monitors).
 _previous_auto_trade_status_by_monitor: Dict[str, Optional[str]] = {}
+# Display-field write throttle for monitor_list.cooldown_timer (not gate authority).
+_AES_COOLDOWN_TIMER_WRITE_MIN_SEC = float(
+    os.getenv("AES_COOLDOWN_TIMER_WRITE_MIN_SEC", "1.0")
+)
+_aes_cooldown_timer_write_state: Dict[str, Tuple[float, int]] = {}
 # Per ctx_ident(): throttle INFO for ACTIVE/INACTIVE flapping at TTC window edges (unified pool × tick rate).
 _status_change_info_log_ts: Dict[str, float] = {}
 STATUS_CHANGE_INFO_MIN_INTERVAL_SEC = 120.0
@@ -1288,18 +1293,10 @@ def load_auto_entry_state_from_db():
                         # Timer has expired or gone negative - spike alert inactive, but keep tracking elapsed time
                         remaining_minutes = remaining_seconds / 60  # Negative value shows elapsed time
                     
-                    # Always update cooldown_timer (even when negative) to show time since last spike
-                    cursor.execute(
-                        f"UPDATE {_aes_monitor_list_table()} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                        (int(remaining_seconds), ctx_mid())
-                    )
-                    
-                    conn.commit()
-                    
-                    full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
-                    _aes_preferences_notify(
-                        "cooldown_timer_change",
-                        {"monitor_id": full_monitor_id, "cooldown_timer": int(remaining_seconds)},
+                    # Display field only — spike gates use cooldown_start_time.
+                    # Throttle writes/NOTIFY to ≥1s to cut switchboard + PG load.
+                    _aes_maybe_write_cooldown_timer_display(
+                        cursor, int(remaining_seconds), commit_conn=conn
                     )
                 
                 state = {
@@ -1591,28 +1588,74 @@ def reset_cooldown_period_in_db():
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error resetting cooldown period: {e}")
 
+def _aes_maybe_write_cooldown_timer_display(
+    cursor, remaining_seconds: int, *, commit_conn=None
+) -> bool:
+    """
+    Persist monitor_list.cooldown_timer for UI display only.
+
+    Spike / entry gates must use cooldown_start_time (see
+    ``_aes_time_since_spike_seconds``), not this throttled column.
+    Returns True when a write + preferences notify ran.
+    """
+    ident = ctx_ident()
+    ri = int(remaining_seconds)
+    now = time.monotonic()
+    prev = _aes_cooldown_timer_write_state.get(ident)
+    if prev is not None:
+        pts, pval = prev
+        if (now - pts) < _AES_COOLDOWN_TIMER_WRITE_MIN_SEC and pval == ri:
+            return False
+        if (now - pts) < _AES_COOLDOWN_TIMER_WRITE_MIN_SEC:
+            return False
+    cursor.execute(
+        f"UPDATE {_aes_monitor_list_table()} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
+        (ri, ctx_mid()),
+    )
+    if commit_conn is not None:
+        commit_conn.commit()
+    _aes_cooldown_timer_write_state[ident] = (now, ri)
+    full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
+    _aes_preferences_notify(
+        "cooldown_timer_change",
+        {"monitor_id": full_monitor_id, "cooldown_timer": ri},
+    )
+    return True
+
+
+def _aes_time_since_spike_seconds() -> Optional[int]:
+    """Seconds since cooldown_start_time (authoritative); None if no active spike start."""
+    try:
+        conn = get_db_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT cooldown_start_time FROM {_aes_monitor_list_table()} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            row = cursor.fetchone()
+        conn.close()
+        if not row or row[0] is None:
+            return None
+        return int((est_now() - row[0]).total_seconds())
+    except Exception as e:
+        log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown_start_time: {e}")
+        return None
+
+
 # Legacy function for backward compatibility (will be removed)
 def update_cooldown_timer_in_db(seconds):
     """Update cooldown_timer in the database (LEGACY - will be removed)"""
     try:
-        import psycopg2
         conn = get_db_connection()
         with conn.cursor() as cursor:
-            # Update the monitor in monitor_list (now single source of truth for cooldown)
-            cursor.execute(
-                f"UPDATE {_aes_monitor_list_table()} SET cooldown_timer = %s, updated_at = CURRENT_TIMESTAMP WHERE id = %s",
-                (seconds, ctx_mid())
+            wrote = _aes_maybe_write_cooldown_timer_display(
+                cursor, int(seconds), commit_conn=conn
             )
-            
-            conn.commit()
         conn.close()
-        log_debug(f"Updated cooldown_timer to {seconds} seconds in production database (LEGACY)")
-        
-        full_monitor_id = f"mon_{ctx_user()}_{ctx_mid()}"
-        _aes_preferences_notify(
-            "cooldown_timer_change",
-            {"monitor_id": full_monitor_id, "cooldown_timer": seconds},
-        )
+        if wrote:
+            log_debug(
+                f"Updated cooldown_timer to {seconds} seconds in production database (LEGACY)"
+            )
     except Exception as e:
         log(f"[AUTO ENTRY] ❌ Error updating cooldown_timer: {e}")
 
@@ -2014,28 +2057,10 @@ def determine_auto_entry_status_momentum_contain():
         if min_cooldown_timer is None and max_cooldown_timer is None:
             return "ACTIVE"
         
-        # Get cooldown_timer from database
-        cooldown_timer = None
-        try:
-            import psycopg2
-            conn = get_db_connection()
-            with conn.cursor() as cursor:
-                cursor.execute(f"SELECT cooldown_timer FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
-                result = cursor.fetchone()
-                cooldown_timer = result[0] if result and result[0] is not None else None
-            conn.close()
-        except Exception as e:
-            log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown timer: {e}")
-        
-        # If cooldown_timer is NULL, cannot determine - return INACTIVE
-        if cooldown_timer is None:
+        # Authoritative elapsed from cooldown_start_time (not throttled cooldown_timer display).
+        time_since_spike = _aes_time_since_spike_seconds()
+        if time_since_spike is None:
             return "INACTIVE"
-        
-        # DB stores cooldown_timer as REMAINING seconds in spike cooldown (positive = in spike).
-        # min/max_cooldown_timer are "seconds since spike started" window. So: time_since_spike = total_cooldown - remaining.
-        cooldown_minutes = settings.get("spike_alert_cooldown_minutes") or 0
-        total_cooldown_seconds = int(cooldown_minutes) * 60
-        time_since_spike = total_cooldown_seconds - int(cooldown_timer) if cooldown_timer > 0 else 0
         
         # If min is set, time_since_spike must be >= min (not too close to spike start)
         if min_cooldown_timer is not None and time_since_spike < min_cooldown_timer:
@@ -3701,11 +3726,11 @@ def _aes_list_lane_monitor_rows() -> List[dict]:
 
 
 def _aes_lane_parallelism() -> int:
-    raw = os.getenv("AES_LANE_PARALLELISM", "32").strip()
+    raw = os.getenv("AES_LANE_PARALLELISM", "12").strip()
     try:
         return max(1, min(int(raw), 64))
     except (TypeError, ValueError):
-        return 32
+        return 12
 
 
 def _aes_refuse_stale_fire(stage: str) -> bool:
@@ -5992,35 +6017,16 @@ def check_auto_entry_conditions_momentum_contain():
         if not spike_alert_active:
             return
         
-        # COOLDOWN TIMER CHECK - Validate cooldown_timer is within activation window
-        # This prevents entry when cooldown_timer is outside min/max parameters
+        # COOLDOWN WINDOW CHECK — seconds since spike start (cooldown_start_time).
         min_cooldown_timer = settings.get("min_cooldown_timer")
         max_cooldown_timer = settings.get("max_cooldown_timer")
         
-        # If either min or max is set, check cooldown_timer is within window
+        # If either min or max is set, check time_since_spike is within window
         if min_cooldown_timer is not None or max_cooldown_timer is not None:
-            # Get cooldown_timer from database
-            cooldown_timer = None
-            try:
-                import psycopg2
-                conn = get_db_connection()
-                with conn.cursor() as cursor:
-                    cursor.execute(f"SELECT cooldown_timer FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
-                    result = cursor.fetchone()
-                    cooldown_timer = result[0] if result and result[0] is not None else None
-                conn.close()
-            except Exception as e:
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ❌ Error getting cooldown timer: {e}")
-            
-            # If cooldown_timer is NULL, cannot determine - skip entry
-            if cooldown_timer is None:
-                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_timer is NULL - skipping entry")
+            time_since_spike = _aes_time_since_spike_seconds()
+            if time_since_spike is None:
+                log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ cooldown_start_time is NULL - skipping entry")
                 return
-            
-            # DB stores cooldown_timer as REMAINING seconds in spike cooldown. min/max are "seconds since spike started".
-            cooldown_minutes = settings.get("spike_alert_cooldown_minutes") or 0
-            total_cooldown_seconds = int(cooldown_minutes) * 60
-            time_since_spike = total_cooldown_seconds - int(cooldown_timer) if cooldown_timer > 0 else 0
             
             if min_cooldown_timer is not None and time_since_spike < min_cooldown_timer:
                 log(f"[AUTO ENTRY MOMENTUM CONTAIN] ⏸️ time_since_spike ({time_since_spike}s) < min_cooldown_timer ({min_cooldown_timer}s) - too close to spike start - skipping entry")

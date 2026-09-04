@@ -204,7 +204,7 @@ def test_failsafe_redis_env_defaults():
 def test_strike_regen_floor_default():
     from backend import strike_table_generator_ws as sg
 
-    assert float(sg.STRIKE_REGEN_MIN_INTERVAL_SEC) >= 0.5
+    assert float(sg.STRIKE_REGEN_MIN_INTERVAL_SEC) >= 1.0
 
 
 def test_live_state_strike_feed_sync_symbols_filter(monkeypatch):

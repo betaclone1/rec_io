@@ -73,8 +73,8 @@ DEFAULT_PIPELINE_MAX_AGE_SEC = 30
 DEFAULT_PIPELINE_MAX_AGE_15M_SEC = 900
 DEFAULT_DEGRADE_CONFIRM_SEC = 30
 # Per-symbol floor between full strike regens (pub/sub can fire many times per second).
-# Env override: STRIKE_REGEN_MIN_INTERVAL_SEC (default 0.5; was 0.25).
-STRIKE_REGEN_MIN_INTERVAL_SEC = float(os.getenv("STRIKE_REGEN_MIN_INTERVAL_SEC", "0.5"))
+# Env override: STRIKE_REGEN_MIN_INTERVAL_SEC (default 1.0; was 0.5 / 0.25).
+STRIKE_REGEN_MIN_INTERVAL_SEC = float(os.getenv("STRIKE_REGEN_MIN_INTERVAL_SEC", "1.0"))
 # Longer backoff when cache/OB is dead — skip useless full regen loops (no substitute data).
 STRIKE_REGEN_DEAD_SYMBOL_BACKOFF_SEC = float(
     os.getenv("STRIKE_REGEN_DEAD_SYMBOL_BACKOFF_SEC", "5")

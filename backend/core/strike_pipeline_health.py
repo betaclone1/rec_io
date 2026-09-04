@@ -14,6 +14,10 @@ TABLE = "strike_pipeline_health"
 MARKET_15M = "15m"
 MARKET_HOURLY = "hourly"
 
+# Coalesce identical health upserts (no LISTEN/NOTIFY on this table; write volume was the cost).
+_upsert_coalesce_lock = threading.Lock()
+_upsert_coalesce_state: dict[tuple[str, str, str], tuple[bool, str, float]] = {}
+
 
 def strike_pipeline_health_strict_mode_enabled() -> bool:
     """
@@ -308,6 +312,32 @@ def upsert_strike_pipeline_health(
     reason: str,
     max_age_sec: int,
 ) -> None:
+    """
+    Upsert health row. Coalesce identical (healthy, reason) writes so STG regen
+    storms do not hammer Postgres (table has no NOTIFY trigger; write volume
+    was the cost). State *changes* always write immediately.
+    """
+    ex = exchange.strip().lower()
+    mk = market.strip().lower()
+    sy = symbol.strip().upper()
+    h = bool(healthy)
+    r = str(reason or "")
+    key = (ex, mk, sy)
+    try:
+        min_iv = float(
+            os.getenv("STRIKE_PIPELINE_HEALTH_UPSERT_MIN_INTERVAL_SEC", "5.0")
+        )
+    except (TypeError, ValueError):
+        min_iv = 5.0
+    min_iv = max(0.0, min_iv)
+    now = time.monotonic()
+    with _upsert_coalesce_lock:
+        prev = _upsert_coalesce_state.get(key)
+        if prev is not None:
+            ph, pr, pts = prev
+            if ph == h and pr == r and (now - pts) < min_iv:
+                return
+        _upsert_coalesce_state[key] = (h, r, now)
     with conn.cursor() as cur:
         cur.execute(
             f"""
@@ -323,11 +353,11 @@ def upsert_strike_pipeline_health(
                 updated_at = NOW()
             """,
             (
-                exchange.strip().lower(),
-                market.strip().lower(),
-                symbol.strip().upper(),
-                bool(healthy),
-                reason,
+                ex,
+                mk,
+                sy,
+                h,
+                r,
                 max(5, int(max_age_sec)),
             ),
         )

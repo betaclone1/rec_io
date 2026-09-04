@@ -4124,11 +4124,11 @@ def _ats_ensure_lane_hub():
             return _ats_lane_hub
         from backend.core.tradeflow_latest_only_lane import LatestOnlyLaneHub
 
-        raw = os.getenv("ATS_LANE_PARALLELISM", "32").strip()
+        raw = os.getenv("ATS_LANE_PARALLELISM", "12").strip()
         try:
             parallelism = max(1, min(int(raw), 64))
         except (TypeError, ValueError):
-            parallelism = 32
+            parallelism = 12
         _ats_lane_hub = LatestOnlyLaneHub(
             service=f"ats_{MONITOR_IDENTIFIER}",
             fetch_snap=_ats_fetch_ladder_snap,
@@ -4195,6 +4195,17 @@ def _ats_refresh_monitoring_all_bindings() -> None:
         if not ls_at.list_trades(ctx_user(), monitor_id=ctx_mid()):
             return
     update_active_trade_monitoring_data()
+
+
+def _ats_on_live_state() -> None:
+    """
+    Wake the monitoring worker on live_state.
+
+    Do not refresh marks here — the worker loop already calls
+    ``update_active_trade_monitoring_data`` on wake. Inline refresh duplicated
+    Redis/PG mark writes on every live_state event.
+    """
+    _ats_live_state_wake.set()
 
 
 def _update_monitoring_marks_redis(
@@ -4386,7 +4397,13 @@ def _update_monitoring_marks_redis(
                         "current_pnl": pnl_formatted,
                     }
                 )
-                log(f"MONITORING: Updated trade {trade_id} - symbol_price: {current_symbol_price}, market_price: {current_market_price}, buffer: {buffer_from_strike}, prob: {current_probability}, pnl: {pnl_formatted}")
+                # Match PG path: log at most once per 60s of trade age.
+                if time_since_entry % 60 == 0:
+                    log(
+                        f"MONITORING: Updated trade {trade_id} - symbol_price: {current_symbol_price}, "
+                        f"market_price: {current_market_price}, buffer: {buffer_from_strike}, "
+                        f"prob: {current_probability}, pnl: {pnl_formatted}"
+                    )
         except Exception as e:
             log(f"Error updating Redis monitoring for trade: {e}")
 
@@ -5414,13 +5431,6 @@ def start_monitoring_loop():
                 from backend.core.tradeflow_live_state_trigger import (
                     start_tradeflow_live_state_listener,
                 )
-
-                def _ats_on_live_state() -> None:
-                    _ats_live_state_wake.set()
-                    try:
-                        _ats_refresh_monitoring_all_bindings()
-                    except Exception as live_exc:
-                        log(f"live_state mark refresh failed: {live_exc}")
 
                 def _ats_on_ladder(s: str, m: str) -> None:
                     if _ATS_LANE_EXITS:
