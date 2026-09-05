@@ -206,3 +206,4 @@ backend/data/users/user_0001/credentials/quickbooks/*
 !backend/data/users/user_0001/credentials/quickbooks/env.example
 backend/data/users/user_0001/credentials/mercury/*
 !backend/data/users/user_0001/credentials/mercury/env.example
+var/prob_lookup_mmap/

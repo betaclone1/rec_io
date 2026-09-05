@@ -1,15 +1,29 @@
 """
-In-process RAM cache for analytics probability lookup tables.
+Probability lookup tables: shared mmap (Phase 2 B1) or private RAM.
 
-Used by strike_table_generator on the hot path (default ON via live_state_config).
+Default: OS-shared numpy memmap under ``var/prob_lookup_mmap/`` so STG + ATS
+processes share one physical copy per symbol (~1.6GB) instead of 4× private heaps.
+
+Fail-closed lookup semantics unchanged: missing/unloadable → ``(None, None)``;
+callers may use SQL. Never invents probability values.
+
+Env:
+  PROBABILITY_LOOKUP_RAM=0          disable RAM/mmap path entirely
+  PROB_LOOKUP_SHARED_MMAP=0         use private Python lists (legacy)
+  PROB_LOOKUP_MMAP_DIR=/path        mmap directory (default: <repo>/var/prob_lookup_mmap)
 """
 
 from __future__ import annotations
 
+import json
 import logging
 import math
+import os
 import threading
+import time
 from typing import Dict, List, Optional, Tuple
+
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -19,24 +33,64 @@ _AVAILABLE_BUCKETS = [
 ]
 _HIGH_PRECISION = frozenset({"sol", "xrp", "doge"})
 
+_ROW_DTYPE = np.dtype(
+    [
+        ("ttc", "<f8"),
+        ("buf", "<f8"),
+        ("mom", "<i4"),
+        ("pos", "<f8"),
+        ("neg", "<f8"),
+    ]
+)
+
 _lock = threading.Lock()
 _by_symbol: Dict[str, "_SymbolTable"] = {}
 
+# Magic for meta schema version (bump if layout changes).
+_META_VERSION = 1
+
 
 class _SymbolTable:
-    __slots__ = ("table_name", "max_buffer", "fine_price", "rows")
+    __slots__ = ("table_name", "max_buffer", "fine_price", "rows", "shared")
 
     def __init__(
         self,
         table_name: str,
         max_buffer: float,
         fine_price: bool,
-        rows: List[Tuple[float, float, int, float, float]],
+        rows,
+        *,
+        shared: bool,
     ):
         self.table_name = table_name
         self.max_buffer = max_buffer
         self.fine_price = fine_price
-        self.rows = rows
+        self.rows = rows  # List[tuple] or np.memmap / ndarray
+        self.shared = shared
+
+
+def _project_root() -> str:
+    return os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+
+
+def shared_mmap_enabled() -> bool:
+    raw = os.getenv("PROB_LOOKUP_SHARED_MMAP", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def mmap_dir() -> str:
+    raw = os.getenv("PROB_LOOKUP_MMAP_DIR", "").strip()
+    if raw:
+        return raw
+    return os.path.join(_project_root(), "var", "prob_lookup_mmap")
+
+
+def _meta_path(sym: str, table_name: str) -> str:
+    return os.path.join(mmap_dir(), f"{sym}_{table_name}.meta.json")
+
+
+def _bin_path(sym: str, table_name: str) -> str:
+    return os.path.join(mmap_dir(), f"{sym}_{table_name}.npy")
 
 
 def _find_latest_table(symbol: str, cursor) -> str:
@@ -56,7 +110,7 @@ def _find_latest_table(symbol: str, cursor) -> str:
     return str(results[0][0])
 
 
-def _load_symbol(symbol: str) -> _SymbolTable:
+def _fetch_rows_from_pg(symbol: str) -> Tuple[str, float, bool, np.ndarray]:
     from backend.core.config.database import get_system_postgresql_connection
 
     sym = symbol.lower()
@@ -71,38 +125,184 @@ def _load_symbol(symbol: str) -> _SymbolTable:
             FROM analytics.{table_name}
             """
         )
-        rows = [
-            (
-                float(r[0]),
-                float(r[1]),
-                int(r[2]),
-                float(r[3]),
-                float(r[4]),
-            )
-            for r in cur.fetchall()
-        ]
+        raw = cur.fetchall()
         cur.execute(f"SELECT MAX(buffer_points) FROM analytics.{table_name}")
         max_row = cur.fetchone()
         if not max_row or max_row[0] is None:
             raise ValueError(f"No buffer data in {table_name}")
         max_buffer = float(max_row[0])
         conn.close()
-        logger.info(
-            "probability_lookup_cache loaded %s rows=%s table=%s",
-            sym.upper(),
-            len(rows),
-            table_name,
-        )
-        return _SymbolTable(
-            table_name,
-            max_buffer,
-            sym in _HIGH_PRECISION,
-            rows,
-        )
     except Exception:
         if conn:
             conn.close()
         raise
+
+    arr = np.empty(len(raw), dtype=_ROW_DTYPE)
+    for i, r in enumerate(raw):
+        arr[i] = (float(r[0]), float(r[1]), int(r[2]), float(r[3]), float(r[4]))
+    return table_name, max_buffer, sym in _HIGH_PRECISION, arr
+
+
+def _try_open_mmap(sym: str, table_name: str) -> Optional[_SymbolTable]:
+    meta_p = _meta_path(sym, table_name)
+    bin_p = _bin_path(sym, table_name)
+    if not os.path.isfile(meta_p) or not os.path.isfile(bin_p):
+        return None
+    try:
+        with open(meta_p, "r", encoding="utf-8") as f:
+            meta = json.load(f)
+        if int(meta.get("meta_version", -1)) != _META_VERSION:
+            return None
+        if str(meta.get("table_name")) != table_name:
+            return None
+        nrows = int(meta["nrows"])
+        max_buffer = float(meta["max_buffer"])
+        fine_price = bool(meta["fine_price"])
+        arr = np.memmap(bin_p, dtype=_ROW_DTYPE, mode="r", shape=(nrows,))
+        if arr.shape[0] != nrows:
+            return None
+        return _SymbolTable(
+            table_name, max_buffer, fine_price, arr, shared=True
+        )
+    except Exception as e:
+        logger.warning("probability_lookup mmap open failed %s %s: %s", sym, table_name, e)
+        return None
+
+
+def _write_mmap_atomic(
+    sym: str,
+    table_name: str,
+    max_buffer: float,
+    fine_price: bool,
+    arr: np.ndarray,
+) -> _SymbolTable:
+    d = mmap_dir()
+    os.makedirs(d, exist_ok=True)
+    meta_p = _meta_path(sym, table_name)
+    bin_p = _bin_path(sym, table_name)
+    tmp_bin = bin_p + f".tmp.{os.getpid()}"
+    tmp_meta = meta_p + f".tmp.{os.getpid()}"
+    try:
+        mm = np.memmap(tmp_bin, dtype=_ROW_DTYPE, mode="w+", shape=(arr.shape[0],))
+        mm[:] = arr
+        mm.flush()
+        del mm
+        meta = {
+            "meta_version": _META_VERSION,
+            "symbol": sym,
+            "table_name": table_name,
+            "nrows": int(arr.shape[0]),
+            "max_buffer": float(max_buffer),
+            "fine_price": bool(fine_price),
+            "built_at_unix": time.time(),
+        }
+        with open(tmp_meta, "w", encoding="utf-8") as f:
+            json.dump(meta, f, separators=(",", ":"))
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_bin, bin_p)
+        os.replace(tmp_meta, meta_p)
+    finally:
+        for p in (tmp_bin, tmp_meta):
+            try:
+                if os.path.isfile(p):
+                    os.unlink(p)
+            except OSError:
+                pass
+    opened = _try_open_mmap(sym, table_name)
+    if opened is None:
+        raise RuntimeError(f"mmap write succeeded but open failed for {sym} {table_name}")
+    return opened
+
+
+def _load_symbol_shared(symbol: str) -> _SymbolTable:
+    """Load via shared mmap; build from PG under flock if missing."""
+    import fcntl
+
+    from backend.core.config.database import get_system_postgresql_connection
+
+    sym = symbol.lower()
+    conn = get_system_postgresql_connection()
+    try:
+        cur = conn.cursor()
+        table_name = _find_latest_table(sym, cur)
+        conn.close()
+    except Exception:
+        if conn:
+            conn.close()
+        raise
+
+    existing = _try_open_mmap(sym, table_name)
+    if existing is not None:
+        logger.info(
+            "probability_lookup_cache mmap attach %s rows=%s table=%s",
+            sym.upper(),
+            len(existing.rows),
+            table_name,
+        )
+        return existing
+
+    os.makedirs(mmap_dir(), exist_ok=True)
+    lock_path = os.path.join(mmap_dir(), f"{sym}_{table_name}.build.lock")
+    with open(lock_path, "a+", encoding="utf-8") as lock_f:
+        fcntl.flock(lock_f.fileno(), fcntl.LOCK_EX)
+        existing = _try_open_mmap(sym, table_name)
+        if existing is not None:
+            logger.info(
+                "probability_lookup_cache mmap attach %s rows=%s table=%s",
+                sym.upper(),
+                len(existing.rows),
+                table_name,
+            )
+            return existing
+        table_name, max_buffer, fine_price, arr = _fetch_rows_from_pg(sym)
+        built = _write_mmap_atomic(sym, table_name, max_buffer, fine_price, arr)
+        logger.info(
+            "probability_lookup_cache mmap built %s rows=%s table=%s path=%s",
+            sym.upper(),
+            len(built.rows),
+            table_name,
+            _bin_path(sym, table_name),
+        )
+        return built
+
+
+def _load_symbol_private(symbol: str) -> _SymbolTable:
+    table_name, max_buffer, fine_price, arr = _fetch_rows_from_pg(symbol)
+    rows = [
+        (float(r["ttc"]), float(r["buf"]), int(r["mom"]), float(r["pos"]), float(r["neg"]))
+        for r in arr
+    ]
+    logger.info(
+        "probability_lookup_cache loaded private %s rows=%s table=%s",
+        symbol.upper(),
+        len(rows),
+        table_name,
+    )
+    return _SymbolTable(table_name, max_buffer, fine_price, rows, shared=False)
+
+
+def _load_symbol(symbol: str) -> _SymbolTable:
+    if shared_mmap_enabled():
+        try:
+            return _load_symbol_shared(symbol)
+        except Exception as e:
+            logger.warning(
+                "probability_lookup shared mmap failed %s (%s); using private RAM",
+                symbol.upper(),
+                e,
+            )
+    return _load_symbol_private(symbol)
+
+
+def _iter_rows(cache: _SymbolTable):
+    rows = cache.rows
+    if isinstance(rows, np.ndarray):
+        for r in rows:
+            yield float(r["ttc"]), float(r["buf"]), int(r["mom"]), float(r["pos"]), float(r["neg"])
+    else:
+        for t, b, m, pos, neg in rows:
+            yield t, b, m, pos, neg
 
 
 def _nearest_momentum_bucket(momentum_bucket: int) -> int:
@@ -123,7 +323,7 @@ def _query_neighbors(
     bp = float(buffer_points)
     ttc = float(ttc_seconds)
     scored: List[Tuple[float, Tuple[float, float, float, float]]] = []
-    for t, b, m, pos, neg in cache.rows:
+    for t, b, m, pos, neg in _iter_rows(cache):
         if m != momentum_bucket:
             continue
         if t < ttc - 5 or t > ttc + 5:
@@ -228,7 +428,9 @@ def _linear(
     )
 
 
-def _lookup(cache: _SymbolTable, ttc_seconds: int, buffer_points: float, momentum_bucket: int) -> Tuple[Optional[float], Optional[float]]:
+def _lookup(
+    cache: _SymbolTable, ttc_seconds: int, buffer_points: float, momentum_bucket: int
+) -> Tuple[Optional[float], Optional[float]]:
     ttc_seconds = round(ttc_seconds / 10) * 10
     momentum_bucket = _nearest_momentum_bucket(momentum_bucket)
     bp = float(buffer_points)
@@ -279,6 +481,30 @@ def get_probability(
 
 
 def preload_symbols(symbols: Tuple[str, ...]) -> None:
-    """Warm RAM tables at strike_generator startup (optional)."""
-    for s in symbols:
+    """Warm tables at startup. BTC first (HWS priority)."""
+    ordered = sorted(
+        {str(s).strip().upper() for s in symbols if str(s).strip()},
+        key=lambda s: (0 if s == "BTC" else 1, s),
+    )
+    for s in ordered:
         get_probability(s, 300, 100.0, 10)
+
+
+def cache_info() -> Dict[str, dict]:
+    """Diagnostics: which symbols are loaded and whether shared mmap."""
+    with _lock:
+        out = {}
+        for sym, c in _by_symbol.items():
+            out[sym] = {
+                "table_name": c.table_name,
+                "max_buffer": c.max_buffer,
+                "shared": c.shared,
+                "nrows": int(len(c.rows)),
+            }
+        return out
+
+
+def clear_cache_for_tests() -> None:
+    """Unit tests only."""
+    with _lock:
+        _by_symbol.clear()

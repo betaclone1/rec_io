@@ -667,12 +667,23 @@ def run_redis_triggered(
 
     subscribed = frozenset(syms)
 
-    try:
-        from backend.core.probability_lookup_cache import preload_symbols
+    # Hourly preload is optional (default skip): BTC 15m HWS owns startup priority;
+    # hourly attaches shared mmap lazily on first lookup.
+    _skip_hourly_preload = os.getenv(
+        "STRIKE_HOURLY_SKIP_PROB_PRELOAD", "1"
+    ).strip().lower() in ("1", "true", "yes", "on")
+    if mk == "hourly" and _skip_hourly_preload:
+        logger.info(
+            "probability_lookup_cache preload skipped for hourly "
+            "(STRIKE_HOURLY_SKIP_PROB_PRELOAD; shared mmap on first use)"
+        )
+    else:
+        try:
+            from backend.core.probability_lookup_cache import preload_symbols
 
-        preload_symbols(syms)
-    except Exception as e:
-        logger.warning("probability_lookup_cache preload skipped: %s", e)
+            preload_symbols(syms)
+        except Exception as e:
+            logger.warning("probability_lookup_cache preload skipped: %s", e)
 
     for s in syms:
         _last_regen_mono.pop(s, None)

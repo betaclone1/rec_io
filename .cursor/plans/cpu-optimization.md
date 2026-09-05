@@ -1,8 +1,20 @@
 # Production CPU optimization plan
 
 **Status:** active  
-**Last audit:** 2026-09-04T17:25:08Z (`scripts/prod/prod_cpu_ram_audit.sh`)  
-**Deployed:** `e1907a12` — live OB off cycle-hot shed path (OB hot path OK overnight; **no host CPU relief**)
+**Last audit:** 2026-09-04T21:13:17Z (post Phase 1; idle ~28%, load 1m ~9–11)  
+**Deployed:** `03aee7b` — CPU OPTIMIZATION - PHASE 1
+
+## Product priority (non-negotiable)
+
+**TOP PRIORITY — not close:** **BTC 15m High Water Scalp** (and the 15m ladder / AES / ATS / TM path that feeds it).
+
+**Hourlies are an afterthought.** Do not trade 15m HWS freshness, isolation, or fail-closed behavior for hourly CPU/RAM wins.
+
+Implications for later phases:
+- **Do not merge STG (B4)** if it couples hourly failure/starvation into the 15m process — prefer keeping `strike_table_generator_ws_15m` isolated; starve or slow *hourly* first if reclaiming CPU.
+- **B1 shared prob lookup:** 15m consumers must fail closed on missing/stale cache; never let hourly preload races delay BTC 15m.
+- **Phase 3:** if splitting droplets, protect **15m ingest + trading** first; hourly can ride degraded or stay on a crowded host longer.
+- **Phase 1 B2** (`STRIKE_REGEN_MIN_INTERVAL_SEC=1.0`) applies to both gens — if 15m HWS needs tighter regen, override **15m only** via env / process-specific setting rather than rolling back host-wide for hourlies.
 
 ## Current host picture
 
@@ -75,10 +87,31 @@ Prefer work that does **not** change fire/entry semantics. Treat Exp Scalp fire-
 
 ## Phase 2 — Memory / structure
 
-| ID | Change | Benefit |
-|----|--------|---------|
-| **B1** | Shared probability lookup | Free ~4–6 GB RSS (2× strike gen + 2× ATS copies) |
-| **B4** / merge strike gens | One STG process | ~60–70% of one core + half RSS |
+**Status: implemented in tree (not deployed).** B4 deferred. Restart after deploy: both `strike_table_generator_ws_*`, both `active_trade_supervisor_*` (mmap attach / rebuild). Prefer restart **15m STG first**, then ATS, then hourly.
+
+| ID | Change | Benefit | Status |
+|----|--------|---------|--------|
+| **B1** | Shared probability lookup via numpy **mmap** (`var/prob_lookup_mmap/`, `PROB_LOOKUP_SHARED_MMAP=1` default) | One physical copy per symbol; BTC preload first; hourly STG skips startup preload by default (`STRIKE_HOURLY_SKIP_PROB_PRELOAD=1`) | **Done** |
+| **B4** / merge strike gens | One STG process | — | **Deferred / avoid** (HWS blast radius) |
+
+**Monitor (programmatic):** `scripts/diagnostics/monitor_phase2_trading_health.py`
+
+```bash
+# one-shot (exit 0/1/2 = ok/warn/critical)
+cd /opt/rec_io_server && PYTHONPATH=. venv/bin/python \
+  scripts/diagnostics/monitor_phase2_trading_health.py --once --user-no 0001
+
+# continuous after Phase 2 deploy
+nohup venv/bin/python scripts/diagnostics/monitor_phase2_trading_health.py \
+  --hours 24 --interval 60 --log logs/phase2_trading_health.log \
+  > logs/phase2_trading_health.nohup.out 2>&1 &
+```
+
+Watches: BTC 15m `strike_pipeline_health`, High Water* BTC 15m monitors, active/touched trades, mmap files, MemAvailable + STG/ATS **PSS** (RSS overcounts shared mmap).
+
+**Env:** `PROB_LOOKUP_SHARED_MMAP`, `PROB_LOOKUP_MMAP_DIR`, `STRIKE_HOURLY_SKIP_PROB_PRELOAD`, `PROBABILITY_LOOKUP_RAM`.
+
+**Note:** `ps` RSS may still look large per process; judge RAM win by `MemAvailable` and `pss_stg_ats_mb` in the monitor.
 
 ---
 
