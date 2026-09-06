@@ -109,9 +109,19 @@ nohup venv/bin/python scripts/diagnostics/monitor_phase2_trading_health.py \
 
 Watches: BTC 15m `strike_pipeline_health`, High Water* BTC 15m monitors, active/touched trades, mmap files, MemAvailable + STG/ATS **PSS** (RSS overcounts shared mmap).
 
-**Env:** `PROB_LOOKUP_SHARED_MMAP`, `PROB_LOOKUP_MMAP_DIR`, `STRIKE_HOURLY_SKIP_PROB_PRELOAD`, `PROBABILITY_LOOKUP_RAM`.
+**Env:** `PROB_LOOKUP_SHARED_MMAP`, `PROB_LOOKUP_MMAP_DIR`, `STRIKE_HOURLY_SKIP_PROB_PRELOAD`, `PROBABILITY_LOOKUP_RAM`, `PROB_LOOKUP_USE_INDEX` (default on; `0` = full scan).
 
 **Note:** `ps` RSS may still look large per process; judge RAM win by `MemAvailable` and `pss_stg_ats_mb` in the monitor.
+
+### Phase 2.1 — Indexed neighbor lookup (local first)
+
+**Status: local only (not on prod).** Same filters/interp as full scan; `(mom, round(ttc))` index into mmap rows. Tie-break `(dist, ttc, buf)` for deterministic neighbors.
+
+- Code: `backend/core/probability_lookup_cache.py`
+- Tests: `tests/unit/test_probability_lookup_index_parity.py` (incl. BTC table golden sample)
+- Rollback: `PROB_LOOKUP_USE_INDEX=0`
+- Prod: only after local observe; restart STG then ATS
+
 
 ---
 

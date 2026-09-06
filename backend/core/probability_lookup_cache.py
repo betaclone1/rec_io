@@ -7,10 +7,14 @@ processes share one physical copy per symbol (~1.6GB) instead of 4× private hea
 Fail-closed lookup semantics unchanged: missing/unloadable → ``(None, None)``;
 callers may use SQL. Never invents probability values.
 
+Neighbor search uses an in-memory (mom, ttc) index into the same rows (Phase 2.1).
+Same filters and interpolation as the full scan — not a coarser grid.
+
 Env:
   PROBABILITY_LOOKUP_RAM=0          disable RAM/mmap path entirely
   PROB_LOOKUP_SHARED_MMAP=0         use private Python lists (legacy)
   PROB_LOOKUP_MMAP_DIR=/path        mmap directory (default: <repo>/var/prob_lookup_mmap)
+  PROB_LOOKUP_USE_INDEX=0           force full-table scan (parity / debug)
 """
 
 from __future__ import annotations
@@ -51,7 +55,15 @@ _META_VERSION = 1
 
 
 class _SymbolTable:
-    __slots__ = ("table_name", "max_buffer", "fine_price", "rows", "shared")
+    __slots__ = (
+        "table_name",
+        "max_buffer",
+        "fine_price",
+        "rows",
+        "shared",
+        "index",
+        "ttcs_for_mom",
+    )
 
     def __init__(
         self,
@@ -67,6 +79,9 @@ class _SymbolTable:
         self.fine_price = fine_price
         self.rows = rows  # List[tuple] or np.memmap / ndarray
         self.shared = shared
+        self.index: Dict[Tuple[int, int], np.ndarray] = {}
+        self.ttcs_for_mom: Dict[int, Tuple[int, ...]] = {}
+        _build_mom_ttc_index(self)
 
 
 def _project_root() -> str:
@@ -75,6 +90,11 @@ def _project_root() -> str:
 
 def shared_mmap_enabled() -> bool:
     raw = os.getenv("PROB_LOOKUP_SHARED_MMAP", "1").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
+def use_index_enabled() -> bool:
+    raw = os.getenv("PROB_LOOKUP_USE_INDEX", "1").strip().lower()
     return raw not in ("0", "false", "no", "off")
 
 
@@ -91,6 +111,63 @@ def _meta_path(sym: str, table_name: str) -> str:
 
 def _bin_path(sym: str, table_name: str) -> str:
     return os.path.join(mmap_dir(), f"{sym}_{table_name}.npy")
+
+
+def _build_mom_ttc_index(table: _SymbolTable) -> None:
+    """
+    Map (momentum_bucket, round(ttc)) → row indices into ``table.rows`` sorted by buffer.
+
+    Stores only int indices (no full data copy) so mmap pages stay shareable.
+    """
+    rows = table.rows
+    n = len(rows)
+    if n == 0:
+        table.index = {}
+        table.ttcs_for_mom = {}
+        return
+
+    if isinstance(rows, np.ndarray):
+        moms = np.asarray(rows["mom"], dtype=np.int32)
+        ttcs = np.rint(np.asarray(rows["ttc"], dtype=np.float64)).astype(np.int32)
+        bufs = np.asarray(rows["buf"], dtype=np.float64)
+        order = np.lexsort((bufs, ttcs, moms))
+        moms_s = moms[order]
+        ttcs_s = ttcs[order]
+        # Contiguous groups in sorted order
+        index: Dict[Tuple[int, int], np.ndarray] = {}
+        ttcs_acc: Dict[int, List[int]] = {}
+        i = 0
+        while i < n:
+            mom = int(moms_s[i])
+            ttc_k = int(ttcs_s[i])
+            j = i + 1
+            while j < n and int(moms_s[j]) == mom and int(ttcs_s[j]) == ttc_k:
+                j += 1
+            index[(mom, ttc_k)] = order[i:j].astype(np.int64, copy=True)
+            ttcs_acc.setdefault(mom, []).append(ttc_k)
+            i = j
+        table.index = index
+        table.ttcs_for_mom = {m: tuple(sorted(set(ts))) for m, ts in ttcs_acc.items()}
+    else:
+        buckets: Dict[Tuple[int, int], List[int]] = {}
+        for i, (t, b, m, _pos, _neg) in enumerate(rows):
+            key = (int(m), int(round(float(t))))
+            buckets.setdefault(key, []).append(i)
+        for key, idxs in buckets.items():
+            idxs.sort(key=lambda i: float(rows[i][1]))
+        table.index = {
+            key: np.asarray(idxs, dtype=np.int64) for key, idxs in buckets.items()
+        }
+        ttcs_acc2: Dict[int, List[int]] = {}
+        for mom, ttc_k in table.index:
+            ttcs_acc2.setdefault(mom, []).append(ttc_k)
+        table.ttcs_for_mom = {m: tuple(sorted(set(ts))) for m, ts in ttcs_acc2.items()}
+
+    logger.info(
+        "probability_lookup_cache index built table=%s groups=%s",
+        table.table_name,
+        len(table.index),
+    )
 
 
 def _find_latest_table(symbol: str, cursor) -> str:
@@ -309,17 +386,21 @@ def _nearest_momentum_bucket(momentum_bucket: int) -> int:
     return min(_AVAILABLE_BUCKETS, key=lambda x: abs(x - momentum_bucket))
 
 
-def _query_neighbors(
+def _buffer_range(cache: _SymbolTable) -> float:
+    mb = float(cache.max_buffer)
+    if cache.fine_price:
+        return max(1e-4, mb * 0.05)
+    return max(5.0, mb * 0.01)
+
+
+def _query_neighbors_scan(
     cache: _SymbolTable,
     ttc_seconds: int,
     buffer_points: float,
     momentum_bucket: int,
 ) -> List[Tuple[float, float, float, float]]:
-    mb = float(cache.max_buffer)
-    if cache.fine_price:
-        buffer_range = max(1e-4, mb * 0.05)
-    else:
-        buffer_range = max(5.0, mb * 0.01)
+    """Full-table scan (reference implementation for parity tests)."""
+    buffer_range = _buffer_range(cache)
     bp = float(buffer_points)
     ttc = float(ttc_seconds)
     scored: List[Tuple[float, Tuple[float, float, float, float]]] = []
@@ -332,8 +413,79 @@ def _query_neighbors(
             continue
         dist = abs(t - ttc) + abs(b - bp)
         scored.append((dist, (t, b, pos, neg)))
-    scored.sort(key=lambda x: x[0])
+    # Tie-break on (ttc, buf) so scan vs index agree when distances equal.
+    scored.sort(key=lambda x: (x[0], x[1][0], x[1][1]))
     return [r[1] for r in scored[:4]]
+
+
+def _query_neighbors_indexed(
+    cache: _SymbolTable,
+    ttc_seconds: int,
+    buffer_points: float,
+    momentum_bucket: int,
+) -> List[Tuple[float, float, float, float]]:
+    """Same filters as scan; only visits (mom, ttc) groups that can match."""
+    buffer_range = _buffer_range(cache)
+    bp = float(buffer_points)
+    ttc = float(ttc_seconds)
+    ttc_lo = ttc - 5.0
+    ttc_hi = ttc + 5.0
+    buf_lo = bp - buffer_range
+    buf_hi = bp + buffer_range
+    rows = cache.rows
+    scored: List[Tuple[float, Tuple[float, float, float, float]]] = []
+    for ttc_k in cache.ttcs_for_mom.get(int(momentum_bucket), ()):
+        if float(ttc_k) + 0.5000001 < ttc_lo or float(ttc_k) - 0.5000001 > ttc_hi:
+            continue
+        idxs = cache.index.get((int(momentum_bucket), int(ttc_k)))
+        if idxs is None or idxs.size == 0:
+            continue
+        # idxs are sorted by buffer; narrow with binary search on buf.
+        if isinstance(rows, np.ndarray):
+            # idxs sorted by buffer — extract buf column for searchsorted
+            bufs = np.empty(int(idxs.size), dtype=np.float64)
+            for k, i in enumerate(idxs):
+                bufs[k] = float(rows[int(i)]["buf"])
+            left = int(np.searchsorted(bufs, buf_lo, side="left"))
+            right = int(np.searchsorted(bufs, buf_hi, side="right"))
+            for i in idxs[left:right]:
+                r = rows[int(i)]
+                t = float(r["ttc"])
+                if t < ttc_lo or t > ttc_hi:
+                    continue
+                b = float(r["buf"])
+                dist = abs(t - ttc) + abs(b - bp)
+                scored.append((dist, (t, b, float(r["pos"]), float(r["neg"]))))
+        else:
+            # list-of-tuples path
+            bufs = [float(rows[int(i)][1]) for i in idxs]
+            left = int(np.searchsorted(np.asarray(bufs, dtype=np.float64), buf_lo, side="left"))
+            right = int(np.searchsorted(np.asarray(bufs, dtype=np.float64), buf_hi, side="right"))
+            for i in idxs[left:right]:
+                t, b, _m, pos, neg = rows[int(i)]
+                t = float(t)
+                if t < ttc_lo or t > ttc_hi:
+                    continue
+                b = float(b)
+                if b < buf_lo or b > buf_hi:
+                    continue
+                dist = abs(t - ttc) + abs(b - bp)
+                scored.append((dist, (t, b, float(pos), float(neg))))
+    scored.sort(key=lambda x: (x[0], x[1][0], x[1][1]))
+    return [r[1] for r in scored[:4]]
+
+
+def _query_neighbors(
+    cache: _SymbolTable,
+    ttc_seconds: int,
+    buffer_points: float,
+    momentum_bucket: int,
+) -> List[Tuple[float, float, float, float]]:
+    if use_index_enabled() and cache.index:
+        return _query_neighbors_indexed(
+            cache, ttc_seconds, buffer_points, momentum_bucket
+        )
+    return _query_neighbors_scan(cache, ttc_seconds, buffer_points, momentum_bucket)
 
 
 def _bilinear(
