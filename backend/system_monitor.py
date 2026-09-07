@@ -219,9 +219,15 @@ class SystemMonitor:
                         ports.get(f"active_trade_supervisor_{pu}", 8034),
                     )
             
-            discovered_services["strike_table_generator_ws_hourly"] = ports.get(
-                "strike_table_generator_ws_hourly", 8014
-            )
+            if (os.getenv("REC_ENABLE_HOURLY_LIVE") or "0").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            ):
+                discovered_services["strike_table_generator_ws_hourly"] = ports.get(
+                    "strike_table_generator_ws_hourly", 8014
+                )
             discovered_services["strike_table_generator_ws_15m"] = ports.get(
                 "strike_table_generator_ws_15m", 8036
             )

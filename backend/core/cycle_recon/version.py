@@ -1,0 +1,2 @@
+SCHEMA_VERSION = "cycle_recon.v1"
+GENERATOR_VERSION = "1.0.0"

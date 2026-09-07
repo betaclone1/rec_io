@@ -2,103 +2,779 @@
 <html lang="en">
 <head>
   <script src="/js/rec_session.js"></script>
-
   <meta charset="UTF-8" />
-  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Backtester</title>
   <link rel="stylesheet" href="/styles/global.css" />
-  
-  <!-- Preload ALL critical images -->
   <link rel="preload" href="/images/icons/backtester_icon.png" as="image" type="image/png">
-  
   <script src="/js/globals.js"></script>
   <style>
-    .coming-soon-container {
-      display: flex;
-      flex-direction: column;
+    :root {
+      --cr-bg: #1e1e2f;
+      --cr-panel: #323c4e;
+      --cr-border: #4a5568;
+      --cr-text: #ffffff;
+      --cr-muted: #c4c4c4;
+      --cr-accent: #3498db;
+      --cr-warn-bg: #3d3420;
+      --cr-warn-border: #b08900;
+      --cr-warn-text: #ffe8a3;
+      --cr-err: #ff8a8a;
+      --cr-chip: #2a3344;
+      --cr-chip-on: #1f6aa5;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px 24px 40px;
+      font-family: system-ui, -apple-system, Segoe UI, sans-serif;
+      color: var(--cr-text);
+      background: var(--cr-bg);
+      line-height: 1.45;
+    }
+    .banner {
+      background: var(--cr-warn-bg);
+      border: 1px solid var(--cr-warn-border);
+      color: var(--cr-warn-text);
+      padding: 12px 14px;
+      margin-bottom: 18px;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .banner code {
+      color: #fff;
+      background: rgba(0,0,0,0.25);
+      padding: 1px 5px;
+      border-radius: 3px;
+    }
+    h1 { margin: 0 0 8px; font-size: 1.6rem; color: var(--cr-text); font-weight: 700; }
+    h2 { margin: 22px 0 10px; font-size: 1.15rem; color: var(--cr-text); font-weight: 600; }
+    .sub { color: var(--cr-muted); margin: 0 0 18px; font-size: 14px; }
+    .sub code { color: #fff; }
+    .panel {
+      background: var(--cr-panel);
+      border: 1px solid var(--cr-border);
+      border-radius: 8px;
+      padding: 16px 18px;
+      margin-bottom: 16px;
+    }
+    .row { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    @media (max-width: 900px) { .row { grid-template-columns: 1fr; } }
+    label {
+      display: block;
+      margin-top: 12px;
+      font-size: 12px;
+      font-weight: 600;
+      letter-spacing: 0.02em;
+      color: var(--cr-muted);
+    }
+    label:first-child { margin-top: 0; }
+    input[type="text"], input[type="number"], input[type="datetime-local"], input[type="search"] {
+      width: 100%;
+      margin-top: 5px;
+      padding: 9px 11px;
+      border-radius: 4px;
+      border: 1px solid var(--cr-border);
+      background: #1a2030;
+      color: #ffffff;
+      font-size: 14px;
+      font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    }
+    input::placeholder { color: #8b95a8; }
+    input:focus {
+      outline: none;
+      border-color: var(--cr-accent);
+      box-shadow: 0 0 0 2px rgba(52, 152, 219, 0.25);
+    }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 6px; }
+    .chip {
+      border: 1px solid var(--cr-border);
+      background: var(--cr-chip);
+      color: #fff;
+      padding: 7px 12px;
+      border-radius: 4px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .chip.on { background: var(--cr-chip-on); border-color: var(--cr-accent); }
+    .symbol-grid {
+      display: flex; flex-wrap: wrap; gap: 8px 14px;
+      margin-top: 8px; max-height: 120px; overflow: auto;
+    }
+    .symbol-grid label {
+      display: flex; align-items: center; gap: 6px;
+      margin: 0; font-weight: 500; color: var(--cr-text); letter-spacing: 0; cursor: pointer;
+      font-size: 13px;
+    }
+    .ticker-box {
+      margin-top: 8px;
+      border: 1px solid var(--cr-border);
+      border-radius: 6px;
+      background: #1a2030;
+      max-height: 220px;
+      overflow: auto;
+    }
+    .ticker-row {
+      display: grid;
+      grid-template-columns: 22px 1fr auto;
+      gap: 8px;
       align-items: center;
-      justify-content: center;
-      height: 100vh;
-      text-align: center;
-      padding: 20px;
+      padding: 8px 10px;
+      border-bottom: 1px solid rgba(74,85,104,0.5);
+      font-size: 12px;
     }
-    
-    .coming-soon-icon {
-      width: 120px;
-      height: 120px;
-      margin-bottom: 30px;
-      opacity: 0.7;
+    .ticker-row:last-child { border-bottom: none; }
+    .ticker-row code { color: #dbe7ff; }
+    .ticker-meta { color: var(--cr-muted); font-size: 11px; }
+    .selected-tickers {
+      margin-top: 8px;
+      display: flex; flex-wrap: wrap; gap: 6px;
     }
-    
-    .coming-soon-title {
-      font-size: 2.5rem;
-      font-weight: bold;
-      margin-bottom: 20px;
-      color: var(--text-primary);
+    .tag {
+      background: #243044;
+      border: 1px solid var(--cr-border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 12px;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
     }
-    
-    .coming-soon-subtitle {
-      font-size: 1.2rem;
-      color: var(--text-secondary);
-      margin-bottom: 30px;
-      max-width: 600px;
-      line-height: 1.6;
+    .tag button {
+      padding: 0 4px;
+      border: none;
+      background: transparent;
+      color: var(--cr-muted);
+      cursor: pointer;
+      font-size: 14px;
     }
-    
-    .feature-list {
+    .checks { margin-top: 14px; display: flex; gap: 18px; flex-wrap: wrap; font-size: 14px; }
+    .checks label {
+      display: flex; align-items: center; gap: 8px; margin: 0;
+      font-weight: 500; color: var(--cr-text); letter-spacing: 0; cursor: pointer;
+    }
+    details.advanced { margin-top: 14px; color: var(--cr-muted); font-size: 13px; }
+    details.advanced summary { cursor: pointer; color: var(--cr-text); font-weight: 600; }
+    .actions { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+    button, .btn-link {
+      padding: 9px 14px;
+      border-radius: 4px;
+      border: 1px solid var(--cr-accent);
+      background: var(--cr-accent);
+      color: #ffffff;
+      cursor: pointer;
+      font-size: 13px;
+      font-weight: 600;
+      text-decoration: none;
+      display: inline-block;
+    }
+    button.secondary, a.btn-link {
+      background: #2a3344;
+      border-color: var(--cr-border);
+      color: #ffffff;
+    }
+    button:disabled { opacity: 0.45; cursor: not-allowed; }
+    pre {
+      background: #151a26;
+      border: 1px solid var(--cr-border);
+      color: #e8edf5;
+      padding: 12px;
+      overflow: auto;
+      font-size: 12px;
+      line-height: 1.4;
+      max-height: 280px;
+      border-radius: 6px;
+      margin: 0;
+    }
+    table { border-collapse: collapse; width: 100%; font-size: 13px; color: var(--cr-text); }
+    th, td {
+      border-bottom: 1px solid var(--cr-border);
+      padding: 10px 8px;
       text-align: left;
-      max-width: 500px;
-      margin: 0 auto;
+      vertical-align: top;
     }
-    
-    .feature-list h3 {
-      color: var(--text-primary);
-      margin-bottom: 15px;
+    th { color: var(--cr-muted); font-weight: 700; }
+    td code { color: #dbe7ff; font-size: 12px; }
+    .err {
+      color: var(--cr-err);
+      background: rgba(255, 80, 80, 0.12);
+      border: 1px solid rgba(255, 80, 80, 0.35);
+      padding: 10px 12px;
+      border-radius: 6px;
+      margin: 0 0 14px;
+      font-size: 14px;
+      font-weight: 600;
     }
-    
-    .feature-list ul {
-      list-style: none;
-      padding: 0;
+    .muted { color: var(--cr-muted); font-size: 13px; }
+    .job-status {
+      display: none;
+      margin: 0 0 16px;
+      padding: 14px 16px;
+      border-radius: 8px;
+      border: 1px solid var(--cr-border);
+      background: #243044;
     }
-    
-    .feature-list li {
-      padding: 8px 0;
-      color: var(--text-secondary);
-      position: relative;
-      padding-left: 25px;
+    .job-status.on { display: block; }
+    .job-status.running {
+      border-color: #c9a227;
+      background: #3d3420;
+      color: #ffe8a3;
     }
-    
-    .feature-list li::before {
-      content: "→";
-      position: absolute;
-      left: 0;
-      color: var(--accent-color);
-      font-weight: bold;
+    .job-status.done {
+      border-color: #2e7d4f;
+      background: #1e3a2f;
+      color: #b8f0cc;
     }
+    .job-status.error {
+      border-color: rgba(255, 80, 80, 0.5);
+      background: rgba(255, 80, 80, 0.12);
+      color: var(--cr-err);
+    }
+    .job-status .title {
+      font-size: 15px;
+      font-weight: 700;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 0 0 6px;
+    }
+    .job-status .meta { font-size: 13px; opacity: 0.95; line-height: 1.5; }
+    .pulse {
+      width: 10px; height: 10px; border-radius: 50%;
+      background: #ffd34d;
+      box-shadow: 0 0 0 0 rgba(255, 211, 77, 0.7);
+      animation: pulse 1.4s infinite;
+      flex-shrink: 0;
+    }
+    @keyframes pulse {
+      0% { box-shadow: 0 0 0 0 rgba(255, 211, 77, 0.55); }
+      70% { box-shadow: 0 0 0 10px rgba(255, 211, 77, 0); }
+      100% { box-shadow: 0 0 0 0 rgba(255, 211, 77, 0); }
+    }
+    tr.running-row td { background: rgba(201, 162, 39, 0.12); }
   </style>
 </head>
 <body>
-  <div class="coming-soon-container">
-    <img src="/images/icons/backtester_icon.png" alt="Backtester" class="coming-soon-icon">
-    <h1 class="coming-soon-title">Backtester</h1>
-    <p class="coming-soon-subtitle">
-      Major initiative: dial in <strong>auto-trade settings</strong> (same dimensions as
-      <code>auto_entry_supervisor</code> and <code>monitor_list</code>), pick monitors and time ranges,
-      and review results in the browser. Today the engine runs as a CLI under
-      <code>scripts/backtest/</code>; this tab will become the interactive surface.
-    </p>
-    
-    <div class="feature-list">
-      <h3>Product direction (see repo <code>docs/BACKTESTING.md</code>)</h3>
-      <ul>
-        <li>Mirror everything the supervisor uses for <strong>entry</strong> (TTC window, prob, momentum, asks, cooldowns, etc.)</li>
-        <li>Historical + <strong>hypothetical</strong> economics (position size, fees, returns)</li>
-        <li><strong>TTC sweeps</strong> and <strong>multi-parameter search</strong> for better defaults</li>
-        <li>Elegant in-app tables and charts; export for review</li>
-        <li>Future: scheduled optimization and <strong>suggested</strong> setting updates within owner guardrails</li>
-      </ul>
+  <div class="banner">
+    <strong>Backtester</strong> — cycle reconstruction from sealed archives + Postgres trade log.
+    Times below are <code>America/New_York</code>; the backend converts to UTC.
+    Disabled in production. Requires <code>master_admin</code>.
+  </div>
+  <h1>Backtester</h1>
+  <p class="sub">Trades load from the session tenant Postgres log (live ∪ archives). Packages land under <code>cycle_recon_runs/</code>.</p>
+
+  <div id="gateErr" class="err" style="display:none;"></div>
+
+  <div id="jobStatus" class="job-status" aria-live="polite">
+    <div class="title"><span id="jobPulse" class="pulse" style="display:none;"></span><span id="jobTitle">Job</span></div>
+    <div class="meta" id="jobMeta"></div>
+  </div>
+
+  <div class="panel">
+    <div class="row">
+      <div>
+        <label>Range (Eastern)</label>
+        <div class="chips" id="rangeChips">
+          <button type="button" class="chip" data-range="24h">Prev 24h</button>
+          <button type="button" class="chip on" data-range="7d">7d</button>
+          <button type="button" class="chip" data-range="30d">30d</button>
+          <button type="button" class="chip" data-range="all">All</button>
+        </div>
+        <label>Start (Eastern)</label>
+        <input id="start_et" type="datetime-local" />
+        <label>End (Eastern)</label>
+        <input id="end_et" type="datetime-local" />
+        <p class="muted" id="boundsHint" style="margin-top:8px;">Loading catalog…</p>
+      </div>
+      <div>
+        <label>Symbols</label>
+        <div class="symbol-grid" id="symbolGrid"><span class="muted">Loading…</span></div>
+        <label>Ticker search</label>
+        <input id="tickerSearch" type="search" placeholder="Filter tickers…" />
+        <div class="ticker-box" id="tickerList"></div>
+        <div class="selected-tickers" id="selectedTickers"></div>
+        <label>Workers</label>
+        <input id="workers" type="number" value="1" min="1" max="4" />
+        <div class="checks">
+          <label><input id="offline" type="checkbox" checked /> Offline (cache only)</label>
+          <label><input id="force_refresh" type="checkbox" /> Force refresh public tape</label>
+        </div>
+        <details class="advanced">
+          <summary>Advanced</summary>
+          <label>Trade IDs (optional, comma-separated)</label>
+          <input id="trade_ids" type="text" placeholder="leave empty to use range / tickers" />
+          <label>CSV trade log override (optional)</label>
+          <input id="trade_log" type="text" placeholder="fixtures only — leave empty for Postgres" />
+        </details>
+      </div>
+    </div>
+    <div class="actions">
+      <button id="startBtn" onclick="startJob()">Start run</button>
+      <button class="secondary" onclick="refreshCatalog()">Refresh catalog</button>
+      <button class="secondary" onclick="refreshRuns()">Refresh packages</button>
+      <button class="secondary" id="cancelBtn" onclick="cancelJob()" disabled>Cancel job</button>
     </div>
   </div>
+
+  <h2>Job</h2>
+  <pre id="job">none</pre>
+
+  <h2>Packages</h2>
+  <div class="panel" id="runs"><span class="muted">Loading…</span></div>
+
+  <h2>Preview</h2>
+  <pre id="preview">Select a run</pre>
+
+  <script>
+    const API = '/api/cycle_recon';
+    const JOB_KEY = 'cycle_recon_active_job';
+    let currentJob = null;
+    let pollTimer = null;
+    let rangePreset = '7d';
+    let catalog = { symbols: [], tickers: [] };
+    let selectedSymbols = new Set();
+    let selectedTickers = new Set();
+
+    function splitCsv(v) {
+      return String(v || '').split(',').map(s => s.trim()).filter(Boolean);
+    }
+
+    function pad(n) { return String(n).padStart(2, '0'); }
+
+    function fmtBytes(n) {
+      n = Number(n) || 0;
+      if (n < 1024) return n + ' B';
+      if (n < 1024 * 1024) return (n / 1024).toFixed(1) + ' KB';
+      if (n < 1024 * 1024 * 1024) return (n / (1024 * 1024)).toFixed(1) + ' MB';
+      return (n / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+    }
+
+    function fmtElapsed(sec) {
+      sec = Math.max(0, Math.floor(Number(sec) || 0));
+      const h = Math.floor(sec / 3600);
+      const m = Math.floor((sec % 3600) / 60);
+      const s = sec % 60;
+      if (h) return h + 'h ' + pad(m) + 'm ' + pad(s) + 's';
+      if (m) return m + 'm ' + pad(s) + 's';
+      return s + 's';
+    }
+
+    function saveJobRef(job) {
+      if (!job || !job.job_id) {
+        try { localStorage.removeItem(JOB_KEY); } catch (e) {}
+        return;
+      }
+      try {
+        localStorage.setItem(JOB_KEY, JSON.stringify({
+          job_id: job.job_id,
+          run_id: job.run_id,
+          started_at: job.started_at || Date.now() / 1000,
+        }));
+      } catch (e) {}
+    }
+
+    function loadJobRef() {
+      try {
+        const raw = localStorage.getItem(JOB_KEY);
+        return raw ? JSON.parse(raw) : null;
+      } catch (e) {
+        return null;
+      }
+    }
+
+    function renderJobBanner(j) {
+      const el = document.getElementById('jobStatus');
+      const title = document.getElementById('jobTitle');
+      const meta = document.getElementById('jobMeta');
+      const pulse = document.getElementById('jobPulse');
+      if (!j) {
+        el.className = 'job-status';
+        el.classList.remove('on');
+        return;
+      }
+      const st = j.status || 'unknown';
+      const running = st === 'running' || st === 'cancel_requested';
+      el.className = 'job-status on ' + (running ? 'running' : (st === 'done' ? 'done' : 'error'));
+      pulse.style.display = running ? 'inline-block' : 'none';
+      const req = j.request || {};
+      const prog = j.progress || {};
+      title.textContent = running
+        ? ('RUNNING — ' + (j.run_id || j.job_id))
+        : ((st === 'done' ? 'DONE' : String(st).toUpperCase()) + ' — ' + (j.run_id || j.job_id));
+      const bits = [];
+      bits.push('elapsed ' + fmtElapsed(j.elapsed_s));
+      if (req.range_preset) bits.push('range ' + req.range_preset);
+      if ((req.symbols || []).length) bits.push('symbols ' + req.symbols.join(','));
+      if (req.offline) bits.push('offline');
+      if (prog.partial) bits.push('writing package (' + fmtBytes(prog.bytes) + ', ' + (prog.file_count || 0) + ' files)');
+      else if (running) bits.push('phase ' + (prog.phase || 'starting'));
+      if (j.pid_alive) bits.push('pid ' + j.pid);
+      else if (running) bits.push('process state unknown');
+      meta.textContent = bits.join(' · ');
+      document.getElementById('startBtn').disabled = running;
+      document.getElementById('cancelBtn').disabled = !running;
+    }
+
+    function toDatetimeLocalValue(d) {
+      return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) +
+        'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+    }
+
+    /** Approximate Eastern wall for datetime-local using America/New_York parts. */
+    function nowEasternParts() {
+      const fmt = new Intl.DateTimeFormat('en-US', {
+        timeZone: 'America/New_York',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', hour12: false
+      });
+      const parts = Object.fromEntries(fmt.formatToParts(new Date()).map(p => [p.type, p.value]));
+      const hour = parts.hour === '24' ? '00' : parts.hour;
+      return {
+        y: +parts.year, m: +parts.month, d: +parts.day,
+        hh: +hour, mm: +parts.minute
+      };
+    }
+
+    function applyRangePreset(preset) {
+      rangePreset = preset;
+      document.querySelectorAll('#rangeChips .chip').forEach(btn => {
+        btn.classList.toggle('on', btn.dataset.range === preset);
+      });
+      const endParts = nowEasternParts();
+      const end = new Date(endParts.y, endParts.m - 1, endParts.d, endParts.hh, endParts.mm);
+      let start = new Date(end);
+      if (preset === '24h') start = new Date(end.getTime() - 24 * 3600 * 1000);
+      else if (preset === '7d') start = new Date(end.getTime() - 7 * 24 * 3600 * 1000);
+      else if (preset === '30d') start = new Date(end.getTime() - 30 * 24 * 3600 * 1000);
+      else if (preset === 'all') {
+        document.getElementById('start_et').value = '';
+        document.getElementById('end_et').value = '';
+        return;
+      }
+      document.getElementById('start_et').value = toDatetimeLocalValue(start);
+      document.getElementById('end_et').value = toDatetimeLocalValue(end);
+    }
+
+    document.getElementById('rangeChips').addEventListener('click', (e) => {
+      const btn = e.target.closest('.chip');
+      if (!btn) return;
+      applyRangePreset(btn.dataset.range);
+      refreshCatalog();
+    });
+
+    ['start_et', 'end_et'].forEach(id => {
+      document.getElementById(id).addEventListener('change', () => {
+        rangePreset = null;
+        document.querySelectorAll('#rangeChips .chip').forEach(b => b.classList.remove('on'));
+        refreshCatalog();
+      });
+    });
+
+    async function api(path, opts) {
+      const r = await fetch(API + path, opts);
+      const text = await r.text();
+      let data = null;
+      try { data = text ? JSON.parse(text) : null; } catch (e) { data = { raw: text }; }
+      if (!r.ok) {
+        const err = (data && (data.error || data.detail)) || ('HTTP ' + r.status);
+        throw new Error(typeof err === 'string' ? err : JSON.stringify(err));
+      }
+      return data;
+    }
+
+    async function checkHealth() {
+      try {
+        const h = await api('/health');
+        document.getElementById('gateErr').style.display = 'none';
+        return h;
+      } catch (e) {
+        const el = document.getElementById('gateErr');
+        el.style.display = 'block';
+        el.textContent = 'Unavailable: ' + e.message +
+          (String(e.message).toLowerCase().includes('auth')
+            ? ' — open via /app → Backtester (logged in as master_admin), not a bare /tabs URL.'
+            : '');
+        document.getElementById('startBtn').disabled = true;
+        return null;
+      }
+    }
+
+    function catalogQuery() {
+      const q = new URLSearchParams();
+      if (rangePreset) q.set('range', rangePreset);
+      else {
+        const s = document.getElementById('start_et').value;
+        const e = document.getElementById('end_et').value;
+        if (s) q.set('start_et', s.replace('T', ' '));
+        if (e) q.set('end_et', e.replace('T', ' '));
+      }
+      return q.toString();
+    }
+
+    function renderSymbols() {
+      const el = document.getElementById('symbolGrid');
+      const rows = catalog.symbols || [];
+      if (!rows.length) {
+        el.innerHTML = '<span class="muted">No symbols in range</span>';
+        return;
+      }
+      el.innerHTML = rows.map(r => {
+        const sym = r.symbol || '(blank)';
+        const checked = selectedSymbols.has(r.symbol) ? ' checked' : '';
+        return '<label><input type="checkbox" data-symbol="' +
+          String(r.symbol).replace(/"/g, '&quot;') + '"' + checked + ' /> ' +
+          sym + ' <span class="muted">(' + r.trade_count + ')</span></label>';
+      }).join('');
+      el.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const sym = cb.getAttribute('data-symbol');
+          if (cb.checked) selectedSymbols.add(sym);
+          else selectedSymbols.delete(sym);
+          renderTickers();
+        });
+      });
+    }
+
+    function renderTickers() {
+      const q = (document.getElementById('tickerSearch').value || '').trim().toUpperCase();
+      const el = document.getElementById('tickerList');
+      let rows = catalog.tickers || [];
+      if (selectedSymbols.size) {
+        rows = rows.filter(r => selectedSymbols.has(r.symbol));
+      }
+      if (q) rows = rows.filter(r => String(r.ticker || '').toUpperCase().includes(q));
+      if (!rows.length) {
+        el.innerHTML = '<div class="ticker-row"><span class="muted">No tickers</span></div>';
+        return;
+      }
+      el.innerHTML = rows.slice(0, 200).map(r => {
+        const t = r.ticker;
+        const checked = selectedTickers.has(t) ? ' checked' : '';
+        return '<label class="ticker-row">' +
+          '<input type="checkbox" data-ticker="' + t.replace(/"/g, '&quot;') + '"' + checked + ' />' +
+          '<code>' + t + '</code>' +
+          '<span class="ticker-meta">' + (r.symbol || '') + ' · ' + r.trade_count +
+          ' · ' + (r.min_date || '') + '→' + (r.max_date || '') + '</span></label>';
+      }).join('');
+      el.querySelectorAll('input[type=checkbox]').forEach(cb => {
+        cb.addEventListener('change', () => {
+          const t = cb.getAttribute('data-ticker');
+          if (cb.checked) selectedTickers.add(t);
+          else selectedTickers.delete(t);
+          renderSelectedTags();
+        });
+      });
+      renderSelectedTags();
+    }
+
+    function renderSelectedTags() {
+      const el = document.getElementById('selectedTickers');
+      if (!selectedTickers.size) {
+        el.innerHTML = '<span class="muted">No tickers selected — run expands to all tickers for the selected symbol(s) in the time window</span>';
+        return;
+      }
+      el.innerHTML = Array.from(selectedTickers).map(t =>
+        '<span class="tag"><code>' + t + '</code><button type="button" data-rm="' + t + '">×</button></span>'
+      ).join('');
+      el.querySelectorAll('button[data-rm]').forEach(btn => {
+        btn.addEventListener('click', () => {
+          selectedTickers.delete(btn.getAttribute('data-rm'));
+          renderTickers();
+        });
+      });
+    }
+
+    document.getElementById('tickerSearch').addEventListener('input', renderTickers);
+
+    async function refreshCatalog() {
+      try {
+        catalog = await api('/trade_catalog?' + catalogQuery());
+        const b = catalog.bounds || {};
+        document.getElementById('boundsHint').textContent =
+          'Source ' + (catalog.source || 'pg') +
+          (b.start_et || b.end_et
+            ? (' · ' + (b.start_et || '…') + ' → ' + (b.end_et || '…'))
+            : ' · all dates') +
+          ' · ' + ((catalog.tickers || []).length) + ' tickers';
+        renderSymbols();
+        renderTickers();
+      } catch (e) {
+        document.getElementById('boundsHint').textContent = 'Catalog error: ' + e.message;
+        document.getElementById('symbolGrid').innerHTML = '<span class="err">' + e.message + '</span>';
+      }
+    }
+
+    async function startJob() {
+      try {
+        document.getElementById('startBtn').disabled = true;
+        const tradeLog = document.getElementById('trade_log').value.trim();
+        const body = {
+          range_preset: rangePreset,
+          start_et: rangePreset ? null : (document.getElementById('start_et').value.replace('T', ' ') || null),
+          end_et: rangePreset ? null : (document.getElementById('end_et').value.replace('T', ' ') || null),
+          symbols: Array.from(selectedSymbols),
+          tickers: Array.from(selectedTickers),
+          trade_ids: splitCsv(document.getElementById('trade_ids').value),
+          trade_log: tradeLog || null,
+          use_pg: !tradeLog,
+          workers: parseInt(document.getElementById('workers').value || '1', 10),
+          offline: document.getElementById('offline').checked,
+          force_refresh: document.getElementById('force_refresh').checked,
+        };
+        currentJob = await api('/jobs', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        saveJobRef(currentJob);
+        renderJobBanner({ ...currentJob, status: 'running', elapsed_s: 0, progress: { phase: 'starting' }, request: body });
+        document.getElementById('job').textContent = JSON.stringify(currentJob, null, 2);
+        pollJob();
+      } catch (e) {
+        document.getElementById('job').textContent = 'Error: ' + e.message;
+        document.getElementById('startBtn').disabled = false;
+        renderJobBanner(null);
+      }
+    }
+
+    async function pollJob() {
+      if (!currentJob || !currentJob.job_id) return;
+      if (pollTimer) clearTimeout(pollTimer);
+      try {
+        const j = await api('/jobs/' + currentJob.job_id);
+        currentJob = j;
+        renderJobBanner(j);
+        const slim = {
+          job_id: j.job_id,
+          run_id: j.run_id,
+          status: j.status,
+          elapsed_s: j.elapsed_s,
+          pid: j.pid,
+          pid_alive: j.pid_alive,
+          returncode: j.returncode,
+          progress: j.progress,
+          request: j.request,
+          log_tail: j.log_tail,
+        };
+        document.getElementById('job').textContent = JSON.stringify(slim, null, 2);
+        if (j.status === 'running' || j.status === 'cancel_requested') {
+          saveJobRef(j);
+          pollTimer = setTimeout(pollJob, 2000);
+          if ((Date.now() / 1000) % 10 < 2.5) refreshRuns();
+        } else {
+          saveJobRef(null);
+          document.getElementById('startBtn').disabled = false;
+          document.getElementById('cancelBtn').disabled = true;
+          refreshRuns();
+        }
+      } catch (e) {
+        document.getElementById('job').textContent = 'Poll error: ' + e.message;
+        // Keep banner if we still think it's running via packages list
+        pollTimer = setTimeout(pollJob, 5000);
+      }
+    }
+
+    async function cancelJob() {
+      if (!currentJob) return;
+      try {
+        await api('/jobs/' + currentJob.job_id + '/cancel', { method: 'POST' });
+        pollJob();
+      } catch (e) {
+        document.getElementById('job').textContent = 'Cancel error: ' + e.message;
+      }
+    }
+
+    async function resumeActiveJob() {
+      const ref = loadJobRef();
+      try {
+        const data = await api('/jobs');
+        const active = (data.active || [])[0] || null;
+        if (active) {
+          currentJob = active;
+          saveJobRef(active);
+          renderJobBanner(active);
+          pollJob();
+          return;
+        }
+      } catch (e) {
+        /* fall through to localStorage */
+      }
+      if (ref && ref.job_id) {
+        currentJob = ref;
+        renderJobBanner({ ...ref, status: 'running', progress: { phase: 'resuming' } });
+        pollJob();
+      }
+    }
+
+    async function refreshRuns() {
+      const el = document.getElementById('runs');
+      try {
+        const data = await api('/runs');
+        const rows = data.runs || [];
+        if (!rows.length) {
+          el.innerHTML = '<span class="muted">No packages yet</span>';
+          return;
+        }
+        el.innerHTML = '<table><thead><tr><th>run</th><th>markets</th><th>statuses</th><th>handoff</th><th>files</th></tr></thead><tbody>' +
+          rows.map(x => {
+            const rid = encodeURIComponent(x.run_id);
+            const running = !!x.partial || x.status === 'running';
+            const arch = x.handoff_archive || {};
+            const hasArch = arch.path || arch.filename;
+            const archCell = running
+              ? ('<span class="muted">in progress · ' + fmtBytes(x.progress_bytes) +
+                 (x.progress_files != null ? ' · ' + x.progress_files + ' files' : '') + '</span>')
+              : (hasArch
+              ? ('<a class="btn-link" href="' + API + '/runs/' + rid + '/archive">Download archive</a>' +
+                 '<div class="muted" style="margin-top:4px">' +
+                 (arch.format || '') + ' · ' + (arch.bytes != null ? fmtBytes(arch.bytes) : '') +
+                 (arch.sha256 ? '<br/>sha256 ' + String(arch.sha256).slice(0, 16) + '…' : '') +
+                 '</div>')
+              : (arch.error
+                  ? '<span class="err" style="display:inline-block;padding:4px 8px;margin:0">archive failed</span>'
+                  : '<span class="muted">no archive</span>'));
+            const statusCell = running
+              ? '<strong style="color:#ffe8a3">RUNNING</strong>'
+              : '<code>' + JSON.stringify(x.statuses || {}) + '</code>';
+            const filesCell = running
+              ? '<span class="muted">wait for finalize</span>'
+              : (
+                '<button class="secondary" onclick="previewRun(\'' + x.run_id.replace(/'/g, "\\'") + '\')">preview</button> ' +
+                '<a class="btn-link" href="' + API + '/runs/' + rid + '/file/summary.json" target="_blank" rel="noopener">summary</a> ' +
+                '<a class="btn-link" href="' + API + '/runs/' + rid + '/file/quality_report.json" target="_blank" rel="noopener">quality</a> ' +
+                '<a class="btn-link" href="' + API + '/runs/' + rid + '/file/analyst_index.json" target="_blank" rel="noopener">index</a> ' +
+                '<a class="btn-link" href="' + API + '/runs/' + rid + '/file/README.md" target="_blank" rel="noopener">readme</a>'
+              );
+            return '<tr class="' + (running ? 'running-row' : '') + '">' +
+              '<td>' + x.run_id + (running ? ' <span class="muted">.partial</span>' : '') + '</td>' +
+              '<td>' + (x.market_count ?? (running ? '…' : '')) + '</td>' +
+              '<td>' + statusCell + '</td>' +
+              '<td>' + archCell + '</td>' +
+              '<td>' + filesCell + '</td></tr>';
+          }).join('') + '</tbody></table>';
+      } catch (e) {
+        el.innerHTML = '<div class="err">' + e.message + '</div>';
+      }
+    }
+
+    async function previewRun(runId) {
+      try {
+        const data = await api('/runs/' + encodeURIComponent(runId) + '/preview');
+        document.getElementById('preview').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        document.getElementById('preview').textContent = 'Error: ' + e.message;
+      }
+    }
+
+    applyRangePreset('7d');
+    checkHealth().then(function (ok) {
+      if (ok) {
+        refreshCatalog();
+        refreshRuns();
+        resumeActiveJob();
+      }
+    });
+  </script>
 </body>
 </html>

@@ -88,6 +88,13 @@ class CascadingFailureDetector:
         
         # Service monitoring - only truly critical services
         # Core services that are always critical
+        # Hourly STG is parked by default (REC_ENABLE_HOURLY_LIVE=0); only critical when enabled.
+        _hourly_live = (os.getenv("REC_ENABLE_HOURLY_LIVE") or "0").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
         self.core_critical_services = [
             "main_app",           # Core web interface
             user_scoped_service_name("trade_manager"),       # Trade management
@@ -95,11 +102,16 @@ class CascadingFailureDetector:
             "cfbenchmarks_price_watchdog",  # Crypto index prices (BTC/ETH/SOL/XRP)
             # SPX/NDX not currently traded; uncomment to re-enable later.
             # "symbol_price_watchdog_spx", # SPX price data
-            "strike_table_generator_ws_hourly",  # WS hourly strikes → live_data.strike_table_hourly
             user_scoped_service_name("kalshi_account_sync"), # Kalshi API sync
             "market_watchdog_ws_kalshi",
             "strike_table_generator_ws_15m", # WS 15m strikes → live_data.strike_table_15m
         ]
+        if _hourly_live:
+            idx = self.core_critical_services.index("strike_table_generator_ws_15m")
+            self.core_critical_services.insert(
+                idx,
+                "strike_table_generator_ws_hourly",  # WS hourly strikes (opt-in)
+            )
         
         # Monitor-specific services will be added dynamically
         self.critical_services = self.core_critical_services.copy()

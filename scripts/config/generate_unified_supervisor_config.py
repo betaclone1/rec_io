@@ -48,6 +48,17 @@ _KALSHI_STREAM_OVERLAY_KEYS = (
 )
 
 
+def _hourly_live_streams_enabled() -> bool:
+    """
+    Hourly Kalshi live ingest + strike generation are parked by default (15m focus).
+
+    Code for hourly remains in-tree. Re-enable with REC_ENABLE_HOURLY_LIVE=1 at
+    supervisord generate time, then regenerate and restart the watchdog / hourly STG.
+    """
+    raw = (os.getenv("REC_ENABLE_HOURLY_LIVE") or "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
 def _load_kalshi_stream_symbols_overlay() -> dict:
     """Load durable stream-symbol overrides. Shell env wins over the overlay file."""
     out: dict = {}
@@ -96,6 +107,7 @@ def global_core_service_specs():
     Global autostart supervisor programs (name + script fragment).
     Shared with system_monitor service discovery — keep in sync with _generate_supervisor_content.
     """
+    mw_market = "all" if _hourly_live_streams_enabled() else "15m"
     return [
         {"name": "main_app", "script": "main.py"},
         {"name": "read_api", "script": "read_api.py"},
@@ -103,7 +115,7 @@ def global_core_service_specs():
         {"name": "cfbenchmarks_price_watchdog", "script": "cfbenchmarks_price_watchdog.py"},
         {
             "name": "market_watchdog_ws_kalshi",
-            "script": "market_watchdog_ws.py --exchange kalshi --market all",
+            "script": f"market_watchdog_ws.py --exchange kalshi --market {mw_market}",
         },
         {"name": "system_monitor", "script": "system_monitor.py"},
         {"name": "cascading_failure_detector", "script": "cascading_failure_detector.py"},
@@ -530,15 +542,23 @@ class SupervisorConfigGenerator:
                 "autostart": True,
             }
         )
+        hourly_live = _hourly_live_streams_enabled()
+        mw_market = "all" if hourly_live else "15m"
+        if not hourly_live:
+            logger.info(
+                "Hourly live streams parked (REC_ENABLE_HOURLY_LIVE!=1): "
+                "market_watchdog --market 15m; strike_table_generator_ws_hourly autostart=false"
+            )
         services.append(
             {
                 "name": "market_watchdog_ws_kalshi",
-                "script": "market_watchdog_ws.py --exchange kalshi --market all",
+                "script": f"market_watchdog_ws.py --exchange kalshi --market {mw_market}",
                 "port": ports.get("market_watchdog_ws_kalshi", 8005),
                 "environment": env_global
                 + (
                     f',MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE="{stream_overlay["MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE"]}"'
-                    if (stream_overlay.get("MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE") or "").strip()
+                    if hourly_live
+                    and (stream_overlay.get("MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE") or "").strip()
                     else ""
                 ),
                 "autostart": True,
@@ -734,7 +754,8 @@ class SupervisorConfigGenerator:
                 "script": f"strike_table_generator_ws.py --exchange kalshi --market hourly{stg_sym_suffix}",
                 "port": ports.get("strike_table_generator_ws_hourly", 8014),
                 "environment": env_global,
-                "autostart": True,
+                # Parked unless REC_ENABLE_HOURLY_LIVE=1 (15m bandwidth/CPU focus).
+                "autostart": _hourly_live_streams_enabled(),
             }
         )
         services.append(
@@ -1140,6 +1161,16 @@ environment={env_vars}
             # Historical strike archive: default publisher-only (same ladder as Redis); see historical_strike_table_archive.
             if not any(x.startswith("REC_STRIKE_TABLE_ARCHIVE_SOURCE=") for x in env_vars):
                 env_vars.append('REC_STRIKE_TABLE_ARCHIVE_SOURCE="publisher"')
+            # Park hourly snapshot markets unless hourly live streams are re-enabled.
+            if not any(x.startswith("STRIKE_SNAPSHOT_MARKETS=") for x in env_vars):
+                if _hourly_live_streams_enabled():
+                    env_vars.append('STRIKE_SNAPSHOT_MARKETS="hourly,15m"')
+                else:
+                    env_vars.append('STRIKE_SNAPSHOT_MARKETS="15m"')
+            if not any(x.startswith("REC_ENABLE_HOURLY_LIVE=") for x in env_vars):
+                env_vars.append(
+                    f'REC_ENABLE_HOURLY_LIVE="{"1" if _hourly_live_streams_enabled() else "0"}"'
+                )
 
             if rec_user_schema:
                 esc_s = str(rec_user_schema).replace("\\", "\\\\").replace('"', '\\"')

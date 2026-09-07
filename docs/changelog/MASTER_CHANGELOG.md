@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-07 — Release v3.12.6: Cycle recon / Backtester (local analysis) + hourly live park
+
+**Summary**
+- **Release: v3.12.6**
+- **Cycle reconstruction (Backtester tab):** Local-only offline/batch pipeline (`backend/core/cycle_recon/`, CLI `scripts/cycle_recon/reconstruct.py`, APIs `/api/cycle_recon/*`). Builds versioned analysis packages + handoff archives from sealed cycle archives + Postgres trade log (CSV override for fixtures). Hard-disabled when `REC_ENVIRONMENT=production`; requires `master_admin`. Does not mutate live trading, Redis, or production writes.
+- **UI:** Eastern range presets (24h / 7d / 30d / all), symbol + ticker pickers, Postgres catalog, running-job banner + in-progress package rows, archive download.
+- **Hourly live park (ops):** `REC_ENABLE_HOURLY_LIVE` default off — hourly STG not critical / not discovered; Kalshi WS market watchdog defaults to `15m` unless enabled. Example env overlay updated.
+- **Docs / tests:** `docs/CYCLE_RECONSTRUCTION_PIPELINE.md`; `docs/TRADE_LIFECYCLE_AND_AUTO_STOP_CURRENT.md`; `tests/unit/cycle_recon/*`; fixture CSV under `tests/fixtures/cycle_recon/`.
+- **No DB migrations** in this release.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-07`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `/api/cycle_recon/health` returns 403 in production (disabled); Backtester not required on prod; trading services RUNNING
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.6`
+
+---
+
 ## 2026-09-01 — Release v3.12.5: High Water Test 1 + HWS close pricing fixes
 
 **Summary**
@@ -19,15 +40,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-01`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20260901_1400_high_water_test_1_stop_loss_offset` then `down 20260901_1200_high_water_test_1`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations:
+- [x] Apply migrations:
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260901_1200_high_water_test_1`
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260901_1400_high_water_test_1_stop_loss_offset`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; High Water Test 1 monitor settings save; new monitor defaults paper; HWS limit_close closes record sell ~0.99 not 1.00
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.5`
+- [x] Verify: health 3000/8001; High Water Test 1 monitor settings save; new monitor defaults paper; HWS limit_close closes record sell ~0.99 not 1.00
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.5`
 
 ---
 

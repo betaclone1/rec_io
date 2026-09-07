@@ -207,3 +207,10 @@ backend/data/users/user_0001/credentials/quickbooks/*
 backend/data/users/user_0001/credentials/mercury/*
 !backend/data/users/user_0001/credentials/mercury/env.example
 var/prob_lookup_mmap/
+
+# Cycle recon local analysis outputs/caches
+backend/data/historical_data/cycle_recon_runs/
+backend/data/historical_data/cycle_recon_cache/
+!tests/fixtures/cycle_recon/
+!tests/fixtures/cycle_recon/**
+!tests/fixtures/cycle_recon/**/*.csv
