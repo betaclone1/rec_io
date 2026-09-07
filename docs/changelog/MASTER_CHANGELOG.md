@@ -18,12 +18,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-07`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `/api/cycle_recon/health` returns 403 in production (disabled); Backtester not required on prod; trading services RUNNING
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.6`
+- [x] Verify: health 3000/8001; `/api/cycle_recon/health` returns 403 in production (disabled); Backtester not required on prod; trading services RUNNING
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.6`
 
 ---
 
