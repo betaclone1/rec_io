@@ -11706,6 +11706,16 @@
               alert('Monitor time window has not loaded from the monitor row. Nothing was saved.');
               return;
             }
+            // Never invent strategy defaults on save (esp. falsy 0 → || 90). Existing
+            // monitors only change via loaded values the user edited, or weekend adjust.
+            function mUatRequireLoadedFinite(v, label) {
+              const n = typeof v === 'number' ? v : Number(v);
+              if (!Number.isFinite(n)) {
+                alert('Cannot save: ' + label + ' has not loaded from the monitor row. Nothing was saved.');
+                return null;
+              }
+              return n;
+            }
 
             const payload = {
               monitor_id: apiId,
@@ -11787,9 +11797,11 @@
             } else if (saveIsMB || saveIsMC) {
               // MOMENTUM BREAKOUT/CONTAIN specific fields
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
-              // Use ask price window values (ensure they're floats with 4 decimal places)
-              payload.min_ask = parseFloat(parseFloat(window.dashboardMobileContainMinAsk || 0.0000).toFixed(4));
-              payload.max_ask = parseFloat(parseFloat(window.dashboardMobileContainMaxAsk || 0.9800).toFixed(4));
+              const containMinAsk = mUatRequireLoadedFinite(window.dashboardMobileContainMinAsk, 'min ask');
+              const containMaxAsk = mUatRequireLoadedFinite(window.dashboardMobileContainMaxAsk, 'max ask');
+              if (containMinAsk === null || containMaxAsk === null) return;
+              payload.min_ask = parseFloat(containMinAsk.toFixed(4));
+              payload.max_ask = parseFloat(containMaxAsk.toFixed(4));
               // Win Streak Threshold and Loss Prevention Toggle (same as Hourly HTC)
               payload.win_streak_threshold = parseInt(document.getElementById('m_winStreak').value, 10);
               payload.loss_prevention_toggle = document.getElementById('m_lossPreventionToggle').checked;
@@ -11814,8 +11826,11 @@
               payload.performance_based_allocation = document.getElementById('m_perfAlloc').checked;
             } else if (saveIsRD) {
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
-              payload.min_probability = parseFloat(parseFloat(window.dashboardMobileMinProbability || 95.00).toFixed(1));
-              payload.max_probability = parseFloat(parseFloat(window.dashboardMobileMaxProbability || 100.00).toFixed(1));
+              const rdMinP = mUatRequireLoadedFinite(window.dashboardMobileMinProbability, 'min probability');
+              const rdMaxP = mUatRequireLoadedFinite(window.dashboardMobileMaxProbability, 'max probability');
+              if (rdMinP === null || rdMaxP === null) return;
+              payload.min_probability = parseFloat(rdMinP.toFixed(1));
+              payload.max_probability = parseFloat(rdMaxP.toFixed(1));
               payload.min_differential = parseFloat(document.getElementById('m_autoEntryDiff').value);
               payload.max_differential = (function() {
                 const v = parseFloat(document.getElementById('m_autoEntryMaxDiff').value);
@@ -11841,12 +11856,19 @@
               payload.stop_verification_period_enabled = document.getElementById('m_verifyEnabled').checked;
               payload.stop_verification_period_seconds = parseInt(document.getElementById('m_verifySeconds').value, 10);
             } else if (saveIsES) {
-              payload.min_probability = parseFloat(parseFloat(window.dashboardMobileMinProbability || 90.00).toFixed(1));
-              payload.max_probability = parseFloat(parseFloat(window.dashboardMobileMaxProbability || 100.00).toFixed(1));
-              payload.min_movement = parseFloat(parseFloat(window.dashboardMobileMinMovement || 0.00).toFixed(1));
-              payload.max_movement = parseFloat(parseFloat(window.dashboardMobileMaxMovement || 100.00).toFixed(1));
-              payload.min_ask = parseFloat(parseFloat(dashboardMobileExpirationScalpMinAsk).toFixed(4));
-              payload.max_ask = parseFloat(parseFloat(dashboardMobileExpirationScalpMaxAsk).toFixed(4));
+              const esMinP = mUatRequireLoadedFinite(window.dashboardMobileMinProbability, 'min probability');
+              const esMaxP = mUatRequireLoadedFinite(window.dashboardMobileMaxProbability, 'max probability');
+              const esMinMov = mUatRequireLoadedFinite(window.dashboardMobileMinMovement, 'min movement');
+              const esMaxMov = mUatRequireLoadedFinite(window.dashboardMobileMaxMovement, 'max movement');
+              const esMinAsk = mUatRequireLoadedFinite(dashboardMobileExpirationScalpMinAsk, 'min ask');
+              const esMaxAsk = mUatRequireLoadedFinite(dashboardMobileExpirationScalpMaxAsk, 'max ask');
+              if (esMinP === null || esMaxP === null || esMinMov === null || esMaxMov === null || esMinAsk === null || esMaxAsk === null) return;
+              payload.min_probability = parseFloat(esMinP.toFixed(1));
+              payload.max_probability = parseFloat(esMaxP.toFixed(1));
+              payload.min_movement = parseFloat(esMinMov.toFixed(1));
+              payload.max_movement = parseFloat(esMaxMov.toFixed(1));
+              payload.min_ask = parseFloat(esMinAsk.toFixed(4));
+              payload.max_ask = parseFloat(esMaxAsk.toFixed(4));
               if (saveIsHWSFamily) {
                 const ptEl = document.getElementById('m_highWaterScalpPriceTargetSlider');
                 const ptRaw = ptEl ? parseInt(ptEl.value, 10) / 100 : NaN;
@@ -11917,9 +11939,11 @@
             } else {
               // HOURLY HTC / REVERSE HTC specific fields
               payload.min_volume = parseInt(document.getElementById('m_autoEntryMinVolume').value, 10);
-              // Use probability window values (ensure they're floats with 1 decimal)
-              payload.min_probability = parseFloat(parseFloat(window.dashboardMobileMinProbability || 95.00).toFixed(1));
-              payload.max_probability = parseFloat(parseFloat(window.dashboardMobileMaxProbability || 100.00).toFixed(1));
+              const htcMinP = mUatRequireLoadedFinite(window.dashboardMobileMinProbability, 'min probability');
+              const htcMaxP = mUatRequireLoadedFinite(window.dashboardMobileMaxProbability, 'max probability');
+              if (htcMinP === null || htcMaxP === null) return;
+              payload.min_probability = parseFloat(htcMinP.toFixed(1));
+              payload.max_probability = parseFloat(htcMaxP.toFixed(1));
               payload.min_differential = parseFloat(document.getElementById('m_autoEntryDiff').value);
               payload.max_differential = (function() {
                 const v = parseFloat(document.getElementById('m_autoEntryMaxDiff').value);
