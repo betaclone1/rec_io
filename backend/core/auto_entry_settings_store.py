@@ -91,6 +91,85 @@ def monitor_list_flip_columns_available(
     return cursor.fetchone() is not None
 
 
+def monitor_list_position_risk_columns_available(
+    cursor,
+    table_name: Optional[str] = None,
+    *,
+    tenant_context: Optional[TenantContext] = None,
+) -> bool:
+    """True when position_risk_* migration has been applied."""
+    ctx = tenant_context if tenant_context is not None else _cursor_tenant_context(cursor)
+    tn = table_name or f"monitor_list_{ctx.user_no}"
+    cursor.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s AND column_name = 'position_risk_mode'
+        LIMIT 1
+        """,
+        (ctx.pg_schema, tn),
+    )
+    return cursor.fetchone() is not None
+
+
+def _boolish(v: Any) -> bool:
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes", "on")
+    return bool(v)
+
+
+def _validate_position_risk_settings(
+    cursor,
+    ml: str,
+    monitor_id: str,
+    data: Dict[str, Any],
+) -> Optional[Dict[str, Any]]:
+    """Validate mode/policy/book_only. Return error dict or None if ok."""
+    from backend.core.position_risk import POLICY_ALLOWLIST, POSITION_RISK_MODES
+    from backend.core.position_risk.safety import looks_like_production_host
+
+    mode_in = "position_risk_mode" in data
+    policy_in = "position_risk_policy" in data
+    book_in = "position_risk_book_only_enabled" in data
+    if not (mode_in or policy_in or book_in):
+        return None
+
+    if mode_in:
+        mode = str(data.get("position_risk_mode") or "").strip().lower()
+        if mode not in POSITION_RISK_MODES:
+            return {
+                "status": "error",
+                "message": f"position_risk_mode must be one of {sorted(POSITION_RISK_MODES)}",
+            }
+        if mode == "paper":
+            if looks_like_production_host():
+                return {
+                    "status": "error",
+                    "message": "position_risk_mode=paper rejected on production-looking host",
+                }
+            cursor.execute(f"SELECT paper_trade FROM {ml} WHERE id = %s", (monitor_id,))
+            row = cursor.fetchone()
+            paper = bool(row[0]) if row else False
+            # If this same request also sets paper_trade, use the incoming value.
+            if "paper_trade" in data:
+                paper = _boolish(data["paper_trade"])
+            elif "test_filter" in data and _boolish(data["test_filter"]):
+                paper = True
+            if not paper:
+                return {
+                    "status": "error",
+                    "message": "position_risk_mode=paper requires paper_trade=true",
+                }
+
+    if policy_in:
+        policy = str(data.get("position_risk_policy") or "").strip()
+        if policy not in POLICY_ALLOWLIST:
+            return {
+                "status": "error",
+                "message": f"position_risk_policy must be one of {sorted(POLICY_ALLOWLIST)}",
+            }
+    return None
+
+
 def apply_auto_entry_settings(
     cursor,
     monitor_id: str,
@@ -118,6 +197,14 @@ def apply_auto_entry_settings(
         return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
 
     has_flip_cols = monitor_list_flip_columns_available(cursor, tenant_context=ctx)
+    has_position_risk_cols = monitor_list_position_risk_columns_available(
+        cursor, tenant_context=ctx
+    )
+
+    if has_position_risk_cols:
+        pr_err = _validate_position_risk_settings(cursor, ml, str(monitor_id), data)
+        if pr_err is not None:
+            return pr_err
 
     update_fields = []
     update_values = []
@@ -426,6 +513,17 @@ def apply_auto_entry_settings(
         update_fields.append("stop_loss_price = %s")
         update_values.append(round(slp, 4))
 
+    if has_position_risk_cols:
+        if "position_risk_mode" in data:
+            update_fields.append("position_risk_mode = %s")
+            update_values.append(str(data["position_risk_mode"]).strip().lower())
+        if "position_risk_policy" in data:
+            update_fields.append("position_risk_policy = %s")
+            update_values.append(str(data["position_risk_policy"]).strip())
+        if "position_risk_book_only_enabled" in data:
+            update_fields.append("position_risk_book_only_enabled = %s")
+            update_values.append(_boolish(data["position_risk_book_only_enabled"]))
+
     if "min_ask_range" in data:
         mar = data["min_ask_range"]
         if mar is None:
@@ -591,10 +689,18 @@ def apply_auto_entry_settings(
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
     """
+    sel_pr = """
+               , position_risk_mode, position_risk_policy, position_risk_book_only_enabled
+    """
     cursor.execute(
-        (sel_base + (sel_flip if has_flip_cols else "") + f"""
+        (
+            sel_base
+            + (sel_flip if has_flip_cols else "")
+            + (sel_pr if has_position_risk_cols else "")
+            + f"""
         FROM {ml} WHERE id = %s
-        """).replace("\n", " "),
+        """
+        ).replace("\n", " "),
         (monitor_id,),
     )
     updated_result = cursor.fetchone()
@@ -638,14 +744,24 @@ def apply_auto_entry_settings(
         "weekend_adjustment": str(updated_result[32]) if updated_result[32] is not None else "none",
         "monitor_dupe_pairing": list(updated_result[33]) if updated_result[33] else [],
     }
+    idx = 34
     if has_flip_cols:
-        out["flip_sell_prob"] = bool(updated_result[34]) if updated_result[34] is not None else False
-        out["flip_sell_prob_mult"] = str(updated_result[35]) if updated_result[35] is not None else None
-        out["flip_sell_floor"] = bool(updated_result[36]) if updated_result[36] is not None else False
-        out["flip_sell_floor_mult"] = str(updated_result[37]) if updated_result[37] is not None else None
+        out["flip_sell_prob"] = bool(updated_result[idx]) if updated_result[idx] is not None else False
+        out["flip_sell_prob_mult"] = str(updated_result[idx + 1]) if updated_result[idx + 1] is not None else None
+        out["flip_sell_floor"] = bool(updated_result[idx + 2]) if updated_result[idx + 2] is not None else False
+        out["flip_sell_floor_mult"] = str(updated_result[idx + 3]) if updated_result[idx + 3] is not None else None
+        idx += 4
     else:
         out["flip_sell_prob"] = False
         out["flip_sell_prob_mult"] = None
         out["flip_sell_floor"] = False
         out["flip_sell_floor_mult"] = None
+    if has_position_risk_cols:
+        out["position_risk_mode"] = str(updated_result[idx] or "legacy")
+        out["position_risk_policy"] = str(updated_result[idx + 1] or "hws_lvw_v1")
+        out["position_risk_book_only_enabled"] = bool(updated_result[idx + 2]) if updated_result[idx + 2] is not None else False
+    else:
+        out["position_risk_mode"] = "legacy"
+        out["position_risk_policy"] = "hws_lvw_v1"
+        out["position_risk_book_only_enabled"] = False
     return out

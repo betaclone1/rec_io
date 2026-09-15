@@ -110,6 +110,66 @@ def _pid_alive(pid: Optional[int]) -> bool:
         return False
 
 
+def _kill_job_process(pid: Optional[int]) -> Dict[str, Any]:
+    """SIGTERM then SIGKILL; prefer process-group kill when started with start_new_session."""
+    if not pid:
+        return {"killed": False, "reason": "no_pid"}
+    pid_i = int(pid)
+    errors: List[str] = []
+
+    def _sig(sig: int) -> None:
+        try:
+            os.killpg(pid_i, sig)
+            return
+        except Exception:
+            pass
+        try:
+            os.kill(pid_i, sig)
+        except ProcessLookupError:
+            pass
+        except Exception as e:
+            errors.append(str(e))
+
+    _sig(15)
+    time.sleep(0.4)
+    if _pid_alive(pid_i):
+        _sig(9)
+        time.sleep(0.2)
+    return {"killed": not _pid_alive(pid_i), "pid": pid_i, "errors": errors}
+
+
+def _abandon_partial(run_id: str) -> Optional[str]:
+    """Rename ``{run_id}.partial`` so it no longer looks like an active job."""
+    if not run_id:
+        return None
+    partial = _runs_root() / f"{run_id}.partial"
+    if not partial.is_dir():
+        return None
+    dest = _runs_root() / f"{run_id}.cancelled.{int(time.time())}"
+    try:
+        partial.rename(dest)
+        return str(dest)
+    except Exception:
+        return None
+
+
+def _mark_job_finished(job: Dict[str, Any], status: str, *, note: Optional[str] = None) -> Dict[str, Any]:
+    job = dict(job)
+    job["status"] = status
+    job["finished_at"] = time.time()
+    if note:
+        prev = str(job.get("stderr_tail") or "")
+        job["stderr_tail"] = (prev + "\n" + note).strip() if prev else note
+    jid = str(job.get("job_id") or "")
+    with _LOCK:
+        if jid and jid in _JOBS:
+            _JOBS[jid].update(job)
+            _write_job_meta(_JOBS[jid])
+        elif jid:
+            _write_job_meta(job)
+    return job
+
+
 def _partial_progress(run_id: str) -> Dict[str, Any]:
     root = _runs_root()
     partial = root / f"{run_id}.partial"
@@ -144,7 +204,6 @@ def _enrich_job(job: Dict[str, Any]) -> Dict[str, Any]:
     out["pid_alive"] = _pid_alive(out.get("pid"))
     run_id = str(out.get("run_id") or "")
     out["progress"] = _partial_progress(run_id) if run_id else {}
-    # Live log while running (stdout/stderr redirected to file)
     log_p = _job_log_path(str(out.get("job_id") or ""))
     if log_p.is_file():
         try:
@@ -156,18 +215,24 @@ def _enrich_job(job: Dict[str, Any]) -> Dict[str, Any]:
         out["log_tail"] = _sanitize_text(
             str(out.get("stderr_tail") or "") + "\n" + str(out.get("stdout_tail") or "")
         )
-    # Reconcile status if process died but meta still says running
+    # Dead process must not stay "running" forever because a .partial dir remains
     if out.get("status") in ("running", "cancel_requested") and not out["pid_alive"]:
-        partial = (out.get("progress") or {}).get("partial")
         final = (_runs_root() / run_id).is_dir() if run_id else False
         if final:
-            out["status"] = "done"
-            out["finished_at"] = out.get("finished_at") or now
-        elif not partial:
-            out["status"] = "error"
-            out["finished_at"] = out.get("finished_at") or now
-            if not out.get("stderr_tail") and out.get("log_tail"):
-                out["stderr_tail"] = out["log_tail"]
+            reconciled = "done"
+        elif out.get("status") == "cancel_requested":
+            reconciled = "cancelled"
+        else:
+            reconciled = "error"
+        out["status"] = reconciled
+        out["finished_at"] = out.get("finished_at") or now
+        # Persist so list_jobs stops treating this as active
+        try:
+            _mark_job_finished(out, reconciled)
+        except Exception:
+            pass
+        if reconciled == "error" and not out.get("stderr_tail") and out.get("log_tail"):
+            out["stderr_tail"] = out["log_tail"]
     out["stdout_tail"] = _sanitize_text(str(out.get("stdout_tail") or ""))
     out["stderr_tail"] = _sanitize_text(str(out.get("stderr_tail") or ""))
     return out
@@ -378,7 +443,12 @@ def list_jobs():
         }
     enriched = [_enrich_job(j) for j in jobs.values()]
     enriched.sort(key=lambda x: float(x.get("started_at") or 0), reverse=True)
-    active = [j for j in enriched if j.get("status") in ("running", "cancel_requested")]
+    # Only truly live processes count as active (dead+partial used to stick forever)
+    active = [
+        j
+        for j in enriched
+        if j.get("status") in ("running", "cancel_requested") and j.get("pid_alive")
+    ]
     return {"jobs": enriched[:30], "active": active}
 
 
@@ -618,6 +688,7 @@ def start_job(body: RunBody):
                 stdout=log_f,
                 stderr=subprocess.STDOUT,
                 text=True,
+                start_new_session=True,
             )
             with _LOCK:
                 _JOBS[job_id]["pid"] = proc.pid
@@ -634,7 +705,11 @@ def start_job(body: RunBody):
         except Exception:
             pass
         with _LOCK:
-            _JOBS[job_id]["status"] = "done" if rc == 0 else "error"
+            cur = str(_JOBS[job_id].get("status") or "")
+            if cur in ("cancel_requested", "cancelled"):
+                _JOBS[job_id]["status"] = "cancelled"
+            else:
+                _JOBS[job_id]["status"] = "done" if rc == 0 else "error"
             _JOBS[job_id]["returncode"] = rc
             _JOBS[job_id]["stdout_tail"] = log_tail
             _JOBS[job_id]["stderr_tail"] = log_tail
@@ -679,20 +754,56 @@ def cancel_job(job_id: str):
     denied = _gate()
     if denied is not None:
         return denied
-    job = _load_job(job_id)
+    jid = str(job_id).strip()
+    job = _load_job(jid)
     if not job:
-        raise HTTPException(404, "job not found")
+        # Orphan partial: job_id may be "manual_24h_btc" or full "ui_…"
+        run_guess = jid if jid.startswith("ui_") else f"ui_{jid}"
+        prog = _partial_progress(run_guess)
+        if not prog.get("partial"):
+            raise HTTPException(404, "job not found")
+        job = {
+            "job_id": jid[3:] if jid.startswith("ui_") else jid,
+            "run_id": run_guess,
+            "status": "running",
+            "started_at": time.time(),
+            "source": "partial_dir",
+        }
+        jid = str(job["job_id"])
+
+    run_id = str(job.get("run_id") or f"ui_{jid}")
     pid = job.get("pid")
     with _LOCK:
-        if job_id in _JOBS:
-            _JOBS[job_id]["status"] = "cancel_requested"
-            _write_job_meta(_JOBS[job_id])
+        if jid in _JOBS:
+            _JOBS[jid]["status"] = "cancel_requested"
+            _write_job_meta(_JOBS[jid])
         else:
             job["status"] = "cancel_requested"
             _write_job_meta(job)
-    if pid:
-        try:
-            os.kill(int(pid), 15)
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
-    return {"ok": True}
+
+    kill_info = _kill_job_process(pid if pid else None)
+    try:
+        for line in subprocess.check_output(["ps", "aux"], text=True).splitlines():
+            if "reconstruct.py" in line and run_id in line:
+                try:
+                    kill_info = _kill_job_process(int(line.split()[1]))
+                except Exception:
+                    pass
+    except Exception:
+        pass
+
+    abandoned = _abandon_partial(run_id)
+    finished = _mark_job_finished(
+        {**job, "job_id": jid, "run_id": run_id, "pid": pid},
+        "cancelled",
+        note="cancelled by operator"
+        + (f"; abandoned={abandoned}" if abandoned else "")
+        + f"; kill={kill_info}",
+    )
+    return {
+        "ok": True,
+        "status": "cancelled",
+        "job": _enrich_job(finished),
+        "kill": kill_info,
+        "abandoned_partial": abandoned,
+    }

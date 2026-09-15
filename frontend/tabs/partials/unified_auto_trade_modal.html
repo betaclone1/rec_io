@@ -743,6 +743,22 @@
           </div>
         </div>
         </div>
+        <div id="highWaterPositionRiskSection" style="display:none; margin:12px 0 16px 0;">
+          <label for="positionRiskMode" style="font-size:14px; color:#333; font-weight:500;">Position Risk Mode:</label>
+          <select id="positionRiskMode" style="width:100%; margin:6px 0 12px 0; padding:8px;">
+            <option value="legacy">legacy</option>
+            <option value="shadow">shadow</option>
+            <option value="paper">paper</option>
+          </select>
+          <label for="positionRiskPolicy" style="font-size:14px; color:#333; font-weight:500;">Position Risk Policy:</label>
+          <select id="positionRiskPolicy" style="width:100%; margin:6px 0 12px 0; padding:8px;">
+            <option value="hws_lvw_v1">hws_lvw_v1</option>
+          </select>
+          <label style="display:flex; align-items:center; gap:8px; font-size:13px; color:#666;">
+            <input type="checkbox" id="positionRiskBookOnlyEnabled" style="width:16px; height:16px;" />
+            Book-only marginal (when public tape UNKNOWN)
+          </label>
+        </div>
         <div id="highWaterTest1StopLossOffsetSection" style="display:none;">
         <label for="highWaterTest1StopLossOffsetSlider" style="font-size:14px; color:#333; font-weight:500;">Stop Loss Offset:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">

@@ -2644,6 +2644,9 @@ def _strategy_defaults_tuple_to_dict(result) -> Dict[str, Any]:
         "stop_loss_offset": _f(result[53]) if len(result) > 53 else None,
         "stop_verification_period_enabled": _b(result[54]) if len(result) > 54 else None,
         "stop_verification_period_seconds": _i(result[55]) if len(result) > 55 else None,
+        "position_risk_mode": str(result[56]) if len(result) > 56 and result[56] is not None else "legacy",
+        "position_risk_policy": str(result[57]) if len(result) > 57 and result[57] is not None else "hws_lvw_v1",
+        "position_risk_book_only_enabled": _b(result[58]) if len(result) > 58 else False,
     }
 
 
@@ -2674,7 +2677,8 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             time_in_force, order_type,
             simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult,
-            limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled, stop_verification_period_seconds
+            limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled, stop_verification_period_seconds,
+            position_risk_mode, position_risk_policy, position_risk_book_only_enabled
         FROM {}
         WHERE name = %s
         """
@@ -2705,7 +2709,8 @@ def _fetch_strategy_defaults_row(cursor, table_ident, strategy_name):
             time_in_force, order_type,
             simulated_trade_loss_prevention, symbol_wide_loss_prevention, loss_prevention_duration, simulated_loss_prevention_cooldown_start_time,
             flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult,
-            limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled, stop_verification_period_seconds
+            limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled, stop_verification_period_seconds,
+            position_risk_mode, position_risk_policy, position_risk_book_only_enabled
         FROM {}
         WHERE LOWER(name) = LOWER(%s)
         """
@@ -3050,12 +3055,13 @@ def create_monitor():
                  original_loss_prevention_cooldown_start_time, loss_prevention_cooldown_loss_count,
                  live_loss_prevention_cooldown_start_time,
                  flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price, min_slippage, limit_close_price, limit_close_offset, stop_loss_offset,
-                 stop_verification_period_enabled, stop_verification_period_seconds)
+                 stop_verification_period_enabled, stop_verification_period_seconds,
+                 position_risk_mode, position_risk_policy, position_risk_book_only_enabled)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -3150,6 +3156,9 @@ def create_monitor():
                     if strategy_defaults.get('stop_verification_period_seconds') is not None
                     else 1
                 ),
+                str(strategy_defaults.get('position_risk_mode') or 'legacy'),
+                str(strategy_defaults.get('position_risk_policy') or 'hws_lvw_v1'),
+                bool(strategy_defaults.get('position_risk_book_only_enabled', False)),
                 ),
             )
 

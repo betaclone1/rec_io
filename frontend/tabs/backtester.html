@@ -399,10 +399,8 @@
       pulse.style.display = running ? 'inline-block' : 'none';
       const req = j.request || {};
       const prog = j.progress || {};
-      title.textContent = running
-        ? ('RUNNING — ' + (j.run_id || j.job_id))
-        : ((st === 'done' ? 'DONE' : String(st).toUpperCase()) + ' — ' + (j.run_id || j.job_id));
-      const bits = [];
+      const label = st === 'cancelled' ? 'CANCELLED' : (running ? 'RUNNING' : (st === 'done' ? 'DONE' : String(st).toUpperCase()));
+      title.textContent = label + ' — ' + (j.run_id || j.job_id);      const bits = [];
       bits.push('elapsed ' + fmtElapsed(j.elapsed_s));
       if (req.range_preset) bits.push('range ' + req.range_preset);
       if ((req.symbols || []).length) bits.push('symbols ' + req.symbols.join(','));
@@ -676,12 +674,23 @@
     }
 
     async function cancelJob() {
-      if (!currentJob) return;
+      const ref = currentJob || loadJobRef();
+      if (!ref || !ref.job_id) {
+        document.getElementById('job').textContent = 'Cancel: no active job id';
+        return;
+      }
       try {
-        await api('/jobs/' + currentJob.job_id + '/cancel', { method: 'POST' });
-        pollJob();
+        document.getElementById('cancelBtn').disabled = true;
+        const res = await api('/jobs/' + ref.job_id + '/cancel', { method: 'POST' });
+        currentJob = (res && res.job) || { ...ref, status: 'cancelled' };
+        saveJobRef(null);
+        renderJobBanner(currentJob);
+        document.getElementById('job').textContent = JSON.stringify(res, null, 2);
+        document.getElementById('startBtn').disabled = false;
+        refreshRuns();
       } catch (e) {
         document.getElementById('job').textContent = 'Cancel error: ' + e.message;
+        document.getElementById('cancelBtn').disabled = false;
       }
     }
 

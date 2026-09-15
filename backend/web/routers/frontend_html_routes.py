@@ -140,6 +140,18 @@ async def serve_log_viewer():
     return HTMLResponse(content="<h1>Log Viewer not found</h1>", status_code=404)
 
 
+@frontend_html_router.get("/position_risk_audit.html", response_class=HTMLResponse)
+async def serve_position_risk_audit(request: Request):
+    if AUTH_ENABLED:
+        if not query_token_auth_ok(request):
+            return RedirectResponse(url="/login")
+    file_path = f"{frontend_dir}/tabs/position_risk_audit.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r") as f:
+            return HTMLResponse(content=f.read(), headers=_html_no_cache_headers())
+    return HTMLResponse(content="Position risk audit page not found", status_code=404)
+
+
 @frontend_html_router.get("/styles/{filename:path}")
 async def serve_css(filename: str):
     file_path = f"{frontend_dir}/styles/{filename}"

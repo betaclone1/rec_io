@@ -1,0 +1,93 @@
+{
+  "name": "gradual_collapse_reference_v1",
+  "frames": [
+    {
+      "t_ms": 0,
+      "seq": 1,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.98": "500"
+      }
+    },
+    {
+      "t_ms": 2000,
+      "seq": 2,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.97": "500"
+      }
+    },
+    {
+      "t_ms": 5000,
+      "seq": 3,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.96": "500"
+      }
+    },
+    {
+      "t_ms": 7600,
+      "seq": 4,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.949": "500"
+      }
+    },
+    {
+      "t_ms": 10000,
+      "seq": 5,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.93": "500"
+      }
+    },
+    {
+      "t_ms": 13500,
+      "seq": 6,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.899": "500"
+      }
+    },
+    {
+      "t_ms": 17000,
+      "seq": 7,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.89": "500"
+      }
+    },
+    {
+      "t_ms": 20200,
+      "seq": 8,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.88": "500"
+      }
+    }
+  ]
+}

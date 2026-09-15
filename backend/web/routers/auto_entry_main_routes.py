@@ -31,13 +31,20 @@ async def get_auto_entry_settings(monitor_id: str = None):
         return {"status": "error", "message": "Monitor ID required"}
 
     try:
-        from backend.core.auto_entry_settings_store import monitor_list_flip_columns_available
+        from backend.core.auto_entry_settings_store import (
+            monitor_list_flip_columns_available,
+            monitor_list_position_risk_columns_available,
+        )
 
         conn = get_postgresql_connection()
         with conn.cursor() as cursor:
             has_flip = monitor_list_flip_columns_available(cursor)
+            has_pr = monitor_list_position_risk_columns_available(cursor)
             sel_flip = """
                        , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
+            """
+            sel_pr = """
+                       , position_risk_mode, position_risk_policy, position_risk_book_only_enabled
             """
             tenant_user_no = effective_tenant_context_for_sql_rewrite().user_no
             ml = legacy_users_monitor_list(tenant_user_no)
@@ -65,6 +72,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                          stop_loss_offset, min_buffer_pct, stop_verification_period_enabled,
                          stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing
             """
+                + (sel_pr if has_pr else "")
                 + f"""
                 FROM {ml} WHERE id = %s
             """
@@ -181,6 +189,15 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 row["monitor_dupe_pairing"] = (
                     [int(x) for x in raw_pairs if x is not None] if raw_pairs else []
                 )
+                pr_base = _sw_i + 16
+                if has_pr and len(result) > pr_base + 2:
+                    row["position_risk_mode"] = _s(result[pr_base]) or "legacy"
+                    row["position_risk_policy"] = _s(result[pr_base + 1]) or "hws_lvw_v1"
+                    row["position_risk_book_only_enabled"] = _b(result[pr_base + 2]) or False
+                else:
+                    row["position_risk_mode"] = "legacy"
+                    row["position_risk_policy"] = "hws_lvw_v1"
+                    row["position_risk_book_only_enabled"] = False
                 st_start_iso = (
                     timestamptz_wire_iso_et(st_start)
                     if hasattr(st_start, "isoformat")

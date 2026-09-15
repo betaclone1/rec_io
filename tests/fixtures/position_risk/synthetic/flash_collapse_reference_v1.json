@@ -1,0 +1,49 @@
+{
+  "name": "flash_collapse_reference_v1",
+  "frames": [
+    {
+      "t_ms": 0,
+      "seq": 1,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.98": "500"
+      }
+    },
+    {
+      "t_ms": 10,
+      "seq": 2,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.917": "500"
+      }
+    },
+    {
+      "t_ms": 25,
+      "seq": 3,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.793": "500"
+      }
+    },
+    {
+      "t_ms": 50,
+      "seq": 4,
+      "size": 100.0,
+      "side": "N",
+      "floor_owned": 0.9,
+      "yes": {},
+      "no": {
+        "0.681": "500"
+      }
+    }
+  ]
+}

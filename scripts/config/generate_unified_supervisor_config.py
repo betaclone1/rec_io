@@ -59,6 +59,11 @@ def _hourly_live_streams_enabled() -> bool:
     return raw in ("1", "true", "yes", "on")
 
 
+def _position_risk_engine_autostart() -> bool:
+    """PRE always autostarts (local and production)."""
+    return True
+
+
 def _load_kalshi_stream_symbols_overlay() -> dict:
     """Load durable stream-symbol overrides. Shell env wins over the overlay file."""
     out: dict = {}
@@ -598,6 +603,25 @@ class SupervisorConfigGenerator:
                 "port": 0,
                 "environment": self._cycle_packager_environment(env_global),
                 "autostart": cycle_capture_enabled,
+            }
+        )
+        # PRE always on (HWS Scalp LVWAP decisions; ATS remains sole closer).
+        pre_autostart = _position_risk_engine_autostart()
+        pre_env = env_global
+        extras = []
+        if not any(x.startswith("REC_POSITION_RISK_STATUS_PATH=") for x in pre_env.split(",")):
+            extras.append(
+                f'REC_POSITION_RISK_STATUS_PATH="{project_root}/backend/data/position_risk/status.json"'
+            )
+        if extras:
+            pre_env = pre_env + "," + ",".join(extras)
+        services.append(
+            {
+                "name": "position_risk_engine",
+                "script": "position_risk_engine.py",
+                "port": 0,
+                "environment": pre_env,
+                "autostart": pre_autostart,
             }
         )
         # db_writer_agent removed: script not in tree; hot path uses Redis live_state + optional spool.

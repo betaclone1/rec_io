@@ -10461,6 +10461,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `limit_close_price` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp: owned-side GTC close target (e.g. 0.99). 0 disables. Opposite-leg rest price is `1 − limit_close_price`. Migration `20260828_1635_high_water_scalp`. |
 | `limit_close_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1: owned-side GTC offset from fill (e.g. 0.0100). Persisted `limit_close_price` on the trade row is `buy_price + offset` after open confirm. Migration `20260901_1200_high_water_test_1`. |
 | `stop_loss_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1: owned-side stop floor offset below fill (e.g. 0.1000). ATS uses `buy_price - offset` per trade. Migration `20260901_1400_high_water_test_1_stop_loss_offset`. |
+| `position_risk_mode` | `text` | NO | `'legacy'` | PRE mode snapshot / monitor control (`legacy` \| `shadow` \| `paper`). HWS Scalp stop authority uses PRE LVWAP regardless. Migration `20260908_1945_position_risk_monitor_settings`. |
+| `position_risk_policy` | `text` | NO | `'hws_lvw_v1'` | Pinned PRE policy version (allowlist). Migration `20260908_1945_position_risk_monitor_settings`. |
+| `position_risk_book_only_enabled` | `boolean` | NO | false | Allow marginal L2-only decisions when public tape is UNKNOWN. Migration `20260908_1945_position_risk_monitor_settings`. |
 | `current_contract` | `text` | YES | - | |
 | `current_weekly_cycle` | `smallint(16)` | YES | - | |
 | `current_performance_modifier` | `numeric(10,2)` | YES | 1.00 | |
@@ -10699,6 +10702,9 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `limit_close_price` | `numeric(6,4)` | YES | 0.0000 | High Water Scalp default for new monitors: owned-side GTC close target. Migration `20260828_1635_high_water_scalp`. |
 | `limit_close_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1 default for new monitors: owned-side GTC offset from fill. Migration `20260901_1200_high_water_test_1`. |
 | `stop_loss_offset` | `numeric(6,4)` | YES | 0.0000 | High Water Test 1 default for new monitors: owned-side stop floor offset below fill. Migration `20260901_1400_high_water_test_1_stop_loss_offset`. |
+| `position_risk_mode` | `text` | NO | `'legacy'` | PRE mode default for new monitors. Migration `20260908_1945_position_risk_monitor_settings`. |
+| `position_risk_policy` | `text` | NO | `'hws_lvw_v1'` | PRE policy default. Migration `20260908_1945_position_risk_monitor_settings`. |
+| `position_risk_book_only_enabled` | `boolean` | NO | false | PRE book-only marginal default. Migration `20260908_1945_position_risk_monitor_settings`. |
 | `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Monitor-only: minimum acceptable projected entry slippage (est. fill − trigger); 0.0000 disables, enabled range -0.2000..0.0000. TM slippage gate. Migration `20260716_1200_min_slippage_gate`. |
 | `position_size` | `integer(32)` | YES | 1 | |
 | `position_type` | `character varying(20)` | YES | 'percent'::character varying | |
@@ -10943,6 +10949,9 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `limit_close_price` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Scalp close target at insert; **0.0000** = not used until fill confirm for offset strategies. Migration `20260828_1635_high_water_scalp`. |
 | `limit_close_offset` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Test 1 offset at insert. Migration `20260901_1200_high_water_test_1`. |
 | `stop_loss_offset` | `numeric(6,4)` | NO | 0.0000 | Snapshot of monitor High Water Test 1 stop offset at insert. Migration `20260901_1400_high_water_test_1_stop_loss_offset`. |
+| `position_risk_mode` | `text` | NO | `'legacy'` | Snapshot of monitor PRE mode at insert. Migration `20260908_1945_position_risk_monitor_settings`. |
+| `position_risk_policy` | `text` | NO | `'hws_lvw_v1'` | Snapshot of monitor PRE policy at insert. Migration `20260908_1945_position_risk_monitor_settings`. |
+| `position_risk_book_only_enabled` | `boolean` | NO | false | Snapshot of monitor book-only flag at insert. Migration `20260908_1945_position_risk_monitor_settings`. |
 | `close_filled_count` | `numeric(12,2)` | NO | 0.00 | Cumulative close-leg fills while the row is still open. Remaining = `position − close_filled_count`. Live High Water Scalp: a GTC slice plus leftover expiry/stop is recorded as mixed PnL using this count plus remainder settlement or flatten; fully flattened live rows set this to `position`. Migration `20260828_1635_high_water_scalp`. |
 | `high_price` | `numeric(10,4)` | YES | NULL::numeric | |
 | `low_price` | `numeric(10,4)` | YES | NULL::numeric | |

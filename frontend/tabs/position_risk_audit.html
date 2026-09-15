@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Position Risk Audit</title>
+  <style>
+    body { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; margin: 24px; background: #111; color: #ddd; }
+    h1 { font-size: 18px; font-weight: 600; }
+    input, button { font: inherit; padding: 6px 10px; }
+    pre { white-space: pre-wrap; word-break: break-word; background: #1a1a1a; padding: 12px; border: 1px solid #333; }
+    .row { display: flex; gap: 8px; align-items: center; margin-bottom: 16px; flex-wrap: wrap; }
+    .meta { color: #888; font-size: 12px; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+  <h1>Position Risk Audit</h1>
+  <div class="row">
+    <label>trade_id <input id="tradeId" type="number" /></label>
+    <label>tenant_slot <input id="slot" type="text" placeholder="optional" /></label>
+    <button id="loadBtn" type="button">Load</button>
+  </div>
+  <div class="meta" id="meta"></div>
+  <pre id="out">Enter a trade_id and load.</pre>
+  <script>
+    const params = new URLSearchParams(location.search);
+    if (params.get('trade_id')) document.getElementById('tradeId').value = params.get('trade_id');
+    if (params.get('tenant_slot')) document.getElementById('slot').value = params.get('tenant_slot');
+
+    async function loadAudit() {
+      const tid = document.getElementById('tradeId').value;
+      const slot = document.getElementById('slot').value.trim();
+      if (!tid) { document.getElementById('out').textContent = 'trade_id required'; return; }
+      const q = new URLSearchParams({ trade_id: tid });
+      if (slot) q.set('tenant_slot', slot);
+      const res = await fetch('/api/position_risk/audit?' + q.toString(), { credentials: 'same-origin' });
+      const body = await res.json();
+      document.getElementById('meta').textContent = res.ok
+        ? `count=${body.count || 0}`
+        : `HTTP ${res.status}`;
+      document.getElementById('out').textContent = JSON.stringify(body, null, 2);
+    }
+    document.getElementById('loadBtn').addEventListener('click', loadAudit);
+    if (params.get('trade_id')) loadAudit();
+  </script>
+</body>
+</html>

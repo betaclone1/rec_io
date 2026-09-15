@@ -1242,6 +1242,8 @@
       if (hwsStop) hwsStop.style.display = isHighWaterTest1 ? 'none' : '';
       const hwt1Stop = document.getElementById('highWaterTest1StopLossOffsetSection');
       if (hwt1Stop) hwt1Stop.style.display = isHighWaterTest1 ? 'block' : 'none';
+      const hwsPre = document.getElementById('highWaterPositionRiskSection');
+      if (hwsPre) hwsPre.style.display = isHighWaterFamily ? 'block' : 'none';
       const otEl = document.getElementById('uatKalshiOrderType');
       const tifEl = document.getElementById('uatKalshiTimeInForce');
       if (otEl) {
@@ -2566,6 +2568,12 @@
           if (slp1) slp1.value = String(slpCents);
           if (slp2) slp2.value = String(slpCents);
         }
+        const prm = document.getElementById('positionRiskMode');
+        if (prm && data.position_risk_mode != null) prm.value = String(data.position_risk_mode);
+        const prp = document.getElementById('positionRiskPolicy');
+        if (prp && data.position_risk_policy != null) prp.value = String(data.position_risk_policy);
+        const prb = document.getElementById('positionRiskBookOnlyEnabled');
+        if (prb && data.position_risk_book_only_enabled != null) prb.checked = !!data.position_risk_book_only_enabled;
         
         // Initialize time window slider
         setTimeout(() => {
@@ -3102,6 +3110,14 @@
           || document.getElementById('stopLossPriceSlider');
         if (stopLossPriceSliderEl && !isHighWaterTest1) {
           payload.stop_loss_price = parseInt(stopLossPriceSliderEl.value, 10) / 100;
+        }
+        if (isHighWaterFamily) {
+          const prmEl = document.getElementById('positionRiskMode');
+          const prpEl = document.getElementById('positionRiskPolicy');
+          const prbEl = document.getElementById('positionRiskBookOnlyEnabled');
+          if (prmEl) payload.position_risk_mode = prmEl.value || 'legacy';
+          if (prpEl) payload.position_risk_policy = prpEl.value || 'hws_lvw_v1';
+          if (prbEl) payload.position_risk_book_only_enabled = !!prbEl.checked;
         }
         if (isMomentumScalp) {
           var msFloorCb = document.getElementById('uatFlipSellStopLossFloorMs');

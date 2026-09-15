@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-15 — Release v3.12.7: High Water Scalp VWAP stop (PRE)
+
+**Summary**
+- **Release: v3.12.7**
+- **High Water Scalp stop:** Trigger is gross executable LVWAP of remaining size vs the existing stop floor (`buy_price − stop_loss_offset`), with 250ms + 3 book-generation persistence. Replaces the opposite-ask hard book touch for **High Water Scalp only**.
+- **High Water Test 1:** Unchanged — still uses the legacy opposite-ask floor path.
+- **position_risk_engine (PRE):** System-scoped sidecar enrolls open High Water Scalp positions, evaluates `hws_lvw_v1`, writes durable audit JSONL. Never places orders; ATS remains sole closer (`auto_pre_hws_catastrophic` / `auto_pre_hws_marginal`).
+- **Supervisor:** `position_risk_engine` always autostarts (local and production).
+- **DB:** Migration **`20260908_1945_position_risk_monitor_settings`** — `position_risk_mode`, `position_risk_policy`, `position_risk_book_only_enabled` on all tenant `monitor_list_*` and matching trade snapshot columns.
+- **UI:** Monitor PRE controls + `/position_risk_audit.html` audit page.
+- **Plans:** `position-risk-engine-stage1`, `position-risk-engine-stage2-ats-local`, `ats-auto-stop-modernization-alignment`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-15-vwap`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20260908_1945_position_risk_monitor_settings`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260908_1945_position_risk_monitor_settings`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `supervisorctl status position_risk_engine` is RUNNING; High Water Scalp ATS still RUNNING; no PRE refuse-to-start in `logs/position_risk_engine.err.log`
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.7`
+
+---
+
 ## 2026-09-07 — Release v3.12.6: Cycle recon / Backtester (local analysis) + hourly live park
 
 **Summary**

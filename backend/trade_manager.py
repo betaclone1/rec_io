@@ -566,7 +566,9 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
             cursor.execute(
                 f"""
                 SELECT time_in_force, order_type, min_fill_price, min_slippage,
-                       limit_close_price, limit_close_offset, stop_loss_offset
+                       limit_close_price, limit_close_offset, stop_loss_offset,
+                       stop_loss_price,
+                       position_risk_mode, position_risk_policy, position_risk_book_only_enabled
                 FROM {_tm_monitor_list_table()}
                 WHERE id = %s
                 """,
@@ -602,6 +604,22 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
             slo = parse_stop_loss_offset(row[6])
             if slo is not None:
                 data["stop_loss_offset"] = slo
+        if len(row) > 7 and row[7] is not None:
+            try:
+                slp = float(row[7])
+                data["stop_loss_price"] = round(slp, 4)
+            except (TypeError, ValueError):
+                pass
+        if len(row) > 10:
+            # Always stamp from monitor so open rows cannot keep a stale legacy default
+            # while the monitor is paper/shadow.
+            data["position_risk_mode"] = (
+                str(row[8]).strip().lower() if row[8] is not None and str(row[8]).strip() else "legacy"
+            )
+            data["position_risk_policy"] = (
+                str(row[9]).strip() if row[9] is not None and str(row[9]).strip() else "hws_lvw_v1"
+            )
+            data["position_risk_book_only_enabled"] = bool(row[10]) if row[10] is not None else False
 
         ok, err = validate_execution_fields(str(tif), str(ot))
         if not ok:
@@ -2300,6 +2318,30 @@ def _stop_loss_offset_for_db(trade: dict) -> float:
     return parsed if parsed is not None else 0.0
 
 
+def _position_risk_mode_for_db(trade: dict) -> str:
+    # Prefer monitor-applied fields; never silently invent paper. Default legacy.
+    mode = str(trade.get("position_risk_mode") or "legacy").strip().lower()
+    if mode not in ("legacy", "shadow", "paper"):
+        return "legacy"
+    return mode
+
+
+def _position_risk_policy_for_db(trade: dict) -> str:
+    from backend.core.position_risk import POLICY_ALLOWLIST, POLICY_HWS_LVW_V1
+
+    policy = str(trade.get("position_risk_policy") or POLICY_HWS_LVW_V1).strip()
+    if policy not in POLICY_ALLOWLIST:
+        return POLICY_HWS_LVW_V1
+    return policy
+
+
+def _position_risk_book_only_for_db(trade: dict) -> bool:
+    raw = trade.get("position_risk_book_only_enabled", False)
+    if isinstance(raw, str):
+        return raw.lower() in ("true", "1", "yes", "on")
+    return bool(raw)
+
+
 def _limit_close_offset_for_db(trade: dict) -> float:
     from backend.core.high_water_scalp import parse_limit_close_offset
 
@@ -3775,6 +3817,9 @@ def insert_trade(trade):
                 limit_close_price_for_db = _limit_close_price_for_db(trade)
                 limit_close_offset_for_db = _limit_close_offset_for_db(trade)
                 stop_loss_offset_for_db = _stop_loss_offset_for_db(trade)
+                position_risk_mode_for_db = _position_risk_mode_for_db(trade)
+                position_risk_policy_for_db = _position_risk_policy_for_db(trade)
+                position_risk_book_only_for_db = _position_risk_book_only_for_db(trade)
 
                 # Live active-row dedupe (same keys as simulated duplicate guard): second INSERT path
                 # returns the existing row when pending/open already exists for this monitor/strike.
@@ -3877,9 +3922,10 @@ def insert_trade(trade):
                         paper_trade, cooldown_timer, test_filter,
                         time_in_force, order_type, min_fill_price, min_slippage,
                         limit_close_price, limit_close_offset, stop_loss_offset, close_filled_count,
+                        position_risk_mode, position_risk_policy, position_risk_book_only_enabled,
                         subaccount,
                         created_at, updated_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(), NOW())
                     RETURNING id
                     """,
                     (
@@ -3918,6 +3964,9 @@ def insert_trade(trade):
                     limit_close_offset_for_db,
                     stop_loss_offset_for_db,
                     0.00,
+                    position_risk_mode_for_db,
+                    position_risk_policy_for_db,
+                    position_risk_book_only_for_db,
                     int(trade.get("subaccount", 1)),
                 ))
                 last_id = cursor.fetchone()[0]

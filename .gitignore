@@ -214,3 +214,4 @@ backend/data/historical_data/cycle_recon_cache/
 !tests/fixtures/cycle_recon/
 !tests/fixtures/cycle_recon/**
 !tests/fixtures/cycle_recon/**/*.csv
+backend/data/position_risk/

@@ -6478,6 +6478,8 @@ def _close_method_for_auto_trigger(trigger_reason: str) -> str:
         "close_attempt_failed_retry": "auto_close_retry",
         "close_failed_retry": "auto_close_retry",  # legacy trigger_reason only
         "limit_close": "limit_close",
+        "pre_hws_catastrophic": "auto_pre_hws_catastrophic",
+        "pre_hws_marginal": "auto_pre_hws_marginal",
     }
     return mapped.get(key, f"auto_{key}")
 
@@ -7784,6 +7786,43 @@ def get_stop_loss_price():
         return 0.0
 
 
+def get_position_risk_mode() -> str:
+    """Monitor position_risk_mode; missing column / row → legacy."""
+    try:
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT position_risk_mode FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None and str(row[0]).strip():
+            return str(row[0]).strip().lower()
+        return "legacy"
+    except Exception as e:
+        log_debug(f"[AUTO STOP] position_risk_mode unavailable: {e}")
+        return "legacy"
+
+
+def get_position_risk_book_only_enabled() -> bool:
+    try:
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            cursor.execute(
+                f"SELECT position_risk_book_only_enabled FROM {legacy_users_monitor_list(ctx_user())} WHERE id = %s",
+                (ctx_mid(),),
+            )
+            row = cursor.fetchone()
+        conn.close()
+        if row and row[0] is not None:
+            return bool(row[0])
+        return False
+    except Exception as e:
+        log_debug(f"[AUTO STOP] position_risk_book_only_enabled unavailable: {e}")
+        return False
+
+
 def _try_stop_loss_ask_floor(
     trade,
     stop_floor: float,
@@ -7949,7 +7988,11 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
 
     strategy = get_trade_strategy()
     
-    from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy, is_high_water_family
+    from backend.core.high_water_scalp import (
+        is_expiration_scalp_entry_strategy,
+        is_high_water_scalp,
+        is_high_water_test_1,
+    )
 
     if strategy == "Momentum Scalp":
         check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
@@ -7958,8 +8001,12 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
     elif strategy == "Reverse HTC":
         # Reverse HTC uses the same auto-stop logic as Hourly HTC
         check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
-    elif is_high_water_family(strategy):
+    elif is_high_water_scalp(strategy):
+        # High Water Scalp: PRE gross LVWAP vs floor (not opposite-ask touch).
         check_auto_stop_conditions_high_water_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
+    elif is_high_water_test_1(strategy):
+        # High Water Test 1: keep legacy opposite-ask floor for now.
+        check_auto_stop_conditions_high_water_test_1(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     elif is_expiration_scalp_entry_strategy(strategy):
         check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     else:
@@ -7998,6 +8045,9 @@ def _hws_load_trade_close_state(trade_id) -> dict:
         "trade_strategy": None,
         "buy_price": None,
         "stop_loss_offset": None,
+        "position_risk_mode": None,
+        "position_risk_policy": None,
+        "position_risk_book_only_enabled": None,
     }
     try:
         conn = get_postgresql_connection()
@@ -8008,7 +8058,8 @@ def _hws_load_trade_close_state(trade_id) -> dict:
                 f"""
                 SELECT position, close_filled_count, limit_close_price, order_id_close,
                        paper_trade, subaccount, ticket_id, ticker, side,
-                       trade_strategy, buy_price, stop_loss_offset
+                       trade_strategy, buy_price, stop_loss_offset,
+                       position_risk_mode, position_risk_policy, position_risk_book_only_enabled
                 FROM {legacy_users_trades(ctx_user())}
                 WHERE id = %s
                 """,
@@ -8034,8 +8085,49 @@ def _hws_load_trade_close_state(trade_id) -> dict:
         out["trade_strategy"] = row[9]
         out["buy_price"] = row[10]
         out["stop_loss_offset"] = row[11]
+        out["position_risk_mode"] = row[12]
+        out["position_risk_policy"] = row[13]
+        out["position_risk_book_only_enabled"] = row[14]
     except Exception as e:
-        log(f"[AUTO STOP HWS] load close state failed trade={trade_id}: {e}")
+        # Columns may be absent until migration; retry without PRE snapshot cols.
+        try:
+            conn = get_postgresql_connection()
+            if not conn:
+                log(f"[AUTO STOP HWS] load close state failed trade={trade_id}: {e}")
+                return out
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"""
+                    SELECT position, close_filled_count, limit_close_price, order_id_close,
+                           paper_trade, subaccount, ticket_id, ticker, side,
+                           trade_strategy, buy_price, stop_loss_offset
+                    FROM {legacy_users_trades(ctx_user())}
+                    WHERE id = %s
+                    """,
+                    (trade_id,),
+                )
+                row = cursor.fetchone()
+            conn.close()
+            if not row:
+                return out
+            out["position"] = row[0]
+            out["close_filled_count"] = row[1] or 0.0
+            out["limit_close_price"] = row[2]
+            out["order_id_close"] = row[3]
+            pt = row[4]
+            if isinstance(pt, str):
+                out["paper_trade"] = pt.lower() in ("true", "1", "yes")
+            else:
+                out["paper_trade"] = bool(pt)
+            out["subaccount"] = int(row[5] or 1)
+            out["ticket_id"] = row[6] or ""
+            out["ticker"] = row[7]
+            out["side"] = row[8]
+            out["trade_strategy"] = row[9]
+            out["buy_price"] = row[10]
+            out["stop_loss_offset"] = row[11]
+        except Exception as e2:
+            log(f"[AUTO STOP HWS] load close state failed trade={trade_id}: {e2}")
     return out
 
 
@@ -8147,15 +8239,10 @@ def _hws_enqueue_paper_resting_fill(trade: dict, st: dict, sim: dict) -> bool:
         return False
 
 
-def check_auto_stop_conditions_high_water_scalp(
+def check_auto_stop_conditions_high_water_test_1(
     active_trades, auto_stop_triggered_trades, verification_pending_trades
 ):
-    """Floor stop only (no min-TTC, probability, or momentum), plus paper GTC book sim.
-
-    Optional ``stop_verification_period_*`` dwell before flatten (not entry
-    ``entry_verification_period_*``). Cancels the resting close before flattening remaining size.
-    Paper cannot rest a Kalshi GTC; ATS walks the live Redis book and fills incrementally.
-    """
+    """High Water Test 1: legacy opposite-ask floor (PRE VWAP not yet applied)."""
     from backend.core.high_water_scalp import (
         floor_is_past,
         floor_stop_verify_allows_fire,
@@ -8240,6 +8327,104 @@ def check_auto_stop_conditions_high_water_scalp(
         ):
             _hws_floor_verify_until.pop(trade_id, None)
             continue
+
+
+def check_auto_stop_conditions_high_water_scalp(
+    active_trades, auto_stop_triggered_trades, verification_pending_trades
+):
+    """High Water Scalp stop via PRE LVWAP floor, plus paper GTC book sim.
+
+    Cancels the resting close before flattening remaining size.
+    Paper cannot rest a Kalshi GTC; ATS walks the live Redis book and fills incrementally.
+    """
+    from backend.core.high_water_scalp import (
+        parse_limit_close_price,
+        remaining_contracts,
+    )
+    from backend.core.high_water_scalp_paper import evaluate_paper_resting_gtc
+
+    _ = verification_pending_trades
+
+    _hws_paper_avail_prune({t.get("trade_id") for t in active_trades})
+
+    for trade in list(active_trades):
+        trade_id = trade.get("trade_id")
+        if trade_id in auto_stop_triggered_trades:
+            continue
+        st = _hws_load_trade_close_state(trade_id)
+        stop_floor = _hws_stop_floor_for_trade(st)
+        rem = remaining_contracts(st.get("position"), st.get("close_filled_count"))
+        if rem <= 0:
+            _hws_paper_avail_set(trade_id, None)
+            _hws_floor_verify_until.pop(trade_id, None)
+            continue
+        trade["position"] = rem
+
+        lcp = parse_limit_close_price(st.get("limit_close_price"))
+        if st.get("paper_trade") and lcp is not None:
+            ticker = trade.get("ticker") or st.get("ticker")
+            side = trade.get("side") or st.get("side")
+            sim = evaluate_paper_resting_gtc(
+                ticker, side, lcp, rem, _hws_paper_avail_get(trade_id)
+            )
+            if sim.get("available") is not None:
+                if sim.get("reset_last"):
+                    _hws_paper_avail_set(trade_id, 0.0)
+                else:
+                    _hws_paper_avail_set(trade_id, float(sim["available"]))
+            fill_qty = float(sim.get("fill_qty") or 0.0)
+            if fill_qty > 0 and sim.get("owned_sell_vwap") is not None:
+                if _hws_enqueue_paper_resting_fill(trade, st, sim):
+                    new_rem = remaining_contracts(
+                        st.get("position"),
+                        float(st.get("close_filled_count") or 0.0) + fill_qty,
+                    )
+                    if new_rem <= 0:
+                        auto_stop_triggered_trades.add(trade_id)
+                        _hws_paper_avail_set(trade_id, None)
+                        _hws_floor_verify_until.pop(trade_id, None)
+                        continue
+                    trade["position"] = new_rem
+                    rem = new_rem
+                else:
+                    continue
+
+        # High Water Scalp stop = PRE gross LVWAP vs floor (not opposite-ask touch).
+        try:
+            from backend.core.position_risk.ats_consume import consider_hws_pre_decision
+        except ImportError:
+            consider_hws_pre_decision = None  # type: ignore[assignment]
+
+        if consider_hws_pre_decision is None:
+            continue
+
+        pre = consider_hws_pre_decision(
+            trade,
+            stop_floor=stop_floor,
+            remaining=rem,
+            paper_trade=bool(st.get("paper_trade")),
+            tenant_slot=str(ctx_user()),
+        )
+        if pre.action == "accept" and pre.trigger_reason:
+            detail = (
+                f"pre reason={pre.reason} dedupe={pre.dedupe_key} "
+                f"kind={(pre.decision or {}).get('decision_kind')} "
+                f"gross_lvwap={(pre.decision or {}).get('gross_lvwap')} "
+                f"floor={stop_floor}"
+            )
+            log(
+                f"[AUTO STOP HWS PRE] accept trade={trade_id} "
+                f"trigger={pre.trigger_reason} {detail}"
+            )
+            if trigger_auto_stop_close(
+                trade,
+                trigger_reason=pre.trigger_reason,
+                trigger_detail=detail,
+            ):
+                auto_stop_triggered_trades.add(trade_id)
+                _hws_floor_verify_until.pop(trade_id, None)
+                _hws_paper_avail_set(trade_id, None)
+        continue
 
 
 def check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades):
