@@ -1223,11 +1223,11 @@
         uatApplyRangeMinMaxValue(vpSlider, isHighWaterFamily ? 1 : 5, 60, vpSlider.value);
       }
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
-      if (esAsk) esAsk.style.display = (isExpirationScalp && !isHighWaterFamily) ? 'block' : 'none';
+      if (esAsk) esAsk.style.display = ((isExpirationScalp && !isHighWaterFamily) || !!isHighWaterTest1) ? 'block' : 'none';
       const esFill = document.getElementById('expirationScalpFillGatesSection');
       if (esFill) esFill.style.display = isExpirationScalp ? 'block' : 'none';
       const hwsPt = document.getElementById('highWaterScalpPriceTargetSection');
-      if (hwsPt) hwsPt.style.display = isHighWaterFamily ? 'block' : 'none';
+      if (hwsPt) hwsPt.style.display = isHighWaterScalp ? 'block' : 'none';
       const esMov = document.getElementById('expirationScalpMovementWindowSection');
       if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
       const esNote = document.getElementById('expirationScalpProbMovementNote');
@@ -1246,14 +1246,8 @@
       if (hwsPre) hwsPre.style.display = isHighWaterFamily ? 'block' : 'none';
       const otEl = document.getElementById('uatKalshiOrderType');
       const tifEl = document.getElementById('uatKalshiTimeInForce');
-      if (otEl) {
-        if (isHighWaterFamily) otEl.value = 'limit';
-        otEl.disabled = !!isHighWaterFamily;
-      }
-      if (tifEl) {
-        if (isHighWaterFamily) tifEl.value = 'immediate_or_cancel';
-        tifEl.disabled = !!isHighWaterFamily;
-      }
+      if (otEl) otEl.disabled = false;
+      if (tifEl) tifEl.disabled = false;
       const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');
       if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
     }
@@ -2151,15 +2145,10 @@
             const tif = data.time_in_force;
             const otEl = document.getElementById('uatKalshiOrderType');
             const tifEl = document.getElementById('uatKalshiTimeInForce');
-            if (isHighWaterScalp) {
-              if (otEl) { otEl.value = 'limit'; otEl.disabled = true; }
-              if (tifEl) { tifEl.value = 'immediate_or_cancel'; tifEl.disabled = true; }
-            } else {
-              const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
-              const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
-              if (otEl) { otEl.value = validOt; otEl.disabled = false; }
-              if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
-            }
+            const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
+            const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+            if (otEl) { otEl.value = validOt; otEl.disabled = false; }
+            if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
           }
           {
             const waEl = document.getElementById('uatWeekendAdjustment');
@@ -2264,13 +2253,22 @@
           const esMaxAsk = uatFiniteOrNull(data.max_ask);
           if (esMinAsk != null) dashboardExpirationScalpMinAsk = esMinAsk;
           if (esMaxAsk != null) dashboardExpirationScalpMaxAsk = esMaxAsk;
-          const isHwsPopulate = uatIsHighWaterFamily(currentStrategy);
-          if (isHwsPopulate && esMinAsk != null) {
+          const isHwsScalpPopulate = uatIsHighWaterScalp(currentStrategy);
+          const isHwt1Populate = uatIsHighWaterTest1(currentStrategy);
+          if (isHwsScalpPopulate && esMinAsk != null) {
             const ptSlider = Math.min(99, Math.max(1, Math.round(esMinAsk * 100)));
             const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
             if (ptEl) ptEl.value = ptSlider;
             if (typeof updateHighWaterScalpPriceTargetBubble === 'function') {
               updateHighWaterScalpPriceTargetBubble(ptSlider);
+            }
+          }
+          if (isHwt1Populate) {
+            if (esMinAsk != null && esMaxAsk == null) {
+              dashboardExpirationScalpMaxAsk = esMinAsk;
+            }
+            if (esMaxAsk != null && esMinAsk == null) {
+              dashboardExpirationScalpMinAsk = esMaxAsk;
             }
           }
           const mfpRaw = uatFiniteOrNull(data.min_fill_price);
@@ -2319,7 +2317,7 @@
             }
           }
           const MIN_ASK_SEPARATION = 0.01;
-          if (!isHwsPopulate && esMinAsk != null && esMaxAsk != null
+          if ((isHwt1Populate || (!isHwsScalpPopulate && !isHwt1Populate)) && esMinAsk != null && esMaxAsk != null
               && dashboardExpirationScalpMaxAsk - dashboardExpirationScalpMinAsk < MIN_ASK_SEPARATION) {
             if (dashboardExpirationScalpMaxAsk < 1.0) {
               dashboardExpirationScalpMaxAsk = parseFloat((dashboardExpirationScalpMinAsk + MIN_ASK_SEPARATION).toFixed(4));
@@ -2886,10 +2884,6 @@
           const tif = tifEl && tifEl.value;
           payload.order_type = ot === 'limit' || ot === 'market' ? ot : 'market';
           payload.time_in_force = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
-          if (isHighWaterFamily) {
-            payload.order_type = 'limit';
-            payload.time_in_force = 'immediate_or_cancel';
-          }
         }
         {
           const waEl = document.getElementById('uatWeekendAdjustment');
@@ -3007,7 +3001,7 @@
           payload.max_movement = parseFloat(parseFloat(dashboardMaxMovement).toFixed(1));
           payload.min_ask = parseFloat(parseFloat(dashboardExpirationScalpMinAsk).toFixed(4));
           payload.max_ask = parseFloat(parseFloat(dashboardExpirationScalpMaxAsk).toFixed(4));
-          if (isHighWaterFamily) {
+          if (isHighWaterScalp) {
             const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
             const ptRaw = ptEl ? parseInt(ptEl.value, 10) / 100 : NaN;
             if (!Number.isFinite(ptRaw) || ptRaw <= 0 || ptRaw >= 1) {
@@ -3017,6 +3011,12 @@
             const pt = parseFloat(ptRaw.toFixed(4));
             payload.min_ask = pt;
             payload.max_ask = pt;
+          } else if (isHighWaterTest1) {
+            if (!Number.isFinite(payload.min_ask) || !Number.isFinite(payload.max_ask)
+                || payload.min_ask <= 0 || payload.max_ask >= 1 || payload.min_ask > payload.max_ask) {
+              alert('Active-side ask window (min/max) is required.');
+              return;
+            }
           }
           const mfpEl = document.getElementById('expirationScalpMinFillPriceSlider');
           if (mfpEl) {

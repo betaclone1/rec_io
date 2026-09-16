@@ -2280,7 +2280,7 @@ def get_auto_entry_settings():
                            min_cooldown_timer, max_cooldown_timer, min_ask_range,
                            min_movement, max_movement,
                            entry_verification_period_enabled, entry_verification_period_seconds,
-                           min_buffer_pct
+                           min_buffer_pct, order_type
                     """
                     + (sel_flip if has_flip else "")
                     + f"""
@@ -2301,6 +2301,8 @@ def get_auto_entry_settings():
                         return bool(v) if v is not None else None
 
                     # Pass-through from monitor_list only — never invent strategy/UI defaults.
+                    from backend.core.kalshi_execution_settings import normalize_execution_order_type
+
                     settings = {
                         "min_probability": _f(strategy_result[0]),
                         "max_probability": _f(strategy_result[1]),
@@ -2327,8 +2329,9 @@ def get_auto_entry_settings():
                         "entry_verification_period_enabled": _b(strategy_result[22]),
                         "entry_verification_period_seconds": _i(strategy_result[23]),
                         "min_buffer_pct": _f(strategy_result[24]),
+                        "order_type": normalize_execution_order_type(strategy_result[25]),
                     }
-                    flip_base = 25
+                    flip_base = 26
                     if has_flip:
                         settings["flip_sell_prob"] = _b(strategy_result[flip_base])
                         settings["flip_sell_prob_mult"] = strategy_result[flip_base + 1]
@@ -4563,7 +4566,10 @@ def check_auto_entry_conditions_expiration_scalp():
 
         from backend.core.high_water_scalp import (
             ask_hits_price_target,
+            ask_in_price_band,
             is_high_water_family,
+            is_high_water_scalp,
+            is_high_water_test_1,
             parse_limit_close_price,
         )
         from backend.util.auto_entry_expiration_scalp_gates import parse_min_buffer_pct
@@ -4577,11 +4583,23 @@ def check_auto_entry_conditions_expiration_scalp():
         min_movement = float(settings["min_movement"])
         max_movement = float(settings["max_movement"])
         min_buffer_pct = parse_min_buffer_pct(settings)
-        hws_family = is_high_water_family(get_trade_strategy())
-        hws_target = parse_limit_close_price(min_ask) if hws_family else None
-        if hws_family and hws_target is None:
-            log(f"{log_tag} ❌ High Water missing active-side price target (min_ask)")
+        strategy_name = get_trade_strategy()
+        hws_family = is_high_water_family(strategy_name)
+        hws_scalp = is_high_water_scalp(strategy_name)
+        hwt1 = is_high_water_test_1(strategy_name)
+        hws_target = parse_limit_close_price(min_ask) if hws_scalp else None
+        hwt1_lo = parse_limit_close_price(min_ask) if hwt1 else None
+        hwt1_hi = parse_limit_close_price(max_ask) if hwt1 else None
+        if hws_scalp and hws_target is None:
+            log(f"{log_tag} ❌ High Water Scalp missing active-side price target (min_ask)")
             return
+        if hwt1 and (hwt1_lo is None or hwt1_hi is None or hwt1_lo > hwt1_hi):
+            log(f"{log_tag} ❌ High Water Test 1 missing/invalid ask band (min_ask/max_ask)")
+            return
+        from backend.core.kalshi_execution_settings import normalize_execution_order_type
+
+        hws_order_type = normalize_execution_order_type(settings.get("order_type")) or "market"
+        hws_limit_entry = bool(hws_family and hws_order_type == "limit")
         verify_enabled = bool(settings["entry_verification_period_enabled"])
         try:
             verify_seconds = int(settings["entry_verification_period_seconds"])
@@ -4707,7 +4725,21 @@ def check_auto_entry_conditions_expiration_scalp():
                         )
                         continue
                     ask_price = float(ask_dollars)
-                    if hws_family:
+                    if hwt1:
+                        if not ask_in_price_band(ask_price, hwt1_lo, hwt1_hi):
+                            _exp_scalp_verify_abort(
+                                verify_bucket,
+                                dedupe_key,
+                                now_ts=now_ts,
+                                need_s=verify_seconds,
+                                reason="ask_outside_band",
+                                strike_key=strike_key,
+                                side_key=side_key,
+                                log_tag=log_tag,
+                                extra=f"ask=${ask_price:.4f} band=${hwt1_lo:.4f}-${hwt1_hi:.4f}",
+                            )
+                            continue
+                    elif hws_scalp:
                         if not ask_hits_price_target(ask_price, hws_target):
                             _exp_scalp_verify_abort(
                                 verify_bucket,
@@ -4837,8 +4869,8 @@ def check_auto_entry_conditions_expiration_scalp():
                             if prior_state
                             else None,
                             snapshot_ask=ask_price,
-                            min_ask=hws_target if hws_family else min_ask,
-                            max_ask=hws_target if hws_family else max_ask,
+                            min_ask=hws_target if hws_scalp else min_ask,
+                            max_ask=hws_target if hws_scalp else max_ask,
                             live_ask=live_ask,
                             step_cents=exp_scalp_flicker_step_cents(),
                         )
@@ -4936,7 +4968,16 @@ def check_auto_entry_conditions_expiration_scalp():
                         continue
 
                     diff = strike.get("yes_diff") if side_key == "yes" else strike.get("no_diff")
-                    entry_limit = hws_target if hws_family else ask_price
+                    if hws_scalp and hws_limit_entry:
+                        entry_buy = hws_target
+                        entry_limit = hws_target
+                    elif hws_limit_entry:
+                        # High Water Test 1 limit: IOC at the current ask inside the band.
+                        entry_buy = ask_price
+                        entry_limit = ask_price
+                    else:
+                        entry_buy = ask_price
+                        entry_limit = None
                     strike_data = {
                         "strike": format_trade_strike_label(
                             strike.get("strike"),
@@ -4945,8 +4986,8 @@ def check_auto_entry_conditions_expiration_scalp():
                         ),
                         "side": side_key,
                         "ticker": strike.get("ticker"),
-                        "buy_price": entry_limit,
-                        "entry_limit_price": entry_limit if hws_family else None,
+                        "buy_price": entry_buy,
+                        "entry_limit_price": entry_limit,
                         "probability": prob_f,
                         "diff": diff,
                         "half_size": size_mode == "half",

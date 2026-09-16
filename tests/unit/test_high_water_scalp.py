@@ -69,7 +69,7 @@ def test_owned_stop_floor_from_offset():
 
 
 def test_ask_hits_price_target_one_cent():
-    from backend.core.high_water_scalp import ask_hits_price_target
+    from backend.core.high_water_scalp import ask_hits_price_target, ask_in_price_band
 
     assert ask_hits_price_target(0.50, 0.50) is True
     assert ask_hits_price_target(0.504, 0.50) is True
@@ -78,6 +78,63 @@ def test_ask_hits_price_target_one_cent():
     assert ask_hits_price_target(None, 0.50) is False
     assert ask_hits_price_target(0.50, 0) is False
 
+    assert ask_in_price_band(0.70, 0.70, 0.90) is True
+    assert ask_in_price_band(0.90, 0.70, 0.90) is True
+    assert ask_in_price_band(0.80, 0.70, 0.90) is True
+    assert ask_in_price_band(0.69, 0.70, 0.90) is False
+    assert ask_in_price_band(0.91, 0.70, 0.90) is False
+    assert ask_in_price_band(0.70, 0.90, 0.70) is False
+    assert ask_in_price_band(None, 0.70, 0.90) is False
+
+
+def test_hwt1_entry_uses_ask_band():
+    from backend.util.auto_entry_expiration_scalp_gates import evaluate_expiration_scalp_entry
+
+    settings = {
+        "min_time": 0,
+        "max_time": 900,
+        "min_probability": 0,
+        "max_probability": 100,
+        "min_ask": 0.70,
+        "max_ask": 0.90,
+        "min_movement": 0,
+        "max_movement": 100,
+        "order_type": "market",
+    }
+    miss, reason = evaluate_expiration_scalp_entry(
+        settings,
+        ttc_seconds=60,
+        side="yes",
+        ask_dollars=0.95,
+        probability=80.0,
+        high_water_test_1=True,
+    )
+    assert miss is None
+    assert reason == "ask_outside_band"
+
+    hit, reason_ok = evaluate_expiration_scalp_entry(
+        settings,
+        ttc_seconds=60,
+        side="yes",
+        ask_dollars=0.85,
+        probability=80.0,
+        high_water_test_1=True,
+    )
+    assert reason_ok is None
+    assert hit["buy_price"] == 0.85
+    assert hit.get("entry_limit_price") is None
+
+    hit_lim, reason_lim = evaluate_expiration_scalp_entry(
+        {**settings, "order_type": "limit"},
+        ttc_seconds=60,
+        side="yes",
+        ask_dollars=0.85,
+        probability=80.0,
+        high_water_test_1=True,
+    )
+    assert reason_lim is None
+    assert hit_lim["buy_price"] == 0.85
+    assert hit_lim["entry_limit_price"] == 0.85
 
 def test_hws_entry_gate_single_price_limit():
     from backend.util.auto_entry_expiration_scalp_gates import evaluate_expiration_scalp_entry
@@ -104,7 +161,7 @@ def test_hws_entry_gate_single_price_limit():
     assert reason == "ask_misses_price_target"
 
     hit, reason_ok = evaluate_expiration_scalp_entry(
-        settings,
+        {**settings, "order_type": "limit"},
         ttc_seconds=60,
         side="yes",
         ask_dollars=0.50,
@@ -114,6 +171,18 @@ def test_hws_entry_gate_single_price_limit():
     assert reason_ok is None
     assert hit["buy_price"] == 0.50
     assert hit["entry_limit_price"] == 0.50
+
+    hit_mkt, reason_mkt = evaluate_expiration_scalp_entry(
+        {**settings, "order_type": "market"},
+        ttc_seconds=60,
+        side="yes",
+        ask_dollars=0.50,
+        probability=80.0,
+        high_water_scalp=True,
+    )
+    assert reason_mkt is None
+    assert hit_mkt["buy_price"] == 0.50
+    assert hit_mkt.get("entry_limit_price") is None
 
     window, _ = evaluate_expiration_scalp_entry(
         settings,
@@ -165,8 +234,10 @@ def test_aes_routes_hws_to_expiration_scalp_entry():
             "def _live_partial_row_if_residual"
         )
     ]
-    assert 'data["order_type"] = "limit"' in enrich
-    assert 'data["time_in_force"] = "immediate_or_cancel"' in enrich
+    # High Water follows monitor order_type / TIF (no hard force to limit+IOC).
+    assert 'data["order_type"] = "limit"' not in enrich
+    assert 'data["time_in_force"] = "immediate_or_cancel"' not in enrich
+    assert 'data["order_type"] = str(ot).strip().lower()' in enrich
 
 
 def test_aes_occupancy_includes_partial():
@@ -430,7 +501,9 @@ def test_hws_modal_full_cycle_time_window_hides_stop_extras():
         / "unified_auto_trade_modal.html"
     ).read_text()
     assert "highWaterScalpPriceTargetSlider" in js
-    assert "payload.time_in_force = 'immediate_or_cancel'" in js
+    # High Water follows monitor Order Type / TIF (no hard-coded limit+IOC force).
+    assert "if (isHighWaterFamily) {\n            payload.order_type = 'limit'" not in js
+    assert "otEl.disabled = !!isHighWaterFamily" not in js
     html = (
         Path(__file__).resolve().parents[2]
         / "frontend"

@@ -582,7 +582,6 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
             )
         tif, ot, min_fill_price, min_slippage = row[0], row[1], row[2], row[3]
         from backend.core.high_water_scalp import (
-            is_high_water_family,
             is_high_water_scalp,
             is_high_water_test_1,
             parse_limit_close_offset,
@@ -627,9 +626,6 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
         data["time_in_force"] = str(tif).strip().lower()
         data["order_type"] = str(ot).strip().lower()
 
-        if is_high_water_family(data.get("trade_strategy")):
-            data["order_type"] = "limit"
-            data["time_in_force"] = "immediate_or_cancel"
         if min_fill_price is not None:
             try:
                 mfp = float(min_fill_price)

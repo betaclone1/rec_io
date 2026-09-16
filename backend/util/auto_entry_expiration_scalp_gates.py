@@ -339,13 +339,17 @@ def evaluate_expiration_scalp_entry(
     buffer_pct: Optional[float] = None,
     avg_60s_buffer_pct: Optional[float] = None,
     high_water_scalp: bool = False,
+    high_water_test_1: bool = False,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
     """
     Pure Exp Scalp entry gate for one side of one contract.
 
     Returns (strike_data_dict, None) on pass, or (None, reason) on reject.
-    ``buy_price`` is the ladder ask for Expiration Scalp, or the configured
-    price target for High Water Scalp (limit IOC at that price).
+    ``buy_price`` is the ladder ask for Expiration Scalp and High Water Test 1.
+    High Water Scalp still requires an exact price-target print; ``order_type=limit``
+    posts a limit IOC at that target, while ``order_type=market`` uses the ask as
+    ``buy_price`` and relies on the monitor market policy (aggressive 0.99) like
+    other strategies. High Water Test 1 uses ``min_ask``/``max_ask`` as an ask band.
 
     Prob+movement joint gate: see ``classify_expiration_scalp_prob_movement``.
     ``min_buffer_pct`` (when > 0) requires ladder ``buffer_pct`` and
@@ -373,7 +377,21 @@ def evaluate_expiration_scalp_entry(
         ask_price = float(ask_dollars)
     except (TypeError, ValueError):
         return None, "bad_ask"
-    if high_water_scalp:
+    from backend.core.kalshi_execution_settings import normalize_execution_order_type
+
+    ot = normalize_execution_order_type(settings.get("order_type")) or "market"
+    if high_water_test_1:
+        from backend.core.high_water_scalp import ask_in_price_band, parse_limit_close_price
+
+        lo = parse_limit_close_price(min_ask)
+        hi = parse_limit_close_price(max_ask)
+        if lo is None or hi is None or lo > hi:
+            return None, "missing_price_band"
+        if not ask_in_price_band(ask_price, lo, hi):
+            return None, "ask_outside_band"
+        buy_price = ask_price
+        entry_limit_price = ask_price if ot == "limit" else None
+    elif high_water_scalp:
         from backend.core.high_water_scalp import ask_hits_price_target, parse_limit_close_price
 
         target = parse_limit_close_price(min_ask)
@@ -381,11 +399,17 @@ def evaluate_expiration_scalp_entry(
             return None, "missing_price_target"
         if not ask_hits_price_target(ask_price, target):
             return None, "ask_misses_price_target"
-        buy_price = target
+        if ot == "limit":
+            buy_price = target
+            entry_limit_price = target
+        else:
+            buy_price = ask_price
+            entry_limit_price = None
     else:
         if ask_price < min_ask or ask_price > max_ask:
             return None, "ask_outside_band"
         buy_price = ask_price
+        entry_limit_price = None
 
     if probability is None:
         return None, "missing_probability"
@@ -426,7 +450,7 @@ def evaluate_expiration_scalp_entry(
         {
             "side": side_l,
             "buy_price": buy_price,
-            "entry_limit_price": buy_price if high_water_scalp else None,
+            "entry_limit_price": entry_limit_price,
             "probability": prob,
             "ttc_seconds": int(ttc_seconds),
             "movement_percentile": float(movement_percentile)

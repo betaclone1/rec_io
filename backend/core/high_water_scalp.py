@@ -1,7 +1,11 @@
 """High Water Scalp: strategy identity, close-price math, paper GTC fill simulation.
 
-Entry is a single active-side price target (``min_ask``): fire when the
-ladder ask prints that cent, then send a limit IOC at that price. TTC,
+Entry for High Water Scalp is a single active-side price target (``min_ask``):
+fire when the ladder ask prints that cent. High Water Test 1 uses
+``min_ask``/``max_ask`` as an ask band instead. With monitor
+``order_type=limit``, Scalp posts a limit IOC at the target and Test 1 posts
+at the current ask inside the band; with ``order_type=market``, both send a
+market-style entry like other strategies (aggressive 0.99 limit policy). TTC,
 probability, movement, and verification dwell still follow Expiration Scalp.
 Close rests a GTC opposite-leg buy at ``1 - limit_close_price``
 (e.g. 0.99 owned-side → 0.01 opposite). Optional floor auto-stop dwell uses
@@ -59,6 +63,19 @@ def ask_hits_price_target(ask: Any, target: float) -> bool:
     if a <= 0.0 or a >= 1.0 or t <= 0.0 or t >= 1.0:
         return False
     return f"{a:.2f}" == f"{t:.2f}"
+
+
+def ask_in_price_band(ask: Any, min_ask: Any, max_ask: Any) -> bool:
+    """True when ask is inside [min_ask, max_ask] at 1-cent grain. Never invent."""
+    try:
+        a = round(float(ask), 2)
+        lo = round(float(min_ask), 2)
+        hi = round(float(max_ask), 2)
+    except (TypeError, ValueError):
+        return False
+    if a <= 0.0 or a >= 1.0 or lo <= 0.0 or hi >= 1.0 or lo > hi:
+        return False
+    return lo <= a <= hi
 
 
 def parse_limit_close_price(raw: Any) -> Optional[float]:
