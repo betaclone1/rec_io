@@ -6,6 +6,26 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-16 — Release v3.12.8: High Water Test 1 ask band + market order type
+
+**Summary**
+- **Release: v3.12.8**
+- **High Water family Order Type:** Monitor Limit/Market setting is honored on entry (no hard force to limit+IOC). Market uses the same aggressive 0.99 entry policy as other strategies.
+- **High Water Test 1 ask band:** Entry fires when the active-side ask is inside `[min_ask, max_ask]` (cent grain). Desktop + mobile settings use the dual-handle Active-Side Ask Window slider.
+- **High Water Scalp:** Still uses a single price-target slider / exact-cent fire.
+- **No DB migrations** in this release.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-16`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `auto_entry_supervisor_0001` RUNNING; High Water Test 1 settings show ask window; no AES refuse-to-start in recent logs
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.8`
+
+---
+
 ## 2026-09-15 — Release v3.12.7: High Water Scalp VWAP stop (PRE)
 
 **Summary**
