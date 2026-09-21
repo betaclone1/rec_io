@@ -19,13 +19,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-21`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20260918_1400_short_horizon_deltas_adverse_15s`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260918_1400_short_horizon_deltas_adverse_15s`
-- [ ] Regenerate supervisor config and full restart:
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260918_1400_short_horizon_deltas_adverse_15s`
+- [x] Regenerate supervisor config and full restart:
   `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `active_trade_supervisor_0001` / `trade_manager_0001` / `trade_executor_0001` / AES exp-scalp cutout RUNNING; no ATS failsafe deadlock; Exp Scalp settings show Adverse 15s control
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.9`
+- [x] Verify: health 3000/8001; `active_trade_supervisor_0001` / `trade_manager_0001` / `trade_executor_0001` / AES exp-scalp cutout RUNNING; no ATS failsafe deadlock; Exp Scalp settings show Adverse 15s control
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.9`
 
 ---
 
