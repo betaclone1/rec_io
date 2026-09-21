@@ -225,6 +225,16 @@ def build_symbol_tick_row(
             "delta_30m": None,
         }
 
+    try:
+        short_deltas = calculate_short_horizon_deltas(symbol)
+    except Exception:
+        short_deltas = {
+            "delta_5s": None,
+            "delta_10s": None,
+            "delta_15s": None,
+            "delta_30s": None,
+        }
+
     momentum_percentile = None
     if momentum_data.get("momentum") is not None:
         try:
@@ -277,6 +287,10 @@ def build_symbol_tick_row(
         "delta_4m": momentum_data.get("delta_4m"),
         "delta_15m": momentum_data.get("delta_15m"),
         "delta_30m": momentum_data.get("delta_30m"),
+        "delta_5s": short_deltas.get("delta_5s"),
+        "delta_10s": short_deltas.get("delta_10s"),
+        "delta_15s": short_deltas.get("delta_15s"),
+        "delta_30s": short_deltas.get("delta_30s"),
         "momentum_percentile": momentum_percentile,
         "momentum_5s_avg": momentum_5s_avg,
         "momentum_30s_avg": momentum_30s_avg,
@@ -734,39 +748,51 @@ def get_momentum_data(symbol: str = 'BTC') -> dict:
 
 def get_price_at_offset(symbol: str, minutes_ago: int) -> Optional[float]:
     """Get price from X minutes ago using tick buffer or PostgreSQL."""
-    if _metrics_use_buffer(symbol):
-        from backend.core.symbol_tick_buffer import price_at_offset_minutes
+    return get_price_at_offset_seconds(symbol, float(minutes_ago) * 60.0)
 
-        return price_at_offset_minutes(symbol, minutes_ago)
+
+def get_price_at_offset_seconds(symbol: str, seconds_ago: float) -> Optional[float]:
+    """Get price from X seconds ago using tick buffer or PostgreSQL."""
+    if _metrics_use_buffer(symbol):
+        from backend.core.symbol_tick_buffer import price_at_offset_seconds
+
+        return price_at_offset_seconds(symbol, seconds_ago)
+    try:
+        secs = float(seconds_ago)
+    except (TypeError, ValueError):
+        return None
+    if secs < 0:
+        return None
     try:
         conn = get_postgres_connection()
         cursor = conn.cursor()
-        
-        # Calculate timestamp for X minutes ago in EST
-        est_tz = ZoneInfo('US/Eastern')
+
+        est_tz = ZoneInfo("US/Eastern")
         now_est = datetime.now(est_tz)
-        target_time = now_est - timedelta(minutes=minutes_ago)
+        target_time = now_est - timedelta(seconds=secs)
         target_timestamp = target_time.strftime("%Y-%m-%dT%H:%M:%S")
-        
-        table_name = SYMBOL_CONFIG[symbol]['table_name']
-        
-        # Get the closest price before the target time
-        cursor.execute(f"""
-            SELECT price FROM live_data.{table_name} 
-            WHERE timestamp <= %s 
-            ORDER BY timestamp DESC 
+
+        table_name = SYMBOL_CONFIG[symbol]["table_name"]
+
+        cursor.execute(
+            f"""
+            SELECT price FROM live_data.{table_name}
+            WHERE timestamp <= %s
+            ORDER BY timestamp DESC
             LIMIT 1
-        """, (target_timestamp,))
-        
+        """,
+            (target_timestamp,),
+        )
+
         result = cursor.fetchone()
         conn.close()
-        
+
         if result:
             return float(result[0])
         return None
-        
+
     except Exception as e:
-        logger.warning("Error getting price at %sm offset: %s", minutes_ago, e)
+        logger.warning("Error getting price at %ss offset: %s", seconds_ago, e)
         return None
 
 def get_current_price_from_db(symbol: str) -> Optional[float]:
@@ -865,6 +891,25 @@ def calculate_momentum_deltas(symbol: str) -> Dict[str, Optional[float]]:
     }
     
     return deltas
+
+
+def calculate_short_horizon_deltas(symbol: str) -> Dict[str, Optional[float]]:
+    """Percent price change over 5s / 10s / 15s / 30s (same units as minute deltas)."""
+    empty = {
+        "delta_5s": None,
+        "delta_10s": None,
+        "delta_15s": None,
+        "delta_30s": None,
+    }
+    current_price = get_current_price_from_db(symbol)
+    if current_price is None:
+        return empty
+    return {
+        "delta_5s": calculate_delta(current_price, get_price_at_offset_seconds(symbol, 5)),
+        "delta_10s": calculate_delta(current_price, get_price_at_offset_seconds(symbol, 10)),
+        "delta_15s": calculate_delta(current_price, get_price_at_offset_seconds(symbol, 15)),
+        "delta_30s": calculate_delta(current_price, get_price_at_offset_seconds(symbol, 30)),
+    }
 
 def calculate_weighted_momentum_score(deltas: Dict[str, Optional[float]]) -> Optional[float]:
     """Calculate weighted momentum score using the standard formula"""
@@ -1339,8 +1384,10 @@ def insert_tick(
         # Insert the data with all columns including momentum, volatility, and movement
         cursor.execute(f'''
             INSERT INTO live_data.{table_name} 
-            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m, momentum_percentile, momentum_5s_avg, momentum_30s_avg, volatility, volatility_percentile, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile) 
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            (timestamp, price, one_minute_avg, momentum, delta_1m, delta_2m, delta_3m, delta_4m, delta_15m, delta_30m,
+             delta_5s, delta_10s, delta_15s, delta_30s,
+             momentum_percentile, momentum_5s_avg, momentum_30s_avg, volatility, volatility_percentile, move_1m, move_2m, move_3m, move_4m, move_15m, move_30m, movement, movement_percentile) 
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             ON CONFLICT (timestamp) DO UPDATE SET
                 price = EXCLUDED.price,
                 one_minute_avg = EXCLUDED.one_minute_avg,
@@ -1351,6 +1398,10 @@ def insert_tick(
                 delta_4m = EXCLUDED.delta_4m,
                 delta_15m = EXCLUDED.delta_15m,
                 delta_30m = EXCLUDED.delta_30m,
+                delta_5s = EXCLUDED.delta_5s,
+                delta_10s = EXCLUDED.delta_10s,
+                delta_15s = EXCLUDED.delta_15s,
+                delta_30s = EXCLUDED.delta_30s,
                 momentum_percentile = EXCLUDED.momentum_percentile,
                 momentum_5s_avg = EXCLUDED.momentum_5s_avg,
                 momentum_30s_avg = EXCLUDED.momentum_30s_avg,
@@ -1375,6 +1426,10 @@ def insert_tick(
             momentum_data.get('delta_4m'),
             momentum_data.get('delta_15m'),
             momentum_data.get('delta_30m'),
+            tick_row.get('delta_5s'),
+            tick_row.get('delta_10s'),
+            tick_row.get('delta_15s'),
+            tick_row.get('delta_30s'),
             momentum_percentile,
             momentum_5s_avg,
             momentum_30s_avg,

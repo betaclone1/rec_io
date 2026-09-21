@@ -8500,6 +8500,10 @@ Created by migration **`20260415_1730_historical_strike_table_master_partitioned
 | `delta_4m` | `numeric(10,4)` | YES | - | |
 | `delta_15m` | `numeric(10,4)` | YES | - | |
 | `delta_30m` | `numeric(10,4)` | YES | - | |
+| `delta_5s` | `numeric(12,6)` | YES | - | Percent change vs price ~5s ago. Migration `20260918_1400_short_horizon_deltas_adverse_15s`. |
+| `delta_10s` | `numeric(12,6)` | YES | - | Percent change vs price ~10s ago. |
+| `delta_15s` | `numeric(12,6)` | YES | - | Percent change vs price ~15s ago (Exp Scalp adverse gate). |
+| `delta_30s` | `numeric(12,6)` | YES | - | Percent change vs price ~30s ago. |
 | `momentum_percentile` | `numeric(5,1)` | YES | - | |
 | `momentum_5s_avg` | `numeric(5,1)` | YES | - | |
 | `momentum_30s_avg` | `numeric(5,1)` | YES | - | |
@@ -10452,6 +10456,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `min_fill_price` | `numeric(6,4)` | YES | - | Minimum estimated taker fill (dollars) before executor sends open order; NULL or 0 disables. Migration `20260613_1200_orderbook_strike_min_fill_price`. |
 | `min_slippage` | `numeric(6,4)` | YES | 0.0000 | Minimum acceptable projected entry slippage (est. fill − trigger, dollars); 0.0000 disables, enabled range -0.2000..0.0000. TM rejects opens whose projected slippage is below this. Migration `20260716_1200_min_slippage_gate`. |
 | `min_buffer_pct` | `numeric(12,6)` | YES | 0.000000 | Expiration Scalp: minimum strike `buffer_pct` (percent of spot, same units as live strike ladder). 0.000000 disables. AES rejects entry when ladder `buffer_pct` is below this. Migration `20260829_1056_min_buffer_pct`. |
+| `adverse_delta_15s_pct` | `numeric(12,6)` | YES | 0.000000 | Expiration Scalp: veto entry when live `delta_15s` moves against the proposed side by at least this magnitude (percent points). YES vetoes on `delta_15s <= -threshold`; NO on `delta_15s >= +threshold`. 0 disables. Migration `20260918_1400_short_horizon_deltas_adverse_15s`. |
 | `max_profit` | `numeric(6,4)` | YES | 0.9900 | |
 | `loss_prevention_toggle` | `boolean` | YES | true | Master enable for any monitor loss-prevention method. |
 | `loss_prevention_method` | `text` | YES | win_streak | Loss-prevention algorithm: `win_streak` or `time`. |

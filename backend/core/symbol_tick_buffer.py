@@ -100,8 +100,19 @@ def avg_price_last_minute(symbol: str, fallback: float) -> float:
 
 def price_at_offset_minutes(symbol: str, minutes_ago: int) -> Optional[float]:
     """Price of the tick closest to ``minutes_ago``."""
+    return price_at_offset_seconds(symbol, float(minutes_ago) * 60.0)
+
+
+def price_at_offset_seconds(symbol: str, seconds_ago: float) -> Optional[float]:
+    """Price of the tick closest to ``seconds_ago`` (wall clock, EST buffer epochs)."""
     sym = symbol.upper()
-    target = datetime.now(_EST).timestamp() - minutes_ago * 60
+    try:
+        secs = float(seconds_ago)
+    except (TypeError, ValueError):
+        return None
+    if secs < 0:
+        return None
+    target = datetime.now(_EST).timestamp() - secs
     best_price: Optional[float] = None
     best_dist = float("inf")
     with _lock:

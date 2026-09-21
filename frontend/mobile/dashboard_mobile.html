@@ -9088,6 +9088,11 @@
           <input type="range" id="m_expirationScalpMinBufferPctSlider" min="0" max="250" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="m_expirationScalpMinBufferPctValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000%</div>
         </div>
+        <label for="m_expirationScalpAdverseDelta15sSlider" style="font-size:14px; color:#333; font-weight:500;">Adverse 15s Delta Gate:</label>
+        <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
+          <input type="range" id="m_expirationScalpAdverseDelta15sSlider" min="0" max="250" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
+          <div id="m_expirationScalpAdverseDelta15sValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.0000%</div>
+        </div>
         <label for="m_expirationScalpMinSlippageSlider" style="font-size:14px; color:#333; font-weight:500;">Minimum Slippage:</label>
         <div class="value-bubble-container" style="position:relative; width:100%; box-sizing:border-box;">
           <input type="range" id="m_expirationScalpMinSlippageSlider" min="-200" max="0" step="1" value="0" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
@@ -10666,6 +10671,16 @@
         const percent = (n - min) / (max - min);
         display.style.left = `${mobileUatRangeBubbleLeftPx(slider, percent)}px`;
       }
+      function updateMobileExpirationScalpAdverseDelta15sBubble(rawValue) {
+        const slider = document.getElementById('m_expirationScalpAdverseDelta15sSlider');
+        const display = document.getElementById('m_expirationScalpAdverseDelta15sValueDisplay');
+        if (!slider || !display) return;
+        const n = Math.min(250, Math.max(0, parseInt(rawValue, 10) || 0));
+        display.textContent = (n / 10000).toFixed(4) + '%';
+        const min = parseInt(slider.min, 10), max = parseInt(slider.max, 10);
+        const percent = (n - min) / (max - min);
+        display.style.left = `${mobileUatRangeBubbleLeftPx(slider, percent)}px`;
+      }
       function updateMobileHighWaterScalpPriceTargetBubble(rawValue) {
         const slider = document.getElementById('m_highWaterScalpPriceTargetSlider');
         const display = document.getElementById('m_highWaterScalpPriceTargetValueDisplay');
@@ -11409,6 +11424,15 @@
               updateMobileExpirationScalpMinBufferPctBubble(mbpSlider);
             }
           }
+          const adv15Raw = uatMobileFiniteOrNull(data.adverse_delta_15s_pct);
+          if (adv15Raw != null) {
+            const advSlider = Math.min(250, Math.max(0, Math.round(adv15Raw * 10000)));
+            const advEl = document.getElementById('m_expirationScalpAdverseDelta15sSlider');
+            if (advEl) advEl.value = advSlider;
+            if (typeof updateMobileExpirationScalpAdverseDelta15sBubble === 'function') {
+              updateMobileExpirationScalpAdverseDelta15sBubble(advSlider);
+            }
+          }
           const sloRaw = uatMobileFiniteOrNull(data.stop_loss_offset);
           if (sloRaw != null) {
             const sloSlider = Math.min(99, Math.max(1, Math.round(sloRaw * 100)));
@@ -11670,6 +11694,14 @@
               esMbp.addEventListener('input', function() { updateMobileExpirationScalpMinBufferPctBubble(this.value); });
             }
           }
+          const esAdv15 = document.getElementById('m_expirationScalpAdverseDelta15sSlider');
+          if (esAdv15) {
+            updateMobileExpirationScalpAdverseDelta15sBubble(esAdv15.value);
+            if (!esAdv15._mobileAdv15Wired) {
+              esAdv15._mobileAdv15Wired = true;
+              esAdv15.addEventListener('input', function() { updateMobileExpirationScalpAdverseDelta15sBubble(this.value); });
+            }
+          }
           const hwsPt = document.getElementById('m_highWaterScalpPriceTargetSlider');
           if (hwsPt) {
             updateMobileHighWaterScalpPriceTargetBubble(hwsPt.value);
@@ -11912,6 +11944,11 @@
               if (mbpEl) {
                 const mbpVal = parseInt(mbpEl.value, 10) / 10000;
                 payload.min_buffer_pct = mbpVal > 0 ? parseFloat(mbpVal.toFixed(6)) : 0;
+              }
+              const adv15El = document.getElementById('m_expirationScalpAdverseDelta15sSlider');
+              if (adv15El) {
+                const advVal = parseInt(adv15El.value, 10) / 10000;
+                payload.adverse_delta_15s_pct = advVal > 0 ? parseFloat(advVal.toFixed(6)) : 0;
               }
               const esVerifyCb = document.getElementById('m_esVerifyEnabled');
               const esVerifySl = document.getElementById('m_esVerifySeconds');

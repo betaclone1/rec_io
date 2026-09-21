@@ -211,7 +211,13 @@ var/prob_lookup_mmap/
 # Cycle recon local analysis outputs/caches
 backend/data/historical_data/cycle_recon_runs/
 backend/data/historical_data/cycle_recon_cache/
+# Ad-hoc cycle package extracts (local scratch)
+backend/data/historical_data/tmp_*/
+backend/data/historical_data/tmp_*/**
 !tests/fixtures/cycle_recon/
 !tests/fixtures/cycle_recon/**
 !tests/fixtures/cycle_recon/**/*.csv
 backend/data/position_risk/
+backend/data/historical_data/cfbenchmarks/BRTI_2026-09-14_utc.csv
+# Large Kalshi public-tape day dumps (local analysis)
+backend/data/historical_data/kalshi_public_trades/

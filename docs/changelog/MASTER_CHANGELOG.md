@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-09-21 — Release v3.12.9: Combined flip-sell + Exp Scalp adverse 15s gate + ATS failsafe lock
+
+**Summary**
+- **Release: v3.12.9**
+- **Combined flip-sell:** When floor/prob flip-sell is enabled, ATS attaches `flip_sell` on the auto-stop close. TM creates an independent flip row (`entry_method=flip_sell`) and sends **one** opposite-leg executor order sized `close_qty + flip_qty`. Fills allocate **close first**, then remainder to the flip (same VWAP). Paper uses the same close-then-flip record split at `buy = 1 − sell`.
+- **ATS failsafe lock:** `check_monitoring_failsafe` releases `monitoring_thread_lock` before `start_monitoring_loop` (fixes unified ATS deadlock after VWAP/PRE).
+- **Expiration Scalp adverse 15s gate:** Live `delta_15s` vetoes entry against the proposed side when magnitude ≥ `adverse_delta_15s_pct` (0 disables). Pre-dwell and in-dwell VERIFY ABORT logging (throttled). Desktop + mobile settings slider.
+- **Short-horizon deltas:** CFB watchdog / tick buffer publish `delta_5s`/`10s`/`15s`/`30s` on live price history.
+- **DB:** Migration **`20260918_1400_short_horizon_deltas_adverse_15s`** — delta columns on `live_data.live_price_log_1s_*` (+ `live_symbol_status` when present); `adverse_delta_15s_pct` on all tenant `monitor_list_*`.
+- **Docs / tests:** `TRADE_LIFECYCLE_AND_AUTO_STOP_CURRENT.md`; flip-sell / adverse-gate / failsafe unit tests; `.gitignore` for large local public-tape / BRTI dumps.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-09-21`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20260918_1400_short_horizon_deltas_adverse_15s`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20260918_1400_short_horizon_deltas_adverse_15s`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `active_trade_supervisor_0001` / `trade_manager_0001` / `trade_executor_0001` / AES exp-scalp cutout RUNNING; no ATS failsafe deadlock; Exp Scalp settings show Adverse 15s control
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.9`
+
+---
+
 ## 2026-09-16 — Release v3.12.8: High Water Test 1 ask band + market order type
 
 **Summary**

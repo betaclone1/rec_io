@@ -317,7 +317,7 @@ def _v2_buy_leg_from_legacy_intent_side(intent: str, legacy_side: str) -> str:
     """
     s = "yes" if str(legacy_side).strip().lower() in ("y", "yes") else "no"
     i = str(intent or "open").strip().lower()
-    if i in ("close", "resting_close"):
+    if i in ("close", "resting_close", "close_with_flip_sell"):
         return "no" if s == "yes" else "yes"
     return s
 
@@ -661,6 +661,9 @@ def process_trigger_trade_request(data: dict):
                     status_payload = {"id": trade_id, "status": "error", "error_message": msg, "intent": intent}
                 else:
                     status_payload = {"ticket_id": ticket_id, "status": "error", "error_message": msg, "intent": intent}
+                flip_tid = data.get("flip_trade_id")
+                if flip_tid is not None:
+                    status_payload["flip_trade_id"] = flip_tid
                 _notify_trade_manager_executor_status(status_payload)
                 return {"status": "rejected", "error": msg}, 502
 
@@ -680,6 +683,9 @@ def process_trigger_trade_request(data: dict):
                 "order_id": order_id,
                 "intent": intent,
             }
+        flip_tid = data.get("flip_trade_id")
+        if flip_tid is not None:
+            status_payload["flip_trade_id"] = flip_tid
         _notify_trade_manager_executor_status(status_payload)
         return {"status": "sent", "message": "Trade sent successfully"}, 200
 

@@ -4841,10 +4841,13 @@ def check_monitoring_failsafe():
                 active_count = int(cursor.fetchone()[0])
             conn.close()
 
-        # If there are tracked trades but no monitoring thread, restart it
+        # If there are tracked trades but no monitoring thread, restart it.
+        # Must NOT call start_monitoring_loop() while holding monitoring_thread_lock:
+        # that lock is a non-reentrant threading.Lock and start_monitoring_loop acquires
+        # it — nested acquire deadlocks the process (prod 2026-09-17).
         if active_count != 0:
+            thread_alive = False
             with monitoring_thread_lock:
-                thread_alive = False
                 try:
                     thread_alive = monitoring_thread is not None and monitoring_thread.is_alive()
                 except Exception as e:
@@ -4852,58 +4855,69 @@ def check_monitoring_failsafe():
                     monitoring_thread = None
                     thread_alive = False
 
-                if not thread_alive:
-                    count_msg = (
-                        f"{active_count} tracked trade row(s)"
-                        if active_count > 0
-                        else "tracked trade row(s) (count unknown — DB unreachable)"
+            if not thread_alive:
+                count_msg = (
+                    f"{active_count} tracked trade row(s)"
+                    if active_count > 0
+                    else "tracked trade row(s) (count unknown — DB unreachable)"
+                )
+                log(
+                    f"🔄 FAILSAFE: Found {count_msg} "
+                    f"(active/pending/closing) but monitoring not running"
+                )
+
+                # Step 1: Try thread restart first (quick recovery)
+                log("🔄 FAILSAFE: Attempting thread restart...")
+                thread_restart_succeeded = False
+                try:
+                    start_monitoring_loop()
+
+                    # Verify thread restart succeeded
+                    time.sleep(1)  # Give thread time to start
+                    with monitoring_thread_lock:
+                        if monitoring_thread is not None:
+                            try:
+                                if monitoring_thread.is_alive():
+                                    log("✅ FAILSAFE: Thread restart succeeded and verified")
+                                    thread_restart_succeeded = True
+                                    # Reset restart attempts on success
+                                    check_monitoring_failsafe.restart_attempts = {}
+                            except Exception as e:
+                                log(
+                                    f"⚠️ FAILSAFE: Thread verification failed ({e}), "
+                                    f"escalating to process restart"
+                                )
+                except Exception as e:
+                    log(f"❌ FAILSAFE: Thread restart failed ({e}), escalating to process restart")
+                    import traceback
+                    log(f"❌ FAILSAFE: Thread restart stack trace: {traceback.format_exc()}")
+
+                # Step 2: Thread restart failed or verification failed - restart entire process
+                if not thread_restart_succeeded:
+                    current_time = time.time()
+                    time_since_last_restart = (
+                        current_time - check_monitoring_failsafe.last_process_restart
                     )
+
+                    if time_since_last_restart < check_monitoring_failsafe.process_restart_cooldown:
+                        log(
+                            f"⏳ FAILSAFE: Process restart on cooldown "
+                            f"({int(check_monitoring_failsafe.process_restart_cooldown - time_since_last_restart)}s remaining)"
+                        )
+                        return
+
+                    log("🚨 CRITICAL FAILSAFE: Thread restart failed, restarting entire process!")
                     log(
-                        f"🔄 FAILSAFE: Found {count_msg} "
-                        f"(active/pending/closing) but monitoring not running"
+                        f"🚨 CRITICAL: {active_count} active trades are UNPROTECTED - "
+                        f"process restart required!"
                     )
-                    
-                    # Step 1: Try thread restart first (quick recovery)
-                    log("🔄 FAILSAFE: Attempting thread restart...")
-                    thread_restart_succeeded = False
-                    try:
-                        start_monitoring_loop()
-                        
-                        # Verify thread restart succeeded
-                        time.sleep(1)  # Give thread time to start
-                        with monitoring_thread_lock:
-                            if monitoring_thread is not None:
-                                try:
-                                    if monitoring_thread.is_alive():
-                                        log("✅ FAILSAFE: Thread restart succeeded and verified")
-                                        thread_restart_succeeded = True
-                                        # Reset restart attempts on success
-                                        check_monitoring_failsafe.restart_attempts = {}
-                                except Exception as e:
-                                    log(f"⚠️ FAILSAFE: Thread verification failed ({e}), escalating to process restart")
-                    except Exception as e:
-                        log(f"❌ FAILSAFE: Thread restart failed ({e}), escalating to process restart")
-                        import traceback
-                        log(f"❌ FAILSAFE: Thread restart stack trace: {traceback.format_exc()}")
-                    
-                    # Step 2: Thread restart failed or verification failed - restart entire process
-                    if not thread_restart_succeeded:
-                        current_time = time.time()
-                        time_since_last_restart = current_time - check_monitoring_failsafe.last_process_restart
-                        
-                        if time_since_last_restart < check_monitoring_failsafe.process_restart_cooldown:
-                            log(f"⏳ FAILSAFE: Process restart on cooldown ({int(check_monitoring_failsafe.process_restart_cooldown - time_since_last_restart)}s remaining)")
-                            return
-                        
-                        log(f"🚨 CRITICAL FAILSAFE: Thread restart failed, restarting entire process!")
-                        log(f"🚨 CRITICAL: {active_count} active trades are UNPROTECTED - process restart required!")
-                        
-                        # Restart this process via supervisorctl
-                        restart_active_trade_supervisor_process()
-                        
-                        # Update cooldown
-                        check_monitoring_failsafe.last_process_restart = current_time
-        
+
+                    # Restart this process via supervisorctl
+                    restart_active_trade_supervisor_process()
+
+                    # Update cooldown
+                    check_monitoring_failsafe.last_process_restart = current_time
+
     except Exception as e:
         log(f"❌ CRITICAL: Failsafe check itself failed: {e}")
         import traceback
@@ -5415,59 +5429,62 @@ def start_monitoring_loop():
             monitoring_thread = None
         log("📊 MONITORING: Monitoring thread finished")
     
-    # Start monitoring in a separate thread WITH EXCEPTION HANDLING
-    with monitoring_thread_lock:
-        try:
+    # Start monitoring in a separate thread WITH EXCEPTION HANDLING.
+    # Hold monitoring_thread_lock only around thread create/start — not while
+    # installing the live_state listener (can block; callers may also need the lock).
+    try:
+        with monitoring_thread_lock:
             monitoring_thread = threading.Thread(target=monitoring_worker, daemon=True)
             monitoring_thread.start()
-            
+
             # Verify thread actually started
             if not monitoring_thread.is_alive():
                 raise RuntimeError("Thread failed to start after start() call")
-            
+
             log("📊 MONITORING: Monitoring thread started and verified alive")
 
-            try:
-                from backend.core.tradeflow_live_state_trigger import (
-                    start_tradeflow_live_state_listener,
-                )
+        try:
+            from backend.core.tradeflow_live_state_trigger import (
+                start_tradeflow_live_state_listener,
+            )
 
-                def _ats_on_ladder(s: str, m: str) -> None:
-                    if _ATS_LANE_EXITS:
-                        try:
-                            if not _ats_ladder_has_tracked_trades(s, m):
-                                return
-                            _ats_ensure_lane_hub().on_ladder_notify(s, m)
-                        except Exception as le:
-                            log_debug(f"ATS lane notify failed: {le}")
-                    else:
-                        _ats_live_state_wake.set()
+            def _ats_on_ladder(s: str, m: str) -> None:
+                if _ATS_LANE_EXITS:
+                    try:
+                        if not _ats_ladder_has_tracked_trades(s, m):
+                            return
+                        _ats_ensure_lane_hub().on_ladder_notify(s, m)
+                    except Exception as le:
+                        log_debug(f"ATS lane notify failed: {le}")
+                else:
+                    _ats_live_state_wake.set()
 
-                def _ats_symbol_market_filter(s: str, m: str) -> bool:
-                    if ATS_BTC15M_EXP_SCALP:
-                        return s.strip().upper() == "BTC" and m.strip().lower() == "15m"
-                    return True
+            def _ats_symbol_market_filter(s: str, m: str) -> bool:
+                if ATS_BTC15M_EXP_SCALP:
+                    return s.strip().upper() == "BTC" and m.strip().lower() == "15m"
+                return True
 
-                if start_tradeflow_live_state_listener(
-                    on_evaluate=_ats_on_live_state,
-                    on_ladder_update=_ats_on_ladder if _ATS_LANE_EXITS else None,
-                    service=f"ats_{MONITOR_IDENTIFIER}",
-                    symbol_market_filter=_ats_symbol_market_filter
-                    if ATS_BTC15M_EXP_SCALP
-                    else None,
-                ):
-                    log("📊 MONITORING: live_state trigger enabled")
-            except Exception as trig_exc:
-                log_debug(f"live_state trigger not started: {trig_exc}")
-            
-        except Exception as e:
-            log(f"❌ CRITICAL: Failed to start monitoring thread: {e}")
-            log(f"❌ CRITICAL: Exception type: {type(e).__name__}")
-            import traceback
-            log(f"❌ CRITICAL: Stack trace: {traceback.format_exc()}")
-            # Clear thread reference on failure
+            if start_tradeflow_live_state_listener(
+                on_evaluate=_ats_on_live_state,
+                on_ladder_update=_ats_on_ladder if _ATS_LANE_EXITS else None,
+                service=f"ats_{MONITOR_IDENTIFIER}",
+                symbol_market_filter=_ats_symbol_market_filter
+                if ATS_BTC15M_EXP_SCALP
+                else None,
+            ):
+                log("📊 MONITORING: live_state trigger enabled")
+        except Exception as trig_exc:
+            log_debug(f"live_state trigger not started: {trig_exc}")
+
+    except Exception as e:
+        log(f"❌ CRITICAL: Failed to start monitoring thread: {e}")
+        log(f"❌ CRITICAL: Exception type: {type(e).__name__}")
+        import traceback
+        log(f"❌ CRITICAL: Stack trace: {traceback.format_exc()}")
+        # Clear thread reference on failure
+        with monitoring_thread_lock:
             monitoring_thread = None
-            raise  # Re-raise to let caller know it failed
+        raise  # Re-raise to let caller know it failed
 
 def update_monitoring_on_demand():
     """
@@ -6719,26 +6736,29 @@ def _ats_get_paper_trade_from_monitor() -> bool:
     return False
 
 
-def trigger_flip_sell_open_after_auto_stop(
+def prepare_flip_sell_meta_for_auto_stop(
     trade: Dict[str, Any],
     trigger_reason: str,
     pos_closed: int,
     inverted_side: str,
-) -> bool:
+) -> Optional[Dict[str, Any]]:
     """
-    After a successful auto-stop close enqueue, optionally open a flip leg on the same monitor.
+    Build the ``flip_sell`` block attached to an auto-stop close when enabled.
+
+    TM creates an independent flip trade row and sends **one** combined opposite-leg
+    execution (close qty + flip qty). Returns None when flip must not run.
 
     **Strict:** only ``stop_loss_floor`` / ``probability_auto_stop`` plus matching monitor
     ``flip_sell_floor`` / ``flip_sell_prob`` must be the PostgreSQL boolean TRUE (not NULL).
     """
     tr = (trigger_reason or "").strip().lower()
     if tr not in ("stop_loss_floor", "probability_auto_stop"):
-        return False
+        return None
 
     row = _ats_fetch_flip_sell_monitor_row()
     if row is None:
         log_debug("[FLIP SELL] skip: flip columns absent or monitor row unavailable")
-        return False
+        return None
 
     flip_prob, prob_mult_raw, flip_floor, floor_mult_raw, _paper_col = row
     if tr == "stop_loss_floor":
@@ -6746,14 +6766,14 @@ def trigger_flip_sell_open_after_auto_stop(
             log_debug(
                 f"[FLIP SELL] skip floor stop: flip_sell_floor is not TRUE for monitor {ctx_mid()}"
             )
-            return False
+            return None
         mult_raw = floor_mult_raw
     else:
         if not _ats_monitor_flip_boolean_strictly_true(flip_prob):
             log_debug(
                 f"[FLIP SELL] skip prob stop: flip_sell_prob is not TRUE for monitor {ctx_mid()}"
             )
-            return False
+            return None
         mult_raw = prob_mult_raw
 
     tid = trade.get("trade_id")
@@ -6762,65 +6782,35 @@ def trigger_flip_sell_open_after_auto_stop(
     except (TypeError, ValueError):
         tid_int = None
     if tid_int is None:
-        return False
+        return None
 
     em = _ats_trade_log_entry_method(tid_int)
     if em == "flip_sell":
         log_debug(f"[FLIP SELL] skip: trade {tid_int} already flip_sell entry_method (no chain)")
-        return False
+        return None
 
     mult = parse_flip_sell_multiplier(mult_raw)
     flip_count = max(1, int(round(float(pos_closed) * mult)))
     if flip_count < 1:
-        return False
+        return None
 
     if not trade.get("ticker") or trade.get("strike") is None:
         log_debug(f"[FLIP SELL] skip trade_id={tid}: missing ticker or strike")
-        return False
+        return None
 
     current_close_price = trade.get("current_close_price")
     symbol_close = trade.get("current_symbol_price")
     if current_close_price is None or symbol_close is None:
         log_debug(f"[FLIP SELL] skip trade_id={tid}: missing price snapshot for open")
-        return False
+        return None
 
     try:
         flip_buy_price = float(current_close_price)
     except (TypeError, ValueError):
         log_debug(f"[FLIP SELL] skip trade_id={tid}: invalid current_close_price")
-        return False
+        return None
 
-    conn = None
-    try:
-        symbol, market = get_current_monitor_symbol_and_market()
-        mnorm = (market or "").strip().lower()
-        if mnorm in ("15m", "hourly"):
-            conn = get_db_connection()
-            try:
-                ok, reason = evaluate_pipeline_gate_conn(
-                    conn,
-                    exchange="kalshi",
-                    market=mnorm,
-                    symbol=str(symbol or "").upper(),
-                )
-            finally:
-                conn.close()
-                conn = None
-            if not ok:
-                log(
-                    f"[FLIP SELL] 🚫 BLOCKED by pipeline gate symbol={symbol} market={mnorm} "
-                    f"reason={reason} trade_id={tid}"
-                )
-                return False
-    except Exception as gate_err:
-        log(f"[FLIP SELL] 🚫 BLOCKED by pipeline gate check error: {gate_err} trade_id={tid}")
-        try:
-            if conn:
-                conn.close()
-        except Exception:
-            pass
-        return False
-
+    # Pipeline gate already evaluated on the close path; skip a second gate here.
     import random
 
     ticket_id = f"TICKET-{random.getrandbits(32):08x}-{int(time.time() * 1000)}"
@@ -6834,13 +6824,13 @@ def trigger_flip_sell_open_after_auto_stop(
     bankroll_allotment = _ats_get_bankroll_allotment()
     if bankroll_allotment is None:
         log(f"[FLIP SELL] skip trade_id={tid}: no bankroll_allotment_total on monitor")
-        return False
+        return None
 
     monitor_key = trade.get("monitor") or f"mon_{ctx_user()}_{ctx_mid()}"
     prob_out = trade.get("current_probability")
     diff_out = trade.get("diff")
 
-    open_payload: Dict[str, Any] = {
+    meta: Dict[str, Any] = {
         "ticket_id": ticket_id,
         "status": "pending",
         "date": eastern_date,
@@ -6863,122 +6853,36 @@ def trigger_flip_sell_open_after_auto_stop(
         "loss_prevention": loss_prevention_flag,
         "multiplier": _ats_get_multiplier_from_monitor(),
         "paper_trade": paper_trade,
-    }
-
-    log_message = (
-        f"FLIP_SELL OPEN | trigger={tr} | {trade.get('ticker')} | {trade.get('strike')} | "
-        f"side={inverted_side} | count={position_out} (closed={pos_closed} mult={mult}) | "
-        f"buy_price={flip_buy_price}"
-    )
-    notification_data = {
-        "strike": trade.get("strike"),
-        "side": inverted_side,
-        "ticker": trade.get("ticker"),
-        "buy_price": flip_buy_price,
-        "probability": prob_out,
-        "contract": trade.get("contract"),
-        "position": position_out,
-        "entry_method": "flip_sell",
         "auto_stop_trigger": tr,
+        "closed_source_trade_id": tid_int,
+        "closed_source_position": int(pos_closed),
+        "flip_mult": mult,
     }
-
-    try:
-        from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
-
-        use_redis = use_trading_redis_comms()
-        if use_redis and publish_trade_manager_command(
-            "add_trade",
-            open_payload,
-            "active_trade_supervisor",
-            correlation_id=ticket_id,
-            tenant_user_no=ctx_user(),
-        ):
-            if ATS_UNIFIED_POOL:
-                log(
-                    f"[FLIP SELL] OPEN enqueued (Redis) trade_id={tid} ticker={trade.get('ticker')} "
-                    f"position={position_out} trigger={tr}"
-                )
-                _defer_unified_ats_flip_sell_followup(ticket_id, log_message, notification_data)
-                return True
-
-            from backend.util.trade_logger import log_trade_event
-
-            log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
-            try:
-                from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc
-
-                if _use_trc():
-                    publish_preferences_event(
-                        "automated_trade_triggered",
-                        notification_data,
-                        tenant_user_no=ctx_user(),
-                    )
-            except Exception:
-                pass
-            log(
-                f"[FLIP SELL] OPEN enqueued (Redis) trade_id={tid} ticker={trade.get('ticker')} "
-                f"position={position_out} trigger={tr}"
-            )
-            return True
-
-        if not ATS_HTTP_FALLBACK_ENABLED:
-            log(
-                f"[FLIP SELL] Redis open enqueue unavailable trade_id={tid}; "
-                "ATS_HTTP_FALLBACK_ENABLED=0 so HTTP fallback is disabled"
-            )
-            return False
-
-        tm_port = scoped_trade_manager_http_port()
-        url = get_service_url(tm_port) + "/trades"
-        resp = requests.post(url, json=open_payload, timeout=10)
-        if resp.status_code in (200, 201):
-            try:
-                body = resp.json()
-                if isinstance(body, dict) and body.get("error"):
-                    log(f"[FLIP SELL] Open rejected trade_id={tid}: {body.get('error')}")
-                    return False
-            except Exception:
-                pass
-            from backend.util.trade_logger import log_trade_event
-
-            log_trade_event(ticket_id, log_message, service="active_trade_supervisor")
-            try:
-                from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms as _use_trc2
-
-                if _use_trc2():
-                    publish_preferences_event(
-                        "automated_trade_triggered",
-                        notification_data,
-                        tenant_user_no=ctx_user(),
-                    )
-            except Exception:
-                pass
-            log(
-                f"[FLIP SELL] OPEN via HTTP trade_id={tid} ticker={trade.get('ticker')} "
-                f"position={position_out} trigger={tr}"
-            )
-            return True
-        log(
-            f"[FLIP SELL] OPEN failed trade_id={tid}: {resp.status_code} {getattr(resp, 'text', '')}"
-        )
-        return False
-    except Exception as e:
-        log(f"[FLIP SELL] OPEN exception trade_id={tid}: {e}")
-        return False
+    log(
+        f"[FLIP SELL] attach to close trade_id={tid} flip_side={inverted_side} "
+        f"flip_qty={position_out} (closed={pos_closed} mult={mult}) trigger={tr}"
+    )
+    return meta
 
 
-def _ats_after_successful_auto_stop_close_enqueue_flip(
+def trigger_flip_sell_open_after_auto_stop(
     trade: Dict[str, Any],
-    *,
     trigger_reason: str,
-    pos_int: int,
+    pos_closed: int,
     inverted_side: str,
-) -> None:
-    """Never raises; flip is strictly opt-in per monitor boolean."""
-    try:
-        trigger_flip_sell_open_after_auto_stop(trade, trigger_reason, pos_int, inverted_side)
-    except Exception as e:
-        log(f"[FLIP SELL] post-close hook error trade_id={trade.get('trade_id')}: {e}")
+) -> bool:
+    """
+    Legacy helper: build flip meta only (combined close path owns execution).
+
+    Returns True when a flip_sell block would be attached to the auto-stop close.
+    Separate open enqueue was removed — TM+executor run one combined opposite-leg order.
+    """
+    return (
+        prepare_flip_sell_meta_for_auto_stop(
+            trade, trigger_reason, pos_closed, inverted_side
+        )
+        is not None
+    )
 
 
 def trigger_auto_stop_close(
@@ -7119,6 +7023,18 @@ def trigger_auto_stop_close(
         "close_method": close_method_val,
         "monitor": trade.get("monitor"),
     }
+    # Combined flip-sell: attach meta so TM sends one opposite-leg order (close+flip).
+    try:
+        flip_meta = prepare_flip_sell_meta_for_auto_stop(
+            trade, trigger_reason, pos_int, inverted_side
+        )
+        if flip_meta:
+            payload["flip_sell"] = flip_meta
+    except Exception as flip_prep_err:
+        log(
+            f"[FLIP SELL] prepare failed trade_id={tid} trigger={trigger_reason}: {flip_prep_err} "
+            "— proceeding with close only"
+        )
     if _ats_refuse_stale_fire("pre_submit"):
         return False
     try:
@@ -7174,12 +7090,6 @@ def trigger_auto_stop_close(
                     f"prob={trade.get('current_probability')} sell_price={sell_price_float:.4f}"
                 )
                 _defer_unified_ats_close_followup(ticket_id, log_message, notification_data)
-                _ats_after_successful_auto_stop_close_enqueue_flip(
-                    trade,
-                    trigger_reason=trigger_reason,
-                    pos_int=pos_int,
-                    inverted_side=inverted_side,
-                )
                 return True
 
             class _Ok:
@@ -7243,12 +7153,6 @@ def trigger_auto_stop_close(
             except Exception as e:
                 log(f"[AUTO STOP] ❌ Error sending frontend notification: {e}")
 
-            _ats_after_successful_auto_stop_close_enqueue_flip(
-                trade,
-                trigger_reason=trigger_reason,
-                pos_int=pos_int,
-                inverted_side=inverted_side,
-            )
             return True
         log(
             f"[AUTO STOP] Failed to trigger close trigger={trigger_reason} trade_id={tid}: "
@@ -7271,16 +7175,11 @@ def trigger_auto_stop_close(
                 conn.close()
                 
                 if result and result[0] in ['closing', 'closed']:
-                    # Trade status changed, so the close request was processed successfully
+                    # Trade status changed, so the close request was processed successfully.
+                    # Flip (if any) was already on the close payload — do not enqueue a second open.
                     log(
                         f"[AUTO STOP] ⚠️ Request timeout trigger={trigger_reason} trade_id={tid}, "
                         f"but trade status is '{result[0]}' - treating as success"
-                    )
-                    _ats_after_successful_auto_stop_close_enqueue_flip(
-                        trade,
-                        trigger_reason=trigger_reason,
-                        pos_int=pos_int,
-                        inverted_side=inverted_side,
                     )
                     return True
             except Exception as db_check_error:

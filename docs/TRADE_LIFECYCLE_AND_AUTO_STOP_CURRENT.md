@@ -305,15 +305,16 @@ On successful enqueue (unified pool): defer trade_logger + preferences notify; o
 
 ### 5.8 Flip-sell
 
-`trigger_flip_sell_open_after_auto_stop`:
+`prepare_flip_sell_meta_for_auto_stop` (ATS) + TM close with `flip_sell` block:
 
-- Only after **successful** auto-stop close enqueue.
 - Only for `stop_loss_floor` or `probability_auto_stop`.
 - Monitor `flip_sell_floor` / `flip_sell_prob` must be **PostgreSQL TRUE** (strict; NULL/false never enables).
 - Size: closed position × `flip_sell_*_mult` (parsed e.g. `1x`).
-- Opens **inverted** side; `entry_method=flip_sell`.
+- **Combined execution:** ATS attaches `flip_sell` on the auto-stop **close** payload. TM inserts an independent pending flip row (`entry_method=flip_sell`) and sends **one** executor opposite-leg order sized `close_qty + flip_qty` (`intent=close_with_flip_sell`).
+- Fill allocation: **close first**, then remainder to the flip open (same VWAP / close price). Incomplete close fill → close fails / retry; flip pending deleted.
 - **No chain:** if closed trade’s entry was already `flip_sell`, skip.
-- Subject to pipeline gate and loss-prevention sizing awareness.
+- Subject to pipeline gate (on close) and loss-prevention sizing awareness.
+- Paper: close then open flip at `buy = 1 − sell` without a second Kalshi order.
 
 ### 5.9 Loss prevention (not an exit engine)
 

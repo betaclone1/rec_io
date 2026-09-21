@@ -142,6 +142,33 @@ def symbol_metrics(
     return dict(data)
 
 
+def short_horizon_deltas(
+    symbol: str,
+    *,
+    max_age_sec: Optional[float] = None,
+) -> Optional[Dict[str, Optional[float]]]:
+    """
+    Live-state ``delta_5s`` / ``delta_10s`` / ``delta_15s`` / ``delta_30s`` for AES/ATS gates.
+
+    Returns None when the symbol envelope is missing/stale. Individual keys may be
+    None when that window cannot be computed yet (fail closed at the gate).
+    """
+    m = symbol_metrics(symbol, max_age_sec=max_age_sec)
+    if not m:
+        return None
+    out: Dict[str, Optional[float]] = {}
+    for key in ("delta_5s", "delta_10s", "delta_15s", "delta_30s"):
+        v = m.get(key)
+        if v is None:
+            out[key] = None
+            continue
+        try:
+            out[key] = float(v)
+        except (TypeError, ValueError):
+            out[key] = None
+    return out
+
+
 def symbol_spot_price(
     symbol: str,
     *,

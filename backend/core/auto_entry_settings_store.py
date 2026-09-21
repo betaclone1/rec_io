@@ -255,6 +255,20 @@ def apply_auto_entry_settings(
                 }
             update_fields.append("min_buffer_pct = %s")
             update_values.append(round(mbp, 6))
+    if "adverse_delta_15s_pct" in data:
+        adv_raw = data["adverse_delta_15s_pct"]
+        if adv_raw is None or adv_raw == "":
+            update_fields.append("adverse_delta_15s_pct = %s")
+            update_values.append(0.0)
+        else:
+            adv = float(adv_raw)
+            if adv < 0 or adv > 0.025:
+                return {
+                    "status": "error",
+                    "message": "adverse_delta_15s_pct must be between 0.000000 and 0.025000 (0 disables)",
+                }
+            update_fields.append("adverse_delta_15s_pct = %s")
+            update_values.append(round(adv, 6))
     if "min_differential" in data:
         update_fields.append("min_differential = %s")
         update_values.append(float(data["min_differential"]))

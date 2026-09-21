@@ -69,7 +69,7 @@ async def get_auto_entry_settings(monitor_id: str = None):
                          COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
                          COALESCE(symbol_wide_loss_prevention, FALSE),
                          min_slippage, min_movement, max_movement, limit_close_price, limit_close_offset,
-                         stop_loss_offset, min_buffer_pct, stop_verification_period_enabled,
+                         stop_loss_offset, min_buffer_pct, adverse_delta_15s_pct, stop_verification_period_enabled,
                          stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing
             """
                 + (sel_pr if has_pr else "")
@@ -181,15 +181,16 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 row["limit_close_offset"] = _f(result[_sw_i + 9])
                 row["stop_loss_offset"] = _f(result[_sw_i + 10])
                 row["min_buffer_pct"] = _f(result[_sw_i + 11])
-                row["stop_verification_period_enabled"] = _b(result[_sw_i + 12])
-                svs = result[_sw_i + 13]
+                row["adverse_delta_15s_pct"] = _f(result[_sw_i + 12])
+                row["stop_verification_period_enabled"] = _b(result[_sw_i + 13])
+                svs = result[_sw_i + 14]
                 row["stop_verification_period_seconds"] = int(svs) if svs is not None else None
-                row["weekend_adjustment"] = _s(result[_sw_i + 14]) or "none"
-                raw_pairs = result[_sw_i + 15]
+                row["weekend_adjustment"] = _s(result[_sw_i + 15]) or "none"
+                raw_pairs = result[_sw_i + 16]
                 row["monitor_dupe_pairing"] = (
                     [int(x) for x in raw_pairs if x is not None] if raw_pairs else []
                 )
-                pr_base = _sw_i + 16
+                pr_base = _sw_i + 17
                 if has_pr and len(result) > pr_base + 2:
                     row["position_risk_mode"] = _s(result[pr_base]) or "legacy"
                     row["position_risk_policy"] = _s(result[pr_base + 1]) or "hws_lvw_v1"

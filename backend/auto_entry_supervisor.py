@@ -1176,6 +1176,13 @@ _RISING_DEVIL_RATELIMIT: Dict[str, Dict[str, float]] = {}
 # Expiration Scalp entry verification dwell: ctx_ident -> (strike_key, side) -> {started_at}
 _exp_scalp_entry_verify_by_monitor: Dict[str, Dict[Tuple[str, str], dict]] = {}
 
+# Pre-dwell veto INFO throttle: (log_tag, strike, side, reason) -> last_log_mono
+# Adverse / buffer / ask blocks before dwell are the common path and would 1Hz-spam otherwise.
+_EXP_SCALP_PRE_DWELL_VETO_LOG_INTERVAL_SEC = float(
+    os.getenv("EXP_SCALP_PRE_DWELL_VETO_LOG_INTERVAL_SEC", "5") or 5
+)
+_exp_scalp_pre_dwell_veto_log_mono: Dict[Tuple[str, str, str, str], float] = {}
+
 
 def _exp_scalp_verify_abort(
     verify_bucket: Dict[Tuple[str, str], dict],
@@ -1189,18 +1196,45 @@ def _exp_scalp_verify_abort(
     log_tag: str,
     extra: str = "",
 ) -> None:
-    """Clear in-progress entry dwell and INFO-log so aborts are countable."""
+    """
+    Clear in-progress entry dwell (if any) and INFO-log the veto.
+
+    Pre-dwell rejects (no verify state yet) are the common case for gates like
+    adverse_delta_15s — e.g. spot jumps against the side and asks gap before
+    dwell starts. Those must be logged; previously they returned silently.
+    Pre-dwell lines are lightly throttled; in-dwell aborts always log.
+    """
     prior = verify_bucket.pop(dedupe_key, None)
-    if not prior:
-        return
-    try:
-        started = float(prior.get("started_at"))
-        dwell = max(0.0, float(now_ts) - started)
-    except (TypeError, ValueError, AttributeError):
+    if prior:
+        try:
+            started = float(prior.get("started_at"))
+            dwell = max(0.0, float(now_ts) - started)
+        except (TypeError, ValueError, AttributeError):
+            dwell = 0.0
+        phase = "in_dwell"
+    else:
         dwell = 0.0
+        phase = "pre_dwell"
+        throttle_key = (
+            str(log_tag),
+            str(strike_key),
+            str(side_key).lower(),
+            str(reason),
+        )
+        try:
+            interval = max(0.0, float(_EXP_SCALP_PRE_DWELL_VETO_LOG_INTERVAL_SEC))
+        except (TypeError, ValueError):
+            interval = 5.0
+        if interval > 0:
+            now_mono = time.monotonic()
+            last = _exp_scalp_pre_dwell_veto_log_mono.get(throttle_key)
+            if last is not None and (now_mono - last) < interval:
+                return
+            _exp_scalp_pre_dwell_veto_log_mono[throttle_key] = now_mono
+
     msg = (
         f"{log_tag} VERIFY ABORT | {strike_key} {side_key.upper()} | "
-        f"dwell={dwell:.1f}s need={need_s}s | reason={reason}"
+        f"dwell={dwell:.1f}s need={need_s}s | reason={reason} | phase={phase}"
     )
     if extra:
         msg = f"{msg} | {extra}"
@@ -1386,6 +1420,23 @@ def get_momentum_30s_avg(symbol="BTC"):
         return None
     except Exception as e:
         log(f"[AUTO ENTRY MOMENTUM] Error getting momentum_30s_avg for {symbol}: {e}")
+        return None
+
+
+def get_delta_15s(symbol="BTC"):
+    """Get current delta_15s (% change) from live_state symbol cache."""
+    try:
+        from backend.core.tradeflow_live_reads import symbol_metrics
+
+        m = symbol_metrics(str(symbol or "BTC").strip().upper())
+        if not m:
+            return None
+        v = m.get("delta_15s")
+        if v is not None:
+            return float(v)
+        return None
+    except Exception as e:
+        log(f"[AUTO ENTRY] Error getting delta_15s for {symbol}: {e}")
         return None
 
 
@@ -2280,7 +2331,7 @@ def get_auto_entry_settings():
                            min_cooldown_timer, max_cooldown_timer, min_ask_range,
                            min_movement, max_movement,
                            entry_verification_period_enabled, entry_verification_period_seconds,
-                           min_buffer_pct, order_type
+                           min_buffer_pct, adverse_delta_15s_pct, order_type
                     """
                     + (sel_flip if has_flip else "")
                     + f"""
@@ -2329,9 +2380,10 @@ def get_auto_entry_settings():
                         "entry_verification_period_enabled": _b(strategy_result[22]),
                         "entry_verification_period_seconds": _i(strategy_result[23]),
                         "min_buffer_pct": _f(strategy_result[24]),
-                        "order_type": normalize_execution_order_type(strategy_result[25]),
+                        "adverse_delta_15s_pct": _f(strategy_result[25]),
+                        "order_type": normalize_execution_order_type(strategy_result[26]),
                     }
-                    flip_base = 26
+                    flip_base = 27
                     if has_flip:
                         settings["flip_sell_prob"] = _b(strategy_result[flip_base])
                         settings["flip_sell_prob_mult"] = strategy_result[flip_base + 1]
@@ -4572,7 +4624,10 @@ def check_auto_entry_conditions_expiration_scalp():
             is_high_water_test_1,
             parse_limit_close_price,
         )
-        from backend.util.auto_entry_expiration_scalp_gates import parse_min_buffer_pct
+        from backend.util.auto_entry_expiration_scalp_gates import (
+            parse_adverse_delta_15s_pct,
+            parse_min_buffer_pct,
+        )
 
         min_time = settings["min_time"]
         max_time = settings["max_time"]
@@ -4583,6 +4638,8 @@ def check_auto_entry_conditions_expiration_scalp():
         min_movement = float(settings["min_movement"])
         max_movement = float(settings["max_movement"])
         min_buffer_pct = parse_min_buffer_pct(settings)
+        adverse_delta_15s_pct = parse_adverse_delta_15s_pct(settings)
+        delta_15s_live = get_delta_15s(get_current_monitor_symbol())
         strategy_name = get_trade_strategy()
         hws_family = is_high_water_family(strategy_name)
         hws_scalp = is_high_water_scalp(strategy_name)
@@ -4665,6 +4722,7 @@ def check_auto_entry_conditions_expiration_scalp():
             expiration_scalp_busy_book_gate,
             expiration_scalp_flicker_gate,
             expiration_scalp_min_buffer_pct_gate,
+            expiration_scalp_adverse_delta_15s_gate,
             update_expiration_scalp_entry_verification,
         )
 
@@ -4853,6 +4911,28 @@ def check_auto_entry_conditions_expiration_scalp():
                                 f"buffer_pct={buffer_pct_f} "
                                 f"60s_avg_buffer_pct={avg_60s_buffer_pct_f} "
                                 f"min_buffer_pct={min_buffer_pct}"
+                            ),
+                        )
+                        continue
+
+                    adv_reject = expiration_scalp_adverse_delta_15s_gate(
+                        side=side_key,
+                        delta_15s=delta_15s_live,
+                        adverse_delta_15s_pct=adverse_delta_15s_pct,
+                    )
+                    if adv_reject:
+                        _exp_scalp_verify_abort(
+                            verify_bucket,
+                            dedupe_key,
+                            now_ts=now_ts,
+                            need_s=verify_seconds,
+                            reason=adv_reject,
+                            strike_key=strike_key,
+                            side_key=side_key,
+                            log_tag=log_tag,
+                            extra=(
+                                f"delta_15s={delta_15s_live} "
+                                f"adverse_delta_15s_pct={adverse_delta_15s_pct}"
                             ),
                         )
                         continue

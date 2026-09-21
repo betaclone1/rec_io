@@ -328,6 +328,58 @@ def expiration_scalp_min_buffer_pct_gate(
     return None
 
 
+def parse_adverse_delta_15s_pct(settings: Mapping[str, Any]) -> float:
+    """Monitor ``adverse_delta_15s_pct``; missing/invalid/≤0 → 0 (gate disabled)."""
+    raw = settings.get("adverse_delta_15s_pct") if settings is not None else None
+    if raw is None or raw == "":
+        return 0.0
+    try:
+        v = float(raw)
+    except (TypeError, ValueError):
+        return 0.0
+    if v <= 0:
+        return 0.0
+    return v
+
+
+def expiration_scalp_adverse_delta_15s_gate(
+    *,
+    side: str,
+    delta_15s: Optional[float],
+    adverse_delta_15s_pct: float,
+) -> Optional[str]:
+    """
+    Veto Exp Scalp entry when spot has moved against the proposed side over 15s.
+
+    Units match live ``delta_15s`` (percent change vs price 15s ago). Threshold is
+    a positive magnitude; 0 disables. Fail closed when enabled and delta missing/bad.
+
+    YES: veto when ``delta_15s <= -threshold`` (spot down).
+    NO: veto when ``delta_15s >= +threshold`` (spot up).
+    """
+    thresh = float(adverse_delta_15s_pct or 0.0)
+    if thresh <= 0:
+        return None
+    side_l = (side or "").strip().lower()
+    if side_l in ("y", "yes"):
+        side_l = "yes"
+    elif side_l in ("n", "no"):
+        side_l = "no"
+    else:
+        return "bad_side"
+    if delta_15s is None:
+        return "missing_delta_15s"
+    try:
+        d = float(delta_15s)
+    except (TypeError, ValueError):
+        return "bad_delta_15s"
+    if side_l == "yes" and d <= -thresh:
+        return "adverse_delta_15s_yes"
+    if side_l == "no" and d >= thresh:
+        return "adverse_delta_15s_no"
+    return None
+
+
 def evaluate_expiration_scalp_entry(
     settings: Mapping[str, Any],
     *,
@@ -338,6 +390,7 @@ def evaluate_expiration_scalp_entry(
     movement_percentile: Optional[float] = None,
     buffer_pct: Optional[float] = None,
     avg_60s_buffer_pct: Optional[float] = None,
+    delta_15s: Optional[float] = None,
     high_water_scalp: bool = False,
     high_water_test_1: bool = False,
 ) -> tuple[Optional[dict[str, Any]], Optional[str]]:
@@ -354,6 +407,8 @@ def evaluate_expiration_scalp_entry(
     Prob+movement joint gate: see ``classify_expiration_scalp_prob_movement``.
     ``min_buffer_pct`` (when > 0) requires ladder ``buffer_pct`` and
     ``60s_avg_buffer_pct`` ≥ floor.
+    ``adverse_delta_15s_pct`` (when > 0) vetoes when spot ``delta_15s`` moved
+    against the proposed side by at least that magnitude.
     Passed dict may include ``half_size`` True for out-of-prob / in-movement rescues.
     """
     try:
@@ -446,6 +501,15 @@ def evaluate_expiration_scalp_entry(
     else:
         return None, "bad_side"
 
+    adv = parse_adverse_delta_15s_pct(settings)
+    adv_reject = expiration_scalp_adverse_delta_15s_gate(
+        side=side_l,
+        delta_15s=delta_15s,
+        adverse_delta_15s_pct=adv,
+    )
+    if adv_reject:
+        return None, adv_reject
+
     return (
         {
             "side": side_l,
@@ -457,6 +521,7 @@ def evaluate_expiration_scalp_entry(
             if movement_percentile is not None
             else None,
             "buffer_pct": float(buffer_pct) if buffer_pct is not None else None,
+            "delta_15s": float(delta_15s) if delta_15s is not None else None,
             "half_size": size_mode == "half",
             "size_mode": size_mode,
             "size_reason": size_reason,

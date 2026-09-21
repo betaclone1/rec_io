@@ -1574,7 +1574,7 @@ def init_database():
             DECLARE
                 col text;
                 ty text;
-                cols text[] := ARRAY['timestamp','price','one_minute_avg','momentum','delta_1m','delta_2m','delta_3m','delta_4m','delta_15m','delta_30m','momentum_percentile','momentum_5s_avg','volatility','volatility_percentile','momentum_30s_avg','move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile','prev_day_avg_momentum_percentile','prev_day_avg_volatility_percentile','prev_day_avg_movement_percentile','daily_update'];
+                cols text[] := ARRAY['timestamp','price','one_minute_avg','momentum','delta_1m','delta_2m','delta_3m','delta_4m','delta_15m','delta_30m','delta_5s','delta_10s','delta_15s','delta_30s','momentum_percentile','momentum_5s_avg','volatility','volatility_percentile','momentum_30s_avg','move_1m','move_2m','move_3m','move_4m','move_15m','move_30m','movement','movement_percentile','prev_day_avg_momentum_percentile','prev_day_avg_volatility_percentile','prev_day_avg_movement_percentile','daily_update'];
                 types text[] := ARRAY['TEXT','DECIMAL(10,2)','DECIMAL(10,2)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(10,6)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(10,4)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(5,1)','DECIMAL(5,1)','TEXT'];
                 i int;
             BEGIN

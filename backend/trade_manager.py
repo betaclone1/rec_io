@@ -4249,9 +4249,305 @@ def wake_confirm_close_for_order(order_id: str) -> None:
     ).start()
 
 
+def _tm_lookup_combined_flip_pair(order_id: str):
+    """
+    If this Kalshi order is a combined close+flip execution, return
+    (close_id, close_ticket, flip_id, flip_ticket, close_qty, flip_qty); else None.
+
+    Close row may already be ``closed`` while flip is still pending (in-between finalize).
+    """
+    oid = str(order_id or "").strip()
+    if not oid:
+        return None
+    pg_conn = get_postgresql_connection()
+    if not pg_conn:
+        return None
+    try:
+        with pg_conn.cursor() as cursor:
+            cursor.execute(
+                f"""
+                SELECT id, ticket_id, position, status FROM {_tm_trades_table()}
+                WHERE order_id_close = %s
+                  AND status IN ('open', 'partial', 'closing', 'closed')
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (oid,),
+            )
+            close_row = cursor.fetchone()
+            cursor.execute(
+                f"""
+                SELECT id, ticket_id, position, COALESCE(initial_count, position)
+                FROM {_tm_trades_table()}
+                WHERE order_id_open = %s
+                  AND status IN ('pending', 'partial')
+                  AND LOWER(COALESCE(entry_method, '')) = 'flip_sell'
+                ORDER BY id ASC
+                LIMIT 1
+                """,
+                (oid,),
+            )
+            flip_row = cursor.fetchone()
+    finally:
+        try:
+            pg_conn.close()
+        except Exception:
+            pass
+    if not close_row or not flip_row:
+        return None
+    close_id, close_ticket, close_pos = close_row[0], close_row[1], close_row[2]
+    flip_id, flip_ticket = flip_row[0], flip_row[1]
+    flip_req = flip_row[3] if len(flip_row) > 3 else flip_row[2]
+    try:
+        close_qty = float(close_pos or 0.0)
+    except (TypeError, ValueError):
+        close_qty = 0.0
+    try:
+        flip_qty = float(flip_req or 0.0)
+    except (TypeError, ValueError):
+        flip_qty = 0.0
+    return (
+        int(close_id),
+        close_ticket or "",
+        int(flip_id),
+        flip_ticket or "",
+        close_qty,
+        flip_qty,
+        str(close_row[3] or "").strip().lower() if len(close_row) > 3 else "",
+    )
+
+
+def confirm_combined_flip_sell_for_order_id(order_id: str) -> bool:
+    """
+    Allocate one opposite-leg fill close-first, then remainder to the flip open.
+    Returns True when this order was handled as a combined flip pair.
+    """
+    from backend.core.flip_sell_combined import (
+        allocate_combined_flip_fees,
+        allocate_combined_flip_fills,
+        close_fill_is_complete,
+    )
+
+    oid = str(order_id or "").strip()
+    pair = _tm_lookup_combined_flip_pair(oid)
+    if not pair:
+        return False
+    close_id, close_ticket, flip_id, flip_ticket, close_qty, flip_qty, close_status = pair
+    log(
+        f"[FLIP SELL COMBINED] confirm order={oid} close_id={close_id} flip_id={flip_id} "
+        f"close_qty={close_qty} flip_qty={flip_qty} close_status={close_status}"
+    )
+    log_event(
+        close_ticket,
+        f"MANAGER: COMBINED FLIP confirm order={oid} close={close_id} flip={flip_id}",
+        trade_id=close_id,
+    )
+
+    # Serialize on order_id (not trade locks) so we can safely call confirm_close/open.
+    combined_key = f"combined_flip:{oid}"
+    with _trade_confirm_locks_guard:
+        lock = _trade_confirm_locks.get(combined_key)
+        if lock is None:
+            lock = threading.Lock()
+            _trade_confirm_locks[combined_key] = lock
+
+    with lock:
+        # Re-check pair under lock (may already be finalized).
+        pair2 = _tm_lookup_combined_flip_pair(oid)
+        if not pair2:
+            return True
+        close_id, close_ticket, flip_id, flip_ticket, close_qty, flip_qty, close_status = pair2
+
+        order_rec = _fetch_kalshi_order_for_confirm(oid)
+        if not order_rec:
+            log_event(close_ticket, f"MANAGER: COMBINED FLIP order {oid} not in hot state yet")
+            return True
+
+        remaining_val = _order_count_val(None, order_rec.get("remaining_count_fp"))
+        fill_val = _order_count_val(None, order_rec.get("fill_count_fp"))
+        order_status = str(order_rec.get("status") or "").lower()
+        if remaining_val != 0 or fill_val <= 0 or order_status not in ("executed", "canceled"):
+            log_event(
+                close_ticket,
+                f"MANAGER: COMBINED FLIP wait remaining={remaining_val} fill={fill_val} status={order_status}",
+            )
+            return True
+
+        close_fill, flip_fill = allocate_combined_flip_fills(fill_val, close_qty, flip_qty)
+        taker_fees_usd = _parse_dollars(order_rec.get("taker_fees_dollars")) or 0.0
+        maker_fees_usd = _parse_dollars(order_rec.get("maker_fees_dollars")) or 0.0
+        total_order_fees = taker_fees_usd + maker_fees_usd
+        close_fees, flip_fees = allocate_combined_flip_fees(total_order_fees, close_fill, flip_fill)
+        total_close_cost_usd = _order_fill_cost_dollars(order_rec)
+        avg_opp = None
+        if total_close_cost_usd is not None and fill_val > 0:
+            avg_opp = float(total_close_cost_usd) / float(fill_val)
+        sell_price = (1.0 - avg_opp) if avg_opp is not None else None
+        flip_buy = avg_opp
+
+        log_event(
+            close_ticket,
+            f"MANAGER: COMBINED FLIP allocate fill={fill_val} -> close={close_fill} flip={flip_fill} "
+            f"sell={sell_price} flip_buy={flip_buy} fees_close={close_fees} fees_flip={flip_fees}",
+            trade_id=close_id,
+        )
+
+        if close_status != "closed" and not close_fill_is_complete(close_fill, close_qty):
+            log(
+                f"[FLIP SELL COMBINED] incomplete close fill={close_fill} need={close_qty} "
+                f"order={oid} — leaving close open for retry; deleting flip pending"
+            )
+            log_event(
+                close_ticket,
+                f"MANAGER: COMBINED FLIP incomplete close fill={close_fill}/{close_qty}",
+                trade_id=close_id,
+            )
+            try:
+                _delete_pending_trade_for_rejection(flip_id, flip_ticket, "FLIP_COMBINED_INCOMPLETE_CLOSE")
+            except Exception as e:
+                log(f"[FLIP SELL COMBINED] flip delete failed: {e}")
+            _mark_close_trade_failed(
+                close_id,
+                close_ticket,
+                f"combined_flip_incomplete_close fill={close_fill} need={close_qty}",
+            )
+            return True
+
+        if close_status != "closed":
+            confirm_close_trade(close_id, close_ticket)
+            try:
+                pg = get_postgresql_connection()
+                if pg and close_fees is not None:
+                    with pg.cursor() as cur:
+                        cur.execute(
+                            f"SELECT fees FROM {_tm_trades_table()} WHERE id = %s",
+                            (close_id,),
+                        )
+                        fr = cur.fetchone()
+                        existing_fees = float(fr[0] or 0.0) if fr else 0.0
+                        prior_open = max(0.0, existing_fees - total_order_fees)
+                        corrected = prior_open + close_fees
+                        cur.execute(
+                            f"UPDATE {_tm_trades_table()} SET fees = %s WHERE id = %s",
+                            (corrected, close_id),
+                        )
+                    pg.commit()
+                    pg.close()
+            except Exception as fee_err:
+                log(f"[FLIP SELL COMBINED] close fee rebalance failed: {fee_err}")
+
+        if flip_fill <= 0:
+            log_event(
+                flip_ticket,
+                "MANAGER: COMBINED FLIP no remainder for open — delete pending",
+                trade_id=flip_id,
+            )
+            _delete_pending_trade_for_rejection(flip_id, flip_ticket, "FLIP_COMBINED_ZERO_FLIP_FILL")
+            return True
+
+        # Do not call confirm_open_trade: shared order fill_count is the combined size.
+        _tm_finalize_combined_flip_open(
+            flip_id=flip_id,
+            flip_ticket=flip_ticket,
+            order_id=oid,
+            flip_fill=flip_fill,
+            flip_buy=flip_buy,
+            flip_fees=flip_fees,
+        )
+        return True
+
+
+def _tm_finalize_combined_flip_open(
+    *,
+    flip_id: int,
+    flip_ticket: str,
+    order_id: str,
+    flip_fill: float,
+    flip_buy: Optional[float],
+    flip_fees: float,
+) -> None:
+    """Mark flip_sell pending row open using the allocated slice of a combined order."""
+    pos = _trade_position_for_db(flip_fill)
+    if pos <= 0:
+        _delete_pending_trade_for_rejection(flip_id, flip_ticket, "FLIP_COMBINED_ZERO_FLIP_FILL")
+        return
+    buy = float(flip_buy) if flip_buy is not None else None
+    if buy is None:
+        log_event(flip_ticket, "MANAGER: COMBINED FLIP missing buy price — delete pending", trade_id=flip_id)
+        _delete_pending_trade_for_rejection(flip_id, flip_ticket, "FLIP_COMBINED_NO_PRICE")
+        return
+    try:
+        pg = get_postgresql_connection()
+        if not pg:
+            return
+        with pg.cursor() as cur:
+            append_sql = sql_append_order_id_if_absent("order_ids_open")
+            cur.execute(
+                f"""
+                UPDATE {_tm_trades_table()}
+                SET status = 'open',
+                    position = %s,
+                    initial_count = %s,
+                    buy_price = %s,
+                    fees = %s,
+                    {append_sql},
+                    order_id_open = %s
+                WHERE id = %s AND status IN ('pending', 'partial')
+                """,
+                (
+                    pos,
+                    int(round(pos)),
+                    buy,
+                    float(flip_fees or 0.0),
+                    str(order_id),
+                    str(order_id),
+                    str(order_id),
+                    flip_id,
+                ),
+            )
+            if cur.rowcount < 1:
+                pg.rollback()
+                pg.close()
+                log_event(flip_ticket, "MANAGER: COMBINED FLIP open skipped (status changed)", trade_id=flip_id)
+                return
+        pg.commit()
+        pg.close()
+    except Exception as e:
+        log(f"[FLIP SELL COMBINED] finalize flip open failed: {e}")
+        log_event(flip_ticket, f"MANAGER: COMBINED FLIP open failed: {e}", trade_id=flip_id)
+        return
+
+    log_event(
+        flip_ticket,
+        f"MANAGER: COMBINED FLIP OPENED qty={pos} buy={buy} fees={flip_fees} order={order_id}",
+        trade_id=flip_id,
+    )
+    notify_active_trade_supervisor_direct(flip_id, flip_ticket, "open")
+    notify_strike_table_trade_change(flip_id, "open")
+    try:
+        from backend.core.trading_redis_comms import publish_preferences_event, use_trading_redis_comms
+
+        if use_trading_redis_comms():
+            publish_preferences_event(
+                "automated_trade_triggered",
+                {
+                    "entry_method": "flip_sell",
+                    "trade_id": flip_id,
+                    "position": pos,
+                    "buy_price": buy,
+                },
+                tenant_user_no=effective_tenant_context_for_sql_rewrite().user_no,
+            )
+    except Exception:
+        pass
+
+
 def confirm_open_trade_for_order_id(order_id: str) -> None:
     oid = str(order_id or "").strip()
     if not oid:
+        return
+    if _tm_lookup_combined_flip_pair(oid):
+        confirm_combined_flip_sell_for_order_id(oid)
         return
     pg_conn = get_postgresql_connection()
     if not pg_conn:
@@ -4279,6 +4575,9 @@ def confirm_open_trade_for_order_id(order_id: str) -> None:
 def confirm_close_trade_for_order_id(order_id: str) -> None:
     oid = str(order_id or "").strip()
     if not oid:
+        return
+    if _tm_lookup_combined_flip_pair(oid):
+        confirm_combined_flip_sell_for_order_id(oid)
         return
     pg_conn = get_postgresql_connection()
     if not pg_conn:
@@ -6963,6 +7262,42 @@ async def add_trade(request: Request):
                 
                 log(f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}, PAPER_TRADE={paper_trade}")
 
+                from backend.core.flip_sell_combined import (
+                    FLIP_SELL_COMBINED_INTENT,
+                    combined_order_count,
+                    normalize_flip_sell_payload,
+                )
+
+                flip_meta = normalize_flip_sell_payload(data.get("flip_sell"))
+                flip_trade_id = None
+                if flip_meta:
+                    try:
+                        flip_row = dict(flip_meta)
+                        flip_row["paper_trade"] = paper_trade
+                        flip_row["status"] = "pending"
+                        if not flip_row.get("symbol"):
+                            flip_row["symbol"] = trade_symbol
+                        flip_trade_id, flip_inserted = insert_trade(flip_row)
+                        if flip_trade_id is None:
+                            log(f"[FLIP SELL] failed to insert pending flip for close trade_id={trade_id}")
+                            flip_trade_id = None
+                        else:
+                            log(
+                                f"[FLIP SELL] pending flip id={flip_trade_id} "
+                                f"for close trade_id={trade_id} qty={flip_meta.get('position')} "
+                                f"inserted_new={flip_inserted}"
+                            )
+                            log_event(
+                                flip_meta.get("ticket_id") or data.get("ticket_id"),
+                                f"MANAGER: FLIP_SELL pending created id={flip_trade_id} "
+                                f"source_close={trade_id}",
+                                trade_id=flip_trade_id,
+                            )
+                    except Exception as flip_ins_err:
+                        log(f"[FLIP SELL] insert pending failed: {flip_ins_err}")
+                        flip_trade_id = None
+                        flip_meta = None
+
                 tif_close = normalize_time_in_force_loose(
                     data.get("time_in_force", "immediate_or_cancel")
                 ) or "immediate_or_cancel"
@@ -7160,12 +7495,59 @@ async def add_trade(request: Request):
                             
                             # Notify strike table for display update
                             notify_strike_table_trade_change(trade_id, "closed")
+
+                            # Combined flip-sell (paper): open flip at same opposite-leg price.
+                            if flip_trade_id and flip_meta and sell_price is not None:
+                                try:
+                                    flip_buy = 1.0 - float(sell_price)
+                                    flip_pos = int(flip_meta.get("position") or 1)
+                                    flip_fee = estimate_kalshi_taker_fee(flip_pos, flip_buy) if 0 < flip_buy < 1 else 0.0
+                                    _tm_finalize_combined_flip_open(
+                                        flip_id=int(flip_trade_id),
+                                        flip_ticket=str(flip_meta.get("ticket_id") or ""),
+                                        order_id=f"paper_flip_{trade_id}_{flip_trade_id}",
+                                        flip_fill=float(flip_pos),
+                                        flip_buy=flip_buy,
+                                        flip_fees=float(flip_fee),
+                                    )
+                                    log(
+                                        f"[FLIP SELL] paper flip opened id={flip_trade_id} "
+                                        f"buy={flip_buy} qty={flip_pos} after close={trade_id}"
+                                    )
+                                except Exception as paper_flip_err:
+                                    log(f"[FLIP SELL] paper flip open failed: {paper_flip_err}")
+                                    try:
+                                        _delete_pending_trade_for_rejection(
+                                            int(flip_trade_id),
+                                            flip_meta.get("ticket_id"),
+                                            "FLIP_PAPER_OPEN_FAILED",
+                                        )
+                                    except Exception:
+                                        pass
                         else:
                             log(f"❌ Failed to finalize paper trade {trade_id}: missing trade data or sell_price")
                             log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSE FAILED - missing data")
+                            if flip_trade_id:
+                                try:
+                                    _delete_pending_trade_for_rejection(
+                                        int(flip_trade_id),
+                                        (flip_meta or {}).get("ticket_id"),
+                                        "FLIP_PAPER_CLOSE_FAILED",
+                                    )
+                                except Exception:
+                                    pass
                     except Exception as e:
                         log(f"❌ Error finalizing paper trade {trade_id}: {e}")
                         log_event(ticket_id, f"MANAGER: PAPER TRADE CLOSE ERROR: {e}")
+                        if flip_trade_id:
+                            try:
+                                _delete_pending_trade_for_rejection(
+                                    int(flip_trade_id),
+                                    (flip_meta or {}).get("ticket_id"),
+                                    "FLIP_PAPER_CLOSE_ERROR",
+                                )
+                            except Exception:
+                                pass
                 else:
                     # Early close: ring avg_60s at the close instant, not the raw spot
                     # tick the requester snapshotted.
@@ -7173,27 +7555,45 @@ async def add_trade(request: Request):
                         trade_symbol, datetime.now(EST_ZONE)
                     )
 
-                    # LIVE TRADE: Send to executor as normal
-                    # IMMEDIATELY send to executor with trade_id
+                    # LIVE TRADE: one opposite-leg order (close only, or close+flip combined).
                     try:
-                        log(f"SENDING CLOSE TO EXECUTOR")
+                        close_qty = float(requested_close_count)
+                        flip_qty = float(flip_meta.get("position") or 0) if flip_meta and flip_trade_id else 0.0
+                        exec_count = combined_order_count(close_qty, flip_qty) if flip_trade_id else close_qty
+                        exec_intent = (
+                            FLIP_SELL_COMBINED_INTENT if flip_trade_id else "close"
+                        )
+                        log(
+                            f"SENDING CLOSE TO EXECUTOR intent={exec_intent} "
+                            f"count={exec_count} flip_trade_id={flip_trade_id}"
+                        )
                         close_payload = {
-                            "id": trade_id,  # Include trade_id for close orders
-                            "ticker": verified_ticker,  # Use verified ticker from database
-                            # Always use canonical position leg from DB; trade_executor flips on intent=close.
+                            "id": trade_id,
+                            "ticker": verified_ticker,
                             "side": trade_side,
-                            "count_fp": _format_count_fp(data, for_close=True),
+                            "count_fp": f"{float(exec_count):.2f}",
                             "action": "close",
                             "order_type": "market",
                             "time_in_force": "immediate_or_cancel",
                             "buy_price": data.get("buy_price"),
                             "symbol_close": symbol_close,
-                            "intent": "close",
-                            "ticket_id": data.get("ticket_id")  # Include ticket_id for close orders
+                            "intent": exec_intent,
+                            "ticket_id": data.get("ticket_id"),
                         }
+                        if flip_trade_id:
+                            close_payload["flip_trade_id"] = int(flip_trade_id)
                         send_trigger_to_executor(close_payload)
                     except Exception as e:
                         log(f"CLOSE EXECUTOR ERROR: {e}")
+                        if flip_trade_id:
+                            try:
+                                _delete_pending_trade_for_rejection(
+                                    int(flip_trade_id),
+                                    (flip_meta or {}).get("ticket_id"),
+                                    "FLIP_EXECUTOR_SEND_FAILED",
+                                )
+                            except Exception:
+                                pass
                 
                     # Update database status
                     sell_price = data.get("buy_price")
@@ -8219,7 +8619,7 @@ def apply_update_trade_status_payload(data: dict):
         # Store the order_id in the database if provided
         if order_id:
             # Determine which order_id field to update based on intent
-            if intent in ("close", "resting_close"):
+            if intent in ("close", "resting_close", "close_with_flip_sell"):
                 order_id_field = "order_id_close"
                 log_type = "CLOSING"
             else:
@@ -8234,7 +8634,7 @@ def apply_update_trade_status_payload(data: dict):
                 pg_conn = get_postgresql_connection()
                 if pg_conn:
                     with pg_conn.cursor() as cursor:
-                        if intent in ("close", "resting_close"):
+                        if intent in ("close", "resting_close", "close_with_flip_sell"):
                             cursor.execute(
                                 f"""
                                 UPDATE {_tm_trades_table()}
@@ -8262,6 +8662,24 @@ def apply_update_trade_status_payload(data: dict):
                                 f"UPDATE {_tm_trades_table()} SET {order_id_field} = %s WHERE id = %s",
                                 (order_id, id),
                             )
+                        flip_tid_raw = data.get("flip_trade_id")
+                        if intent == "close_with_flip_sell" and flip_tid_raw is not None:
+                            try:
+                                flip_tid = int(flip_tid_raw)
+                            except (TypeError, ValueError):
+                                flip_tid = None
+                            if flip_tid:
+                                append_open = sql_append_order_id_if_absent("order_ids_open")
+                                cursor.execute(
+                                    f"""
+                                    UPDATE {_tm_trades_table()}
+                                    SET {append_open},
+                                        order_id_open = %s
+                                    WHERE id = %s AND status IN ('pending', 'partial')
+                                    """,
+                                    (order_id, order_id, order_id, flip_tid),
+                                )
+                                log(f"[FLIP SELL] stored shared order_id_open on flip id={flip_tid}")
                         pg_conn.commit()
                         log(f"{log_type} ORDER_ID STORED SUCCESSFULLY")
                         if ticket_id:
@@ -8270,8 +8688,12 @@ def apply_update_trade_status_payload(data: dict):
                     
                     if intent == "open" and order_id:
                         wake_confirm_open_for_order(order_id)
-                    elif intent in ("close", "resting_close") and order_id:
-                        wake_confirm_close_for_order(order_id)
+                    elif intent in ("close", "resting_close", "close_with_flip_sell") and order_id:
+                        if intent == "close_with_flip_sell":
+                            # Combined path: one wake that routes via pair lookup.
+                            wake_confirm_close_for_order(order_id)
+                        else:
+                            wake_confirm_close_for_order(order_id)
                 else:
                     log(f"FAILED TO STORE {log_type} ORDER_ID - NO DATABASE CONNECTION")
                     if ticket_id:
@@ -8289,12 +8711,20 @@ def apply_update_trade_status_payload(data: dict):
         intent = data.get("intent", "open")  # Get the original intent
         
         # Check if it's a close order failure
-        if intent in ("close", "resting_close"):
+        if intent in ("close", "resting_close", "close_with_flip_sell"):
             if intent == "resting_close":
                 log(f"RESTING CLOSE ORDER FAILED: {error_message} — trade remains open")
                 if ticket_id:
                     log_event(ticket_id, f"MANAGER: RESTING CLOSE FAILED — {error_message}")
                 return ({"message": "Resting close failed - trade remains open for retry", "id": id}, None)
+            flip_tid_raw = data.get("flip_trade_id")
+            if flip_tid_raw is not None:
+                try:
+                    _delete_pending_trade_for_rejection(
+                        int(flip_tid_raw), None, "FLIP_COMBINED_EXECUTOR_ERROR"
+                    )
+                except Exception:
+                    pass
             return (_mark_close_trade_failed(id, ticket_id, error_message), None)
         
         # Check if it's an insufficient volume or insufficient balance error for OPEN orders
