@@ -18,9 +18,23 @@
     function uatIsHighWaterFamily(strategy) {
       return uatIsHighWaterScalp(strategy) || uatIsHighWaterTest1(strategy);
     }
+    function uatIsExpirationReversal(strategy) {
+      return String(strategy || '').toUpperCase().includes('EXPIRATION REVERSAL');
+    }
     function uatIsExpirationScalpEntry(strategy) {
       const u = String(strategy || '').toUpperCase();
-      return u.includes('EXPIRATION SCALP') || u.includes('HIGH WATER SCALP') || u.includes('HIGH WATER TEST 1');
+      return u.includes('EXPIRATION SCALP') || uatIsExpirationReversal(strategy)
+        || u.includes('HIGH WATER SCALP') || u.includes('HIGH WATER TEST 1');
+    }
+    // Expiration Reversal: floor flip sell is mandatory; checkbox locked on, multiplier editable.
+    function uatApplyExpirationReversalFlipLock(checkboxId, locked) {
+      var cb = document.getElementById(checkboxId);
+      if (!cb) return;
+      cb.disabled = !!locked;
+      if (locked) cb.checked = true;
+      var row = cb.closest('.uat-auto-stop-accuracy-row');
+      var multEl = row && row.querySelector('.uat-flip-multipliers');
+      if (multEl) multEl.classList.toggle('uat-flip-multipliers--disabled', !cb.checked);
     }
     function uatMonitorMarketIs15m(market) {
       return String(market || '').trim().toLowerCase() === '15m';
@@ -2577,6 +2591,7 @@
         dashboardUatApplyFlipRow('uatFlipSellProbabilityStop', data.flip_sell_prob, data.flip_sell_prob_mult);
         dashboardUatApplyFlipRow('uatFlipSellStopLossFloor', data.flip_sell_floor, data.flip_sell_floor_mult);
         dashboardUatApplyFlipRow('uatFlipSellStopLossFloorMs', data.flip_sell_floor, data.flip_sell_floor_mult);
+        uatApplyExpirationReversalFlipLock('uatFlipSellStopLossFloor', uatIsExpirationReversal(currentStrategy));
         const slpRaw = uatFiniteOrNull(data.stop_loss_price);
         if (slpRaw != null) {
           const slpCents = Math.min(99, Math.max(0, Math.round(slpRaw * 100)));
@@ -3165,7 +3180,7 @@
             payload.flip_sell_prob_mult = dashboardUatReadFlipMult('uatFlipSellProbabilityStop');
           }
           if (htcFloorCb) {
-            payload.flip_sell_floor = htcFloorCb.checked;
+            payload.flip_sell_floor = uatIsExpirationReversal(currentStrategy) ? true : htcFloorCb.checked;
             payload.flip_sell_floor_mult = dashboardUatReadFlipMult('uatFlipSellStopLossFloor');
           }
         }

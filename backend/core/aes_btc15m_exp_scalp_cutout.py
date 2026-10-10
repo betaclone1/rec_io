@@ -2,7 +2,7 @@
 BTC 15m Expiration Scalp AES/ATS cutout membership.
 
 Config/class rule (not hard-coded monitor ids):
-  symbol=BTC, market=15m, strategy=Expiration Scalp
+  symbol=BTC, market=15m, strategy=Expiration Scalp or Expiration Reversal
 """
 
 from __future__ import annotations
@@ -13,6 +13,7 @@ import time
 from typing import Any, Dict, List, Optional, Set
 
 CUTOUT_STRATEGY = "Expiration Scalp"
+CUTOUT_STRATEGIES = (CUTOUT_STRATEGY, "Expiration Reversal")
 CUTOUT_SYMBOL = "BTC"
 CUTOUT_MARKET = "15m"
 CUTOUT_ARGV = "btc15m_exp_scalp"
@@ -46,7 +47,7 @@ def is_btc15m_exp_scalp_cutout_row(row: Dict[str, Any]) -> bool:
     sym = str(row.get("symbol") or "").strip().upper()
     mkt = str(row.get("market") or "").strip().lower()
     strat = str(row.get("strategy") or "").strip()
-    return sym == CUTOUT_SYMBOL and mkt == CUTOUT_MARKET and strat == CUTOUT_STRATEGY
+    return sym == CUTOUT_SYMBOL and mkt == CUTOUT_MARKET and strat in CUTOUT_STRATEGIES
 
 
 def row_matches_cutout_fields(

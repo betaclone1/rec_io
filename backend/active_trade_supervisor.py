@@ -6616,10 +6616,10 @@ def _defer_unified_ats_flip_sell_followup(
     threading.Thread(target=_run, daemon=True).start()
 
 
-def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any]]:
+def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any, Any]]:
     """
-    Returns (flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult, paper_trade)
-    or None if columns are absent or the monitor row cannot be read.
+    Returns (flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult,
+    paper_trade, test_filter) or None if columns are absent or the monitor row cannot be read.
     """
     conn = get_postgresql_connection()
     if not conn:
@@ -6630,7 +6630,8 @@ def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any
                 return None
             cur.execute(
                 f"""
-                SELECT flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult, paper_trade
+                SELECT flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult,
+                       paper_trade, test_filter
                 FROM {legacy_users_monitor_list(ctx_user())}
                 WHERE id = %s
                 """,
@@ -6750,7 +6751,12 @@ def prepare_flip_sell_meta_for_auto_stop(
 
     **Strict:** only ``stop_loss_floor`` / ``probability_auto_stop`` plus matching monitor
     ``flip_sell_floor`` / ``flip_sell_prob`` must be the PostgreSQL boolean TRUE (not NULL).
+
+    Expiration Reversal: floor stops always flip, and the flip carries the monitor's own
+    ``paper_trade`` / ``test_filter`` (the stopped parent is always paper/test).
     """
+    from backend.core.expiration_reversal import flip_execution_flags, is_expiration_reversal
+
     tr = (trigger_reason or "").strip().lower()
     if tr not in ("stop_loss_floor", "probability_auto_stop"):
         return None
@@ -6760,9 +6766,10 @@ def prepare_flip_sell_meta_for_auto_stop(
         log_debug("[FLIP SELL] skip: flip columns absent or monitor row unavailable")
         return None
 
-    flip_prob, prob_mult_raw, flip_floor, floor_mult_raw, _paper_col = row
+    flip_prob, prob_mult_raw, flip_floor, floor_mult_raw, mon_paper, mon_test_filter = row
+    expiration_reversal = is_expiration_reversal(get_trade_strategy())
     if tr == "stop_loss_floor":
-        if not _ats_monitor_flip_boolean_strictly_true(flip_floor):
+        if not expiration_reversal and not _ats_monitor_flip_boolean_strictly_true(flip_floor):
             log_debug(
                 f"[FLIP SELL] skip floor stop: flip_sell_floor is not TRUE for monitor {ctx_mid()}"
             )
@@ -6819,7 +6826,11 @@ def prepare_flip_sell_meta_for_auto_stop(
     eastern_time = now.strftime("%H:%M:%S")
     current_symbol = get_current_monitor_symbol()
     trade_strategy = get_trade_strategy()
-    paper_trade = _ats_get_paper_trade_from_monitor()
+    if expiration_reversal:
+        paper_trade, flip_test_filter = flip_execution_flags(mon_paper, mon_test_filter)
+    else:
+        paper_trade = _ats_get_paper_trade_from_monitor()
+        flip_test_filter = None
     position_out, loss_prevention_flag = _ats_flip_sell_position_after_loss_prevention(flip_count)
     bankroll_allotment = _ats_get_bankroll_allotment()
     if bankroll_allotment is None:
@@ -6858,9 +6869,17 @@ def prepare_flip_sell_meta_for_auto_stop(
         "closed_source_position": int(pos_closed),
         "flip_mult": mult,
     }
+    if expiration_reversal:
+        meta["expiration_reversal"] = True
+        meta["test_filter"] = flip_test_filter
     log(
         f"[FLIP SELL] attach to close trade_id={tid} flip_side={inverted_side} "
         f"flip_qty={position_out} (closed={pos_closed} mult={mult}) trigger={tr}"
+        + (
+            f" expiration_reversal paper={paper_trade} test_filter={flip_test_filter}"
+            if expiration_reversal
+            else ""
+        )
     )
     return meta
 

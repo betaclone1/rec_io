@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-10 — Release v3.12.10: Expiration Reversal strategy
+
+**Summary**
+- **Release: v3.12.10**
+- **Expiration Reversal (ER):** New strategy that runs the exact Expiration Scalp entry/gates/exits (including the BTC 15m AES/ATS cutout lane). Every original ER entry is recorded `paper_trade=TRUE`, `test_filter=TRUE` regardless of monitor flags (forced in AES and TM).
+- **ER flip on floor stop:** Floor stop always flips for ER. The flip row follows the monitor's own flags: `test_filter=TRUE` → paper+test; `paper_trade=TRUE` → paper non-test; `paper_trade=FALSE` → **live** standalone opposite-side open (market, IOC, flip qty only) sent to the executor and confirmed/finalized via the normal open path. Trading disabled / send failure deletes the pending flip row (no substitute). Probability stops still require `flip_sell_prob`; no flip of a flip.
+- **Flip sell locked on for ER:** DB CHECK `expiration_reversal_flip_floor_chk`, settings API rejects `flip_sell_floor=false`, monitor create / strategy change to ER sets `flip_sell_floor=TRUE` (mult `1x` if empty). Desktop + mobile settings modal: flip toggle checked/disabled, multiplier selectable.
+- **DB:** Migration **`20261010_1100_expiration_reversal_strategy`** — seeds **Expiration Reversal** in `system.strategy_list_default` and every tenant `strategy_list_%` (copy of that table's Expiration Scalp row, floor flip on); CHECK constraint on all tenant `monitor_list_%`, `strategy_list_%`, and `system.strategy_list_default`.
+- **Tests:** `tests/unit/test_expiration_reversal.py`, `tests/unit/test_trade_manager_expiration_reversal_flip.py`, ER cases in `tests/test_active_trade_supervisor_flip_sell.py`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-10`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20261010_1100_expiration_reversal_strategy` (drops ER rows + constraints).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261010_1100_expiration_reversal_strategy`
+- [ ] Regenerate supervisor config and full restart:
+  `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; all programs RUNNING (incl. AES/ATS exp-scalp cutout); Expiration Reversal present in strategy list; no new errors in AES/ATS/TM logs
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.10`
+
+---
+
 ## 2026-09-21 — Release v3.12.9: Combined flip-sell + Exp Scalp adverse 15s gate + ATS failsafe lock
 
 **Summary**

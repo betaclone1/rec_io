@@ -3006,6 +3006,12 @@ def trigger_auto_entry_trade(strike_data):
         from backend.trading_mode import effective_paper_trade
 
         paper_trade = effective_paper_trade(paper_trade)
+
+        from backend.core.expiration_reversal import is_expiration_reversal
+
+        expiration_reversal_entry = is_expiration_reversal(trade_strategy)
+        if expiration_reversal_entry:
+            paper_trade = True
         
         # Market interval must travel with the ticket so TM pipeline gate keys the
         # matching strike_pipeline_health row (15m must never consult hourly).
@@ -3041,6 +3047,8 @@ def trigger_auto_entry_trade(strike_data):
             "paper_trade": paper_trade,
             "min_slippage": min_slippage
         }
+        if expiration_reversal_entry:
+            trade_payload["test_filter"] = True
         
         if _aes_refuse_stale_fire("pre_submit"):
             return False

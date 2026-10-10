@@ -4542,6 +4542,96 @@ def _tm_finalize_combined_flip_open(
         pass
 
 
+def _tm_send_expiration_reversal_live_flip_open(
+    flip_id: int,
+    flip_meta: dict,
+    parent_symbol: Optional[str],
+    close_request: dict,
+) -> None:
+    """Expiration Reversal: paper parent closed; send the live flip as its own Kalshi open.
+
+    Same order shape as the combined flip leg (market-style IOC on the flip side, flip qty
+    only). Fill confirmation runs through the normal open path (``confirm_open_trade``).
+    """
+    flip_ticket = str(flip_meta.get("ticket_id") or "")
+    try:
+        trading_enabled = _is_trading_enabled()
+    except Exception as e:
+        log(f"[ER FLIP] trading mode check failed id={flip_id}: {e}")
+        trading_enabled = False
+    if not trading_enabled:
+        _delete_pending_trade_for_rejection(flip_id, flip_ticket, "ER_FLIP_TRADING_DISABLED")
+        return
+    pg = get_postgresql_connection()
+    if not pg:
+        _delete_pending_trade_for_rejection(flip_id, flip_ticket, "ER_FLIP_DB_UNAVAILABLE")
+        return
+    try:
+        with pg.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT ticker, side, position, buy_price, symbol, market, monitor, subaccount,
+                       paper_trade, status
+                FROM {_tm_trades_table()}
+                WHERE id = %s
+                """,
+                (int(flip_id),),
+            )
+            row = cur.fetchone()
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+    if not row:
+        log(f"[ER FLIP] flip row {flip_id} missing — live open not sent")
+        return
+    ticker, side, position, buy_price, symbol, market, monitor, subaccount, row_paper, st = row
+    if _normalize_boolean_flag(row_paper) or str(st or "").lower() != "pending":
+        log(f"[ER FLIP] flip row {flip_id} paper={row_paper} status={st} — live open not sent")
+        return
+    try:
+        qty = float(position)
+    except (TypeError, ValueError):
+        qty = 0.0
+    if not ticker or qty <= 0:
+        _delete_pending_trade_for_rejection(flip_id, flip_ticket, "ER_FLIP_BAD_INPUT")
+        return
+    payload = {
+        "id": int(flip_id),
+        "ticket_id": flip_ticket,
+        "intent": "open",
+        "ticker": ticker,
+        "side": side,
+        "count_fp": f"{qty:.2f}",
+        "buy_price": float(buy_price) if buy_price is not None else None,
+        "order_type": "market",
+        "time_in_force": "immediate_or_cancel",
+        "symbol": symbol or parent_symbol,
+        "market": market,
+        "monitor": monitor,
+        "subaccount": int(subaccount or 1),
+        "entry_method": "flip_sell",
+    }
+    log(
+        f"[ER FLIP] live flip open id={flip_id} ticker={ticker} side={side} qty={qty} "
+        f"after paper close={close_request.get('id')}"
+    )
+    log_event(
+        flip_ticket,
+        f"MANAGER: EXPIRATION REVERSAL live flip open sent qty={qty} side={side} "
+        f"source_close={close_request.get('id')}",
+        trade_id=int(flip_id),
+    )
+    try:
+        send_trigger_to_executor(payload)
+    except Exception as e:
+        log(f"[ER FLIP] executor send failed id={flip_id}: {e}")
+        _delete_pending_trade_for_rejection(flip_id, flip_ticket, "ER_FLIP_EXECUTOR_SEND_FAILED")
+        return
+    notify_active_trade_supervisor_direct(flip_id, flip_ticket or "UNKNOWN", "pending")
+
+
 def confirm_open_trade_for_order_id(order_id: str) -> None:
     oid = str(order_id or "").strip()
     if not oid:
@@ -7270,10 +7360,24 @@ async def add_trade(request: Request):
 
                 flip_meta = normalize_flip_sell_payload(data.get("flip_sell"))
                 flip_trade_id = None
+                er_live_flip = False
                 if flip_meta:
                     try:
                         flip_row = dict(flip_meta)
-                        flip_row["paper_trade"] = paper_trade
+                        flip_row.pop("expiration_reversal", None)
+                        if flip_meta.get("expiration_reversal") and paper_trade:
+                            from backend.trading_mode import effective_paper_trade
+
+                            er_test = _normalize_boolean_flag(flip_meta.get("test_filter"))
+                            er_paper = effective_paper_trade(
+                                _normalize_boolean_flag(flip_meta.get("paper_trade")) or er_test
+                            )
+                            flip_row["paper_trade"] = er_paper
+                            flip_row["test_filter"] = er_test
+                            er_live_flip = not er_paper
+                        else:
+                            flip_row.pop("test_filter", None)
+                            flip_row["paper_trade"] = paper_trade
                         flip_row["status"] = "pending"
                         if not flip_row.get("symbol"):
                             flip_row["symbol"] = trade_symbol
@@ -7285,7 +7389,7 @@ async def add_trade(request: Request):
                             log(
                                 f"[FLIP SELL] pending flip id={flip_trade_id} "
                                 f"for close trade_id={trade_id} qty={flip_meta.get('position')} "
-                                f"inserted_new={flip_inserted}"
+                                f"inserted_new={flip_inserted} er_live_flip={er_live_flip}"
                             )
                             log_event(
                                 flip_meta.get("ticket_id") or data.get("ticket_id"),
@@ -7496,8 +7600,12 @@ async def add_trade(request: Request):
                             # Notify strike table for display update
                             notify_strike_table_trade_change(trade_id, "closed")
 
+                            if flip_trade_id and flip_meta and er_live_flip:
+                                _tm_send_expiration_reversal_live_flip_open(
+                                    int(flip_trade_id), flip_meta, trade_symbol, data
+                                )
                             # Combined flip-sell (paper): open flip at same opposite-leg price.
-                            if flip_trade_id and flip_meta and sell_price is not None:
+                            elif flip_trade_id and flip_meta and sell_price is not None:
                                 try:
                                     flip_buy = 1.0 - float(sell_price)
                                     flip_pos = int(flip_meta.get("position") or 1)
@@ -7805,6 +7913,12 @@ async def add_trade(request: Request):
                 if mst and _normalize_boolean_flag(mst.get("test_filter")):
                     paper_trade = effective_paper_trade(True)
                     data["paper_trade"] = True
+                from backend.core.expiration_reversal import is_expiration_reversal
+
+                if mst and is_expiration_reversal(mst.get("strategy")):
+                    paper_trade = effective_paper_trade(True)
+                    data["paper_trade"] = True
+                    data["test_filter"] = True
         except Exception as e:
             log_debug(f"add_trade test_filter monitor check: {e}")
         finally:

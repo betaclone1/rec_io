@@ -45,9 +45,12 @@ def is_high_water_family(strategy: Optional[str]) -> bool:
 
 
 def is_expiration_scalp_entry_strategy(strategy: Optional[str]) -> bool:
-    """Expiration Scalp or High Water family (same AES entry path)."""
+    """Expiration Scalp, Expiration Reversal, or High Water family (same AES entry path)."""
+    from backend.core.expiration_reversal import STRATEGY_NAME as EXPIRATION_REVERSAL
+
     return _strategy_base_name(strategy) in (
         "Expiration Scalp",
+        EXPIRATION_REVERSAL,
         STRATEGY_NAME,
         STRATEGY_NAME_TEST_1,
     )

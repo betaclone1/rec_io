@@ -9704,9 +9704,23 @@
       function uatMobileIsHighWaterFamily(strategy) {
         return uatMobileIsHighWaterScalp(strategy) || uatMobileIsHighWaterTest1(strategy);
       }
+      function uatMobileIsExpirationReversal(strategy) {
+        return String(strategy || '').toUpperCase().includes('EXPIRATION REVERSAL');
+      }
       function uatMobileIsExpirationScalpEntry(strategy) {
         const u = String(strategy || '').toUpperCase();
-        return u.includes('EXPIRATION SCALP') || u.includes('HIGH WATER SCALP') || u.includes('HIGH WATER TEST 1');
+        return u.includes('EXPIRATION SCALP') || uatMobileIsExpirationReversal(strategy)
+          || u.includes('HIGH WATER SCALP') || u.includes('HIGH WATER TEST 1');
+      }
+      // Expiration Reversal: floor flip sell is mandatory; checkbox locked on, multiplier editable.
+      function uatMobileApplyExpirationReversalFlipLock(checkboxId, locked) {
+        const cb = document.getElementById(checkboxId);
+        if (!cb) return;
+        cb.disabled = !!locked;
+        if (locked) cb.checked = true;
+        const row = cb.closest('.uat-auto-stop-accuracy-row');
+        const multEl = row && row.querySelector('.uat-flip-multipliers');
+        if (multEl) multEl.classList.toggle('uat-flip-multipliers--disabled', !cb.checked);
       }
       function uatMobileMonitorMarketIs15m(market) {
         return String(market || '').trim().toLowerCase() === '15m';
@@ -11601,6 +11615,7 @@
         mobileDashUatApplyFlipRow('m_flipSellProbStop', data.flip_sell_prob, data.flip_sell_prob_mult);
         mobileDashUatApplyFlipRow('m_flipSellStopLossFloor', data.flip_sell_floor, data.flip_sell_floor_mult);
         mobileDashUatApplyFlipRow('m_flipSellStopLossFloorMs', data.flip_sell_floor, data.flip_sell_floor_mult);
+        uatMobileApplyExpirationReversalFlipLock('m_flipSellStopLossFloor', uatMobileIsExpirationReversal(currentStrategy));
 
         const slpRaw = uatMobileFiniteOrNull(data.stop_loss_price);
         if (slpRaw != null) {
@@ -12064,7 +12079,7 @@
                 payload.flip_sell_prob_mult = mobileDashUatReadFlipMult('m_flipSellProbStop');
               }
               if (htcFloorCb) {
-                payload.flip_sell_floor = htcFloorCb.checked;
+                payload.flip_sell_floor = uatMobileIsExpirationReversal(currentStrategy) ? true : htcFloorCb.checked;
                 payload.flip_sell_floor_mult = mobileDashUatReadFlipMult('m_flipSellStopLossFloor');
               }
             }

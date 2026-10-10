@@ -3036,6 +3036,10 @@ def create_monitor():
                 # For contracts: position_size * multiplier
                 total_position = int(final_position_size * multiplier_value)
             
+            from backend.core.expiration_reversal import is_expiration_reversal
+
+            er_create = is_expiration_reversal(strategy)
+
             # Durable: heal sequence drift before SERIAL allocate (archived rows still hold ids).
             ensure_monitor_list_id_sequence(cursor, user_number)
 
@@ -3142,9 +3146,10 @@ def create_monitor():
                 0,  # loss_prevention_cooldown_loss_count
                 None,  # live_loss_prevention_cooldown_start_time
                 strategy_defaults.get('flip_sell_prob', False),
-                strategy_defaults.get('flip_sell_floor', False),
+                True if er_create else strategy_defaults.get('flip_sell_floor', False),
                 strategy_defaults.get('flip_sell_prob_mult'),
-                strategy_defaults.get('flip_sell_floor_mult'),
+                (strategy_defaults.get('flip_sell_floor_mult') or '1x') if er_create
+                else strategy_defaults.get('flip_sell_floor_mult'),
                 strategy_defaults.get('min_fill_price'),
                 strategy_defaults.get('min_slippage', 0.0000),
                 float(strategy_defaults.get('limit_close_price') or 0.0),

@@ -9414,7 +9414,7 @@ Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and
 
 ### Table: `system.strategy_list_default`
 
-Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). **`20261010_1100_expiration_reversal_strategy`** seeds **Expiration Reversal** (copy of each table's own Expiration Scalp row, `flip_sell_floor=TRUE`, `flip_sell_floor_mult` default `1x`) into `system.strategy_list_default` and every tenant `strategy_list_%`, plus CHECK `expiration_reversal_flip_floor_chk`. Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
 
 ---
 
@@ -10502,6 +10502,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 
 - **Primary Key:** `monitor_list_0001_pkey` on `id`
 - **Check (weekend adjustment):** `{table}_weekend_adjustment_chk` — `weekend_adjustment` ∈ `none`, `paper_only`, `reduce_position_50`, `reduce_position_25`, `probability_adjustment_10`, `probability_adjustment_25`. Migration `20260831_1430_monitor_weekend_adjustment`.
+- **Check (Expiration Reversal):** `expiration_reversal_flip_floor_chk` — `strategy IS DISTINCT FROM 'Expiration Reversal' OR flip_sell_floor IS TRUE` (ER monitors cannot disable floor flip-sell). Every `users` / `users_NNNN` `monitor_list_%`. Migration `20261010_1100_expiration_reversal_strategy`.
 
 #### Triggers (real-time backbone)
 
@@ -10739,6 +10740,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 - **Primary Key:** `strategy_list_0001_pkey` on `id`
 - **Check (TIF):** `strategy_list_0001_time_in_force_chk` — `time_in_force` ∈ `fill_or_kill`, `immediate_or_cancel`, `good_till_canceled` (tenant table name may differ; `system.strategy_list_default` uses `strategy_list_default_time_in_force_chk`).
 - **Check (order type):** `strategy_list_0001_order_type_policy_chk` — `order_type` ∈ `limit`, `market` (or legacy `strategy_list_0001_order_type_chk` on some installs; migration adds `*_order_type_policy_chk` when missing).
+- **Check (Expiration Reversal):** `expiration_reversal_flip_floor_chk` — `name IS DISTINCT FROM 'Expiration Reversal' OR flip_sell_floor IS TRUE`. Every tenant `strategy_list_%` and `system.strategy_list_default`. Migration `20261010_1100_expiration_reversal_strategy`.
 
 #### Indexes
 

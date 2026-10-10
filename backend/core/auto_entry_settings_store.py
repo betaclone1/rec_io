@@ -196,6 +196,20 @@ def apply_auto_entry_settings(
     if not cursor.fetchone():
         return {"status": "error", "message": f"Monitor not found: {monitor_id}"}
 
+    if "flip_sell_floor" in data and not (
+        data["flip_sell_floor"] is True
+        or str(data["flip_sell_floor"]).strip().lower() in ("true", "1", "yes")
+    ):
+        from backend.core.expiration_reversal import is_expiration_reversal
+
+        cursor.execute(f"SELECT strategy FROM {ml} WHERE id = %s", (monitor_id,))
+        strat_row = cursor.fetchone()
+        if strat_row and is_expiration_reversal(strat_row[0]):
+            return {
+                "status": "error",
+                "message": "Expiration Reversal requires flip_sell_floor = true (flip sell cannot be turned off)",
+            }
+
     has_flip_cols = monitor_list_flip_columns_available(cursor, tenant_context=ctx)
     has_position_risk_cols = monitor_list_position_risk_columns_available(
         cursor, tenant_context=ctx

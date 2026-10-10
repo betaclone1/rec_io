@@ -119,6 +119,13 @@ async def update_monitor_details(monitor_id: int, request: dict, user_id: Option
         if strategy is not None:
             update_fields.append("strategy = %s")
             values.append(strategy)
+            from backend.core.expiration_reversal import is_expiration_reversal
+
+            if is_expiration_reversal(strategy):
+                update_fields.append("flip_sell_floor = TRUE")
+                update_fields.append(
+                    "flip_sell_floor_mult = COALESCE(NULLIF(BTRIM(flip_sell_floor_mult), ''), '1x')"
+                )
 
         if position_size is not None:
             update_fields.append("position_size = %s")
