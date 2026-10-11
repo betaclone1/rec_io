@@ -526,32 +526,22 @@ def performance_rollups_read_payload(
     )
 
 
-def _dashboard_tile_aggregate_all_modes(rd: Dict[str, Any], prefix: str) -> Tuple[float, int, float, float]:
+def _dashboard_tile_aggregate_all_modes(
+    rd: Dict[str, Any], prefix: str, *, include_test: bool
+) -> Tuple[float, int, float, float]:
     """
-    Dashboard monitor tiles: live + paper + test combined.
+    Dashboard monitor tiles: live + paper combined, plus test only for test_filter monitors.
     ``ret_pct_*`` columns store **sums** of per-trade ret_pct (see rollup buckets); combined ret is the sum
     of those sums. Win rate combines modes by trade count.
     """
-    n_live = int(rd.get(f"{prefix}trades_n_live") or 0)
-    n_paper = int(rd.get(f"{prefix}trades_n_paper") or 0)
-    n_test = int(rd.get(f"{prefix}trades_n_test") or 0)
-    trades_n = n_live + n_paper + n_test
-    pnl = (
-        float(rd.get(f"{prefix}pnl_live") or 0)
-        + float(rd.get(f"{prefix}pnl_paper") or 0)
-        + float(rd.get(f"{prefix}pnl_test") or 0)
-    )
-    ret_sum = (
-        float(rd.get(f"{prefix}ret_pct_live") or 0)
-        + float(rd.get(f"{prefix}ret_pct_paper") or 0)
-        + float(rd.get(f"{prefix}ret_pct_test") or 0)
-    )
+    modes = ("live", "paper", "test") if include_test else ("live", "paper")
+    counts = {m: int(rd.get(f"{prefix}trades_n_{m}") or 0) for m in modes}
+    trades_n = sum(counts.values())
+    pnl = sum(float(rd.get(f"{prefix}pnl_{m}") or 0) for m in modes)
+    ret_sum = sum(float(rd.get(f"{prefix}ret_pct_{m}") or 0) for m in modes)
     if trades_n == 0:
         return pnl, 0, 0.0, ret_sum
-    wr_live = float(rd.get(f"{prefix}win_rate_live") or 0)
-    wr_paper = float(rd.get(f"{prefix}win_rate_paper") or 0)
-    wr_test = float(rd.get(f"{prefix}win_rate_test") or 0)
-    wr = (wr_live * n_live + wr_paper * n_paper + wr_test * n_test) / trades_n
+    wr = sum(float(rd.get(f"{prefix}win_rate_{m}") or 0) * counts[m] for m in modes) / trades_n
     return pnl, trades_n, wr, ret_sum
 
 
@@ -562,7 +552,7 @@ def _fetch_performance_monitor_join_rows(cur: Any, slot: str) -> Tuple[List[str]
     cur.execute(
         psql.SQL(
             """
-            SELECT ml.id AS ml_id, pm.*
+            SELECT ml.id AS ml_id, COALESCE(ml.test_filter, FALSE) AS ml_test_filter, pm.*
             FROM {pm} pm
             INNER JOIN {ml} ml
               ON LOWER(TRIM(BOTH FROM pm.monitor::text))
@@ -586,7 +576,7 @@ def _monitor_tiles_numeric_payloads_from_join(
     window: str,
     kind: str,
 ) -> List[Dict[str, Any]]:
-    """Per-monitor numeric tile metrics (live+paper+test) for one ``WINDOWS`` bucket and td/prev kind."""
+    """Per-monitor numeric tile metrics (live+paper, +test on test_filter monitors) for one ``WINDOWS`` bucket and td/prev kind."""
     prefix = f"{window}_{kind}_"
     tiles: List[Dict[str, Any]] = []
     for row in rows:
@@ -594,7 +584,9 @@ def _monitor_tiles_numeric_payloads_from_join(
         mid = rd.get("ml_id")
         if mid is None:
             continue
-        pnl, trades_n, wr, ret_sum = _dashboard_tile_aggregate_all_modes(rd, prefix)
+        pnl, trades_n, wr, ret_sum = _dashboard_tile_aggregate_all_modes(
+            rd, prefix, include_test=rd.get("ml_test_filter") is True
+        )
         win_pct = wr * 100.0 if wr <= 1.0 else wr
         fe_id = f"mon_{u}_{mid}"
         tiles.append(
@@ -618,7 +610,7 @@ def performance_monitor_tiles_read_payload(
     Per-monitor stats from ``performance_monitors_<slot>`` for dashboard tiles.
     ``period``: 1d / 1w / 1m / 1y / all (same as portfolio chart window).
     ``rollup_view``: td (calendar on trade date) or prev (rolling on closed_at).
-    Tiles always aggregate live + paper + test (not scoped by UI trading_mode).
+    Tiles aggregate live + paper, plus test only for test_filter monitors (not scoped by UI trading_mode).
     """
     from backend.core.tenant_context import resolved_tenant_user_no_for_app
 

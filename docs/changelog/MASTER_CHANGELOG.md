@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-11 — Release v3.12.11: Dashboard tiles honor monitor test_filter + ret_pct widen
+
+**Summary**
+- **Release: v3.12.11**
+- **Dashboard monitor tiles:** TEST trades count toward a tile's trades / win rate / ret / P&L only when the monitor itself is `test_filter=TRUE`. Non-test monitors aggregate live + paper only. Applies to `/api/performance/monitor-tiles` and the WS `tiles_matrix` (desktop + mobile), and to stored `monitor_list` stats (`update_monitor_statistics_from_trades`).
+- **Monitor stats fix:** Momentum Contain/Breakout cycle stats query had an unescaped `LIKE '%-%'` in a parameterized query (psycopg2 rejected it); now `'%%-%%'`.
+- **DB:** Migration **`20261011_1340_monitor_list_ret_pct_widen`** — `ret_pct` → `NUMERIC(10,2)` on every tenant `monitor_list_NNNN` (was `NUMERIC(5,1)`, overflowed on high-volume monitors and rolled back the whole stats pass).
+- **Already on prod (committed separately):** ES-family single in-flight trade per ticker (9d7dcd8c); archive `position_risk_*` parity migration `20261011_1330` (498669f3).
+- **Tests:** `tests/unit/test_performance_tiles_test_filter.py`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-11`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20261011_1340_monitor_list_ret_pct_widen` (fails if any ret_pct exceeds ±9,999.9).
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261011_1340_monitor_list_ret_pct_widen`
+- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; all programs RUNNING; monitor stats startup pass succeeds; non-test monitor tiles exclude TEST trades
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.11`
+
+---
+
 ## 2026-10-10 — Release v3.12.10: Expiration Reversal strategy
 
 **Summary**

@@ -1430,7 +1430,7 @@ environment={env_vars}
                         
                         # Get the strategy for this monitor
                         cursor.execute(
-                            sql.SQL("SELECT strategy FROM {} WHERE id = %s").format(ml),
+                            sql.SQL("SELECT strategy, COALESCE(test_filter, FALSE) FROM {} WHERE id = %s").format(ml),
                             (monitor_id,),
                         )
                         strategy_row = cursor.fetchone()
@@ -1439,6 +1439,8 @@ environment={env_vars}
                             raw_s = str(strategy_row[0]).strip()
                             if raw_s:
                                 strategy = raw_s
+                        # TEST trades count toward a monitor's stats only on test_filter monitors.
+                        include_test = bool(strategy_row and len(strategy_row) >= 2 and strategy_row[1] is True)
                         
                         # Check if this is Momentum Contain or Momentum Breakout
                         is_momentum_contain = strategy and "Momentum Contain" in strategy
@@ -1453,14 +1455,14 @@ environment={env_vars}
                                     SELECT 
                                         ticker,
                                         CASE 
-                                            WHEN ticker LIKE '%-%' THEN 
+                                            WHEN ticker LIKE '%%-%%' THEN 
                                                 regexp_replace(ticker, '-[^-]*$', '')
                                             ELSE ticker
                                         END as cycle_id
                                     FROM {} 
                                     WHERE monitor = %s 
                                     AND status IN ('closed', 'settled') 
-                                    AND (test_filter IS NULL OR test_filter = FALSE)
+                                    AND (%s OR test_filter IS NULL OR test_filter = FALSE)
                                     AND ticker IS NOT NULL
                                 ),
                                 cycle_results AS (
@@ -1473,7 +1475,7 @@ environment={env_vars}
                                     JOIN {} t ON t.ticker = cg.ticker
                                     WHERE t.monitor = %s 
                                     AND t.status IN ('closed', 'settled') 
-                                    AND (t.test_filter IS NULL OR t.test_filter = FALSE)
+                                    AND (%s OR t.test_filter IS NULL OR t.test_filter = FALSE)
                                     GROUP BY cg.cycle_id
                                 ),
                                 cycle_summary AS (
@@ -1488,7 +1490,7 @@ environment={env_vars}
                                 FROM cycle_summary
                             """
                                 ).format(tr, tr),
-                                (monitor_identifier, monitor_identifier),
+                                (monitor_identifier, include_test, monitor_identifier, include_test),
                             )
                             
                             cycle_stats = cursor.fetchone()
@@ -1506,10 +1508,10 @@ environment={env_vars}
                                     COALESCE(SUM(ret_pct), 0) as total_ret_pct,
                                     COALESCE(SUM(pnl), 0) as total_pnl
                                 FROM {} 
-                                WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
+                                WHERE monitor = %s AND status IN ('closed', 'settled') AND (%s OR test_filter IS NULL OR test_filter = FALSE)
                             """
                                 ).format(tr),
-                                (monitor_identifier,),
+                                (monitor_identifier, include_test),
                             )
                             
                             trade_stats = cursor.fetchone()
@@ -1560,10 +1562,10 @@ environment={env_vars}
                                 COALESCE(SUM(ret_pct), 0) as total_ret_pct,
                                 COALESCE(SUM(pnl), 0) as total_pnl
                                 FROM {} 
-                                WHERE monitor = %s AND status IN ('closed', 'settled') AND (test_filter IS NULL OR test_filter = FALSE)
+                                WHERE monitor = %s AND status IN ('closed', 'settled') AND (%s OR test_filter IS NULL OR test_filter = FALSE)
                             """
                                 ).format(tr),
-                                (monitor_identifier,),
+                                (monitor_identifier, include_test),
                             )
                             
                             trade_stats = cursor.fetchone()

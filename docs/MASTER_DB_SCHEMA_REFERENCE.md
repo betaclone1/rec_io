@@ -10402,7 +10402,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `auto_trade_status` | `character varying(20)` | YES | 'inactive'::character varying | Auto-trading only (not script lifecycle). |
 | `trades` | `integer(32)` | YES | 0 | |
 | `win_loss` | `numeric(5,1)` | YES | 0.0 | |
-| `ret_pct` | `numeric(5,1)` | YES | 0.0 | |
+| `ret_pct` | `numeric(10,2)` | YES | 0.0 | Cumulative sum of closed non-test trade `ret_pct` (monitor statistics). Widened from `numeric(5,1)` by migration `20261011_1340_monitor_list_ret_pct_widen` (overflow past ±9,999.9 aborted the stats transaction). |
 | `pnl` | `numeric(10,2)` | YES | 0.00 | |
 | `bankroll_allotment` | `numeric(5,1)` | YES | 0.0 | |
 | `bankroll_allotment_pct` | `real(24)` | YES | 0.00 | |
