@@ -3336,11 +3336,13 @@ def has_bracket_for_cycle(contract: Optional[str] = None, strike_tier: Optional[
         # On error, allow trading (fail open)
         return False
 
-def is_strike_already_traded(strike_data):
+def is_strike_already_traded(strike_data, *, any_side: bool = False):
     """Check if we already have an in-flight trade on this Kalshi market ticker (same monitor + side).
 
     Statuses counted as blocking: open, pending, partial, closing (anything not yet terminal).
     Side comparison is canonicalized so DB ``Y`` matches strike_data ``yes`` (prior bug: never matched).
+    ``any_side=True`` blocks on an in-flight trade on either side of the ticker (Expiration family:
+    one open trade per cycle).
     """
     try:
         current_monitor = f"mon_{ctx_user()}_{ctx_mid()}"
@@ -3356,6 +3358,8 @@ def is_strike_already_traded(strike_data):
 
         warm = _aes_open_ticker_sides.get()
         if warm is not None:
+            if any_side:
+                return (str(ticker), "yes") in warm or (str(ticker), "no") in warm
             return (str(ticker), want_side) in warm
 
         conn = get_db_connection()
@@ -3376,7 +3380,7 @@ def is_strike_already_traded(strike_data):
         for trade_id, trade_ticker, trade_side, trade_status in trades:
             if trade_ticker != ticker:
                 continue
-            if _aes_side_bucket_for_dedupe(trade_side) != want_side:
+            if not any_side and _aes_side_bucket_for_dedupe(trade_side) != want_side:
                 continue
             log_debug(
                 f"⚠️ Found {trade_status} trade (ID: {trade_id}) ticker={ticker} side_bucket={want_side} "
@@ -4764,7 +4768,7 @@ def check_auto_entry_conditions_expiration_scalp():
                         "side": side_key,
                         "ticker": strike.get("ticker"),
                     }
-                    if is_strike_already_traded(strike_data_for_check):
+                    if is_strike_already_traded(strike_data_for_check, any_side=True):
                         _exp_scalp_verify_abort(
                             verify_bucket,
                             dedupe_key,
@@ -5084,7 +5088,7 @@ def check_auto_entry_conditions_expiration_scalp():
                         "movement_percentile": movement_pct_f,
                     }
 
-                    if is_strike_already_traded(strike_data):
+                    if is_strike_already_traded(strike_data, any_side=True):
                         _exp_scalp_verify_abort(
                             verify_bucket,
                             dedupe_key,
@@ -5114,6 +5118,9 @@ def check_auto_entry_conditions_expiration_scalp():
                     if trigger_auto_entry_trade(strike_data):
                         log(f"{log_tag} ✅ TRADE SUCCESSFUL | {strike_key} {side_key.upper()}")
                         verify_bucket.pop(dedupe_key, None)
+                        warm_open = _aes_open_ticker_sides.get()
+                        if warm_open is not None and strike.get("ticker"):
+                            warm_open.add((str(strike.get("ticker")), side_key))
                     else:
                         log(f"{log_tag} ❌ TRADE FAILED | {strike_key} {side_key.upper()}")
                         if strike_key in last_trade_times:

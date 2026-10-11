@@ -497,6 +497,58 @@ def _fetch_monitor_state(cursor, monitor_key):
         return None
 
 
+def _reject_expiration_family_second_open(data: dict) -> None:
+    """Expiration-family monitors hold at most one in-flight trade per ticker (either side)."""
+    mk = data.get("monitor")
+    ticker = str(data.get("ticker") or "").strip()
+    if not mk or not ticker or not _monitor_key_matches_worker(mk):
+        return
+    if str(data.get("entry_method") or "").strip().lower() == "flip_sell":
+        return
+    pg = get_postgresql_connection()
+    if not pg:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="database_unavailable",
+        )
+    try:
+        with pg.cursor() as cursor:
+            mst = _fetch_monitor_state(cursor, mk)
+            from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
+            if not mst or not is_expiration_scalp_entry_strategy(mst.get("strategy")):
+                return
+            cursor.execute(
+                f"""
+                SELECT id, side, status FROM {_tm_trades_table()}
+                WHERE monitor = %s AND ticker = %s
+                  AND status IN ('pending', 'open', 'partial', 'closing')
+                  AND ticket_id IS DISTINCT FROM %s
+                ORDER BY id DESC
+                LIMIT 1
+                """,
+                (mk, ticker, str(data.get("ticket_id") or "")),
+            )
+            existing = cursor.fetchone()
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+    if existing:
+        detail = (
+            f"expiration_family_ticker_in_flight existing_id={existing[0]} "
+            f"existing_side={existing[1]} existing_status={existing[2]} "
+            f"ticker={ticker} requested_side={data.get('side')}"
+        )
+        log(f"MANAGER: {detail}")
+        log_event(data.get("ticket_id", "UNKNOWN"), f"MANAGER: {detail}")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="expiration_family_ticker_in_flight",
+        )
+
+
 def _apply_monitor_dupe_pairing_for_open(data: dict) -> None:
     """Cap or block open size when paired monitors already hold the same ticker+side."""
     mk = data.get("monitor")
@@ -7930,6 +7982,7 @@ async def add_trade(request: Request):
 
     if monitor_key_open:
         _enrich_open_trade_execution_from_monitor(data)
+        _reject_expiration_family_second_open(data)
         _apply_monitor_dupe_pairing_for_open(data)
         try:
             proj_position = int(float(data.get("position")))
