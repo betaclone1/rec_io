@@ -3039,8 +3039,16 @@ def create_monitor():
                 total_position = int(final_position_size * multiplier_value)
             
             from backend.core.expiration_reversal import is_expiration_reversal
+            from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
 
             er_create = is_expiration_reversal(strategy)
+            # Expiration family: LP off by default (strategy_list already FALSE; harden fallback).
+            _lp_create_default = (
+                False if is_expiration_scalp_entry_strategy(strategy) else True
+            )
+            _lp_create_toggle = strategy_defaults.get(
+                "loss_prevention_toggle", _lp_create_default
+            )
 
             # Durable: heal sequence drift before SERIAL allocate (archived rows still hold ids).
             ensure_monitor_list_id_sequence(cursor, user_number)
@@ -3095,10 +3103,10 @@ def create_monitor():
                 strategy_defaults.get('win_streak_threshold', 22),
                 (
                     "new"
-                    if strategy_defaults.get('loss_prevention_toggle', True)
+                    if _lp_create_toggle
                     else "off"
                 ),
-                strategy_defaults.get('loss_prevention_toggle', True),
+                _lp_create_toggle,
                 strategy_defaults.get('loss_prevention_method') or 'win_streak',
                 strategy_defaults.get('performance_based_allocation', False),
                 strategy_defaults.get('max_price_spread', 0.0300),

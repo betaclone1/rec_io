@@ -11,7 +11,14 @@ from backend.core.cycle_hot_tables import (
     series_from_ticker,
     symbol_from_cycle_ticker,
 )
-from backend.core.cycle_packager import month_folder, package_path_for_ticker
+from backend.core.cycle_packager import (
+    PACKAGE_SCHEMA_VERSION,
+    _existing_package_complete,
+    month_folder,
+    package_path_for_ticker,
+    public_trades_to_csv_bytes,
+    quality_gate,
+)
 
 _MT = "KXBTC15M-26JUL271045-45"
 _ETH = "KXETH15M-26JUL271045-45"
@@ -72,3 +79,75 @@ def test_month_folder_and_path():
     assert path.parts[-3:] == ("2026", "2026_07_JUL", "KXBTC15M-26JUL261345-45.tar.xz")
     assert "backtesting_data" in path.parts
     assert "KXBTC15M" in path.parts
+
+
+def test_public_trades_csv_bytes_empty_and_sorted():
+    empty = public_trades_to_csv_bytes([])
+    assert empty.startswith(b"trade_id,")
+    raw = public_trades_to_csv_bytes(
+        [
+            {
+                "trade_id": "b",
+                "ticker": _MT,
+                "created_time": "2026-07-27T14:40:00Z",
+                "yes_price_dollars": "0.50",
+                "no_price_dollars": "0.50",
+                "count_fp": "1.00",
+            },
+            {
+                "trade_id": "a",
+                "ticker": _MT,
+                "created_time": "2026-07-27T14:31:00Z",
+                "yes_price_dollars": "0.40",
+                "no_price_dollars": "0.60",
+                "count_fp": "2.00",
+            },
+        ]
+    )
+    text = raw.decode("utf-8")
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    assert "trade_id" in lines[0]
+    assert lines[1].startswith("a,")
+    assert lines[2].startswith("b,")
+
+
+def test_quality_gate_requires_public_trades_for_v3():
+    mm = {"floor_strike": 100.0, "market_result": "yes"}
+    base = {"deltas.csv": 10, "price_ring.csv": 10, "strike_table.csv": 10}
+    ok, reason = quality_gate(row_counts=base, market_meta=mm, require_public_trades=True)
+    assert not ok and reason == "public_trades missing"
+    ok2, _ = quality_gate(
+        row_counts={**base, "public_trades.csv": 0},
+        market_meta=mm,
+        require_public_trades=True,
+    )
+    assert ok2
+    # Legacy v2 on-disk: no public_trades key still complete
+    ok3, _ = _existing_package_complete(
+        names={"meta.json", "market_meta.json", "deltas.csv"},
+        meta_obj={
+            "schema_version": 2,
+            "tables": {
+                "deltas.csv": {"rows": 10},
+                "price_ring.csv": {"rows": 10},
+                "strike_table.csv": {"rows": 10},
+            },
+        },
+        market_meta=mm,
+    )
+    assert ok3
+    assert PACKAGE_SCHEMA_VERSION == 3
+    ok4, reason4 = _existing_package_complete(
+        names={"meta.json", "market_meta.json", "deltas.csv"},
+        meta_obj={
+            "schema_version": 3,
+            "tables": {
+                "deltas.csv": {"rows": 10},
+                "price_ring.csv": {"rows": 10},
+                "strike_table.csv": {"rows": 10},
+                "public_trades.csv": {"rows": 5},
+            },
+        },
+        market_meta=mm,
+    )
+    assert not ok4 and "public_trades" in reason4

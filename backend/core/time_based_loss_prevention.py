@@ -191,7 +191,8 @@ def rebuild_monitor_time_lp_from_trade_logs_on_restart(
     cursor.execute(
         f"""
         SELECT COALESCE(loss_prevention_duration, 4),
-               COALESCE(simulated_trade_loss_prevention, FALSE)
+               COALESCE(simulated_trade_loss_prevention, FALSE),
+               strategy
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -202,6 +203,19 @@ def rebuild_monitor_time_lp_from_trade_logs_on_restart(
         return False
     duration_h = float(cfg[0] or 4)
     include_sim = bool(cfg[1])
+    # Expiration-family flip sells are the continuation of the same trade; exclude from LP episode.
+    exclude_flip_sell = False
+    try:
+        from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
+        exclude_flip_sell = is_expiration_scalp_entry_strategy(cfg[2] if len(cfg) > 2 else None)
+    except Exception:
+        exclude_flip_sell = False
+    flip_excl = (
+        " AND LOWER(COALESCE(t.entry_method, '')) IS DISTINCT FROM 'flip_sell'"
+        if exclude_flip_sell
+        else ""
+    )
 
     te = _sql_close_anchor_epoch("t")
     tt = _sql_close_anchor_timestamptz("t")
@@ -216,6 +230,7 @@ def rebuild_monitor_time_lp_from_trade_logs_on_restart(
         AND t.status = 'closed'
         AND t.win_loss = 'L'
         AND ({tt}) >= NOW() - interval '{_LOSS_LOG_LOOKBACK_DAYS} days'
+        {flip_excl}
     """
     if include_sim:
         se = _sql_close_anchor_epoch("s")
@@ -845,7 +860,8 @@ def on_trade_closed_live_loss_throttle(
     """
     cursor.execute(
         f"""
-        SELECT t.monitor, t.win_loss, {_SQL_T_CLOSE_ANCHOR_EPOCH}
+        SELECT t.monitor, t.win_loss, {_SQL_T_CLOSE_ANCHOR_EPOCH},
+               LOWER(COALESCE(t.entry_method, ''))
         FROM {trades_qualified} AS t
         WHERE t.id = %s
         """,
@@ -859,6 +875,7 @@ def on_trade_closed_live_loss_throttle(
         row[1],
         row[2],
     )
+    entry_method = str(row[3] or "").strip().lower() if len(row) > 3 else ""
     if win_loss != "L":
         return False
     if not monitor_key:
@@ -869,7 +886,8 @@ def on_trade_closed_live_loss_throttle(
     cursor.execute(
         f"""
         SELECT COALESCE(loss_prevention_toggle, FALSE),
-               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak')
+               COALESCE(NULLIF(loss_prevention_method, ''), 'win_streak'),
+               strategy
         FROM {monitor_list_qualified}
         WHERE id = %s
         """,
@@ -878,6 +896,15 @@ def on_trade_closed_live_loss_throttle(
     flg = cursor.fetchone()
     if not flg or not (bool(flg[0]) and str(flg[1]).strip().lower() == "time"):
         return False
+    # Expiration flip sells are the same trade as the parent loss — do not re-trigger LP from them.
+    if entry_method == "flip_sell":
+        try:
+            from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
+            if is_expiration_scalp_entry_strategy(flg[2] if len(flg) > 2 else None):
+                return False
+        except Exception:
+            pass
     if _parse_ts(anch_ep) is None:
         return False
     refresh_loss_prevention_tally_from_trades(

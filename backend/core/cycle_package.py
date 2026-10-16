@@ -1,9 +1,11 @@
 """
 Load sealed cycle packages (``.tar.xz``) and reconstruct market state over time.
 
-Package members (schema_version 2):
+Package members (schema_version 3):
   meta.json, market_meta.json, snapshot.csv, deltas.csv,
-  strike_table.csv, price_ring.csv, metrics_ring.csv
+  strike_table.csv, price_ring.csv, metrics_ring.csv, public_trades.csv
+
+Legacy schema_version 2 omits ``public_trades.csv`` (loader returns empty list).
 """
 
 from __future__ import annotations
@@ -77,6 +79,7 @@ class CyclePackage:
     strike_rows: List[Dict[str, Any]]
     price_rows: List[Dict[str, Any]]
     metrics_rows: List[Dict[str, Any]]
+    public_trades: List[Dict[str, Any]] = field(default_factory=list)
 
     @property
     def market_ticker(self) -> str:
@@ -187,6 +190,7 @@ def load_cycle_package(path: Path | str) -> CyclePackage:
         strike_rows=_csv("strike_table.csv"),
         price_rows=_csv("price_ring.csv"),
         metrics_rows=_csv("metrics_ring.csv"),
+        public_trades=_csv("public_trades.csv"),
     )
 
 

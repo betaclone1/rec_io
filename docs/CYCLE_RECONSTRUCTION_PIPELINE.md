@@ -141,7 +141,7 @@ PYTHONPATH=. .venv/bin/python scripts/cycle_recon/reconstruct.py \
 ### 5.1 Historical cycle packages (authoritative book + spot rings)
 
 - Layout: `backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz`
-- Members (`schema_version` 2): `meta.json`, `market_meta.json`, `snapshot.csv`, `deltas.csv`, `strike_table.csv`, `price_ring.csv`, `metrics_ring.csv`
+- Members (`schema_version` 3): `meta.json`, `market_meta.json`, `snapshot.csv`, `deltas.csv`, `strike_table.csv`, `price_ring.csv`, `metrics_ring.csv`, `public_trades.csv` (Kalshi public tape for the market ticker; fetched at seal time). Legacy `schema_version` 2 omits `public_trades.csv`.
 - Optional: pull missing packages from Drive via existing download script into the **same** local tree (archive cache only).
 
 ### 5.2 Public Kalshi executed trades

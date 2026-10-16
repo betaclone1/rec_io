@@ -6649,9 +6649,21 @@ def _ats_fetch_flip_sell_monitor_row() -> Optional[Tuple[Any, Any, Any, Any, Any
             pass
 
 
-def _ats_flip_sell_position_after_loss_prevention(flip_count: int) -> Tuple[int, bool]:
-    """Return (contracts, loss_prevention_trade_payload). Mirrors AES fractional sim tiers."""
+def _ats_flip_sell_position_after_loss_prevention(
+    flip_count: int, *, strategy: Optional[str] = None
+) -> Tuple[int, bool]:
+    """Return (contracts, loss_prevention_trade_payload). Mirrors AES fractional sim tiers.
+
+    Expiration-family flip sells are part of the same trade as the loss that triggered them:
+    do not apply LP sizing (full flip size, loss_prevention=False).
+    """
     try:
+        from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
+        strat = strategy if strategy is not None else get_trade_strategy()
+        if is_expiration_scalp_entry_strategy(strat):
+            return flip_count, False
+
         from backend.core.symbol_wide_loss_prevention import (
             is_loss_prevention_sizing_state,
             normalize_loss_prevention_state_for_sizing,
@@ -6831,7 +6843,9 @@ def prepare_flip_sell_meta_for_auto_stop(
     else:
         paper_trade = _ats_get_paper_trade_from_monitor()
         flip_test_filter = None
-    position_out, loss_prevention_flag = _ats_flip_sell_position_after_loss_prevention(flip_count)
+    position_out, loss_prevention_flag = _ats_flip_sell_position_after_loss_prevention(
+        flip_count, strategy=trade_strategy
+    )
     bankroll_allotment = _ats_get_bankroll_allotment()
     if bankroll_allotment is None:
         log(f"[FLIP SELL] skip trade_id={tid}: no bankroll_allotment_total on monitor")

@@ -4,7 +4,7 @@ Internal backtest packages (BTC 15m cycle `.tar.xz` under `backend/data/historic
 
 **Task tracking:** [.cursor/plans/historical-cycle-data-product.md](../.cursor/plans/historical-cycle-data-product.md)
 
-**Current ballpark:** ~1.5–2.5 MB xz per 15m symbol cycle (~40–87 GB/year/symbol depending on encoding and book activity). OB dominates; strike + price/metrics rings are ~15 KB combined.
+**Current ballpark:** ~1.5–2.5 MB xz per 15m symbol cycle for book+rings; with sealed `public_trades.csv` typically ~4–6 MB xz on busy BTC cycles (~150–200 GB/year/symbol high-side). OB still dominates; public tape compresses well (~1 MB xz on a busy cycle).
 
 ---
 
@@ -87,3 +87,4 @@ Rings and strike will never dominate size; optimize the book path if warehouse c
 | Date | Note |
 |------|------|
 | 2026-07-26 | Initial write-up from cycle-package design discussion; plan filed under `.cursor/plans/historical-cycle-data-product.md`. |
+| 2026-10-16 | Package `schema_version` 3 adds Kalshi `public_trades.csv` at seal time (Drive upload unchanged). |

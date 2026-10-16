@@ -9526,7 +9526,7 @@ Per enabled market ticker (quoted identifiers), six tables:
 **Writers:** Venue WS OB → snapshot/deltas + `market_result` on lifecycle; index/price publisher → price/metrics fan-out to hot tickers for the matching symbol (hot set **refreshed from PG** so new cycles are visible cross-process); strike snapshot publisher → strike rows + `floor_strike` / volume into `_market_meta`.
 
 **Packaging:** Hourly `cycle_packager` exports closed cycles (close + grace) to  
-`backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz`. Members include `market_meta.json`. **Quality gate** (non-force): non-empty deltas, price_ring, strike_table; `floor_strike` and `market_result` present — otherwise skip and leave PG tables for retry. Drops only after a passing package.
+`backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz`. Members (`schema_version` 3): `meta.json`, `market_meta.json`, hot CSVs (`snapshot`, `deltas`, `strike_table`, `price_ring`, `metrics_ring`), and `public_trades.csv` (Kalshi `GET /markets/trades` for that ticker, fetched at seal — not stored in hot PG). **Quality gate** (non-force): non-empty deltas, price_ring, strike_table; `floor_strike` and `market_result` present; successful `public_trades.csv` member (row count may be 0) — otherwise skip and leave PG tables for retry. Drops only after a passing package. Legacy on-disk `schema_version` 2 packages without public trades remain valid for skip/drop.
 Toggle: `CYCLE_HOT_PG=0` (legacy aliases `BTC15M_CYCLE_HOT_PG`, `TESTING_BTC15M_ORDERBOOK_CYCLE_PG`).
 
 ---

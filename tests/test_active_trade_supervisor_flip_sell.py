@@ -58,7 +58,7 @@ def test_prepare_flip_meta_floor(ats_mod):
     }
     with patch.object(ats_mod, "_ats_fetch_flip_sell_monitor_row", return_value=(False, "1x", True, "2x", False, False)), \
          patch.object(ats_mod, "_ats_trade_log_entry_method", return_value="auto_entry"), \
-         patch.object(ats_mod, "_ats_flip_sell_position_after_loss_prevention", side_effect=lambda c: (c, False)), \
+         patch.object(ats_mod, "_ats_flip_sell_position_after_loss_prevention", side_effect=lambda c, **kw: (c, False)), \
          patch.object(ats_mod, "_ats_get_multiplier_from_monitor", return_value=1.0), \
          patch.object(ats_mod, "_ats_get_paper_trade_from_monitor", return_value=False), \
          patch.object(ats_mod, "_ats_get_bankroll_allotment", return_value=1000.0), \
@@ -109,7 +109,7 @@ def _er_patches(ats_mod, row):
     return [
         patch.object(ats_mod, "_ats_fetch_flip_sell_monitor_row", return_value=row),
         patch.object(ats_mod, "_ats_trade_log_entry_method", return_value="auto_entry"),
-        patch.object(ats_mod, "_ats_flip_sell_position_after_loss_prevention", side_effect=lambda c: (c, False)),
+        patch.object(ats_mod, "_ats_flip_sell_position_after_loss_prevention", side_effect=lambda c, **kw: (c, False)),
         patch.object(ats_mod, "_ats_get_multiplier_from_monitor", return_value=1.0),
         patch.object(ats_mod, "_ats_get_paper_trade_from_monitor", side_effect=AssertionError("not used for ER")),
         patch.object(ats_mod, "_ats_get_bankroll_allotment", return_value=1000.0),

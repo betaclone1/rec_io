@@ -69,6 +69,7 @@ This section is the canonical feature inventory for Help Center IA.
 - Create, activate/deactivate, and supervise monitor configurations.
 - Per-monitor process lifecycle under supervisor and monitor manager.
 - Per-monitor loss prevention settings use one master toggle, a method selector (`win_streak` or `time`), and method-specific controls.
+- Expiration-family monitors (Expiration Scalp / Reversal, High Water Scalp / Test 1) use the same LP controls; toggle defaults **off**. Flip sells after a loss keep full size and do not count as a separate LP loss (same trade).
 - Monitors can also opt into symbol-wide loss prevention, following the configured hero monitor state for their symbol when that state is active.
 - Related docs:
   - `docs/MONITORS_LIST_INFRASTRUCTURE.md`

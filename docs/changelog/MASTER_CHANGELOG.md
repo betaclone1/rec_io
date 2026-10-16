@@ -18,12 +18,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-11`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20261011_1340_monitor_list_ret_pct_widen` (fails if any ret_pct exceeds ±9,999.9).
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261011_1340_monitor_list_ret_pct_widen`
-- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; all programs RUNNING; monitor stats startup pass succeeds; non-test monitor tiles exclude TEST trades
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.11`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261011_1340_monitor_list_ret_pct_widen`
+- [x] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; all programs RUNNING; monitor stats startup pass succeeds; non-test monitor tiles exclude TEST trades
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.11`
 
 ---
 

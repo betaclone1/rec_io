@@ -4,7 +4,7 @@ Hourly packager: closed cycle hot tables → xz tar under backtesting_data.
 Layout (per series):
   backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz
 
-Each archive contains:
+Each archive contains (schema_version 3):
   meta.json
   market_meta.json   (floor_strike, market_result, …)
   snapshot.csv
@@ -12,6 +12,7 @@ Each archive contains:
   strike_table.csv
   price_ring.csv
   metrics_ring.csv
+  public_trades.csv  (Kalshi public tape for this market ticker)
 
 Drops PG tables only after a successful write + quality gate + member verification.
 Incomplete cycles are left in PG for the next pass (no silent empty packages).
@@ -19,6 +20,7 @@ Incomplete cycles are left in PG for the next pass (no silent empty packages).
 
 from __future__ import annotations
 
+import csv
 import io
 import json
 import logging
@@ -45,6 +47,26 @@ logger = logging.getLogger("cycle_packager")
 
 _UTC = timezone.utc
 _EST = ZoneInfo("America/New_York")
+
+# Current sealed layout. Legacy packages may still be schema_version 2 (no public_trades).
+PACKAGE_SCHEMA_VERSION = 3
+
+_PUBLIC_TRADES_PREFERRED_COLS = (
+    "trade_id",
+    "ticker",
+    "created_time",
+    "taker_side",
+    "taker_outcome_side",
+    "taker_book_side",
+    "yes_price",
+    "no_price",
+    "yes_price_dollars",
+    "no_price_dollars",
+    "count",
+    "count_fp",
+    "is_block_trade",
+    "ts",
+)
 
 _MONTH_ABBR = (
     "JAN",
@@ -203,16 +225,75 @@ def _enrich_market_result_from_redis(market_meta: Dict[str, Any]) -> None:
         logger.debug("settled redis lookup failed %s: %s", mt, e)
 
 
+def public_trades_to_csv_bytes(trades: List[Dict[str, Any]]) -> bytes:
+    """Serialize Kalshi public Trade objects to CSV bytes (UTF-8)."""
+    if not trades:
+        header = ",".join(_PUBLIC_TRADES_PREFERRED_COLS) + "\n"
+        return header.encode("utf-8")
+    keys: List[str] = []
+    seen: set[str] = set()
+    for k in _PUBLIC_TRADES_PREFERRED_COLS:
+        if any(k in r for r in trades):
+            keys.append(k)
+            seen.add(k)
+    for r in trades:
+        for k in r.keys():
+            if k not in seen:
+                keys.append(k)
+                seen.add(k)
+    buf = io.StringIO()
+    w = csv.DictWriter(buf, fieldnames=keys, extrasaction="ignore")
+    w.writeheader()
+    for r in sorted(
+        trades,
+        key=lambda row: (
+            str(row.get("created_time") or ""),
+            str(row.get("trade_id") or ""),
+        ),
+    ):
+        w.writerow({k: r.get(k, "") for k in keys})
+    return buf.getvalue().encode("utf-8")
+
+
+def fetch_public_trades_csv_for_package(
+    market_ticker: str,
+    *,
+    force_refresh: bool = True,
+) -> Tuple[Optional[bytes], int, Optional[str]]:
+    """
+    Fetch Kalshi public tape for ``market_ticker`` and return (csv_bytes, row_count, error).
+
+    On API/cache failure returns ``(None, 0, reason)`` — caller must not seal a substitute.
+    """
+    from backend.core.cycle_recon.sources import fetch_public_trades
+
+    try:
+        res = fetch_public_trades(
+            market_ticker,
+            force_refresh=force_refresh,
+            offline=False,
+        )
+    except Exception as e:
+        return None, 0, f"public_trades fetch error: {e}"
+    if not res.complete:
+        return None, 0, "public_trades fetch incomplete"
+    raw = public_trades_to_csv_bytes(list(res.trades or []))
+    return raw, len(res.trades or []), None
+
+
 def quality_gate(
     *,
     row_counts: Dict[str, int],
     market_meta: Dict[str, Any],
     force: bool = False,
+    require_public_trades: bool = True,
 ) -> Tuple[bool, str]:
     """
     Require a usable cycle package. Incomplete captures stay in PG for retry.
 
     ``force`` bypasses the gate (ops / rebuild only).
+    ``require_public_trades``: schema v3 seals must include a successful tape member
+    (row count may be 0). Legacy v2 packages omit this check.
     """
     if force:
         return True, "force"
@@ -229,7 +310,33 @@ def quality_gate(
         return False, "floor_strike missing"
     if not market_meta.get("market_result"):
         return False, "market_result missing"
+    if require_public_trades and "public_trades.csv" not in row_counts:
+        return False, "public_trades missing"
     return True, "ok"
+
+
+def _existing_package_complete(
+    *,
+    names: set[str],
+    meta_obj: Dict[str, Any],
+    market_meta: Dict[str, Any],
+) -> Tuple[bool, str]:
+    """Validate an on-disk package; v2 without public_trades remains acceptable."""
+    tables = meta_obj.get("tables") or {}
+    counts = {k: int((v or {}).get("rows") or 0) for k, v in tables.items()}
+    try:
+        sv = int(meta_obj.get("schema_version") or 0)
+    except (TypeError, ValueError):
+        sv = 0
+    require_pt = sv >= PACKAGE_SCHEMA_VERSION
+    if require_pt and "public_trades.csv" not in names:
+        return False, "public_trades member missing"
+    return quality_gate(
+        row_counts=counts,
+        market_meta=market_meta,
+        force=False,
+        require_public_trades=require_pt,
+    )
 
 
 def is_cycle_ready_to_package(
@@ -275,11 +382,11 @@ def package_ticker(
                 names = set(tar.getnames())
                 meta_f = tar.extractfile("meta.json")
                 meta_obj = json.loads(meta_f.read().decode()) if meta_f else {}
-                tables = meta_obj.get("tables") or {}
-                counts = {k: int((v or {}).get("rows") or 0) for k, v in tables.items()}
                 mm_f = tar.extractfile("market_meta.json") if "market_meta.json" in names else None
                 mm = json.loads(mm_f.read().decode()) if mm_f else {}
-            ok, reason = quality_gate(row_counts=counts, market_meta=mm, force=False)
+            ok, reason = _existing_package_complete(
+                names=names, meta_obj=meta_obj, market_meta=mm
+            )
             if ok:
                 logger.info("complete package already exists %s — skipping", out)
                 if drop_after:
@@ -317,7 +424,7 @@ def package_ticker(
         "market_ticker": mt,
         "series": series,
         "schema": _SCHEMA,
-        "schema_version": 2,
+        "schema_version": PACKAGE_SCHEMA_VERSION,
         "packaged_at_utc": datetime.now(_UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z"),
@@ -357,9 +464,24 @@ def package_ticker(
 
         _enrich_market_result_from_redis(market_meta)
 
+        # Public tape is not in PG hot tables — fetch at seal time (authoritative API).
+        pt_bytes, pt_rows, pt_err = fetch_public_trades_csv_for_package(mt, force_refresh=True)
+        if pt_bytes is None:
+            logger.warning(
+                "skip package %s — public_trades unavailable: %s",
+                mt,
+                pt_err or "unknown",
+            )
+            return None
+        members["public_trades.csv"] = pt_bytes
+        meta["tables"]["public_trades.csv"] = {"rows": pt_rows, "bytes": len(pt_bytes)}
+
         row_counts = {k: int(v["rows"]) for k, v in meta["tables"].items()}
         ok, reason = quality_gate(
-            row_counts=row_counts, market_meta=market_meta, force=force
+            row_counts=row_counts,
+            market_meta=market_meta,
+            force=force,
+            require_public_trades=True,
         )
         if not ok:
             logger.warning(

@@ -221,3 +221,4 @@ backend/data/position_risk/
 backend/data/historical_data/cfbenchmarks/BRTI_2026-09-14_utc.csv
 # Large Kalshi public-tape day dumps (local analysis)
 backend/data/historical_data/kalshi_public_trades/
+backend/data/historical_data/kalshi_public_trades/.cache_*/

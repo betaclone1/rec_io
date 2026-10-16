@@ -9750,8 +9750,9 @@
         setForId('m_autoEntryMaxDiff', !isExpirationScalp);
         const minVolSection = document.getElementById('m_uatMinVolumeSection');
         if (minVolSection) minVolSection.style.display = isExpirationScalp ? 'none' : '';
+        // Expiration family uses the same monitor LP controls as HTC (off by default via strategy_list).
         document.querySelectorAll('.uat-loss-prevention-block').forEach(function (el) {
-          el.style.display = disp(!isExpirationScalp);
+          el.style.display = '';
         });
         const spikeRow = document.getElementById('m_spikeEnabled');
         if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = disp(!isExpirationScalp);

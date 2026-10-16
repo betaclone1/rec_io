@@ -7048,7 +7048,7 @@ def update_monitor_win_streak(trade_id: int) -> None:
             # Note: We use ONLY ticker (not contract) because contract is too generic
             # (e.g., "BTC 4pm" matches multiple days, but "KXBTCD-25OCT1316" is unique to one hour)
             cursor.execute(f"""
-                SELECT id, win_loss, contract, ticker 
+                SELECT id, win_loss, contract, ticker, entry_method
                 FROM {_tm_trades_table()} 
                 WHERE monitor = %s 
                 AND status = 'closed'
@@ -7061,10 +7061,6 @@ def update_monitor_win_streak(trade_id: int) -> None:
             pg_conn.close()
             return
         
-        # Check if ANY trade in this cycle is a loss
-        has_loss = any(trade[1] == 'L' for trade in cycle_trades)
-        win_count = sum(1 for trade in cycle_trades if trade[1] == 'W')
-        
         # Get the strategy, win_streak_threshold and loss_prevention_toggle from the database for this monitor
         with pg_conn.cursor() as cursor:
             cursor.execute(f"""
@@ -7075,6 +7071,25 @@ def update_monitor_win_streak(trade_id: int) -> None:
             strategy = config_row[0] if config_row and config_row[0] else "Hourly HTC"
             win_streak_threshold = config_row[1] if config_row and config_row[1] is not None else 22
             loss_prevention_toggle = config_row[2] if config_row and config_row[2] is not None else True
+
+        # Expiration-family flip sells are part of the same trade as the parent entry —
+        # exclude them from win-streak / LP cycle loss detection.
+        from backend.core.high_water_scalp import is_expiration_scalp_entry_strategy
+
+        streak_trades = cycle_trades
+        if is_expiration_scalp_entry_strategy(strategy):
+            streak_trades = [
+                t
+                for t in cycle_trades
+                if str(t[4] or "").strip().lower() != "flip_sell"
+            ]
+            if not streak_trades:
+                pg_conn.close()
+                return
+
+        # Check if ANY (non-flip, when Expiration) trade in this cycle is a loss
+        has_loss = any(trade[1] == 'L' for trade in streak_trades)
+        win_count = sum(1 for trade in streak_trades if trade[1] == 'W')
         
         # Determine if this is Momentum Contain or Momentum Breakout
         is_momentum_contain = strategy and "Momentum Contain" in strategy
