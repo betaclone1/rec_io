@@ -66,6 +66,34 @@ def fetch_event_payload(event_ticker: str, *, timeout_sec: float = 12.0) -> Opti
         return None
 
 
+def fetch_market_payload(market_ticker: str, *, timeout_sec: float = 12.0) -> Optional[Dict[str, Any]]:
+    """
+    Live ``GET /markets/{ticker}``, then archived ``GET /historical/markets/{ticker}``.
+
+    Settled markets older than ``market_settled_ts`` only appear on the historical path
+    (see https://docs.kalshi.com/getting_started/historical_data).
+    """
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None
+    base = kalshi_trade_api_base()
+    for path in (f"/markets/{mt}", f"/historical/markets/{mt}"):
+        try:
+            r = requests.get(f"{base}{path}", headers=_HEADERS, timeout=timeout_sec)
+            if r.status_code == 404:
+                continue
+            r.raise_for_status()
+            data = r.json()
+            if not isinstance(data, dict):
+                continue
+            market = data.get("market")
+            if isinstance(market, dict):
+                return market
+        except Exception as e:
+            logger.warning("Kalshi market fetch failed %s %s: %s", path, mt, e)
+    return None
+
+
 def normalize_market_result_field(raw: Any) -> Optional[str]:
     if raw is None:
         return None
@@ -105,24 +133,42 @@ def market_result_for_ticker(market_ticker: Optional[str]) -> Tuple[Optional[str
     """
     Return (normalized_binary_result, error_or_none).
     Normalized result is 'yes' or 'no' when the market has a binary result; else None.
+
+    Prefers nested markets on ``GET /events/{event_ticker}``; falls back to
+    ``GET /markets/{ticker}`` then ``GET /historical/markets/{ticker}`` when the
+    event payload is missing (common past Kalshi's market settlement cutoff).
     """
-    et = event_ticker_from_market_ticker(market_ticker)
-    if not et:
-        return None, "missing_event_ticker"
-    payload = fetch_event_payload(et)
-    if not payload:
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return None, "missing_market_ticker"
+
+    et = event_ticker_from_market_ticker(mt)
+    if et:
+        payload = fetch_event_payload(et)
+        if payload:
+            for m in _markets_from_payload(payload):
+                if str(m.get("ticker") or "").strip() == mt:
+                    raw = m.get("result")
+                    out = normalize_market_result_field(raw)
+                    if out is not None:
+                        return out, None
+                    if raw is None:
+                        return None, None
+                    s = str(raw).strip().lower()
+                    if s in ("", "scalar"):
+                        return None, None
+                    return None, f"non_binary_result:{raw!r}"
+
+    market = fetch_market_payload(mt)
+    if not market:
         return None, "fetch_failed"
-    mt = str(market_ticker).strip()
-    for m in _markets_from_payload(payload):
-        if str(m.get("ticker") or "").strip() == mt:
-            raw = m.get("result")
-            out = normalize_market_result_field(raw)
-            if out is not None:
-                return out, None
-            if raw is None:
-                return None, None
-            s = str(raw).strip().lower()
-            if s in ("", "scalar"):
-                return None, None
-            return None, f"non_binary_result:{raw!r}"
-    return None, "market_not_in_event"
+    raw = market.get("result")
+    out = normalize_market_result_field(raw)
+    if out is not None:
+        return out, None
+    if raw is None:
+        return None, None
+    s = str(raw).strip().lower()
+    if s in ("", "scalar"):
+        return None, None
+    return None, f"non_binary_result:{raw!r}"

@@ -1,11 +1,13 @@
 """
 Load sealed cycle packages (``.tar.xz``) and reconstruct market state over time.
 
-Package members (schema_version 3):
+Package members (schema_version 4):
   meta.json, market_meta.json, snapshot.csv, deltas.csv,
-  strike_table.csv, price_ring.csv, metrics_ring.csv, public_trades.csv
+  strike_table.csv, price_ring.csv, metrics_ring.csv, public_trades.csv,
+  volume_path.csv, quality.json
 
-Legacy schema_version 2 omits ``public_trades.csv`` (loader returns empty list).
+Legacy: v2 omits public_trades; v3 omits volume_path/quality (loader returns empty).
+External SKU omits proprietary strike_table + metrics_ring (empty lists).
 """
 
 from __future__ import annotations
@@ -80,10 +82,23 @@ class CyclePackage:
     price_rows: List[Dict[str, Any]]
     metrics_rows: List[Dict[str, Any]]
     public_trades: List[Dict[str, Any]] = field(default_factory=list)
+    volume_path: List[Dict[str, Any]] = field(default_factory=list)
+    quality: Dict[str, Any] = field(default_factory=dict)
 
     @property
     def market_ticker(self) -> str:
         return str(self.meta.get("market_ticker") or self.path.name.replace(".tar.xz", ""))
+
+    @property
+    def variant(self) -> str:
+        return str(self.meta.get("variant") or "full")
+
+    @property
+    def proprietary_members(self) -> List[str]:
+        raw = self.meta.get("proprietary_members")
+        if isinstance(raw, list):
+            return [str(x) for x in raw]
+        return []
 
     @property
     def open_utc(self) -> datetime:
@@ -191,6 +206,8 @@ def load_cycle_package(path: Path | str) -> CyclePackage:
         price_rows=_csv("price_ring.csv"),
         metrics_rows=_csv("metrics_ring.csv"),
         public_trades=_csv("public_trades.csv"),
+        volume_path=_csv("volume_path.csv"),
+        quality=_json("quality.json"),
     )
 
 

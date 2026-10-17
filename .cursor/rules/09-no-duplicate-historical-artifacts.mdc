@@ -1,0 +1,23 @@
+---
+description: Do not keep raw/duplicate historical data after a usable packaged form exists
+alwaysApply: true
+---
+
+# No duplicate historical data on disk
+
+When historical data has already been reduced into a **usable work product**, do not leave large intermediate/raw copies around that only existed to build that product.
+
+## Rule
+
+1. **Work product wins.** Examples: day `*_public_trades_*_et.csv`, month `*_public_trades_*_et.tar.xz`, sealed cycle `.tar.xz` packages.
+2. **Flush intermediates after success.** Per-ticker pull caches (`.cache_KXBTC15M_YYYY-MM-DD/`), packaging `*.tmp` left after a finished write, and similar rebuild-only artifacts should be deleted once the durable output is written and verified.
+3. **Keep intermediates only while still needed** — e.g. a day pull still in progress / failed with gaps (resume cache), or an open packaging `.tmp` held by a live process.
+4. **Do not delete** the work products themselves, market-result caches required by offline sweeps, or anything an active job is still writing.
+
+## Pull script convention
+
+`scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` deletes `.cache_{series}_{day}/` after a fully successful day CSV write (override with `--keep-cache`). Prefer that pattern for new ingest paths: stage → package → delete stage.
+
+## Agent habit
+
+Before/after large historical pulls or packaging runs, check for leftover caches/tmps that duplicate finished outputs and remove them. Disk space is a real constraint; duplicate history is not resilience.

@@ -4,7 +4,9 @@ Internal backtest packages (BTC 15m cycle `.tar.xz` under `backend/data/historic
 
 **Task tracking:** [.cursor/plans/historical-cycle-data-product.md](../.cursor/plans/historical-cycle-data-product.md)
 
-**Current ballpark:** ~1.5–2.5 MB xz per 15m symbol cycle for book+rings; with sealed `public_trades.csv` typically ~4–6 MB xz on busy BTC cycles (~150–200 GB/year/symbol high-side). OB still dominates; public tape compresses well (~1 MB xz on a busy cycle).
+**Current ballpark:** ~1.5–2.5 MB xz per 15m symbol cycle for book+rings; with sealed `public_trades.csv` + `volume_path` / `quality` (schema v4) typically ~4–6 MB xz on busy BTC cycles (~80–110 GB/year/symbol typical; ~150–200 GB high-side). OB still dominates; public tape compresses well (~1 MB xz on a busy cycle).
+
+**SKU model:** Seal **full** packages every cycle (`variant=full`, proprietary tags in `meta.json`). Derive an **external** SKU after the fact with `scripts/backtest/export_cycle_package_variant.py` (strips `strike_table.csv` + `metrics_ring.csv` only). Drive archive receives full seals via `CYCLE_GDRIVE_UPLOAD`.
 
 ---
 
@@ -88,3 +90,4 @@ Rings and strike will never dominate size; optimize the book path if warehouse c
 |------|------|
 | 2026-07-26 | Initial write-up from cycle-package design discussion; plan filed under `.cursor/plans/historical-cycle-data-product.md`. |
 | 2026-10-16 | Package `schema_version` 3 adds Kalshi `public_trades.csv` at seal time (Drive upload unchanged). |
+| 2026-10-17 | Package `schema_version` 4: `volume_path.csv`, `quality.json`, rich `market_meta`, `proprietary_members` tags; post-hoc external export CLI. |

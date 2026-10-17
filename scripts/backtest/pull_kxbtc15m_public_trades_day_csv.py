@@ -2,6 +2,13 @@
 """
 Pull Kalshi public tape for all KXBTC15M markets on one Eastern calendar day → CSV.
 
+Routes by ``GET /historical/cutoff`` ``trades_created_ts``:
+  - fills before cutoff → ``GET /historical/trades``
+  - fills after cutoff → ``GET /markets/trades``
+  - days that straddle → both, deduped by ``trade_id``
+
+See https://docs.kalshi.com/api-reference/historical/get-historical-trades
+
 Example:
   .venv/bin/python3 scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py --date 2026-09-14
 """
@@ -11,6 +18,7 @@ from __future__ import annotations
 import argparse
 import csv
 import json
+import shutil
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -26,10 +34,15 @@ if str(_ROOT) not in sys.path:
     sys.path.insert(0, str(_ROOT))
 
 from scripts.backtest.helpers.kalshi_ticker_construct import (
+    EST,
     kalshi_15m_market_tickers_for_eastern_date,
 )
 
-BASE = "https://external-api.kalshi.com/trade-api/v2/markets/trades"
+API_BASE = "https://external-api.kalshi.com/trade-api/v2"
+MARKETS_TRADES = f"{API_BASE}/markets/trades"
+HISTORICAL_TRADES = f"{API_BASE}/historical/trades"
+# https://docs.kalshi.com/api-reference/historical/get-historical-trades
+# https://docs.kalshi.com/getting_started/historical_data
 PREFERRED_COLS = [
     "trade_id",
     "ticker",
@@ -52,7 +65,64 @@ def cache_path_for(cache_dir: Path, ticker: str) -> Path:
     return cache_dir / f"{ticker}.json"
 
 
-def load_cached(cache_dir: Path, ticker: str) -> list[dict[str, Any]] | None:
+def fetch_trades_cutoff_utc() -> datetime | None:
+    """``trades_created_ts`` from GET /historical/cutoff (UTC). None if unavailable."""
+    try:
+        r = requests.get(
+            f"{API_BASE}/historical/cutoff",
+            timeout=30,
+            headers={
+                "Accept": "application/json",
+                "User-Agent": "rec_io_public_trades_csv/1.2",
+            },
+        )
+        r.raise_for_status()
+        raw = r.json()
+        s = (raw or {}).get("trades_created_ts") if isinstance(raw, dict) else None
+        if not s:
+            return None
+        s = str(s).strip()
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.astimezone(timezone.utc)
+    except Exception:
+        return None
+
+
+def trade_sources_for_eastern_day(
+    day: date, cutoff: datetime | None
+) -> list[tuple[str, str]]:
+    """
+    Return (label, url) sources for this Eastern day vs Kalshi trades cutoff.
+
+    Pre-cutoff fills are only on GET /historical/trades; post-cutoff on /markets/trades.
+    Days that straddle the cutoff query both and dedupe by trade_id.
+    """
+    day_start = datetime(day.year, day.month, day.day, 0, 0, tzinfo=EST).astimezone(
+        timezone.utc
+    )
+    # Last settlement of the Eastern day is 23:45 ET (period ending that minute).
+    day_end = datetime(day.year, day.month, day.day, 23, 45, tzinfo=EST).astimezone(
+        timezone.utc
+    )
+    if cutoff is None:
+        return [("historical", HISTORICAL_TRADES), ("markets", MARKETS_TRADES)]
+    if day_end < cutoff:
+        return [("historical", HISTORICAL_TRADES)]
+    if day_start >= cutoff:
+        return [("markets", MARKETS_TRADES)]
+    return [("historical", HISTORICAL_TRADES), ("markets", MARKETS_TRADES)]
+
+
+def load_cached(
+    cache_dir: Path,
+    ticker: str,
+    *,
+    expected_sources: list[str],
+) -> list[dict[str, Any]] | None:
     p = cache_path_for(cache_dir, ticker)
     if not p.is_file():
         return None
@@ -62,16 +132,29 @@ def load_cached(cache_dir: Path, ticker: str) -> list[dict[str, Any]] | None:
         return None
     if not isinstance(raw, dict) or not raw.get("complete"):
         return None
+    cached_sources = raw.get("sources")
+    if not isinstance(cached_sources, list):
+        # Legacy caches (markets-only) are unsafe across the historical cutoff.
+        return None
+    if sorted(str(s) for s in cached_sources) != sorted(expected_sources):
+        return None
     trades = raw.get("trades")
     return list(trades) if isinstance(trades, list) else None
 
 
-def save_cached(cache_dir: Path, ticker: str, trades: list[dict[str, Any]]) -> None:
+def save_cached(
+    cache_dir: Path,
+    ticker: str,
+    trades: list[dict[str, Any]],
+    *,
+    sources: list[str],
+) -> None:
     cache_dir.mkdir(parents=True, exist_ok=True)
     p = cache_path_for(cache_dir, ticker)
     payload = {
         "ticker": ticker,
         "complete": True,
+        "sources": list(sources),
         "fetched_at": datetime.now(timezone.utc).isoformat(),
         "trade_count": len(trades),
         "trades": trades,
@@ -81,19 +164,20 @@ def save_cached(cache_dir: Path, ticker: str, trades: list[dict[str, Any]]) -> N
     tmp.replace(p)
 
 
-def fetch_ticker(
+def _fetch_trades_from_url(
     ticker: str,
+    base_url: str,
     *,
     sleep_s: float = 0.05,
     max_attempts: int = 12,
-) -> tuple[str, list[dict[str, Any]]]:
+) -> list[dict[str, Any]]:
     trades: list[dict[str, Any]] = []
     cursor: str | None = None
     while True:
         params: dict[str, Any] = {"ticker": ticker, "limit": 1000}
         if cursor:
             params["cursor"] = cursor
-        url = f"{BASE}?{urlencode(params)}"
+        url = f"{base_url}?{urlencode(params)}"
         last_err: Exception | None = None
         body: dict[str, Any] | None = None
         for attempt in range(max_attempts):
@@ -103,13 +187,16 @@ def fetch_ticker(
                     timeout=90,
                     headers={
                         "Accept": "application/json",
-                        "User-Agent": "rec_io_public_trades_csv/1.1",
+                        "User-Agent": "rec_io_public_trades_csv/1.2",
                     },
                 )
                 if r.status_code in (429, 500, 502, 503, 504):
                     last_err = RuntimeError(f"HTTP {r.status_code}")
                     time.sleep(min(20.0, 0.5 * (2**attempt)))
                     continue
+                # No market / never listed: same as empty tape (maintenance slots).
+                if r.status_code == 404:
+                    return []
                 r.raise_for_status()
                 raw = r.json()
                 if not isinstance(raw, dict):
@@ -120,7 +207,7 @@ def fetch_ticker(
                 last_err = e
                 time.sleep(min(20.0, 0.5 * (2**attempt)))
         if body is None:
-            raise RuntimeError(f"failed {ticker}: {last_err}")
+            raise RuntimeError(f"failed {ticker} via {base_url}: {last_err}")
         batch = body.get("trades") or []
         if not isinstance(batch, list):
             batch = []
@@ -130,6 +217,32 @@ def fetch_ticker(
             break
         if sleep_s:
             time.sleep(sleep_s)
+    return trades
+
+
+def fetch_ticker(
+    ticker: str,
+    *,
+    sources: list[tuple[str, str]],
+    sleep_s: float = 0.05,
+    max_attempts: int = 12,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Paginate configured trade sources; dedupe by trade_id when both are used."""
+    by_id: dict[str, dict[str, Any]] = {}
+    no_id: list[dict[str, Any]] = []
+    for _label, url in sources:
+        for row in _fetch_trades_from_url(
+            ticker, url, sleep_s=sleep_s, max_attempts=max_attempts
+        ):
+            tid = str(row.get("trade_id") or "").strip()
+            if tid:
+                by_id[tid] = row
+            else:
+                no_id.append(row)
+    trades = list(by_id.values()) + no_id
+    trades.sort(
+        key=lambda r: (str(r.get("created_time") or ""), str(r.get("trade_id") or ""))
+    )
     return ticker, trades
 
 
@@ -163,6 +276,11 @@ def main() -> int:
         action="store_true",
         help="Ignore per-ticker JSON cache and refetch",
     )
+    ap.add_argument(
+        "--keep-cache",
+        action="store_true",
+        help="Keep per-ticker JSON cache after a successful day CSV write (default: delete it)",
+    )
     args = ap.parse_args()
     day = date.fromisoformat(args.date)
     tickers = kalshi_15m_market_tickers_for_eastern_date(args.series, day)
@@ -177,16 +295,25 @@ def main() -> int:
     out.parent.mkdir(parents=True, exist_ok=True)
     cache_dir = out.parent / f".cache_{args.series}_{day.isoformat()}"
 
+    cutoff = fetch_trades_cutoff_utc()
+    sources = trade_sources_for_eastern_day(day, cutoff)
+    source_labels = [s[0] for s in sources]
+
     print(f"series={args.series} day_et={day} tickers={len(tickers)} workers={args.workers}", flush=True)
     print(f"first={tickers[0]} last={tickers[-1]}", flush=True)
     print(f"out={out}", flush=True)
     print(f"cache={cache_dir}", flush=True)
+    print(
+        f"trades_cutoff={cutoff.isoformat() if cutoff else 'unavailable'} "
+        f"sources={','.join(source_labels)}",
+        flush=True,
+    )
 
     by_ticker: dict[str, list[dict[str, Any]]] = {}
     todo: list[str] = []
     for t in tickers:
         if not args.force_refresh:
-            cached = load_cached(cache_dir, t)
+            cached = load_cached(cache_dir, t, expected_sources=source_labels)
             if cached is not None:
                 by_ticker[t] = cached
                 continue
@@ -198,8 +325,8 @@ def main() -> int:
     failed: list[tuple[str, str]] = []
 
     def _one(ticker: str) -> tuple[str, list[dict[str, Any]]]:
-        ticker, rows = fetch_ticker(ticker)
-        save_cached(cache_dir, ticker, rows)
+        ticker, rows = fetch_ticker(ticker, sources=sources)
+        save_cached(cache_dir, ticker, rows, sources=source_labels)
         return ticker, rows
 
     with ThreadPoolExecutor(max_workers=max(1, args.workers)) as pool:
@@ -256,7 +383,15 @@ def main() -> int:
     if still_failed:
         for t, err in still_failed:
             print(f"  missing {t}: {err}", flush=True)
+        # Keep cache so a resume can refill gaps without re-pulling successes.
         return 1
+    # Day CSV is the work product; drop duplicate per-ticker JSON to free disk.
+    if not args.keep_cache and cache_dir.is_dir():
+        try:
+            shutil.rmtree(cache_dir)
+            print(f"flushed_cache={cache_dir}", flush=True)
+        except OSError as e:
+            print(f"cache_flush_failed {cache_dir}: {e}", flush=True)
     return 0
 
 

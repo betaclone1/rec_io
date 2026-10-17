@@ -4,20 +4,23 @@ Hourly packager: closed cycle hot tables → xz tar under backtesting_data.
 Layout (per series):
   backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz
 
-Each archive contains (schema_version 3):
-  meta.json
-  market_meta.json   (floor_strike, market_result, …)
-  snapshot.csv
-  deltas.csv
-  strike_table.csv
-  price_ring.csv
-  metrics_ring.csv
-  public_trades.csv  (Kalshi public tape for this market ticker)
+Each archive contains (schema_version 4):
+  meta.json              (variant=full, proprietary_members listed)
+  market_meta.json       (floor/result + venue fields at seal)
+  snapshot.csv / deltas.csv
+  strike_table.csv       (PROPRIETARY — model probs / fair)
+  price_ring.csv         (underlying index; shareable)
+  metrics_ring.csv       (PROPRIETARY — momentum/vol profile)
+  public_trades.csv      (Kalshi public tape)
+  volume_path.csv        (cum tape volume vs time)
+  quality.json           (capture QA footer)
+
+External SKU: derive after the fact via
+``backend.core.cycle_package_members.export_external_variant``.
 
 Drops PG tables only after a successful write + quality gate + member verification.
 Incomplete cycles are left in PG for the next pass (no silent empty packages).
 """
-
 from __future__ import annotations
 
 import csv
@@ -42,14 +45,21 @@ from backend.core.cycle_hot_tables import (
     parse_cycle_ticker_end_est,
     series_from_ticker,
 )
+from backend.core.cycle_package_members import (
+    PROPRIETARY_MEMBERS,
+    build_quality_report,
+    enrich_market_meta_from_api,
+    member_classification,
+    volume_path_csv_bytes,
+)
 
 logger = logging.getLogger("cycle_packager")
 
 _UTC = timezone.utc
 _EST = ZoneInfo("America/New_York")
 
-# Current sealed layout. Legacy packages may still be schema_version 2 (no public_trades).
-PACKAGE_SCHEMA_VERSION = 3
+# Legacy: v2 no public_trades; v3 +public_trades; v4 +volume_path +quality +meta tags.
+PACKAGE_SCHEMA_VERSION = 4
 
 _PUBLIC_TRADES_PREFERRED_COLS = (
     "trade_id",
@@ -259,11 +269,12 @@ def fetch_public_trades_csv_for_package(
     market_ticker: str,
     *,
     force_refresh: bool = True,
-) -> Tuple[Optional[bytes], int, Optional[str]]:
+) -> Tuple[Optional[bytes], int, Optional[str], List[Dict[str, Any]]]:
     """
-    Fetch Kalshi public tape for ``market_ticker`` and return (csv_bytes, row_count, error).
+    Fetch Kalshi public tape for ``market_ticker``.
 
-    On API/cache failure returns ``(None, 0, reason)`` — caller must not seal a substitute.
+    Returns ``(csv_bytes, row_count, error, trades)``.
+    On API/cache failure returns ``(None, 0, reason, [])`` — caller must not seal a substitute.
     """
     from backend.core.cycle_recon.sources import fetch_public_trades
 
@@ -274,11 +285,12 @@ def fetch_public_trades_csv_for_package(
             offline=False,
         )
     except Exception as e:
-        return None, 0, f"public_trades fetch error: {e}"
+        return None, 0, f"public_trades fetch error: {e}", []
     if not res.complete:
-        return None, 0, "public_trades fetch incomplete"
-    raw = public_trades_to_csv_bytes(list(res.trades or []))
-    return raw, len(res.trades or []), None
+        return None, 0, "public_trades fetch incomplete", []
+    trades = list(res.trades or [])
+    raw = public_trades_to_csv_bytes(trades)
+    return raw, len(trades), None, trades
 
 
 def quality_gate(
@@ -287,13 +299,15 @@ def quality_gate(
     market_meta: Dict[str, Any],
     force: bool = False,
     require_public_trades: bool = True,
+    require_v4_members: bool = False,
 ) -> Tuple[bool, str]:
     """
     Require a usable cycle package. Incomplete captures stay in PG for retry.
 
     ``force`` bypasses the gate (ops / rebuild only).
-    ``require_public_trades``: schema v3 seals must include a successful tape member
+    ``require_public_trades``: schema v3+ seals must include a successful tape member
     (row count may be 0). Legacy v2 packages omit this check.
+    ``require_v4_members``: also require volume_path.csv + quality.json keys.
     """
     if force:
         return True, "force"
@@ -312,6 +326,11 @@ def quality_gate(
         return False, "market_result missing"
     if require_public_trades and "public_trades.csv" not in row_counts:
         return False, "public_trades missing"
+    if require_v4_members:
+        if "volume_path.csv" not in row_counts:
+            return False, "volume_path missing"
+        if "quality.json" not in row_counts:
+            return False, "quality.json missing"
     return True, "ok"
 
 
@@ -321,21 +340,27 @@ def _existing_package_complete(
     meta_obj: Dict[str, Any],
     market_meta: Dict[str, Any],
 ) -> Tuple[bool, str]:
-    """Validate an on-disk package; v2 without public_trades remains acceptable."""
+    """Validate an on-disk package; older schema versions keep their original gate."""
     tables = meta_obj.get("tables") or {}
     counts = {k: int((v or {}).get("rows") or 0) for k, v in tables.items()}
     try:
         sv = int(meta_obj.get("schema_version") or 0)
     except (TypeError, ValueError):
         sv = 0
-    require_pt = sv >= PACKAGE_SCHEMA_VERSION
+    require_pt = sv >= 3
+    require_v4 = sv >= 4
     if require_pt and "public_trades.csv" not in names:
         return False, "public_trades member missing"
+    if require_v4 and "volume_path.csv" not in names:
+        return False, "volume_path member missing"
+    if require_v4 and "quality.json" not in names:
+        return False, "quality.json member missing"
     return quality_gate(
         row_counts=counts,
         market_meta=market_meta,
         force=False,
         require_public_trades=require_pt,
+        require_v4_members=require_v4,
     )
 
 
@@ -420,16 +445,23 @@ def package_ticker(
     end_est = parse_cycle_ticker_end_est(mt)
     win = cycle_window_utc(mt)
     series = series_from_ticker(mt) or mt.split("-", 1)[0]
+    open_utc = win[0] if win else None
+    close_utc = win[1] if win else None
     meta: Dict[str, Any] = {
         "market_ticker": mt,
         "series": series,
         "schema": _SCHEMA,
         "schema_version": PACKAGE_SCHEMA_VERSION,
+        "variant": "full",
+        "proprietary_members": list(PROPRIETARY_MEMBERS),
+        "member_classification": member_classification(),
         "packaged_at_utc": datetime.now(_UTC)
         .isoformat(timespec="milliseconds")
         .replace("+00:00", "Z"),
-        "cycle_open_utc": win[0].isoformat().replace("+00:00", "Z") if win else None,
-        "cycle_close_utc": win[1].isoformat().replace("+00:00", "Z") if win else None,
+        "cycle_open_utc": open_utc.isoformat().replace("+00:00", "Z") if open_utc else None,
+        "cycle_close_utc": close_utc.isoformat().replace("+00:00", "Z")
+        if close_utc
+        else None,
         "cycle_close_est": end_est.isoformat() if end_est else None,
         "tables": {},
     }
@@ -463,9 +495,12 @@ def package_ticker(
                 }
 
         _enrich_market_result_from_redis(market_meta)
+        enrich_market_meta_from_api(market_meta)
 
         # Public tape is not in PG hot tables — fetch at seal time (authoritative API).
-        pt_bytes, pt_rows, pt_err = fetch_public_trades_csv_for_package(mt, force_refresh=True)
+        pt_bytes, pt_rows, pt_err, trades = fetch_public_trades_csv_for_package(
+            mt, force_refresh=True
+        )
         if pt_bytes is None:
             logger.warning(
                 "skip package %s — public_trades unavailable: %s",
@@ -476,12 +511,44 @@ def package_ticker(
         members["public_trades.csv"] = pt_bytes
         meta["tables"]["public_trades.csv"] = {"rows": pt_rows, "bytes": len(pt_bytes)}
 
+        vol_bytes, vol_rows = volume_path_csv_bytes(
+            trades, open_utc=open_utc, close_utc=close_utc
+        )
+        members["volume_path.csv"] = vol_bytes
+        meta["tables"]["volume_path.csv"] = {"rows": vol_rows, "bytes": len(vol_bytes)}
+
+        delta_rows = list(
+            csv.DictReader(io.StringIO(members["deltas.csv"].decode("utf-8", errors="replace")))
+        )
+        price_rows = list(
+            csv.DictReader(
+                io.StringIO(members["price_ring.csv"].decode("utf-8", errors="replace"))
+            )
+        )
         row_counts = {k: int(v["rows"]) for k, v in meta["tables"].items()}
+        quality = build_quality_report(
+            row_counts=row_counts,
+            market_meta=market_meta,
+            deltas=delta_rows,
+            price_rows=price_rows,
+            open_utc=open_utc,
+            close_utc=close_utc,
+        )
+        q_bytes = (json.dumps(quality, indent=2, sort_keys=True) + "\n").encode("utf-8")
+        members["quality.json"] = q_bytes
+        meta["tables"]["quality.json"] = {
+            "rows": 1 if quality else 0,
+            "bytes": len(q_bytes),
+            "status": quality.get("status"),
+        }
+        row_counts = {k: int(v["rows"]) for k, v in meta["tables"].items()}
+
         ok, reason = quality_gate(
             row_counts=row_counts,
             market_meta=market_meta,
             force=force,
             require_public_trades=True,
+            require_v4_members=True,
         )
         if not ok:
             logger.warning(
@@ -498,6 +565,7 @@ def package_ticker(
 
         meta["floor_strike"] = market_meta.get("floor_strike")
         meta["market_result"] = market_meta.get("market_result")
+        meta["quality_status"] = quality.get("status")
         members["market_meta.json"] = (
             json.dumps(market_meta, indent=2, sort_keys=True) + "\n"
         ).encode("utf-8")
