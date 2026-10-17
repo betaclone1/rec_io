@@ -2983,14 +2983,18 @@ def trigger_auto_entry_trade(strike_data):
         # Get trade strategy from PostgreSQL
         trade_strategy = get_effective_trade_strategy()
         
-        # Get paper_trade + min_slippage gate settings from monitor config
+        # Get paper_trade + min_slippage + subaccount from monitor config
         paper_trade = False
         min_slippage = 0.0000
+        monitor_subaccount = 1
         try:
             import psycopg2
             conn = get_db_connection()
             with conn.cursor() as cursor:
-                cursor.execute(f"SELECT paper_trade, min_slippage FROM {_aes_monitor_list_table()} WHERE id = %s", (ctx_mid(),))
+                cursor.execute(
+                    f"SELECT paper_trade, min_slippage, COALESCE(subaccount, 1) FROM {_aes_monitor_list_table()} WHERE id = %s",
+                    (ctx_mid(),),
+                )
                 result = cursor.fetchone()
                 if result and result[0] is not None:
                     paper_trade = bool(result[0])
@@ -3000,9 +3004,14 @@ def trigger_auto_entry_trade(strike_data):
                         min_slippage = round(ms, 4) if ms < 0 else 0.0000
                     except (TypeError, ValueError):
                         min_slippage = 0.0000
+                if result and result[2] is not None:
+                    try:
+                        monitor_subaccount = int(result[2])
+                    except (TypeError, ValueError):
+                        monitor_subaccount = 1
             conn.close()
         except Exception as e:
-            log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade/min_slippage setting: {e}, defaulting to False/0.0000")
+            log(f"[AUTO ENTRY] ⚠️ Could not get paper_trade/min_slippage/subaccount setting: {e}, defaulting to False/0.0000/1")
         from backend.trading_mode import effective_paper_trade
 
         paper_trade = effective_paper_trade(paper_trade)
@@ -3045,7 +3054,8 @@ def trigger_auto_entry_trade(strike_data):
             "loss_prevention_state": loss_prevention,
             "multiplier": get_current_multiplier(),
             "paper_trade": paper_trade,
-            "min_slippage": min_slippage
+            "min_slippage": min_slippage,
+            "subaccount": int(monitor_subaccount or 1),
         }
         if expiration_reversal_entry:
             trade_payload["test_filter"] = True
@@ -3618,6 +3628,20 @@ def trigger_simulated_trade(strike_data):
         contract_name = _format_15m_contract_label(current_symbol, hour_24, minute)
         position_size = get_position_size() or 1
         bankroll_allotment = get_bankroll_allotment() or 0
+        sim_subaccount = 1
+        try:
+            conn = get_db_connection()
+            with conn.cursor() as cursor:
+                cursor.execute(
+                    f"SELECT COALESCE(subaccount, 1) FROM {_aes_monitor_list_table()} WHERE id = %s",
+                    (ctx_mid(),),
+                )
+                sa_row = cursor.fetchone()
+                if sa_row and sa_row[0] is not None:
+                    sim_subaccount = int(sa_row[0])
+            conn.close()
+        except Exception:
+            sim_subaccount = 1
         side = strike_data.get("side")
         conv_side = "Y" if side == "yes" else "N" if side == "no" else side
         payload = {
@@ -3632,6 +3656,7 @@ def trigger_simulated_trade(strike_data):
             "monitor": f"mon_{ctx_user()}_{ctx_mid()}", "bankroll_allotment_total": bankroll_allotment,
             "entry_method": "simulated_15m", "loss_prevention": False, "multiplier": get_current_multiplier(),
             "paper_trade": True, "simulated_trade": True,
+            "subaccount": int(sim_subaccount or 1),
         }
         from backend.core.trading_redis_comms import publish_trade_manager_command, use_trading_redis_comms
 

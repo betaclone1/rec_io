@@ -1914,6 +1914,45 @@
       else btn.textContent = String(checked.length) + ' selected';
     }
 
+    async function uatPopulateSubaccountSelect(selectEl, selectedId) {
+      if (!selectEl) return;
+      const want = selectedId != null && selectedId !== '' ? String(selectedId) : '1';
+      let rows = [];
+      try {
+        const url = (typeof recApiUrlWithTradingMode === 'function')
+          ? recApiUrlWithTradingMode(`${window.location.origin}/api/subaccounts`)
+          : '/api/subaccounts';
+        const r = await fetch(url);
+        const j = await r.json();
+        rows = Array.isArray(j.subaccounts) ? j.subaccounts : [];
+      } catch (e) {
+        console.warn('uatPopulateSubaccountSelect: failed to load subaccounts', e);
+      }
+      selectEl.innerHTML = '';
+      if (!rows.length) {
+        const opt = document.createElement('option');
+        opt.value = want;
+        opt.textContent = want === '1' ? 'Master Trading Bankroll' : ('Subaccount ' + want);
+        selectEl.appendChild(opt);
+        selectEl.value = want;
+        return;
+      }
+      rows
+        .slice()
+        .sort((a, b) => Number(a.id) - Number(b.id))
+        .forEach((row) => {
+          const opt = document.createElement('option');
+          opt.value = String(row.id);
+          opt.textContent = String(row.subaccount || ('Subaccount ' + row.id));
+          selectEl.appendChild(opt);
+        });
+      if ([...selectEl.options].some((o) => o.value === want)) {
+        selectEl.value = want;
+      } else {
+        selectEl.value = String(rows[0].id);
+      }
+    }
+
     async function uatLoadDupePairingMonitors(currentApiId, selectedIds) {
       const host = document.getElementById('uatDupePairingCheckboxes');
       if (!host) return;
@@ -2144,7 +2183,7 @@
       }
       dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1);
 
-      const populate = (data) => {
+      const populate = async (data) => {
         const setVal = (id,v) => { 
           const el=document.getElementById(id); 
           if (el!=null && v!=null) {
@@ -2184,6 +2223,11 @@
               wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
             ) ? wa : 'none';
             if (waEl) waEl.value = validWa;
+          }
+          {
+            const saEl = document.getElementById('uatMonitorSubaccount');
+            const saRaw = data.subaccount != null ? data.subaccount : (monitor && monitor.subaccount);
+            await uatPopulateSubaccountSelect(saEl, saRaw != null ? saRaw : 1);
           }
           void uatLoadDupePairingMonitors(apiId, data.monitor_dupe_pairing);
 
@@ -2865,7 +2909,7 @@
         const j = await r.json();
         if (uatApiSettingsHaveTimeWindow(j)) {
           dashboardSettingsCache[tileId] = j;
-          populate(j);
+          await populate(j);
           hydrateOk = true;
         }
       } catch (hydrateErr) {
@@ -2936,6 +2980,11 @@
             wa === 'reduce_position_50' || wa === 'reduce_position_25' ||
             wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
           ) ? wa : 'none';
+        }
+        {
+          const saEl = document.getElementById('uatMonitorSubaccount');
+          const sa = saEl && parseInt(saEl.value, 10);
+          payload.subaccount = Number.isFinite(sa) ? sa : 1;
         }
         payload.monitor_dupe_pairing = uatSelectedDupePairingIds();
         

@@ -70,7 +70,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                          COALESCE(symbol_wide_loss_prevention, FALSE),
                          min_slippage, min_movement, max_movement, limit_close_price, limit_close_offset,
                          stop_loss_offset, min_buffer_pct, adverse_delta_15s_pct, stop_verification_period_enabled,
-                         stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing
+                         stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing,
+                         COALESCE(subaccount, 1)
             """
                 + (sel_pr if has_pr else "")
                 + f"""
@@ -190,7 +191,11 @@ async def get_auto_entry_settings(monitor_id: str = None):
                 row["monitor_dupe_pairing"] = (
                     [int(x) for x in raw_pairs if x is not None] if raw_pairs else []
                 )
-                pr_base = _sw_i + 17
+                try:
+                    row["subaccount"] = int(result[_sw_i + 17]) if result[_sw_i + 17] is not None else 1
+                except (TypeError, ValueError):
+                    row["subaccount"] = 1
+                pr_base = _sw_i + 18
                 if has_pr and len(result) > pr_base + 2:
                     row["position_risk_mode"] = _s(result[pr_base]) or "legacy"
                     row["position_risk_policy"] = _s(result[pr_base + 1]) or "hws_lvw_v1"

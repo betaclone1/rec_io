@@ -561,7 +561,7 @@ def process_trigger_trade_request(data: dict):
         "self_trade_prevention_type": "maker",
         "client_order_id": str(uuid.uuid4()),
         "cancel_order_on_pause": True,
-        # Master Trading Bankroll (Kalshi subaccount 1); monitor-configurable later.
+        # Kalshi subaccount number from the trade (monitor_list.subaccount via trade_manager).
         "subaccount": int(data.get("subaccount", 1)),
         # -1 = auto-route by market ticker (Kalshi exchange sharding).
         "exchange_index": int(data.get("exchange_index", -1)),

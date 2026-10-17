@@ -1250,6 +1250,7 @@ def init_database():
                 ret_pct DECIMAL(10,2) DEFAULT 0.0,
                 pnl DECIMAL(10,2) DEFAULT 0.00,
                 bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
+                subaccount INTEGER NOT NULL DEFAULT 1,
                 status VARCHAR(20) DEFAULT 'active',
                 dashboard_order INTEGER DEFAULT 0,
                 win_streak INTEGER DEFAULT 0,

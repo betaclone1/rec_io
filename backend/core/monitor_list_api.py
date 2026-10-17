@@ -78,6 +78,7 @@ def _monitor_list_select_sql(user_number: str) -> str:
                     ml.ret_pct,
                     ml.pnl,
                     ml.bankroll_allotment_pct,
+                    COALESCE(ml.subaccount, 1) AS subaccount,
                     ml.status,
                     ml.dashboard_order,
                     ml.win_streak,
@@ -238,6 +239,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             ret_pct,
             pnl,
             bankroll_allotment_pct,
+            subaccount,
             status,
             dashboard_order,
             win_streak,
@@ -453,6 +455,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             "uptime": uptime_str,
             "name": name,
             "bankroll_allotment": bankroll_allotment_pct,
+            "subaccount": int(subaccount) if subaccount is not None else 1,
             "auto_trade_status": auto_trade_status,
             "dashboard_order": dashboard_order or 0,
             "win_streak": win_streak or 0,
@@ -594,6 +597,7 @@ def get_monitors_api_payload(user_number: str) -> Dict[str, Any]:
             "uptime": "",
             "name": "NEW_MONITOR",
             "bankroll_allotment": 0,
+            "subaccount": 1,
             "auto_trade_status": "inactive",
         }
     )

@@ -67,22 +67,28 @@ async def trigger_open_trade_payload(data: Dict[str, Any], logger) -> Dict[str, 
             return {"status": "error", "message": "Invalid monitor format"}
 
         bankroll_allotment_total = None
+        monitor_subaccount = 1
         conn = None
         try:
             conn = get_postgresql_connection()
             with conn.cursor() as cursor:
                 ml = legacy_users_monitor_list(effective_tenant_context_for_sql_rewrite().user_no)
                 cursor.execute(
-                    f"SELECT bankroll_allotment_total FROM {ml} WHERE id = %s",
+                    f"SELECT bankroll_allotment_total, COALESCE(subaccount, 1) FROM {ml} WHERE id = %s",
                     (monitor_id,),
                 )
                 result = cursor.fetchone()
                 if result:
                     bankroll_allotment_total = result[0]
+                    try:
+                        monitor_subaccount = int(result[1]) if result[1] is not None else 1
+                    except (TypeError, ValueError):
+                        monitor_subaccount = 1
                     logger.debug(
-                        "[TRIGGER OPEN TRADE] Bankroll allotment loaded from monitor %s: %s",
+                        "[TRIGGER OPEN TRADE] Bankroll allotment loaded from monitor %s: %s subaccount=%s",
                         monitor_id,
                         bankroll_allotment_total,
+                        monitor_subaccount,
                     )
                 else:
                     logger.debug("[TRIGGER OPEN TRADE] No monitor configuration found for monitor %s", monitor_id)
@@ -120,6 +126,7 @@ async def trigger_open_trade_payload(data: Dict[str, Any], logger) -> Dict[str, 
             "monitor": monitor,
             "bankroll_allotment_total": bankroll_allotment_total,
             "paper_trade": paper_trade,
+            "subaccount": int(monitor_subaccount or 1),
         }
 
         response = requests.post(trade_manager_url, json=trade_data, timeout=10)

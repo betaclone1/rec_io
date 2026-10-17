@@ -607,6 +607,20 @@ def apply_auto_entry_settings(
         update_fields.append("weekend_adjustment = %s")
         update_values.append(wa)
 
+    subaccount_changed = False
+    if "subaccount" in data:
+        from backend.core.monitor_bankroll import subaccount_id_exists
+
+        try:
+            sa = int(data["subaccount"])
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "invalid_subaccount"}
+        if not subaccount_id_exists(cursor, str(ctx.user_no), sa):
+            return {"status": "error", "message": f"Unknown subaccount id: {sa}"}
+        update_fields.append("subaccount = %s")
+        update_values.append(sa)
+        subaccount_changed = True
+
     if "monitor_dupe_pairing" in data:
         from backend.core.monitor_dupe_pairing import normalize_monitor_dupe_pairing
 
@@ -689,6 +703,57 @@ def apply_auto_entry_settings(
     update_values.append(monitor_id)
     cursor.execute(query, update_values)
 
+    if subaccount_changed:
+        from backend.core.monitor_bankroll import latest_bankroll_cents_for_subaccount
+
+        cursor.execute(
+            f"""
+            SELECT bankroll_allotment_pct, position_size, position_type, multiplier,
+                   current_max_pct_exposure, COALESCE(subaccount, 1)
+            FROM {ml} WHERE id = %s
+            """,
+            (monitor_id,),
+        )
+        allot_row = cursor.fetchone()
+        if allot_row:
+            allot_pct, pos_size, pos_type, mult, max_pct_exp, sa_id = allot_row
+            br = latest_bankroll_cents_for_subaccount(
+                cursor, str(ctx.user_no), int(sa_id or 1)
+            )
+            try:
+                pct = float(allot_pct) if allot_pct is not None else 0.0
+            except (TypeError, ValueError):
+                pct = 0.0
+            allot_total = int(pct * br)
+            multiplier_value = float(mult or 0)
+            max_pct_cap = None
+            try:
+                if max_pct_exp is not None:
+                    max_pct_cap = float(max_pct_exp)
+            except (TypeError, ValueError):
+                max_pct_cap = None
+            if multiplier_value == 0:
+                new_total = 1
+            elif pos_type == "percent":
+                allotment_dollars = allot_total / 100.0
+                base_pct = (pos_size or 0) / 100.0
+                effective_pct = base_pct * multiplier_value
+                if max_pct_cap is not None and max_pct_cap > 0:
+                    effective_pct = min(effective_pct, max_pct_cap)
+                new_total = int(round(allotment_dollars * effective_pct))
+                if new_total < 1:
+                    new_total = 1
+            else:
+                new_total = int((pos_size or 0) * multiplier_value)
+            cursor.execute(
+                f"""
+                UPDATE {ml}
+                SET bankroll_allotment_total = %s, total_position = %s
+                WHERE id = %s
+                """,
+                (allot_total, new_total, monitor_id),
+            )
+
     trades_tbl = ctx.qualify_raw_table(f"trades_{ctx.user_no}")
     trades_sim_tbl = ctx.qualify_raw_table(f"trades_simulated_{ctx.user_no}")
     # Local import avoids circular import: time_based_loss_prevention imports
@@ -712,7 +777,8 @@ def apply_auto_entry_settings(
                regime_monitor_enabled, regime_window, stop_loss_price,
                time_in_force, order_type, symbol_wide_loss_prevention,
                limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled,
-               stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing
+               stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing,
+               COALESCE(subaccount, 1)
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -771,8 +837,9 @@ def apply_auto_entry_settings(
         "stop_verification_period_seconds": int(updated_result[31]) if updated_result[31] is not None else None,
         "weekend_adjustment": str(updated_result[32]) if updated_result[32] is not None else "none",
         "monitor_dupe_pairing": list(updated_result[33]) if updated_result[33] else [],
+        "subaccount": int(updated_result[34]) if updated_result[34] is not None else 1,
     }
-    idx = 34
+    idx = 35
     if has_flip_cols:
         out["flip_sell_prob"] = bool(updated_result[idx]) if updated_result[idx] is not None else False
         out["flip_sell_prob_mult"] = str(updated_result[idx + 1]) if updated_result[idx + 1] is not None else None

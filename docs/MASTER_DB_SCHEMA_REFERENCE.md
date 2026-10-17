@@ -10406,6 +10406,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `pnl` | `numeric(10,2)` | YES | 0.00 | |
 | `bankroll_allotment` | `numeric(5,1)` | YES | 0.0 | |
 | `bankroll_allotment_pct` | `real(24)` | YES | 0.00 | |
+| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (`users_*.subaccounts_*.id`). Monitor bankroll allotment uses that subaccount's `bankroll_current`. Default 1 = Master Trading Bankroll. Migration `20261017_1200_monitor_list_subaccount`. |
 | `status` | `character varying(20)` | YES | 'active'::character varying | Script lifecycle: 'active' = AES/ATS run, 'inactive' = torn down. |
 | `created` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
 | `bankroll_allotment_total` | `integer(32)` | YES | 0 | |

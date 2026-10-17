@@ -16,9 +16,9 @@ from backend.core.tenant_context import (
     resolved_tenant_user_no_for_app,
 )
 from backend.core.tenant_legacy_sql import legacy_users_monitor_list
+from backend.core.monitor_bankroll import latest_bankroll_cents_for_subaccount
 from backend.trading_mode import (
     _norm_slot,
-    account_balance_table_for_user,
     is_paper_trading,
     monitor_list_fqn,
     sql_ident_qualified_table,
@@ -197,28 +197,6 @@ async def update_monitors_allocation(request: dict):
             }
 
         with conn.cursor() as cursor:
-            ab_ident = sql_ident_qualified_table(
-                account_balance_table_for_user(
-                    user_number, client_trading_mode=tm
-                )
-            )
-            cursor.execute(
-                sql.SQL(
-                    """
-                SELECT bankroll_current, portfolio
-                FROM {}
-                ORDER BY timestamp DESC
-                LIMIT 1
-                """
-                ).format(ab_ident)
-            )
-
-            balance_result = cursor.fetchone()
-            bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
-            portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
-
-            total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
-
             for update in updates:
                 monitor_id = update.get("id", "").replace(f"mon_{user_number}_", "")
                 new_percentage = update.get("percentage", 0)
@@ -228,6 +206,23 @@ async def update_monitors_allocation(request: dict):
 
                 new_decimal = new_percentage / 100
 
+                cursor.execute(
+                    f"""
+                    SELECT COALESCE(subaccount, 1)
+                    FROM users.monitor_list_{user_number}
+                    WHERE id = %s AND status = 'active'
+                    """,
+                    (monitor_id,),
+                )
+                sa_row = cursor.fetchone()
+                if not sa_row:
+                    continue
+                total_bankroll_cents = latest_bankroll_cents_for_subaccount(
+                    cursor,
+                    user_number,
+                    int(sa_row[0] or 1),
+                    client_trading_mode=tm,
+                )
                 new_dollar_amount_cents = int(total_bankroll_cents * new_decimal)
 
                 cursor.execute(

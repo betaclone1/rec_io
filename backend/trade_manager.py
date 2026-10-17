@@ -620,7 +620,8 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 SELECT time_in_force, order_type, min_fill_price, min_slippage,
                        limit_close_price, limit_close_offset, stop_loss_offset,
                        stop_loss_price,
-                       position_risk_mode, position_risk_policy, position_risk_book_only_enabled
+                       position_risk_mode, position_risk_policy, position_risk_book_only_enabled,
+                       COALESCE(subaccount, 1)
                 FROM {_tm_monitor_list_table()}
                 WHERE id = %s
                 """,
@@ -633,6 +634,11 @@ def _enrich_open_trade_execution_from_monitor(data: dict) -> None:
                 detail="monitor_not_found_for_execution_fields",
             )
         tif, ot, min_fill_price, min_slippage = row[0], row[1], row[2], row[3]
+        # Monitor subaccount is authoritative for opens routed through a monitor.
+        try:
+            data["subaccount"] = int(row[11]) if len(row) > 11 and row[11] is not None else 1
+        except (TypeError, ValueError):
+            data["subaccount"] = 1
         from backend.core.high_water_scalp import (
             is_high_water_scalp,
             is_high_water_test_1,
@@ -7399,7 +7405,11 @@ async def add_trade(request: Request):
             if pg_conn:
                 with pg_conn.cursor() as cursor:
                     cursor.execute(
-                        f"SELECT ticker, status, paper_trade, side, position, symbol FROM {_tm_trades_table()} WHERE id = %s",
+                        f"""
+                        SELECT ticker, status, paper_trade, side, position, symbol,
+                               COALESCE(subaccount, 1)
+                        FROM {_tm_trades_table()} WHERE id = %s
+                        """,
                         (trade_id,),
                     )
                     row = cursor.fetchone()
@@ -7412,12 +7422,19 @@ async def add_trade(request: Request):
                 trade_side = _normalize_trade_side(row[3]) if len(row) > 3 else None
                 trade_position = float(row[4]) if len(row) > 4 and row[4] is not None else 0.0
                 trade_symbol = row[5] if len(row) > 5 else None
+                try:
+                    trade_subaccount = int(row[6]) if len(row) > 6 and row[6] is not None else 1
+                except (TypeError, ValueError):
+                    trade_subaccount = 1
                 if isinstance(paper_trade, str):
                     paper_trade = paper_trade.lower() in ('true', '1', 'yes')
                 elif paper_trade is None:
                     paper_trade = False
                 
-                log(f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}, PAPER_TRADE={paper_trade}")
+                log(
+                    f"VERIFIED OPEN TRADE: ID={trade_id}, TICKER={verified_ticker}, "
+                    f"PAPER_TRADE={paper_trade}, SUBACCOUNT={trade_subaccount}"
+                )
 
                 from backend.core.flip_sell_combined import (
                     FLIP_SELL_COMBINED_INTENT,
@@ -7448,6 +7465,8 @@ async def add_trade(request: Request):
                         flip_row["status"] = "pending"
                         if not flip_row.get("symbol"):
                             flip_row["symbol"] = trade_symbol
+                        # Same Kalshi subaccount as the source open/close trade.
+                        flip_row["subaccount"] = int(trade_subaccount or 1)
                         flip_trade_id, flip_inserted = insert_trade(flip_row)
                         if flip_trade_id is None:
                             log(f"[FLIP SELL] failed to insert pending flip for close trade_id={trade_id}")
@@ -7754,6 +7773,7 @@ async def add_trade(request: Request):
                             "symbol_close": symbol_close,
                             "intent": exec_intent,
                             "ticket_id": data.get("ticket_id"),
+                            "subaccount": int(trade_subaccount or 1),
                         }
                         if flip_trade_id:
                             close_payload["flip_trade_id"] = int(flip_trade_id)

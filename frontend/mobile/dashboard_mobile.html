@@ -8313,6 +8313,44 @@
       else if (checked.length === 1) btn.textContent = checked[0].getAttribute('data-dupe-label') || '1 selected';
       else btn.textContent = String(checked.length) + ' selected';
     }
+    async function mobilePopulateSubaccountSelect(selectEl, selectedId) {
+      if (!selectEl) return;
+      const want = selectedId != null && selectedId !== '' ? String(selectedId) : '1';
+      let rows = [];
+      try {
+        const url = (typeof recApiUrlWithTradingMode === 'function')
+          ? recApiUrlWithTradingMode(`${window.location.origin}/api/subaccounts`)
+          : '/api/subaccounts';
+        const r = await fetch(url);
+        const j = await r.json();
+        rows = Array.isArray(j.subaccounts) ? j.subaccounts : [];
+      } catch (e) {
+        console.warn('mobilePopulateSubaccountSelect: failed to load subaccounts', e);
+      }
+      selectEl.innerHTML = '';
+      if (!rows.length) {
+        const opt = document.createElement('option');
+        opt.value = want;
+        opt.textContent = want === '1' ? 'Master Trading Bankroll' : ('Subaccount ' + want);
+        selectEl.appendChild(opt);
+        selectEl.value = want;
+        return;
+      }
+      rows
+        .slice()
+        .sort((a, b) => Number(a.id) - Number(b.id))
+        .forEach((row) => {
+          const opt = document.createElement('option');
+          opt.value = String(row.id);
+          opt.textContent = String(row.subaccount || ('Subaccount ' + row.id));
+          selectEl.appendChild(opt);
+        });
+      if ([...selectEl.options].some((o) => o.value === want)) {
+        selectEl.value = want;
+      } else {
+        selectEl.value = String(rows[0].id);
+      }
+    }
     async function mobileLoadDupePairingMonitors(currentApiId, selectedIds) {
       const host = document.getElementById('m_uatDupePairingCheckboxes');
       if (!host) return;
@@ -8942,6 +8980,12 @@
             <option value="fill_or_kill">Fill or Kill</option>
             <option value="immediate_or_cancel">Immediate or Cancel</option>
             <option value="good_till_canceled">Good Till Canceled</option>
+          </select>
+        </div>
+        <div style="display:flex; flex-direction:column; gap:4px; min-width:200px;">
+          <label for="m_uatMonitorSubaccount" style="font-size:12px; color:#9ca3af; font-weight:600;">Subaccount</label>
+          <select id="m_uatMonitorSubaccount" aria-label="Subaccount" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+            <option value="1">Master Trading Bankroll</option>
           </select>
         </div>
       </div>
@@ -11326,6 +11370,11 @@
           ) ? wa : 'none';
           if (waEl) waEl.value = validWa;
         }
+        {
+          const saEl = document.getElementById('m_uatMonitorSubaccount');
+          const saRaw = data.subaccount != null ? data.subaccount : (monitor && monitor.subaccount);
+          await mobilePopulateSubaccountSelect(saEl, saRaw != null ? saRaw : 1);
+        }
         void mobileLoadDupePairingMonitors(apiId, data.monitor_dupe_pairing);
 
 
@@ -11816,6 +11865,11 @@
                 wa === 'reduce_position_50' || wa === 'reduce_position_25' ||
                 wa === 'probability_adjustment_10' || wa === 'probability_adjustment_25'
               ) ? wa : 'none';
+            }
+            {
+              const saEl = document.getElementById('m_uatMonitorSubaccount');
+              const sa = saEl && parseInt(saEl.value, 10);
+              payload.subaccount = Number.isFinite(sa) ? sa : 1;
             }
             payload.monitor_dupe_pairing = mobileSelectedDupePairingIds();
             

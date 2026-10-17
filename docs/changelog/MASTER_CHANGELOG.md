@@ -6,6 +6,27 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-17 — Release v3.12.12: Per-monitor Kalshi subaccount + bankroll allotment
+
+**Summary**
+- **Release: v3.12.12**
+- **Monitor subaccount:** New `monitor_list.subaccount` (INTEGER NOT NULL DEFAULT 1 = Master Trading Bankroll / Kalshi #1). Settings modal (desktop + mobile) dropdown shows subaccount **name**, persists **id**.
+- **Bankroll allotment:** Active monitors size `bankroll_allotment_total` from that subaccount’s `bankroll_current` (live: `subaccount_balance_*_<n>`; paper MTB: sticky `account_balance_paper`; other paper ids: `subaccounts_paper.balance`). No cross-subaccount substitute when data is missing.
+- **Trade routing:** AES auto opens, manual `/api/trigger_open_trade`, and TM enrich-from-monitor stamp the monitor’s subaccount onto the trade row; trade_executor sends it on live Kalshi orders; live closes / flip-sell inherit the open row’s subaccount.
+- **DB:** Migration **`20261017_1200_monitor_list_subaccount`** — `subaccount` on every tenant `monitor_list_*` under `users` / `users_NNNN`.
+- **Tests:** `tests/unit/test_monitor_bankroll.py`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-17`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20261017_1200_monitor_list_subaccount`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261017_1200_monitor_list_subaccount`
+- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `main_app` / `monitor_manager_*` / `trade_manager_*` / `trade_executor_*` / AES RUNNING; monitor settings show Subaccount dropdown; new opens write `trades.subaccount` matching monitor
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.12`
+
+---
+
 ## 2026-10-11 — Release v3.12.11: Dashboard tiles honor monitor test_filter + ret_pct widen
 
 **Summary**

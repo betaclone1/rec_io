@@ -46,6 +46,7 @@ from backend.trading_mode import (
     trades_table_fqn,
     _norm_slot,
 )
+from backend.core.monitor_bankroll import latest_bankroll_cents_for_subaccount
 
 
 def _mm_resolve_user_no(explicit: Optional[str]) -> str:
@@ -73,26 +74,11 @@ def _mm_trades_qualified() -> sql.Composed:
     return sql.SQL("{}.{}").format(sql.Identifier(sch), sql.Identifier(tbl))
 
 
-def _latest_bankroll_cents(cursor, user_no: str) -> int:
-    """Latest equity cents for the slot (same basis as /api/monitors/allocation)."""
-    ab_ident = sql_ident_qualified_table(account_balance_table_for_user(_norm_slot(user_no)))
-    cursor.execute(
-        sql.SQL(
-            """
-            SELECT bankroll_current, portfolio
-            FROM {}
-            ORDER BY timestamp DESC NULLS LAST, id DESC
-            LIMIT 1
-            """
-        ).format(ab_ident)
+def _latest_bankroll_cents(cursor, user_no: str, subaccount_number: int = 1) -> int:
+    """Latest equity cents for the monitor's assigned Kalshi subaccount."""
+    return latest_bankroll_cents_for_subaccount(
+        cursor, _norm_slot(user_no), int(subaccount_number or 1)
     )
-    row = cursor.fetchone()
-    if not row:
-        return 0
-    bc, pf = row[0], row[1]
-    bankroll_value = int(bc) if bc is not None else 0
-    portfolio_value = int(pf) if pf is not None else 0
-    return bankroll_value if bankroll_value > 0 else portfolio_value
 from backend.core.config.database import get_system_postgresql_connection
 import threading
 import time
@@ -939,31 +925,10 @@ environment={env_vars}
             un = _mm_resolve_user_no(None)
             ml_ident = sql_ident_qualified_table(monitor_list_fqn(un))
             with conn.cursor() as cursor:
-                ab_ident = sql_ident_qualified_table(account_balance_table_for_user(un))
                 cursor.execute(
                     sql.SQL(
                         """
-                        SELECT bankroll_current, portfolio
-                        FROM {}
-                        ORDER BY timestamp DESC NULLS LAST, id DESC
-                        LIMIT 1
-                        """
-                    ).format(ab_ident)
-                )
-                bankroll_result = cursor.fetchone()
-                if not bankroll_result:
-                    return {"status": "error", "message": "No bankroll data found"}
-
-                bc = bankroll_result[0]
-                pf = bankroll_result[1]
-                bankroll_value = int(bc) if bc is not None else 0
-                portfolio_value = int(pf) if pf is not None else 0
-                bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
-
-                cursor.execute(
-                    sql.SQL(
-                        """
-                        SELECT id, name, bankroll_allotment_pct
+                        SELECT id, name, bankroll_allotment_pct, COALESCE(subaccount, 1)
                         FROM {}
                         WHERE status = 'active'
                         """
@@ -971,10 +936,23 @@ environment={env_vars}
                 )
                 monitors = list(cursor.fetchall())
 
+            if not monitors:
+                return {
+                    "status": "success",
+                    "message": "Updated 0 monitors",
+                    "updated_count": 0,
+                    "bankroll_cents": 0,
+                }
+
             updated_count = 0
-            for monitor_id, monitor_name, allotment_pct in monitors:
+            bankroll_cents = 0
+            for monitor_id, monitor_name, allotment_pct, subaccount in monitors:
                 if allotment_pct is None:
                     continue
+                with conn.cursor() as cursor:
+                    bankroll_cents = _latest_bankroll_cents(
+                        cursor, un, int(subaccount or 1)
+                    )
                 allotment_total_cents = int(allotment_pct * bankroll_cents)
                 try:
                     with conn.cursor() as cursor:
@@ -1166,7 +1144,8 @@ environment={env_vars}
                     sql.SQL(
                         """
                         SELECT position_size, position_type, multiplier,
-                               bankroll_allotment_total, bankroll_allotment_pct, current_max_pct_exposure
+                               bankroll_allotment_total, bankroll_allotment_pct, current_max_pct_exposure,
+                               COALESCE(subaccount, 1)
                         FROM {}
                         WHERE id = %s
                         """
@@ -1186,6 +1165,7 @@ environment={env_vars}
                     bankroll_allotment_total,
                     bankroll_allotment_pct,
                     current_max_pct_exposure,
+                    monitor_subaccount,
                 ) = result
 
                 multiplier_value = float(multiplier or 0)
@@ -1206,7 +1186,9 @@ environment={env_vars}
                         except (TypeError, ValueError):
                             pct = 0.0
                         if pct > 0:
-                            br = _latest_bankroll_cents(cursor, un)
+                            br = _latest_bankroll_cents(
+                                cursor, un, int(monitor_subaccount or 1)
+                            )
                             allotment_cents = int(round(pct * br))
                     allotment_dollars = allotment_cents / 100.0
                     base_pct = (position_size or 0) / 100.0
@@ -1280,7 +1262,8 @@ environment={env_vars}
                                bankroll_allotment_total,
                                bankroll_allotment_pct,
                                current_max_pct_exposure,
-                               performance_based_allocation
+                               performance_based_allocation,
+                               COALESCE(subaccount, 1)
                         FROM {}
                         WHERE status = 'active'
                         """
@@ -1290,7 +1273,7 @@ environment={env_vars}
 
             updated_count = 0
             for row in monitors:
-                if not row or len(row) < 9:
+                if not row or len(row) < 10:
                     continue
                 (
                     monitor_id,
@@ -1302,6 +1285,7 @@ environment={env_vars}
                     bankroll_allotment_pct,
                     current_max_pct_exposure,
                     performance_based_allocation,
+                    monitor_subaccount,
                 ) = row
                 if position_size is None or position_type is None or multiplier is None:
                     continue
@@ -1325,7 +1309,9 @@ environment={env_vars}
                             pct = 0.0
                         if pct > 0:
                             with conn.cursor() as c2:
-                                br = _latest_bankroll_cents(c2, un)
+                                br = _latest_bankroll_cents(
+                                    c2, un, int(monitor_subaccount or 1)
+                                )
                             allotment_cents = int(round(pct * br))
                     allotment_dollars = allotment_cents / 100.0
                     base_pct = (position_size or 0) / 100.0
@@ -2957,6 +2943,10 @@ def create_monitor():
         symbol = data.get("symbol")
         strategy = data.get("strategy")
         bankroll_allotment_pct = data.get("bankroll_allotment_pct", 10)
+        try:
+            create_subaccount = int(data.get("subaccount", 1))
+        except (TypeError, ValueError):
+            create_subaccount = 1
         # Prefer strategy defaults unless explicitly overridden by request.
         position_size = data.get("position_size")
         multiplier = data.get("multiplier")
@@ -2997,28 +2987,21 @@ def create_monitor():
             return jsonify({"status": "error", "message": "Database connection failed"}), 500
         
         with conn.cursor() as cursor:
-            # Get current bankroll to calculate allotment_total (paper vs live for this slot)
-            ab_ident = sql_ident_qualified_table(account_balance_table_for_user(user_number))
             ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
-            cursor.execute(
-                sql.SQL(
-                    """
-                    SELECT bankroll_current, portfolio
-                    FROM {}
-                    ORDER BY id DESC
-                    LIMIT 1
-                    """
-                ).format(ab_ident)
-            )
+            from backend.core.monitor_bankroll import subaccount_id_exists
 
-            balance_result = cursor.fetchone()
-            bankroll_value = balance_result[0] if balance_result and balance_result[0] else 0
-            portfolio_value = balance_result[1] if balance_result and balance_result[1] else 0
-            
-            # Use bankroll_current if available, otherwise portfolio (both in cents)
-            total_bankroll_cents = bankroll_value if bankroll_value > 0 else portfolio_value
-            
-            # Calculate bankroll_allotment_total
+            if not subaccount_id_exists(cursor, user_number, create_subaccount):
+                conn.close()
+                return jsonify(
+                    {
+                        "status": "error",
+                        "message": f"Unknown subaccount id: {create_subaccount}",
+                    }
+                ), 400
+
+            total_bankroll_cents = _latest_bankroll_cents(
+                cursor, user_number, create_subaccount
+            )
             bankroll_allotment_total = int((bankroll_allotment_pct / 100) * total_bankroll_cents)
             
             # Determine final position settings: use request values if provided, otherwise use strategy defaults
@@ -3070,12 +3053,12 @@ def create_monitor():
                  live_loss_prevention_cooldown_start_time,
                  flip_sell_prob, flip_sell_floor, flip_sell_prob_mult, flip_sell_floor_mult, min_fill_price, min_slippage, limit_close_price, limit_close_offset, stop_loss_offset,
                  stop_verification_period_enabled, stop_verification_period_seconds,
-                 position_risk_mode, position_risk_policy, position_risk_book_only_enabled)
+                 position_risk_mode, position_risk_policy, position_risk_book_only_enabled, subaccount)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, NOW(),
                         %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
                         %s, %s, %s, %s, %s, %s, %s, %s,
-                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                        %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id
             """
                 ).format(ml_ident),
@@ -3174,6 +3157,7 @@ def create_monitor():
                 str(strategy_defaults.get('position_risk_mode') or 'legacy'),
                 str(strategy_defaults.get('position_risk_policy') or 'hws_lvw_v1'),
                 bool(strategy_defaults.get('position_risk_book_only_enabled', False)),
+                create_subaccount,
                 ),
             )
 
