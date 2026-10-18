@@ -10,6 +10,8 @@ DECLARE
   has_default_col boolean;
   has_tif boolean;
   has_ot boolean;
+  seq text;
+  already boolean;
 BEGIN
   -- Seed system.strategy_list_default
   IF EXISTS (
@@ -80,7 +82,7 @@ BEGIN
       AND (order_type IS NULL OR BTRIM(order_type) = '');
   END IF;
 
-  -- Seed tenant strategy_list_*
+  -- Seed tenant strategy_list_* (explicit id: serials often lag MAX(id) on prod clones)
   FOR sch IN
     SELECT nspname FROM pg_namespace
     WHERE nspname = 'users' OR nspname ~ '^users_[0-9]{4}$'
@@ -104,50 +106,57 @@ BEGIN
         WHERE c.table_schema = sch AND c.table_name = tbl AND c.column_name = 'order_type'
       ) INTO has_ot;
 
-      IF has_default_col THEN
-        EXECUTE format(
-          $sql$
-          INSERT INTO %I.%I (
-            name, "default",
-            min_time, max_time, min_probability, max_probability,
-            min_ask, max_ask, min_volume, min_differential,
-            spike_alert_enabled, stop_loss_price, loss_prevention_toggle,
-            performance_based_allocation
-          )
-          SELECT
-            'Maker Edge', false,
-            0, 900, 0, 100,
-            0.0100, 0.0100, 0, 0.00,
-            false, 0.0000, false,
-            false
-          WHERE NOT EXISTS (
-            SELECT 1 FROM %I.%I WHERE name = 'Maker Edge'
-          )
-          $sql$,
-          sch, tbl, sch, tbl
-        );
-      ELSE
-        EXECUTE format(
-          $sql$
-          INSERT INTO %I.%I (
-            name,
-            min_time, max_time, min_probability, max_probability,
-            min_ask, max_ask, min_volume, min_differential,
-            spike_alert_enabled, stop_loss_price, loss_prevention_toggle,
-            performance_based_allocation
-          )
-          SELECT
-            'Maker Edge',
-            0, 900, 0, 100,
-            0.0100, 0.0100, 0, 0.00,
-            false, 0.0000, false,
-            false
-          WHERE NOT EXISTS (
-            SELECT 1 FROM %I.%I WHERE name = 'Maker Edge'
-          )
-          $sql$,
-          sch, tbl, sch, tbl
-        );
+      EXECUTE format(
+        'SELECT EXISTS (SELECT 1 FROM %I.%I WHERE name = %L)',
+        sch, tbl, 'Maker Edge'
+      ) INTO already;
+
+      IF NOT already THEN
+        EXECUTE format('SELECT COALESCE(MAX(id), 0) + 1 FROM %I.%I', sch, tbl) INTO new_id;
+
+        IF has_default_col THEN
+          EXECUTE format(
+            'INSERT INTO %I.%I (
+              id, name, "default",
+              min_time, max_time, min_probability, max_probability,
+              min_ask, max_ask, min_volume, min_differential,
+              spike_alert_enabled, stop_loss_price, loss_prevention_toggle,
+              performance_based_allocation
+            ) VALUES (
+              %s, %L, false,
+              0, 900, 0, 100,
+              0.0100, 0.0100, 0, 0.00,
+              false, 0.0000, false,
+              false
+            )',
+            sch, tbl, new_id, 'Maker Edge'
+          );
+        ELSE
+          EXECUTE format(
+            'INSERT INTO %I.%I (
+              id, name,
+              min_time, max_time, min_probability, max_probability,
+              min_ask, max_ask, min_volume, min_differential,
+              spike_alert_enabled, stop_loss_price, loss_prevention_toggle,
+              performance_based_allocation
+            ) VALUES (
+              %s, %L,
+              0, 900, 0, 100,
+              0.0100, 0.0100, 0, 0.00,
+              false, 0.0000, false,
+              false
+            )',
+            sch, tbl, new_id, 'Maker Edge'
+          );
+        END IF;
+
+        seq := pg_get_serial_sequence(format('%I.%I', sch, tbl), 'id');
+        IF seq IS NOT NULL THEN
+          EXECUTE format(
+            'SELECT setval(%L, GREATEST((SELECT MAX(id) FROM %I.%I), 1), true)',
+            seq, sch, tbl
+          );
+        END IF;
       END IF;
 
       IF has_tif THEN
