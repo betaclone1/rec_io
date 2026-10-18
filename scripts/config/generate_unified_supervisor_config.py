@@ -765,6 +765,21 @@ class SupervisorConfigGenerator:
                         "autostart": True,
                     }
                 )
+                # Maker Edge: dual BID/ASK resting agent (outside TE).
+                me_name = f"maker_edge_agent_{user_no}"
+                try:
+                    me_port = int(ports.get(me_name) or (8050 if user_no == "0001" else 8051))
+                except (TypeError, ValueError):
+                    me_port = 8050 if user_no == "0001" else 8051
+                services.append(
+                    {
+                        "name": me_name,
+                        "script": "maker_edge_agent.py",
+                        "port": me_port,
+                        "environment": env_u,
+                        "autostart": True,
+                    }
+                )
 
         stg_sym_suffix = _strike_symbols_cli_suffix(stream_overlay)
         if stg_sym_suffix:

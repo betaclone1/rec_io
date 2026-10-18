@@ -1,4 +1,4 @@
-"""Automatic MTB rake → CASH (Kalshi #1 → #0 on live)."""
+"""Automatic subaccount rake → CASH (any non-CASH source → Kalshi #0 on live)."""
 
 from unittest.mock import MagicMock, patch
 
@@ -6,7 +6,9 @@ from backend.balance_snapshot import (
     AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT,
     apply_balance_snapshot,
     compute_automatic_mtb_rake_amount_cents,
+    compute_automatic_subaccount_rake_amount_cents,
     maybe_execute_live_automatic_mtb_rake,
+    maybe_execute_live_automatic_subaccount_rakes,
 )
 
 
@@ -23,26 +25,26 @@ class _MtbCursor:
 
 
 def test_compute_automatic_mtb_rake_amount_when_target_met():
-    # base 50000, home-shard balance 56000 → 12% pnl; target 11%, transfer_amt 0.10 → 5000 cents
-    # row: balance, base, target, transfer_amt, auto, e0, e1, e2, e3
-    cur = _MtbCursor((56000, 50000, 0.11, 0.10, True, 56000, 0, 0, 0))
+    # id=1, base 50000, home-shard balance 56000 → 12% pnl; target 11%, transfer_amt 0.10 → 5000
+    # row: id, balance, base, target, transfer_amt, auto, e0, e1, e2, e3
+    cur = _MtbCursor((1, 56000, 50000, 0.11, 0.10, True, 56000, 0, 0, 0))
     amt = compute_automatic_mtb_rake_amount_cents(cur, "users_0001.subaccounts_0001")
     assert amt == 5000
 
 
 def test_compute_automatic_mtb_rake_none_when_disabled():
-    cur = _MtbCursor((56000, 50000, 0.11, 0.10, False, 56000, 0, 0, 0))
+    cur = _MtbCursor((1, 56000, 50000, 0.11, 0.10, False, 56000, 0, 0, 0))
     assert compute_automatic_mtb_rake_amount_cents(cur, "users_0001.subaccounts_0001") is None
 
 
 def test_compute_automatic_mtb_rake_none_when_below_target():
-    cur = _MtbCursor((54000, 50000, 0.11, 0.10, True, 54000, 0, 0, 0))
+    cur = _MtbCursor((1, 54000, 50000, 0.11, 0.10, True, 54000, 0, 0, 0))
     assert compute_automatic_mtb_rake_amount_cents(cur, "users_0001.subaccounts_0001") is None
 
 
 def test_compute_automatic_mtb_rake_uses_home_shard_cash_not_sum():
     # Sum balance would meet target, but home shard 0 cash does not.
-    cur = _MtbCursor((56000, 50000, 0.11, 0.10, True, 100, 0, 55900, 0))
+    cur = _MtbCursor((1, 56000, 50000, 0.11, 0.10, True, 100, 0, 55900, 0))
     assert compute_automatic_mtb_rake_amount_cents(
         cur, "users_0001.subaccounts_0001", home_exchange_index=0
     ) is None
@@ -53,15 +55,58 @@ def test_compute_automatic_mtb_rake_uses_home_shard_cash_not_sum():
     assert amt == 5000
 
 
-@patch("backend.balance_snapshot.apply_automatic_mtb_rake_post_transfer_db")
+def test_compute_automatic_non_mtb_rake_uses_sum_balance():
+    # id=2: PnL from total balance (not home shard); e0 small, sum large
+    cur = _MtbCursor((2, 56000, 50000, 0.11, 0.10, True, 100, 0, 55900, 0))
+    amt = compute_automatic_subaccount_rake_amount_cents(
+        cur,
+        "users_0001.subaccounts_0001",
+        subaccount_name="undefined_2",
+        home_exchange_index=0,
+    )
+    assert amt == 5000
+
+
+def test_compute_automatic_rake_rejects_cash_source():
+    cur = _MtbCursor((0, 56000, 50000, 0.11, 0.10, True, 56000, 0, 0, 0))
+    assert (
+        compute_automatic_subaccount_rake_amount_cents(
+            cur, "users_0001.subaccounts_0001", subaccount_name="CASH"
+        )
+        is None
+    )
+
+
+@patch("backend.balance_snapshot.apply_automatic_subaccount_rake_post_transfer_db")
 @patch("backend.bookkeeper.kalshi_subaccount_transfer.apply_subaccount_transfer")
 @patch("backend.balance_snapshot.refresh_mtb_realized_pnl_from_balance")
-@patch("backend.balance_snapshot.compute_automatic_mtb_rake_amount_cents", return_value=2500)
-@patch("backend.balance_snapshot.get_mtb_snapshot_from_subaccounts", return_value=(10000, 5000))
+@patch(
+    "backend.balance_snapshot.compute_automatic_subaccount_rake_amount_cents",
+    return_value=2500,
+)
+@patch(
+    "backend.balance_snapshot._subaccount_balance_for_rake_snapshot",
+    return_value=10000,
+)
+@patch(
+    "backend.balance_snapshot.list_automatic_rake_source_subaccounts",
+    return_value=[
+        {
+            "id": 1,
+            "subaccount": "Master Trading Bankroll",
+            "balance": 10000,
+            "exchange_0_balance": 10000,
+            "exchange_1_balance": 0,
+            "exchange_2_balance": 0,
+            "exchange_3_balance": 0,
+        }
+    ],
+)
 @patch("backend.balance_snapshot._live_automatic_mtb_rake_host_allowed", return_value=True)
 def test_maybe_execute_live_automatic_mtb_rake_calls_kalshi_1_to_0(
     _host_ok,
-    _snap,
+    _list,
+    _bal,
     _compute,
     _refresh,
     mock_xfer,
@@ -78,8 +123,57 @@ def test_maybe_execute_live_automatic_mtb_rake_calls_kalshi_1_to_0(
     assert kwargs.get("exchange_index") == 0
     mock_post_db.assert_called_once()
     assert mock_post_db.call_args[0][2] == 2500  # transfer_amount
-    assert mock_post_db.call_args[0][3] == 7500  # new_mtb_balance
+    assert mock_post_db.call_args[0][3] == 7500  # new source balance
+    assert mock_post_db.call_args[1].get("from_subaccount") == "Master Trading Bankroll"
     assert mock_post_db.call_args[1].get("to_subaccount", AUTOMATIC_MTB_RAKE_TO_SUBACCOUNT) == "CASH"
+
+
+@patch("backend.balance_snapshot.apply_automatic_subaccount_rake_post_transfer_db")
+@patch("backend.bookkeeper.kalshi_subaccount_transfer.apply_subaccount_transfer")
+@patch("backend.balance_snapshot.refresh_mtb_realized_pnl_from_balance")
+@patch(
+    "backend.balance_snapshot.compute_automatic_subaccount_rake_amount_cents",
+    return_value=1000,
+)
+@patch(
+    "backend.balance_snapshot._subaccount_balance_for_rake_snapshot",
+    return_value=5000,
+)
+@patch(
+    "backend.balance_snapshot.list_automatic_rake_source_subaccounts",
+    return_value=[
+        {
+            "id": 2,
+            "subaccount": "undefined_2",
+            "balance": 5000,
+            "exchange_0_balance": 5000,
+            "exchange_1_balance": 0,
+            "exchange_2_balance": 0,
+            "exchange_3_balance": 0,
+        }
+    ],
+)
+@patch("backend.balance_snapshot._live_automatic_mtb_rake_host_allowed", return_value=True)
+def test_maybe_execute_live_rakes_non_mtb_to_cash(
+    _host_ok,
+    _list,
+    _bal,
+    _compute,
+    _refresh,
+    mock_xfer,
+    mock_post_db,
+):
+    cur = MagicMock()
+    any_xfer, mtb_sourced = maybe_execute_live_automatic_subaccount_rakes(
+        cur, "0001", subaccounts_table="users_0001.subaccounts_0001"
+    )
+    assert any_xfer is True
+    assert mtb_sourced is False
+    args, _kwargs = mock_xfer.call_args
+    assert args[1] == 2
+    assert args[2] == 0
+    assert mock_post_db.call_args[1].get("from_subaccount") == "undefined_2"
+
 
 @patch("backend.bookkeeper.kalshi_subaccount_transfer.apply_subaccount_transfer")
 @patch("backend.balance_snapshot._live_automatic_mtb_rake_host_allowed", return_value=False)

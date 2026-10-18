@@ -1270,6 +1270,36 @@ def _invalidate_book(
         _emit_event("orderbook_invalid", market_ticker=mt, reason=reason)
 
 
+def _publish_lifecycle_trades_event(mt: str, mr: str, et: str) -> None:
+    """Fan-out venue outcome to per-tenant ``kalshi_lifecycle_trade_consumer`` processes.
+
+    Do not gate on tracked-series membership: if Kalshi delivered the message on this
+    socket, tenant trades may still need ``market_result`` even when this master is not
+    projecting the ticker into live_state.
+    """
+    try:
+        from backend.core.trading_redis_comms import publish_kalshi_lifecycle_trades_event
+
+        ok = publish_kalshi_lifecycle_trades_event(
+            market_ticker=mt,
+            result_raw=mr,
+            event_type=et,
+            source="market_watchdog_ws",
+        )
+        if not ok:
+            log.warning(
+                "[LIFECYCLE] Redis publish failed market_ticker=%s — tenant "
+                "trades.market_result not updated (fix Redis or run consumers)",
+                mt,
+            )
+    except Exception as e:
+        log.warning(
+            "[LIFECYCLE] Redis publish error market_ticker=%s: %s",
+            mt,
+            e,
+        )
+
+
 async def _handle_lifecycle_v2(master: KalshiMarketWsMaster, msg: dict[str, Any]) -> None:
     """Off hot path so hourly settlement bursts cannot stall WS keepalive."""
     et = str(msg.get("event_type") or "").strip()
@@ -1281,6 +1311,8 @@ async def _handle_lifecycle_v2(master: KalshiMarketWsMaster, msg: dict[str, Any]
     mr = _extract_market_result(msg)
     if not mr:
         return
+    # Restore fan-out dropped in v3.7.0 ingest split (was ``_lifecycle_apply_result_if_tracked``).
+    await asyncio.to_thread(_publish_lifecycle_trades_event, mt, mr, et)
     async with master.lock:
         if not _matches_tracked_series(mt, master):
             return

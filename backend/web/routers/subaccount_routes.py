@@ -241,6 +241,76 @@ async def update_subaccount_transfer_settings(request: Request):
         return {"ok": False, "error": str(e)}
 
 
+@subaccount_router.patch("/api/subaccounts/drawdown-halt")
+async def update_subaccount_drawdown_halt(request: Request):
+    """Set drawdown_trading_halt for a subaccount by name. Body: { \"subaccount\": \"Master Trading Bankroll\", \"drawdown_trading_halt\": true }."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        halt_on = payload.get("drawdown_trading_halt")
+        if subaccount_name is None or halt_on is None:
+            return {"ok": False, "error": "subaccount and drawdown_trading_halt required"}
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(resolved_tenant_user_no_for_app())
+            )
+            cursor.execute(
+                sql.SQL(
+                    "UPDATE {} SET drawdown_trading_halt = %s WHERE subaccount = %s"
+                ).format(sa_ident),
+                (bool(halt_on), subaccount_name),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        _log.warning("Error updating subaccount drawdown_trading_halt: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@subaccount_router.patch("/api/subaccounts/drawdown-settings")
+async def update_subaccount_drawdown_settings(request: Request):
+    """Set drawdown_reset_threshold_pct for a subaccount. Body: { \"subaccount\": \"…\", \"drawdown_reset_threshold_pct\": 50 } (percent, exclusive 0–100)."""
+    try:
+        payload = await request.json()
+        subaccount_name = payload.get("subaccount")
+        pct = payload.get("drawdown_reset_threshold_pct")
+        if subaccount_name is None:
+            return {"ok": False, "error": "subaccount required"}
+        if pct is None:
+            return {"ok": False, "error": "drawdown_reset_threshold_pct required"}
+        try:
+            pct_f = float(pct)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "drawdown_reset_threshold_pct must be a number"}
+        if not (0 < pct_f < 100):
+            return {"ok": False, "error": "drawdown_reset_threshold_pct must be between 0 and 100 exclusive"}
+        conn = get_postgresql_connection()
+        with conn.cursor() as cursor:
+            sa_ident = sql_ident_qualified_table(
+                subaccounts_table_for_user(resolved_tenant_user_no_for_app())
+            )
+            cursor.execute(
+                sql.SQL(
+                    "UPDATE {} SET drawdown_reset_threshold_pct = %s WHERE subaccount = %s"
+                ).format(sa_ident),
+                (pct_f, subaccount_name),
+            )
+            conn.commit()
+            if cursor.rowcount == 0:
+                conn.close()
+                return {"ok": False, "error": "subaccount not found"}
+        conn.close()
+        return {"ok": True}
+    except Exception as e:
+        _log.warning("Error updating subaccount drawdown settings: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
 @subaccount_router.patch("/api/subaccounts/base-value")
 async def update_subaccount_base_value(request: Request):
     """Set base_value (cents) for a subaccount. Body: { \"subaccount\": \"Master Trading Bankroll\", \"base_value\": 84329 } (base_value in cents)."""

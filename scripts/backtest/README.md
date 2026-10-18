@@ -8,6 +8,8 @@ Offline **auto-trade backtesting** against historical `trades` (+ `monitor_list`
 
 **Hypothetical entry / peer fill pricing (methodology, holdouts, live vs paper, pipeline):** [`docs/BACKTEST_PRICE_ESTIMATOR.md`](../../docs/BACKTEST_PRICE_ESTIMATOR.md)
 
+**KXBTC15M Exact Cent Maker / longshot research handoff (architecture, results, build phases):** [`docs/KXBTC15M_EXACT_CENT_MAKER_STRATEGY.md`](../../docs/KXBTC15M_EXACT_CENT_MAKER_STRATEGY.md)
+
 ## Quick start
 
 ```bash

@@ -605,7 +605,10 @@ async def get_subaccounts(
                         """
                     SELECT id, subaccount, balance, base_value, realized_pnl, realized_pnl_pct,
                            target_pnl__pct, transfer_amt, automatic_transfers,
-                           exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance
+                           exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance,
+                           COALESCE(drawdown_trading_halt, true) AS drawdown_trading_halt,
+                           COALESCE(drawdown_reset_threshold_pct, 50.00) AS drawdown_reset_threshold_pct,
+                           COALESCE(trading_halt_active, false) AS trading_halt_active
                     FROM {}
                     ORDER BY id
                     """

@@ -175,6 +175,7 @@ DEFAULT_PORTS = {
     "active_trade_supervisor_0001": 8034,
     "auto_entry_supervisor_0001_btc15m_exp_scalp": 8039,
     "active_trade_supervisor_0001_btc15m_exp_scalp": 8041,
+    "maker_edge_agent_0001": 8050,
     "auto_entry_supervisor_hourly": 8037,
     "active_trade_supervisor_hourly": 8038,
     "trade_manager_0001": 4000,
@@ -189,6 +190,7 @@ DEFAULT_PORTS = {
     "active_trade_supervisor_0002": 8044,
     "auto_entry_supervisor_0002_btc15m_exp_scalp": 8045,
     "active_trade_supervisor_0002_btc15m_exp_scalp": 8046,
+    "maker_edge_agent_0002": 8051,
 }
 
 def ensure_port_config_exists():

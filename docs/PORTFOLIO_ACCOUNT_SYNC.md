@@ -64,7 +64,7 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 **Exchange sharding:** Kalshi balances are a **`(exchange_index, subaccount)`** matrix. After crypto cutover, trading MTB is **`(2, 1)`**; cross-shard moves use a **single IAT** with `source_subaccount` / `destination_subaccount` (no app multi-hop). Schema: `exchange_0..3_balance` on `subaccounts_*` / `subaccount_balance_*_*` (migration **`20260813_1448_subaccount_exchange_balances`**); `balance` = sum. Rake home shard: **`REC_MTB_HOME_EXCHANGE_INDEX`**. Full model: [KALSHI_EXCHANGE_SHARDING.md](KALSHI_EXCHANGE_SHARDING.md).
 
-**Automatic MTB rake (live):** When MTB `realized_pnl_pct` ≥ `target_pnl__pct` and `automatic_transfers` is on, `poll_live_account_balances` calls `POST /portfolio/subaccounts/transfer` **#1 → #0** for `transfer_amt × base_value` cents, updates MTB `base_value` in DB, then **repolls all subaccounts** (no throttle). Paper mode simulates the same destination (**CASH**) in `subaccounts_update` without Kalshi.
+**Automatic subaccount rake (live):** Each non-CASH subaccount with `automatic_transfers` on is evaluated independently (`target_pnl__pct` / `transfer_amt` / `base_value` on that row). When met, `poll_live_account_balances` posts `POST /portfolio/subaccounts/transfer` **source → #0 (CASH)** for `transfer_amt × base_value` cents, updates that source’s `base_value`, then **repolls** (no throttle). MTB (#1) still uses home-shard cash for eligibility; other sources use total balance. Paper mode simulates the same destination (**CASH**) in `subaccounts_update`. CASH (#0) is never a rake source.
 
 **Settlement balance glitch guard (live):** Kalshi `GET /portfolio/balance?subaccount=1` can race around settlement in two ways:
 
@@ -72,6 +72,8 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 2. **Understatement:** buys already debited and marks cleared before settlement credits land (large one-tick portfolio drop; e.g. ~50% false drawdown).
 
 [`poll_live_account_balances`](../backend/balance_snapshot.py) detects both on **MTB (subaccount 1)**. On match it **skips the DB write**, logs `balance_settlement_glitch_skipped` (WARNING), sleeps per `REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC` (default `2,3,5`), and repolls until clean (`balance_settlement_glitch_cleared` INFO). If retries exhaust: **overstatement** keeps the last good row; **understatement** writes the confirmed low reading (API consistently low). Disabled when `REC_BALANCE_GLITCH_GUARD=0`, on automatic MTB rake repoll, or when `sync_balance` saw new external deposit events that cycle (`deposit_cycle`).
+
+**Drawdown halt (per subaccount):** Controls live on each `subaccounts_*` row (`drawdown_trading_halt`, `drawdown_reset_threshold_pct`, `trading_halt_active`, snapshot). Sticky `bankroll_current` on `subaccount_balance_*_<n>` is ratcheted from that subaccount’s equity; a step-down notifies monitor_manager with `drawdown_halt_subaccounts=[n]`, which forces **only** monitors whose `monitor_list.subaccount = n` to paper+test. Hero `account_balance` no longer fires the emergency halt. Global system_settings UI is unchanged for now.
 
 **Drawdown halt confirmation:** Emergency halt (`bankroll_stepped_down`) requires `REC_DRAWDOWN_HALT_CONFIRM_TICKS` consecutive crash-sized readings (default `2`): the previous written portfolio must already be at/below the drawdown threshold before the crossing fires. First observation keeps sticky `bankroll_current` and does not halt.
 

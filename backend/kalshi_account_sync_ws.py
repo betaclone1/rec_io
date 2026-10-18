@@ -496,8 +496,12 @@ def notify_frontend_db_change(db_name: str, change_data: dict = None):
     except Exception as e:
         logger.error("Error notifying frontend: %s", e)
 
-def notify_monitor_manager(bankroll_stepped_down=False):
-    """Notify monitor_manager that bankroll has been updated. Pass bankroll_stepped_down=True when bankroll stepped down (drawdown halt on; MTB at/below configured % of prior bankroll_current)."""
+def notify_monitor_manager(bankroll_stepped_down=False, drawdown_halt_subaccounts=None):
+    """Notify monitor_manager that bankroll has been updated.
+
+    Pass bankroll_stepped_down=True when a subaccount sticky bankroll stepped down
+    (drawdown halt on). ``drawdown_halt_subaccounts`` lists Kalshi subaccount ids that tripped.
+    """
     try:
         import requests
         from backend.core.port_config import get_port
@@ -508,6 +512,8 @@ def notify_monitor_manager(bankroll_stepped_down=False):
         )
 
         body = {"type": "bankroll_updated", "bankroll_stepped_down": bankroll_stepped_down}
+        if drawdown_halt_subaccounts:
+            body["drawdown_halt_subaccounts"] = [int(x) for x in drawdown_halt_subaccounts]
         if use_trading_redis_comms():
             r = redis_client_optional()
             if r:
@@ -519,9 +525,12 @@ def notify_monitor_manager(bankroll_stepped_down=False):
                     pass
 
         monitor_port = get_port("monitor_manager")
+        payload = {"bankroll_stepped_down": bankroll_stepped_down}
+        if drawdown_halt_subaccounts:
+            payload["drawdown_halt_subaccounts"] = [int(x) for x in drawdown_halt_subaccounts]
         response = requests.post(
             f"http://localhost:{monitor_port}/api/bankroll_updated",
-            json={"bankroll_stepped_down": bankroll_stepped_down},
+            json=payload,
             timeout=5
         )
         
@@ -1547,8 +1556,9 @@ def sync_balance(*, full: bool = False, skip_automatic_mtb_rake: bool = False):
             if _slot is None:
                 _slot = process_tenant_context().user_no
             bankroll_stepped_down = False
+            drawdown_halt_subaccounts = []
             with pg_conn.cursor() as cursor:
-                inserted, bankroll_stepped_down = poll_live_account_balances(
+                inserted, bankroll_stepped_down, drawdown_halt_subaccounts = poll_live_account_balances(
                     cursor,
                     _slot,
                     throttle=not full,
@@ -1561,6 +1571,7 @@ def sync_balance(*, full: bool = False, skip_automatic_mtb_rake: bool = False):
 
                 notify_monitor_manager_after_balance_commit(
                     bankroll_stepped_down=bankroll_stepped_down,
+                    drawdown_halt_subaccounts=drawdown_halt_subaccounts or None,
                 )
             except Exception as notify_exc:
                 logger.warning(

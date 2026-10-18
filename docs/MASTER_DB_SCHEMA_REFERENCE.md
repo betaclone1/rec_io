@@ -9414,7 +9414,7 @@ Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and
 
 ### Table: `system.strategy_list_default`
 
-Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). **`20261010_1100_expiration_reversal_strategy`** seeds **Expiration Reversal** (copy of each table's own Expiration Scalp row, `flip_sell_floor=TRUE`, `flip_sell_floor_mult` default `1x`) into `system.strategy_list_default` and every tenant `strategy_list_%`, plus CHECK `expiration_reversal_flip_floor_chk`. Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20261017_1500_maker_edge_strategy`** seeds **Maker Edge** (min_time/max_time 0–900, min_ask=max_ask 0.01, limit GTC dual-rest via maker_edge_agent). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). **`20261010_1100_expiration_reversal_strategy`** seeds **Expiration Reversal** (copy of each table's own Expiration Scalp row, `flip_sell_floor=TRUE`, `flip_sell_floor_mult` default `1x`) into `system.strategy_list_default` and every tenant `strategy_list_%`, plus CHECK `expiration_reversal_flip_floor_chk`. Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
 
 ---
 
@@ -9840,7 +9840,7 @@ Parallel balance history when **`trading_mode=paper`**. Same column shape as `us
 
 ### Table: `users.subaccounts_paper_0001`
 
-Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`automatic_transfers`** may mirror live (migration **`20260407_1210_paper_subaccounts_mirror_automatic_transfers`**) or be set per row; when true on MTB, simulated balance ticks rake to Cash Transfer and log **`transfers_paper_0001`**. Unique index on **`subaccount`**.
+Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`automatic_transfers`** may mirror live (migration **`20260407_1210_paper_subaccounts_mirror_automatic_transfers`**) or be set per row; when true on any non-CASH source, simulated balance ticks rake that source → **CASH** and log **`transfers_paper_0001`**. Unique index on **`subaccount`**.
 
 **Id parity:** Each row’s **`id`** must equal the **`id`** of the same **`subaccount`** in **`users.subaccounts_0001`** (migration **`20260407_1200_subaccounts_paper_id_match_live_0001`** realigns if drifted). New live subaccount rows should be mirrored into paper with the **same** primary key if inserts are ever added for live.
 
@@ -9860,7 +9860,11 @@ Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`a
 | `realized_pnl_pct` | `real(24)` | YES | - | |
 | `target_pnl__pct` | `real(24)` | YES | - | |
 | `transfer_amt` | `real(24)` | YES | - | |
-| `automatic_transfers` | `boolean` | NO | false | When true (typically mirrored from live MTB), **paper** balance ticks run the same internal rake as live (`target_pnl__pct` / `transfer_amt`); rows go to **`transfers_paper_0001`**. |
+| `automatic_transfers` | `boolean` | NO | false | When true on a non-CASH row, **paper** balance ticks run the same internal rake as live (`target_pnl__pct` / `transfer_amt` → CASH); rows go to **`transfers_paper_0001`**. |
+| `drawdown_trading_halt` | `boolean` | NO | true | Paper parity with live drawdown halt controls. Migration `20261018_1200_subaccount_drawdown_halt`. |
+| `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Paper drawdown threshold (percent). |
+| `trading_halt_active` | `boolean` | NO | false | Paper drawdown halt latch. |
+| `drawdown_halt_monitor_snapshot` | `jsonb` | YES | - | Paper drawdown monitor snapshot. |
 
 #### Indexes
 
@@ -10773,6 +10777,10 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `target_pnl__pct` | `real(24)` | YES | - | Target fraction (e.g. 0.01 = 1%). When realized_pnl_pct ≥ this, internal transfer runs (if automatic_transfers) |
 | `transfer_amt` | `real(24)` | YES | - | Transfer as fraction of base_value (e.g. 0.005 = 0.5%). Amount raked = transfer_amt × base_value |
 | `automatic_transfers` | `boolean` | NO | false | If TRUE, target-based internal transfers are initiated by account sync; user-definable per subaccount |
+| `drawdown_trading_halt` | `boolean` | NO | true | When true, sticky bankroll drawdown on this subaccount triggers emergency halt for monitors with matching `monitor_list.subaccount`. Migration `20261018_1200_subaccount_drawdown_halt`. |
+| `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Percent drawdown from this subaccount’s sticky `bankroll_current` that triggers step-down (exclusive 0–100). |
+| `trading_halt_active` | `boolean` | NO | false | Latch set true when drawdown emergency halt is applied for this subaccount. |
+| `drawdown_halt_monitor_snapshot` | `jsonb` | YES | - | Pre-halt `paper_trade` / `test_filter` snapshot for monitors on this subaccount. |
 
 #### Constraints
 

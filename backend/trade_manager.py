@@ -283,6 +283,9 @@ def _coalesce_trade_contract(symbol: str, contract: Optional[str], ticker: Optio
     legacy = f"{sym} Market"
     c = str(contract).strip() if contract is not None else ""
     d = derive_contract_label_from_kalshi_ticker(symbol, ticker)
+    # Bare symbol (e.g. "BTC") is not a contract label — derive from ticker.
+    if c and c.upper() == sym:
+        c = ""
     if c and c != legacy:
         return c
     if d:
@@ -1833,7 +1836,7 @@ def _settle_one_expired_paper_trade(now_est: datetime, trade_id: int, ticker: st
 
 
 def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
-    """Finalize paper rows left ``expired`` with NULL ``symbol_close`` (e.g. after a failed price lookup)."""
+    """Finalize paper ``expired`` rows missing ``symbol_close`` and/or ``market_result``."""
     pg = get_postgresql_connection()
     if not pg:
         return
@@ -1844,7 +1847,10 @@ def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
                 SELECT id, ticker, symbol FROM {_tm_trades_table()}
                 WHERE paper_trade IS TRUE
                   AND status = 'expired'
-                  AND symbol_close IS NULL
+                  AND (
+                    symbol_close IS NULL
+                    OR market_result IS NULL
+                  )
                 LIMIT 100
                 """
             )
@@ -1859,7 +1865,10 @@ def _settle_stuck_expired_paper_trades(now_est: datetime) -> None:
         return
     if not rows:
         return
-    log(f"📝 Settling {len(rows)} stuck expired paper trade(s) missing symbol_close")
+    log(
+        f"📝 Settling {len(rows)} stuck expired paper trade(s) "
+        f"(missing symbol_close and/or market_result)"
+    )
     for tid, tkr, sym in rows:
         _settle_one_expired_paper_trade(now_est, tid, tkr, sym)
 
@@ -3321,6 +3330,205 @@ def _apply_high_water_partial_close(
             pg.close()
         except Exception:
             pass
+
+
+def _maker_edge_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional[float]:
+    """Monitor bankroll_allotment_total (cents) for ret_pct; None if unavailable."""
+    if not monitor_key or not _monitor_key_matches_worker(monitor_key):
+        return None
+    _, monitor_id = _monitor_slot_and_id(monitor_key)
+    if not monitor_id:
+        return None
+    pg = get_postgresql_connection()
+    if not pg:
+        return None
+    try:
+        with pg.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT bankroll_allotment_total
+                FROM {_tm_monitor_list_table()}
+                WHERE id = %s
+                """,
+                (monitor_id,),
+            )
+            row = cur.fetchone()
+        if not row or row[0] is None:
+            return None
+        return float(row[0])
+    except Exception as e:
+        log(f"[MAKER EDGE] bankroll lookup failed monitor={monitor_key}: {e}")
+        return None
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
+def book_maker_edge_external_fill(data: dict) -> dict:
+    """
+    Book an open trade from Maker Edge agent after first dual-rest fill.
+
+    Does not call trade_executor. Status is open; order_id_open stamped when provided.
+    Subaccount must be present (monitor routing). Partials: position = filled qty only.
+    Paper maker fees are 0.00 (live uses venue fee fields when known).
+    """
+    from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME
+
+    strat = str(data.get("trade_strategy") or "").strip()
+    if strat != STRATEGY_NAME:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="maker_edge_fill requires trade_strategy=Maker Edge",
+        )
+    side_raw = str(data.get("side") or "").strip().lower()
+    # Persist Y/N like AES so UI / settlement match the rest of trades_*.
+    side = "Y" if side_raw in ("y", "yes", "bid") else "N" if side_raw in ("n", "no", "ask") else None
+    if side is None:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="side required (yes/no)")
+    try:
+        buy_price = float(data.get("buy_price"))
+    except (TypeError, ValueError):
+        buy_price = None
+    if buy_price is None or buy_price <= 0 or buy_price >= 1:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="buy_price required")
+    try:
+        position = float(
+            data.get("position")
+            if data.get("position") is not None
+            else data.get("count_fp")
+        )
+    except (TypeError, ValueError):
+        position = 0.0
+    if position <= 0:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="position/fill qty required")
+    ticker = str(data.get("ticker") or "").strip()
+    if not ticker:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="ticker required")
+    try:
+        strike = float(data.get("strike"))
+    except (TypeError, ValueError):
+        strike = None
+    if strike is None:
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail="strike required (floor_strike from ladder; no fallback)",
+        )
+    try:
+        subaccount = int(data.get("subaccount", 1))
+    except (TypeError, ValueError):
+        subaccount = 1
+
+    paper_raw = data.get("paper_trade")
+    if isinstance(paper_raw, str):
+        paper_trade = paper_raw.lower() in ("true", "1", "yes")
+    else:
+        paper_trade = bool(paper_raw)
+
+    symbol = str(data.get("symbol") or "BTC").strip().upper() or "BTC"
+    monitor_key = data.get("monitor")
+    bankroll = data.get("bankroll_allotment_total")
+    if bankroll is None:
+        bankroll = _maker_edge_bankroll_allotment_cents(
+            str(monitor_key).strip() if monitor_key else None
+        )
+    contract_label = derive_contract_label_from_kalshi_ticker(symbol, ticker)
+
+    row = dict(data)
+    row["status"] = "open"
+    row["side"] = side
+    row["buy_price"] = buy_price
+    row["position"] = position
+    row["strike"] = strike
+    row["symbol"] = symbol
+    row["trade_strategy"] = STRATEGY_NAME
+    row["market"] = data.get("market") or "15m"
+    # Critical: must be venue slug (kalshi), not market cadence (15m). Lifecycle / market_result
+    # backfill filters on exchange='kalshi'.
+    row["exchange"] = "kalshi"
+    row["entry_method"] = data.get("entry_method") or "maker_edge"
+    row["time_in_force"] = data.get("time_in_force") or "good_till_canceled"
+    row["order_type"] = data.get("order_type") or "limit"
+    row["subaccount"] = subaccount
+    row["ticker"] = ticker
+    row["paper_trade"] = paper_trade
+    if contract_label:
+        row["contract"] = contract_label
+    else:
+        row.pop("contract", None)
+    if bankroll is not None:
+        row["bankroll_allotment_total"] = bankroll
+    if not row.get("date") or not row.get("time"):
+        est = datetime.now(EST_ZONE)
+        row.setdefault("date", est.strftime("%Y-%m-%d"))
+        row.setdefault("time", est.strftime("%H:%M:%S"))
+
+    trade_id, inserted = insert_trade(row)
+    if trade_id is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="insert_trade failed",
+        )
+
+    # insert_trade leaves fees NULL; paper maker fees are known zero.
+    oid = str(data.get("order_id_open") or "").strip()
+    pg = get_postgresql_connection()
+    if pg:
+        try:
+            with pg.cursor() as cur:
+                if paper_trade:
+                    cur.execute(
+                        f"""
+                        UPDATE {_tm_trades_table()}
+                        SET fees = 0.0,
+                            exchange = 'kalshi',
+                            updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (trade_id,),
+                    )
+                else:
+                    cur.execute(
+                        f"""
+                        UPDATE {_tm_trades_table()}
+                        SET exchange = 'kalshi', updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (trade_id,),
+                    )
+                if oid:
+                    cur.execute(
+                        f"""
+                        UPDATE {_tm_trades_table()}
+                        SET order_id_open = %s, status = 'open', updated_at = NOW()
+                        WHERE id = %s
+                        """,
+                        (oid, trade_id),
+                    )
+            pg.commit()
+        except Exception as e:
+            log(f"[MAKER EDGE] post-insert stamp failed id={trade_id}: {e}")
+        finally:
+            try:
+                pg.close()
+            except Exception:
+                pass
+
+    log(
+        f"[MAKER EDGE] booked fill id={trade_id} inserted={inserted} "
+        f"side={side} qty={position} px={buy_price} sa={subaccount} ticker={ticker}"
+    )
+    log_event(
+        data.get("ticket_id") or str(trade_id),
+        f"MANAGER: MAKER_EDGE fill booked id={trade_id} side={side} qty={position}",
+        trade_id=trade_id,
+    )
+    try:
+        notify_strike_table_trade_change(trade_id, "open")
+    except Exception:
+        pass
+    return {"status": "ok", "id": trade_id, "inserted": inserted}
 
 
 def apply_paper_high_water_resting_fill(data: dict) -> dict:
@@ -7391,7 +7599,10 @@ async def add_trade(request: Request):
 
     if intent == "paper_hws_resting_fill":
         return apply_paper_high_water_resting_fill(data)
-    
+
+    if intent == "maker_edge_fill":
+        return book_maker_edge_external_fill(data)
+
     if intent == "close":
         log(f"CLOSE TICKET RECEIVED")
         trade_id = data.get("id")  # Get trade_id directly from request

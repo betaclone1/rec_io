@@ -18,6 +18,9 @@
     function uatIsHighWaterFamily(strategy) {
       return uatIsHighWaterScalp(strategy) || uatIsHighWaterTest1(strategy);
     }
+    function uatIsMakerEdge(strategy) {
+      return String(strategy || '').toUpperCase().includes('MAKER EDGE');
+    }
     function uatIsExpirationReversal(strategy) {
       return String(strategy || '').toUpperCase().includes('EXPIRATION REVERSAL');
     }
@@ -40,7 +43,7 @@
       return String(market || '').trim().toLowerCase() === '15m';
     }
     function uatTimeWindowMaxSeconds(strategy, market) {
-      if (uatIsHighWaterFamily(strategy)) {
+      if (uatIsMakerEdge(strategy) || uatIsHighWaterFamily(strategy)) {
         return uatMonitorMarketIs15m(market) ? 900 : 3600;
       }
       if (uatIsExpirationScalpEntry(strategy)) return 300;
@@ -1194,8 +1197,9 @@
       document.removeEventListener('touchend', handleDashboardExpirationScalpAskMouseUp);
     }
 
-    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1) {
+    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge) {
       const isHighWaterFamily = !!(isHighWaterScalp || isHighWaterTest1);
+      const makerEdge = !!isMakerEdge;
       const disp = (on) => (on ? '' : 'none');
       const setForId = (id, visible) => {
         const el = document.getElementById(id);
@@ -1210,15 +1214,19 @@
       });
       const minVolSection = document.getElementById('uatMinVolumeSection');
       if (minVolSection) minVolSection.style.display = isExpirationScalp ? 'none' : '';
-      // Expiration family uses the same monitor LP controls as HTC (off by default via strategy_list).
-      document.querySelectorAll('.uat-loss-prevention-block').forEach((el) => {
-        el.style.display = '';
+      // Expiration family: show HTC LP block (lives outside non-Expiration wrapper). Maker Edge hides it.
+      document.querySelectorAll('#htcStrategySection .uat-loss-prevention-block').forEach((el) => {
+        el.style.display = disp(!makerEdge);
       });
       const spikeRow = document.getElementById('spikeAlertEnabled');
       if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = disp(!isExpirationScalp);
       const spikeGroup = document.getElementById('spikeAlertSliderGroup');
       if (spikeGroup) spikeGroup.style.display = disp(!isExpirationScalp);
-      setForId('cooldownWindowSlider', !isExpirationScalp);
+      // Cooldown Window is Momentum Contain only — force-hide on Expiration family.
+      if (isExpirationScalp) {
+        const cooldownSection = document.getElementById('uatCooldownWindowSection');
+        if (cooldownSection) cooldownSection.style.display = 'none';
+      }
       const probAdjGroup = document.getElementById('probAdjSpikeGroup');
       if (probAdjGroup) probAdjGroup.style.display = disp(!isExpirationScalp);
       const perfRow = document.getElementById('performanceBasedAllocation');
@@ -1238,33 +1246,77 @@
         uatApplyRangeMinMaxValue(vpSlider, isHighWaterFamily ? 1 : 5, 60, vpSlider.value);
       }
       const esAsk = document.getElementById('expirationScalpAskWindowSection');
-      if (esAsk) esAsk.style.display = ((isExpirationScalp && !isHighWaterFamily) || !!isHighWaterTest1) ? 'block' : 'none';
+      if (esAsk) {
+        esAsk.style.display = (
+          !makerEdge && ((isExpirationScalp && !isHighWaterFamily) || !!isHighWaterTest1)
+        ) ? 'block' : 'none';
+      }
       const esFill = document.getElementById('expirationScalpFillGatesSection');
-      if (esFill) esFill.style.display = isExpirationScalp ? 'block' : 'none';
+      if (esFill) esFill.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
       const hwsPt = document.getElementById('highWaterScalpPriceTargetSection');
-      if (hwsPt) hwsPt.style.display = isHighWaterScalp ? 'block' : 'none';
+      if (hwsPt) hwsPt.style.display = (isHighWaterScalp || makerEdge) ? 'block' : 'none';
+      const hwsPtLabel = document.getElementById('highWaterScalpPriceTargetLabel');
+      if (hwsPtLabel) {
+        hwsPtLabel.textContent = makerEdge ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:';
+      }
       const esMov = document.getElementById('expirationScalpMovementWindowSection');
-      if (esMov) esMov.style.display = isExpirationScalp ? 'block' : 'none';
+      if (esMov) esMov.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
       const esNote = document.getElementById('expirationScalpProbMovementNote');
-      if (esNote) esNote.style.display = isExpirationScalp ? 'block' : 'none';
+      if (esNote) esNote.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
       const esVerify = document.getElementById('expirationScalpVerificationSection');
-      if (esVerify) esVerify.style.display = isExpirationScalp ? 'block' : 'none';
+      if (esVerify) esVerify.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
       const hwsClose = document.getElementById('highWaterScalpLimitCloseSection');
-      if (hwsClose) hwsClose.style.display = isHighWaterScalp ? 'block' : 'none';
+      if (hwsClose) hwsClose.style.display = (!makerEdge && isHighWaterScalp) ? 'block' : 'none';
       const hwt1Close = document.getElementById('highWaterTest1LimitCloseOffsetSection');
-      if (hwt1Close) hwt1Close.style.display = isHighWaterTest1 ? 'block' : 'none';
+      if (hwt1Close) hwt1Close.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
       const hwsStop = document.getElementById('highWaterScalpStopLossPriceSection');
-      if (hwsStop) hwsStop.style.display = isHighWaterTest1 ? 'none' : '';
+      if (hwsStop) hwsStop.style.display = (makerEdge || isHighWaterTest1) ? 'none' : '';
       const hwt1Stop = document.getElementById('highWaterTest1StopLossOffsetSection');
-      if (hwt1Stop) hwt1Stop.style.display = isHighWaterTest1 ? 'block' : 'none';
+      if (hwt1Stop) hwt1Stop.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
       const hwsPre = document.getElementById('highWaterPositionRiskSection');
-      if (hwsPre) hwsPre.style.display = isHighWaterFamily ? 'block' : 'none';
+      if (hwsPre) hwsPre.style.display = (!makerEdge && isHighWaterFamily) ? 'block' : 'none';
       const otEl = document.getElementById('uatKalshiOrderType');
       const tifEl = document.getElementById('uatKalshiTimeInForce');
-      if (otEl) otEl.disabled = false;
-      if (tifEl) tifEl.disabled = false;
-      const nonScalpTail = document.getElementById('uatNonExpirationScalpAutoEntry');
-      if (nonScalpTail) nonScalpTail.style.display = disp(!isExpirationScalp);
+      const otWrap = otEl && otEl.parentElement;
+      const tifWrap = tifEl && tifEl.parentElement;
+      if (otEl) {
+        otEl.disabled = !!makerEdge;
+        if (makerEdge) otEl.value = 'limit';
+      }
+      if (tifEl) {
+        tifEl.disabled = !!makerEdge;
+        if (makerEdge) tifEl.value = 'good_till_canceled';
+      }
+      if (otWrap) otWrap.style.display = makerEdge ? 'none' : '';
+      if (tifWrap) tifWrap.style.display = makerEdge ? 'none' : '';
+      const nonScalpShow = !isExpirationScalp && !makerEdge;
+      ['uatNonExpirationScalpAutoEntry', 'uatNonExpirationScalpAutoEntryTail'].forEach((id) => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = disp(nonScalpShow);
+      });
+      // Maker Edge: hide HTC-style auto-stop / spike / volume / win-prob that do not apply
+      if (makerEdge) {
+        ['autoEntryMinVolumeSlider', 'autoEntryDifferentialSlider', 'autoEntryMaxDifferentialSlider'].forEach((id) => {
+          setForId(id, false);
+        });
+        if (minVolSection) minVolSection.style.display = 'none';
+        if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = 'none';
+        if (spikeGroup) spikeGroup.style.display = 'none';
+        const cooldownSecMaker = document.getElementById('uatCooldownWindowSection');
+        if (cooldownSecMaker) cooldownSecMaker.style.display = 'none';
+        if (probAdjGroup) probAdjGroup.style.display = 'none';
+        if (perfRow && perfRow.parentElement) perfRow.parentElement.style.display = 'none';
+        if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = 'none';
+        if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = 'none';
+        if (stopVerifyControls) stopVerifyControls.style.display = 'none';
+        const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+        if (probWindowLabel) probWindowLabel.style.display = 'none';
+        const probWindowContainer = document.getElementById('probabilityWindowSliderContainer');
+        const probWindowWrap = probWindowContainer && probWindowContainer.closest('.value-bubble-container');
+        if (probWindowWrap) probWindowWrap.style.display = 'none';
+        else if (probWindowContainer) probWindowContainer.style.display = 'none';
+        if (autoStopSection) autoStopSection.style.display = 'none';
+      }
     }
 
     // Minimum Time to Close Controls
@@ -1876,6 +1928,36 @@
       return Number.isFinite(n) ? n : null;
     }
 
+    /**
+     * Maker Edge / HWS single-limit slider: set ONLY from monitor API ask.
+     * Returns false if ask missing — caller must refuse hydrate (HTML default 0.90 must never save).
+     */
+    function uatApplyLimitPriceSliderFromMonitorAsk(askDollars, sliderId, bubbleFn) {
+      const ask = uatFiniteOrNull(askDollars);
+      const ptEl = document.getElementById(sliderId);
+      if (ptEl) {
+        delete ptEl.dataset.uatAskFromMonitor;
+      }
+      if (ask == null || ask <= 0 || ask >= 1) return false;
+      if (!ptEl) return false;
+      const ptSlider = Math.min(99, Math.max(1, Math.round(ask * 100)));
+      ptEl.value = String(ptSlider);
+      ptEl.dataset.uatAskFromMonitor = '1';
+      if (typeof bubbleFn === 'function') bubbleFn(ptSlider);
+      return true;
+    }
+
+    function uatApiSettingsReadyForMonitor(data, strategy) {
+      if (!uatApiSettingsHaveTimeWindow(data)) return false;
+      if (uatIsMakerEdge(strategy)) {
+        const ask = uatFiniteOrNull(data.min_ask);
+        const ask2 = uatFiniteOrNull(data.max_ask);
+        const lim = ask != null ? ask : ask2;
+        if (lim == null || lim <= 0 || lim >= 1) return false;
+      }
+      return true;
+    }
+
     let uatDupePairingWired = false;
 
     function uatDupePairingMonitorNumber(monitor) {
@@ -1949,7 +2031,12 @@
       if ([...selectEl.options].some((o) => o.value === want)) {
         selectEl.value = want;
       } else {
-        selectEl.value = String(rows[0].id);
+        // Never invent another subaccount (e.g. rows[0] → undefined_2). Keep monitor's id.
+        const opt = document.createElement('option');
+        opt.value = want;
+        opt.textContent = want === '1' ? 'Master Trading Bankroll' : ('Subaccount ' + want);
+        selectEl.appendChild(opt);
+        selectEl.value = want;
       }
     }
 
@@ -2087,6 +2174,7 @@
       const isHighWaterScalp = uatIsHighWaterScalp(currentStrategy);
       const isHighWaterTest1 = uatIsHighWaterTest1(currentStrategy);
       const isHighWaterFamily = uatIsHighWaterFamily(currentStrategy);
+      const isMakerEdge = uatIsMakerEdge(currentStrategy);
       const isExpirationScalp = uatIsExpirationScalpEntry(currentStrategy);
       window.dashboardTimeWindowMaxSeconds = uatTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
 
@@ -2151,25 +2239,29 @@
       
       // Change "Win Probability Window" label to "Price Window" for Momentum Breakout/Contain
       const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+      const probWindowContainer = document.getElementById('probabilityWindowSliderContainer');
+      const probWindowWrap = probWindowContainer && probWindowContainer.closest('.value-bubble-container');
       if (probWindowLabel) {
-        if (isMomentumBreakout || isMomentumContain) {
-          probWindowLabel.textContent = 'Price Window:';
+        if (isMakerEdge) {
+          probWindowLabel.style.display = 'none';
+          if (probWindowWrap) probWindowWrap.style.display = 'none';
+          else if (probWindowContainer) probWindowContainer.style.display = 'none';
         } else {
-          probWindowLabel.textContent = 'Win Probability Window:';
+          probWindowLabel.style.display = '';
+          if (probWindowWrap) probWindowWrap.style.display = '';
+          else if (probWindowContainer) probWindowContainer.style.display = '';
+          if (isMomentumBreakout || isMomentumContain) {
+            probWindowLabel.textContent = 'Price Window:';
+          } else {
+            probWindowLabel.textContent = 'Win Probability Window:';
+          }
         }
       }
       
-      // Show/hide Cooldown Window slider (Momentum Contain only)
-      const cooldownWindowLabel = document.querySelector('label[for="cooldownWindowSlider"]');
-      const cooldownWindowValueContainer = document.querySelector('label[for="cooldownWindowSlider"]')?.nextElementSibling;
-      if (cooldownWindowLabel && cooldownWindowValueContainer) {
-        if (isMomentumContain) {
-          cooldownWindowLabel.style.display = '';
-          cooldownWindowValueContainer.style.display = '';
-        } else {
-          cooldownWindowLabel.style.display = 'none';
-          cooldownWindowValueContainer.style.display = 'none';
-        }
+      // Cooldown Window slider (Momentum Contain only — hidden for Expiration and all others)
+      {
+        const cooldownSection = document.getElementById('uatCooldownWindowSection');
+        if (cooldownSection) cooldownSection.style.display = isMomentumContain ? '' : 'none';
       }
 
       const rdRising = document.getElementById('risingDevilMinAskRangeSection');
@@ -2178,10 +2270,10 @@
       // Hide the section wrapper — label[for] uses display:block !important in uat_slider_spacing.css.
       {
         const genSec = document.getElementById('uatGenericMinSlippageSection');
-        const showGenericSlip = !isRisingDevil && !isExpirationScalp;
+        const showGenericSlip = !isRisingDevil && !isExpirationScalp && !isMakerEdge;
         if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
       }
-      dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1);
+      dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge);
 
       const populate = async (data) => {
         const setVal = (id,v) => { 
@@ -2324,13 +2416,15 @@
           if (esMaxAsk != null) dashboardExpirationScalpMaxAsk = esMaxAsk;
           const isHwsScalpPopulate = uatIsHighWaterScalp(currentStrategy);
           const isHwt1Populate = uatIsHighWaterTest1(currentStrategy);
+          // Maker Edge limit populate is outside this branch (not Expiration Scalp entry).
           if (isHwsScalpPopulate && esMinAsk != null) {
-            const ptSlider = Math.min(99, Math.max(1, Math.round(esMinAsk * 100)));
-            const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
-            if (ptEl) ptEl.value = ptSlider;
-            if (typeof updateHighWaterScalpPriceTargetBubble === 'function') {
-              updateHighWaterScalpPriceTargetBubble(ptSlider);
-            }
+            uatApplyLimitPriceSliderFromMonitorAsk(
+              esMinAsk,
+              'highWaterScalpPriceTargetSlider',
+              typeof updateHighWaterScalpPriceTargetBubble === 'function'
+                ? updateHighWaterScalpPriceTargetBubble
+                : null
+            );
           }
           if (isHwt1Populate) {
             if (esMinAsk != null && esMaxAsk == null) {
@@ -2429,6 +2523,24 @@
               // If max is at 100, adjust min down
               dashboardMinProbability = parseFloat((dashboardMaxProbability - MIN_SEPARATION).toFixed(1));
             }
+          }
+        }
+
+        // Maker Edge: Limit Price slider is shared HWS chrome (HTML default 0.90). Must load
+        // from monitor min_ask here — NOT inside Expiration Scalp gate (Maker Edge is not ES).
+        if (uatIsMakerEdge(currentStrategy)) {
+          const meAsk = uatFiniteOrNull(data.min_ask) != null
+            ? uatFiniteOrNull(data.min_ask)
+            : uatFiniteOrNull(data.max_ask);
+          const meOk = uatApplyLimitPriceSliderFromMonitorAsk(
+            meAsk,
+            'highWaterScalpPriceTargetSlider',
+            typeof updateHighWaterScalpPriceTargetBubble === 'function'
+              ? updateHighWaterScalpPriceTargetBubble
+              : null
+          );
+          if (!meOk) {
+            throw new Error('Maker Edge min_ask missing from monitor API — refusing UI defaults');
           }
         }
         
@@ -2905,9 +3017,11 @@
       // never enable Save on in-memory slider defaults (0/3600) or a prior session's state.
       let hydrateOk = false;
       try {
+        const ptClear = document.getElementById('highWaterScalpPriceTargetSlider');
+        if (ptClear) delete ptClear.dataset.uatAskFromMonitor;
         const r = await fetch('/api/get_auto_entry_settings?monitor_id=' + apiId);
         const j = await r.json();
-        if (uatApiSettingsHaveTimeWindow(j)) {
+        if (uatApiSettingsReadyForMonitor(j, currentStrategy)) {
           dashboardSettingsCache[tileId] = j;
           await populate(j);
           hydrateOk = true;
@@ -2948,6 +3062,7 @@
       const isHighWaterScalp = uatIsHighWaterScalp(currentStrategy);
       const isHighWaterTest1 = uatIsHighWaterTest1(currentStrategy);
       const isHighWaterFamily = uatIsHighWaterFamily(currentStrategy);
+      const isMakerEdge = uatIsMakerEdge(currentStrategy);
       const isExpirationScalp = uatIsExpirationScalpEntry(currentStrategy);
         
         const payload = {
@@ -2955,6 +3070,22 @@
           min_time: dashboardMinTimeSeconds,
           max_time: dashboardMaxTimeSeconds
         };
+
+        if (isMakerEdge) {
+          const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
+          if (!ptEl || ptEl.dataset.uatAskFromMonitor !== '1') {
+            alert('Maker Edge limit price did not load from the monitor. Nothing was saved.');
+            return;
+          }
+          const ptRaw = parseInt(ptEl.value, 10) / 100;
+          if (!Number.isFinite(ptRaw) || ptRaw <= 0 || ptRaw >= 1) {
+            alert('Limit price is required for Maker Edge.');
+            return;
+          }
+          const pt = parseFloat(ptRaw.toFixed(4));
+          payload.min_ask = pt;
+          payload.max_ask = pt;
+        }
 
         const regimeMonitorEnabledEl = document.getElementById('regimeMonitorEnabled');
         const regimeWindowEl = document.getElementById('regimeWindowSelect');
@@ -2964,7 +3095,10 @@
         payload.test_filter = uatMonitorTestFilterEl ? uatMonitorTestFilterEl.checked : false;
         const uatMonitorReverseEl = document.getElementById('uatMonitorReverse');
         payload.reverse = uatMonitorReverseEl ? uatMonitorReverseEl.checked : false;
-        {
+        if (isMakerEdge) {
+          payload.order_type = 'limit';
+          payload.time_in_force = 'good_till_canceled';
+        } else {
           const otEl = document.getElementById('uatKalshiOrderType');
           const tifEl = document.getElementById('uatKalshiTimeInForce');
           const ot = otEl && otEl.value;
@@ -3171,8 +3305,8 @@
             if (isNaN(stopSec)) stopSec = 1;
             payload.stop_verification_period_seconds = Math.min(60, Math.max(1, stopSec));
           }
-        } else {
-          // HOURLY HTC specific fields
+        } else if (!isMakerEdge) {
+          // HOURLY HTC specific fields (not Maker Edge — no win-prob gate)
           payload.min_volume = parseInt(document.getElementById('autoEntryMinVolumeSlider').value,10);
           // Use probability window values (ensure they're floats with 1 decimal)
           payload.min_probability = parseFloat(parseFloat(dashboardMinProbability).toFixed(1));

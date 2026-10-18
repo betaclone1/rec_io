@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-18 — Release v3.12.13: Maker Edge + per-subaccount drawdown halt
+
+**Summary**
+- **Release: v3.12.13**
+- **Plans:** `maker-edge-strategy` (`.cursor/plans/maker-edge-strategy.md`); strategy handoff `docs/MAKER_EDGE_STRATEGY.md`.
+- **Maker Edge:** New strategy seeds into `system.strategy_list_default` and every tenant `strategy_list_%`. Dedicated `maker_edge_agent_*` (outside TE) arms dual BID/ASK post-only GTC at monitor limit at Kalshi `open_time`, cancels the unfilled side on first fill, optional `min_time` TTC cancel, books fills via TM (`intent=maker_edge_fill`). AES/ATS cutout for Maker Edge monitors so they do not double-open. Settings UI detectors + supervisord program generation.
+- **Per-subaccount drawdown halt:** Live + paper `subaccounts_*` / `subaccounts_paper_*` get `drawdown_trading_halt`, `drawdown_reset_threshold_pct`, `trading_halt_active`, `drawdown_halt_monitor_snapshot`. Halt scopes to monitors whose `monitor_list.subaccount` matches; account manager UI for controls.
+- **DB:** Migrations **`20261017_1500_maker_edge_strategy`**, **`20261018_1200_subaccount_drawdown_halt`**.
+- **Also:** Balance-snapshot / paper MTB rake parity fixes; Kalshi lifecycle trade publish test coverage; exact-cent cum-size backtest CLI polish.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-18`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20261018_1200_subaccount_drawdown_halt` then `down 20261017_1500_maker_edge_strategy`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261017_1500_maker_edge_strategy`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261018_1200_subaccount_drawdown_halt`
+- [ ] Regenerate supervisor + full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `maker_edge_agent_*` RUNNING after regen; AES/ATS/TM RUNNING; Maker Edge selectable in settings; subaccount drawdown controls visible in account manager
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.13`
+
+---
+
 ## 2026-10-17 — Release v3.12.12: Per-monitor Kalshi subaccount + bankroll allotment
 
 **Summary**
@@ -18,12 +40,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-17`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down 20261017_1200_monitor_list_subaccount`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261017_1200_monitor_list_subaccount`
-- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `main_app` / `monitor_manager_*` / `trade_manager_*` / `trade_executor_*` / AES RUNNING; monitor settings show Subaccount dropdown; new opens write `trades.subaccount` matching monitor
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.12`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261017_1200_monitor_list_subaccount`
+- [x] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; `main_app` / `monitor_manager_*` / `trade_manager_*` / `trade_executor_*` / AES RUNNING; monitor settings show Subaccount dropdown; new opens write `trades.subaccount` matching monitor
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.12`
+
 
 ---
 

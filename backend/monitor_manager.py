@@ -710,17 +710,31 @@ environment={env_vars}
 
     # === CORE FUNCTIONALITY (Starting Point) ===
 
-    def apply_drawdown_emergency_monitor_halt(self) -> Dict[str, Any]:
+    def apply_drawdown_emergency_monitor_halt(
+        self,
+        *,
+        subaccount_id: Optional[int] = None,
+    ) -> Dict[str, Any]:
         """
-        Persist all monitors' paper_trade / test_filter to users.system_settings_0001.drawdown_halt_monitor_snapshot,
-        then force every monitor row to paper_trade=TRUE and test_filter=TRUE and set trading_halt_active.
+        Snapshot paper_trade / test_filter for monitors on the tripped subaccount, force those
+        rows to paper_trade=TRUE and test_filter=TRUE, and set that subaccount's trading_halt_active.
+
+        When ``subaccount_id`` is None (legacy), halt every monitor and latch system_settings
+        (pre-per-SA behavior).
         """
+        from backend.core.subaccount_drawdown import (
+            get_subaccount_drawdown_controls,
+            get_subaccount_trading_halt_active_with_cursor,
+            set_subaccount_drawdown_halt_snapshot_with_cursor,
+            set_subaccount_trading_halt_active_with_cursor,
+        )
         from backend.core.system_settings_store import (
             get_drawdown_trading_controls,
             set_drawdown_halt_monitor_snapshot_with_cursor,
             set_trading_halt_active_with_cursor,
             utc_now_iso_and_est_wall_for_halt_snapshot,
         )
+        from backend.trading_mode import subaccounts_table_for_user
 
         conn = None
         try:
@@ -731,31 +745,50 @@ environment={env_vars}
                 sql.Identifier(f"users_{slot}"),
                 sql.Identifier(f"system_settings_{slot}"),
             )
+            sa_fqn = subaccounts_table_for_user(slot)
             already_halted = False
             drawdown_pct: Any = None
             halt_est_wall = ""
             monitors: List[Dict[str, Any]] = []
             n_updated = 0
+            scoped = subaccount_id is not None
             with conn.cursor() as cursor:
-                cursor.execute(
-                    sql.SQL(
-                        "SELECT COALESCE(trading_halt_active, false) FROM {} WHERE id = 1"
-                    ).format(settings_ident)
-                )
-                halt_row = cursor.fetchone()
-                already_halted = bool(halt_row[0]) if halt_row else False
-                _, drawdown_pct = get_drawdown_trading_controls(
-                    cursor, user_number=slot
-                )
-
-                cursor.execute(
-                    sql.SQL(
-                        "SELECT id, name, status, paper_trade, test_filter FROM {} ORDER BY id"
-                    ).format(ml)
-                )
+                if scoped:
+                    already_halted = get_subaccount_trading_halt_active_with_cursor(
+                        cursor, sa_fqn, subaccount_id=int(subaccount_id)
+                    )
+                    _, drawdown_pct = get_subaccount_drawdown_controls(
+                        cursor, sa_fqn, subaccount_id=int(subaccount_id)
+                    )
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT id, name, status, paper_trade, test_filter, subaccount "
+                            "FROM {} WHERE subaccount = %s ORDER BY id"
+                        ).format(ml),
+                        (int(subaccount_id),),
+                    )
+                else:
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT COALESCE(trading_halt_active, false) FROM {} WHERE id = 1"
+                        ).format(settings_ident)
+                    )
+                    halt_row = cursor.fetchone()
+                    already_halted = bool(halt_row[0]) if halt_row else False
+                    _, drawdown_pct = get_drawdown_trading_controls(
+                        cursor, user_number=slot
+                    )
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT id, name, status, paper_trade, test_filter, subaccount "
+                            "FROM {} ORDER BY id"
+                        ).format(ml)
+                    )
                 rows = cursor.fetchall()
 
-                for mid, name, status, paper_trade, test_filter in rows:
+                for row in rows:
+                    mid, name, status, paper_trade, test_filter = row[0], row[1], row[2], row[3], row[4]
+                    sa_col = row[5] if len(row) > 5 else None
                     monitors.append(
                         {
                             "id": int(mid),
@@ -763,6 +796,7 @@ environment={env_vars}
                             "status": str(status) if status is not None else "",
                             "paper_trade": bool(paper_trade) if paper_trade is not None else False,
                             "test_filter": bool(test_filter) if test_filter is not None else False,
+                            "subaccount": int(sa_col) if sa_col is not None else None,
                         }
                     )
 
@@ -774,38 +808,79 @@ environment={env_vars}
                     "reason": "bankroll_drawdown_step_down_50pct",
                     "monitor_list_table": monitor_list_fqn(slot),
                     "user_number": slot,
+                    "subaccount": int(subaccount_id) if scoped else None,
                     "monitors": monitors,
                 }
 
-                cursor.execute(
-                    sql.SQL(
-                        "UPDATE {} SET paper_trade = TRUE, test_filter = TRUE, "
-                        "updated_at = CURRENT_TIMESTAMP"
-                    ).format(ml)
-                )
-                n_updated = cursor.rowcount
-                n_snap = set_drawdown_halt_monitor_snapshot_with_cursor(
-                    cursor, slot, snapshot
-                )
-                if n_snap == 0:
-                    conn.rollback()
-                    return {
-                        "status": "error",
-                        "message": "system_settings row missing or snapshot not saved",
-                    }
-                set_trading_halt_active_with_cursor(cursor, slot, True)
+                if scoped:
+                    cursor.execute(
+                        sql.SQL(
+                            "UPDATE {} SET paper_trade = TRUE, test_filter = TRUE, "
+                            "updated_at = CURRENT_TIMESTAMP WHERE subaccount = %s"
+                        ).format(ml),
+                        (int(subaccount_id),),
+                    )
+                    n_updated = cursor.rowcount
+                    n_snap = set_subaccount_drawdown_halt_snapshot_with_cursor(
+                        cursor,
+                        sa_fqn,
+                        subaccount_id=int(subaccount_id),
+                        snapshot=snapshot,
+                    )
+                    if n_snap == 0:
+                        conn.rollback()
+                        return {
+                            "status": "error",
+                            "message": f"subaccount {subaccount_id} missing or snapshot not saved",
+                        }
+                    set_subaccount_trading_halt_active_with_cursor(
+                        cursor,
+                        sa_fqn,
+                        subaccount_id=int(subaccount_id),
+                        active=True,
+                    )
+                    snapshot_storage = (
+                        f"{sa_fqn}.drawdown_halt_monitor_snapshot (id={int(subaccount_id)})"
+                    )
+                else:
+                    cursor.execute(
+                        sql.SQL(
+                            "UPDATE {} SET paper_trade = TRUE, test_filter = TRUE, "
+                            "updated_at = CURRENT_TIMESTAMP"
+                        ).format(ml)
+                    )
+                    n_updated = cursor.rowcount
+                    n_snap = set_drawdown_halt_monitor_snapshot_with_cursor(
+                        cursor, slot, snapshot
+                    )
+                    if n_snap == 0:
+                        conn.rollback()
+                        return {
+                            "status": "error",
+                            "message": "system_settings row missing or snapshot not saved",
+                        }
+                    set_trading_halt_active_with_cursor(cursor, slot, True)
+                    snapshot_storage = (
+                        f"users_{slot}.system_settings_{slot}.drawdown_halt_monitor_snapshot"
+                    )
             conn.commit()
 
             out = {
                 "status": "success",
-                "snapshot_storage": f"users_{slot}.system_settings_{slot}.drawdown_halt_monitor_snapshot",
+                "snapshot_storage": snapshot_storage,
                 "monitors_snapshotted": len(monitors),
                 "monitors_updated": int(n_updated),
                 "halt_already_active": already_halted,
+                "subaccount": int(subaccount_id) if scoped else None,
             }
             self.log_event(
                 "DRAWDOWN_EMERGENCY_HALT",
-                "Drawdown step-down: snapshot saved and all monitors forced to paper + test_filter.",
+                (
+                    f"Drawdown step-down: snapshot saved; monitors on subaccount {subaccount_id} "
+                    "forced to paper + test_filter."
+                    if scoped
+                    else "Drawdown step-down: snapshot saved and all monitors forced to paper + test_filter."
+                ),
                 out,
             )
             if not already_halted:
@@ -861,18 +936,46 @@ environment={env_vars}
             if conn:
                 conn.close()
 
-    def handle_bankroll_update(self, bankroll_stepped_down: bool = False) -> Dict[str, Any]:
+    def handle_bankroll_update(
+        self,
+        bankroll_stepped_down: bool = False,
+        *,
+        drawdown_halt_subaccounts: Optional[List[int]] = None,
+    ) -> Dict[str, Any]:
         """
         Handle bankroll update from Kalshi sync_balance, paper apply_balance_snapshot, or trading_mode ripple.
         Reads latest row from account_balance_0001 or account_balance_paper_0001 (trading_mode). Updates
         bankroll_allotment_total and total_position for active monitors.
+
+        When ``bankroll_stepped_down``, emergency halt is scoped to each id in
+        ``drawdown_halt_subaccounts`` (monitors with matching ``monitor_list.subaccount``).
+        If that list is empty/missing, falls back to legacy all-monitors halt.
         """
         try:
             self.log_event("BANKROLL_UPDATE", "Processing bankroll update notification")
 
             emergency_halt_result: Optional[Dict[str, Any]] = None
             if bankroll_stepped_down:
-                emergency_halt_result = self.apply_drawdown_emergency_monitor_halt()
+                sa_ids: List[int] = []
+                for raw in drawdown_halt_subaccounts or []:
+                    try:
+                        sa_ids.append(int(raw))
+                    except (TypeError, ValueError):
+                        continue
+                if sa_ids:
+                    results = []
+                    any_fail = False
+                    for sa_id in sa_ids:
+                        one = self.apply_drawdown_emergency_monitor_halt(subaccount_id=sa_id)
+                        results.append(one)
+                        if one.get("status") != "success":
+                            any_fail = True
+                    emergency_halt_result = {
+                        "status": "error" if any_fail else "success",
+                        "per_subaccount": results,
+                    }
+                else:
+                    emergency_halt_result = self.apply_drawdown_emergency_monitor_halt()
                 if emergency_halt_result.get("status") != "success":
                     self.log_event(
                         "DRAWDOWN_EMERGENCY_HALT_FAILED",
@@ -2417,10 +2520,16 @@ except Exception as e:
 
 @app.route('/api/bankroll_updated', methods=['POST'])
 def bankroll_updated():
-    """Endpoint called by kalshi_account_sync when bankroll changes. Body may include bankroll_stepped_down=True after a configured drawdown step-down; monitor_manager then snapshots monitors and forces paper + test_filter."""
+    """Endpoint called by kalshi_account_sync when bankroll changes. Body may include bankroll_stepped_down=True after a configured drawdown step-down; monitor_manager then snapshots monitors and forces paper + test_filter (scoped to drawdown_halt_subaccounts when provided)."""
     payload = request.get_json(silent=True) or {}
     bankroll_stepped_down = payload.get("bankroll_stepped_down", False)
-    return jsonify(monitor_manager.handle_bankroll_update(bankroll_stepped_down=bankroll_stepped_down))
+    halt_sas = payload.get("drawdown_halt_subaccounts")
+    return jsonify(
+        monitor_manager.handle_bankroll_update(
+            bankroll_stepped_down=bankroll_stepped_down,
+            drawdown_halt_subaccounts=halt_sas if isinstance(halt_sas, list) else None,
+        )
+    )
 
 @app.route('/api/sync_bankroll_allotments', methods=['POST'])
 def sync_bankroll_allotments():
@@ -3562,8 +3671,12 @@ def start_monitor_manager_redis_subscriber() -> None:
                         continue
                     try:
                         if data.get("type") == "bankroll_updated":
+                            halt_sas = data.get("drawdown_halt_subaccounts")
                             monitor_manager.handle_bankroll_update(
-                                bool(data.get("bankroll_stepped_down", False))
+                                bool(data.get("bankroll_stepped_down", False)),
+                                drawdown_halt_subaccounts=(
+                                    halt_sas if isinstance(halt_sas, list) else None
+                                ),
                             )
                             continue
                         monitor_manager.handle_trade_status_update(

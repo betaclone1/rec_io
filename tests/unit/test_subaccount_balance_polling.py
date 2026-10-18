@@ -195,7 +195,7 @@ def test_poll_live_account_balances_skips_understatement_then_writes_recovered(m
     monkeypatch.setattr("backend.balance_snapshot.time.sleep", lambda _s: None)
 
     cur = MagicMock()
-    inserted, _ = poll_live_account_balances(cur, "0001", throttle=False)
+    inserted, _, _ = poll_live_account_balances(cur, "0001", throttle=False)
     assert inserted is True
     assert mtb_fetch_calls["n"] == 2
     mtb_writes = [c for c in apply_calls if "subaccount_balance_0001_1" in c.get("account_balance_table", "")]
@@ -247,7 +247,7 @@ def test_poll_live_account_balances_understatement_exhausted_still_writes(monkey
     monkeypatch.setattr("backend.balance_snapshot.time.sleep", lambda _s: None)
 
     cur = MagicMock()
-    inserted, _ = poll_live_account_balances(cur, "0001", throttle=False)
+    inserted, _, _ = poll_live_account_balances(cur, "0001", throttle=False)
     assert inserted is True
     mtb_writes = [c for c in apply_calls if "subaccount_balance_0001_1" in c.get("account_balance_table", "")]
     assert mtb_writes
@@ -306,7 +306,7 @@ def test_poll_live_account_balances_skips_glitch_then_writes_clean(monkeypatch):
     monkeypatch.setattr("backend.balance_snapshot.time.sleep", lambda _s: None)
 
     cur = MagicMock()
-    inserted, _ = poll_live_account_balances(cur, "0001", throttle=False)
+    inserted, _, _ = poll_live_account_balances(cur, "0001", throttle=False)
     assert inserted is True
     assert mtb_fetch_calls["n"] == 2  # glitch tick, then clean repoll
     assert len(apply_calls) >= 1
@@ -406,7 +406,7 @@ def test_poll_live_account_balances_exhausted_retries_no_write(monkeypatch):
     monkeypatch.setattr("backend.balance_snapshot.time.sleep", lambda _s: None)
 
     cur = MagicMock()
-    inserted, _ = poll_live_account_balances(cur, "0001", throttle=False)
+    inserted, _, _ = poll_live_account_balances(cur, "0001", throttle=False)
     assert inserted is False
     assert apply_calls == []
 

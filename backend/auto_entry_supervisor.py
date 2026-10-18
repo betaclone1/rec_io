@@ -3794,13 +3794,16 @@ def _aes_list_lane_monitor_rows() -> List[dict]:
         filter_out_cutout_rows,
         list_active_btc15m_exp_scalp_cutout_rows,
     )
+    from backend.core.aes_btc15m_maker_edge_cutout import filter_out_maker_edge_rows
 
     if AES_BTC15M_EXP_SCALP:
         rows = list_active_btc15m_exp_scalp_cutout_rows()
     elif AES_UNIFIED_15M:
         from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
-        rows = filter_out_cutout_rows(list_active_15m_monitor_rows())
+        rows = filter_out_maker_edge_rows(
+            filter_out_cutout_rows(list_active_15m_monitor_rows())
+        )
     elif AES_UNIFIED_HOURLY:
         from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
 
@@ -3808,7 +3811,9 @@ def _aes_list_lane_monitor_rows() -> List[dict]:
     elif AES_UNIFIED_ALL:
         from backend.core.unified_all_monitors import list_active_unified_monitor_rows
 
-        rows = filter_out_cutout_rows(list_active_unified_monitor_rows())
+        rows = filter_out_maker_edge_rows(
+            filter_out_cutout_rows(list_active_unified_monitor_rows())
+        )
     else:
         rows = []
     rows = [r for r in rows if r.get("auto_trade") is True]
