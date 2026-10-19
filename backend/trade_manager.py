@@ -3368,11 +3368,13 @@ def _maker_edge_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional
 
 def book_maker_edge_external_fill(data: dict) -> dict:
     """
-    Book an open trade from Maker Edge agent after first dual-rest fill.
+    Book / update an open Maker Edge trade from venue fill totals.
 
     Does not call trade_executor. Status is open; order_id_open stamped when provided.
-    Subaccount must be present (monitor routing). Partials: position = filled qty only.
-    Paper maker fees are 0.00 (live uses venue fee fields when known).
+    ``position`` must be the cumulative venue fill qty for the resting order (not a delta).
+    Re-posts with the same ``ticket_id`` raise ``position`` monotonically to match the
+    latest venue total so trade logs reflect actual live fills.
+    Paper maker fees are 0.00 (live uses venue fee fields when known — never invented).
     """
     from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME
 
@@ -3434,12 +3436,99 @@ def book_maker_edge_external_fill(data: dict) -> dict:
             str(monitor_key).strip() if monitor_key else None
         )
     contract_label = derive_contract_label_from_kalshi_ticker(symbol, ticker)
+    ticket_id = str(data.get("ticket_id") or "").strip()
+    oid = str(data.get("order_id_open") or "").strip()
+    try:
+        initial_count = (
+            float(data["initial_count"])
+            if data.get("initial_count") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        initial_count = None
+
+    # Cumulative fill sync: same ticket_id → raise position to venue total (no second row).
+    if ticket_id:
+        pg_exist = get_postgresql_connection()
+        if pg_exist:
+            try:
+                with pg_exist.cursor() as cur:
+                    cur.execute(
+                        f"""
+                        SELECT id, position, status
+                        FROM {_tm_trades_table()}
+                        WHERE ticket_id = %s
+                        LIMIT 1
+                        """,
+                        (ticket_id,),
+                    )
+                    existing = cur.fetchone()
+                    if existing and existing[0] is not None:
+                        trade_id = int(existing[0])
+                        try:
+                            prev_pos = float(existing[1]) if existing[1] is not None else 0.0
+                        except (TypeError, ValueError):
+                            prev_pos = 0.0
+                        st = str(existing[2] or "").strip().lower()
+                        if st not in ("open", "partial"):
+                            return {
+                                "status": "ok",
+                                "id": trade_id,
+                                "inserted": False,
+                                "updated": False,
+                                "skipped_status": st,
+                            }
+                        new_pos = position if position >= prev_pos - 1e-9 else prev_pos
+                        pos_raised = new_pos > prev_pos + 1e-9
+                        if pos_raised or oid:
+                            cur.execute(
+                                f"""
+                                UPDATE {_tm_trades_table()}
+                                SET position = %s,
+                                    order_id_open = COALESCE(NULLIF(%s, ''), order_id_open),
+                                    exchange = 'kalshi',
+                                    updated_at = NOW()
+                                WHERE id = %s AND status IN ('open', 'partial')
+                                """,
+                                (new_pos, oid, trade_id),
+                            )
+                        pg_exist.commit()
+                        if pos_raised:
+                            log(
+                                f"[MAKER EDGE] fill total updated id={trade_id} "
+                                f"qty {prev_pos} → {new_pos} ticker={ticker}"
+                            )
+                            log_event(
+                                ticket_id,
+                                f"MANAGER: MAKER_EDGE fill total id={trade_id} "
+                                f"qty {prev_pos} → {new_pos}",
+                                trade_id=trade_id,
+                            )
+                            try:
+                                notify_strike_table_trade_change(trade_id, "open")
+                            except Exception:
+                                pass
+                        return {
+                            "status": "ok",
+                            "id": trade_id,
+                            "inserted": False,
+                            "updated": new_pos > prev_pos + 1e-9,
+                        }
+            except Exception as e:
+                log(f"[MAKER EDGE] ticket_id upsert lookup failed: {e}")
+            finally:
+                try:
+                    pg_exist.close()
+                except Exception:
+                    pass
 
     row = dict(data)
     row["status"] = "open"
     row["side"] = side
     row["buy_price"] = buy_price
     row["position"] = position
+    if initial_count is not None and initial_count > 0:
+        row["initial_count"] = initial_count
     row["strike"] = strike
     row["symbol"] = symbol
     row["trade_strategy"] = STRATEGY_NAME
@@ -3472,7 +3561,6 @@ def book_maker_edge_external_fill(data: dict) -> dict:
         )
 
     # insert_trade leaves fees NULL; paper maker fees are known zero.
-    oid = str(data.get("order_id_open") or "").strip()
     pg = get_postgresql_connection()
     if pg:
         try:
@@ -3505,6 +3593,17 @@ def book_maker_edge_external_fill(data: dict) -> dict:
                         WHERE id = %s
                         """,
                         (oid, trade_id),
+                    )
+                # If insert_trade reused ticket_id without applying new position, force sync.
+                if not inserted:
+                    cur.execute(
+                        f"""
+                        UPDATE {_tm_trades_table()}
+                        SET position = GREATEST(COALESCE(position, 0), %s),
+                            updated_at = NOW()
+                        WHERE id = %s AND status IN ('open', 'partial')
+                        """,
+                        (position, trade_id),
                     )
             pg.commit()
         except Exception as e:
@@ -4063,7 +4162,12 @@ def insert_trade(trade):
                     symbol, ticker, trade_market_for_db, venue_exchange
                 )
                 initial_price_for_db = trade.get('buy_price')
-                initial_count_for_db = trade.get('position')
+                # Prefer explicit initial_count (Maker Edge resting size) over filled position.
+                initial_count_for_db = (
+                    trade.get("initial_count")
+                    if trade.get("initial_count") is not None
+                    else trade.get("position")
+                )
                 try:
                     initial_price_for_db = float(initial_price_for_db) if initial_price_for_db is not None else None
                 except (TypeError, ValueError):

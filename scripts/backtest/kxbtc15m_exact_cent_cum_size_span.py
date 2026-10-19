@@ -133,6 +133,11 @@ def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--start", required=True)
     ap.add_argument("--end", required=True)
+    ap.add_argument(
+        "--series",
+        default="KXBTC15M",
+        help="Kalshi 15m series ticker (e.g. KXBTC15M, KXETH15M).",
+    )
     ap.add_argument("--limit", type=float, default=0.01)
     ap.add_argument("--contracts", type=float, default=2500.0)
     ap.add_argument("--bankroll", type=float, default=10_000.0)
@@ -150,6 +155,7 @@ def main() -> None:
 
     start = date.fromisoformat(args.start)
     end = date.fromisoformat(args.end)
+    series = str(args.series).strip().upper()
     L = round(float(args.limit), 2)
     contracts = float(args.contracts)
     outlay = contracts * L
@@ -165,7 +171,7 @@ def main() -> None:
     d = start
     while d <= end:
         by: Dict[str, List[dict]] = defaultdict(list)
-        p = OUT / f"KXBTC15M_public_trades_{d.isoformat()}_et.csv"
+        p = OUT / f"{series}_public_trades_{d.isoformat()}_et.csv"
         if p.is_file():
             with p.open() as f:
                 for r in csv.DictReader(f):
@@ -173,7 +179,7 @@ def main() -> None:
         day_keep = 0
         iso_week, week_start = _week_keys(d)
         year_month = f"{d.year}-{d.month:02d}"
-        for t in kalshi_15m_market_tickers_for_eastern_date("KXBTC15M", d):
+        for t in kalshi_15m_market_tickers_for_eastern_date(series, d):
             rows = by.get(t) or []
             if not rows:
                 empty += 1
@@ -238,7 +244,7 @@ def main() -> None:
     load_s = time.time() - t0
 
     print(
-        f"\n======== FINAL {start}..{end} limit={L} contracts={contracts:.0f} "
+        f"\n======== FINAL {series} {start}..{end} limit={L} contracts={contracts:.0f} "
         f"cum_vol>={need:.0f} no TTC ========",
         flush=True,
     )
@@ -267,7 +273,7 @@ def main() -> None:
         _print_table("BY ISO WEEK (Mon-start week_start_et in CSV)", by_week, "iso_week")
 
     out = Path(args.out) if args.out else (
-        OUT / f"KXBTC15M_exact_cent_cum{int(need)}_limit{L:.2f}_{start}_{end}_et.csv"
+        OUT / f"{series}_exact_cent_cum{int(need)}_limit{L:.2f}_{start}_{end}_et.csv"
     )
     stem = out.with_suffix("")  # strip .csv
     # if user passed foo_et.csv, siblings foo_et_by_month.csv is awkward;
@@ -335,6 +341,7 @@ def main() -> None:
 
     totals = [
         {
+            "series": series,
             "span_start": start.isoformat(),
             "span_end": end.isoformat(),
             "limit_px": L,

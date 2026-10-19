@@ -97,7 +97,7 @@ def test_check_fills_cancels_both_at_min_ttc():
     )
     canceled: list[str] = []
 
-    def _cancel(oid, *, subaccount):
+    def _cancel(oid, *, subaccount, market_ticker=None, exchange_index=-1):
         canceled.append(oid)
         return True
 

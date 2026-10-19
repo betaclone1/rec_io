@@ -70,6 +70,7 @@ def main() -> int:
     for extra in (
         f"{args.series}_longshot_winners_{tag}_et.csv",
         f"{args.series}_longshot_summary_{tag}_et.csv",
+        f"{args.series}_market_results_{tag}_et.csv",
     ):
         p = TRADES_DIR / extra
         if p.is_file():

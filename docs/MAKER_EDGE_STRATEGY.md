@@ -110,10 +110,9 @@ See §3.3. Nearly every market with a package got a fill; win count matches cum-
 
 **File:** `KXBTC15M_longshot_limit_sweep_2026-06-01_2026-09-30_et.csv` — do not implement.
 
-### 4.6 In flight (do not invent numbers)
+### 4.6 YTD 2026 exact-cent cum2500
 
-- **YTD 2026** exact-cent cum-size @ **2500** contracts, `L=0.01`, no TTC — waiter on day CSVs; script `kxbtc15m_exact_cent_cum_size_span.py`.  
-- Local pull Jan–May + Oct + Drive month archives still running in parallel.
+Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Monthly table: `docs/BACKTEST_KXBTC15M_YTD_2026_EXACT_CENT_CUM2500.md`.
 
 ---
 
@@ -127,9 +126,9 @@ See §3.3. Nearly every market with a package got a fill; win count matches cum-
 |---------|----------------|
 | Process | Dedicated `maker_edge_agent` per tenant (outside TE); AES/ATS exclude Maker Edge monitors |
 | Symbols | `BTC` / `15m` only (`KXBTC15M`) v1 |
-| Entry | At cycle open (TTC in window): place **two** post-only GTC at monitor limit `L` — **BID @ L** and **ASK @ L** (yes/no constructs) |
+| Entry | At Kalshi ``open_time``: place **two** post-only GTC at monitor limit `L` — **BID @ L** and **ASK @ L** (yes/no constructs). Arming is open_time-driven, not TTC. |
 | Size | Standard bankroll pct/contracts from `monitor_list.subaccount` (v3.12.12) |
-| TTC | User `min_time`/`max_time`; seed full window `0`–`900` |
+| TTC | `min_time` used only to cancel **unfilled** rests near expiry; not a place gate |
 | One-fill rule | First fill → cancel sibling; book into TM `intent=maker_edge_fill` |
 | Hold | TM monitors like any other trade; settlement via `market_result` only |
 | Subaccount | Same routing as all strats on every place/cancel/book |
@@ -147,13 +146,16 @@ Closest existing plumbing: trade_manager GTC / resting orders, account-sync fill
 ### 5.3 Process sketch
 
 ```
-cycle open (watchdog / lifecycle)
-    → strategy worker sees new KXBTC15M ticker + floor
-    → TM/TE: place YES@0.01 GTC maker + NO@0.01 GTC maker (size N)
-    → account-sync / WS fills
-    → on first fill: cancel sibling order; trades_* row open on filled side
+prediscover next open_time (Kalshi /markets)
+    → arm waiter; prefetch: floor, monitor plan, price map, JSON bodies, PEM + TLS warm
+    → re-warm ~1s before open; busy-spin into open_ts
+    → hot path: parallel BID+ASK sign+POST only (no DB / foreign cancel)
+    → book DualRestState; foreign-cycle cleanup after wire
+    → on first fill: cancel sibling; trades_* row open on filled side
     → settlement / market_result → win_loss_confirmed (authoritative only)
 ```
+
+**Latency target (ours):** minimize ``open_time → first byte on the wire`` (`fire_lag_ms`, `send_lag_ms`, `prep_after_fire_ms` in agent logs). Venue ACK RTT (`bid_rtt_ms` / `ask_rtt_ms`, typically ~200–370 ms) is out of our control.
 
 **No fallbacks:** if book depth unknown, do not place; if fill ambiguous, do not invent side; `market_result` NULL until venue.
 
@@ -258,8 +260,8 @@ Under `backend/data/historical_data/kalshi_public_trades/`:
 - Month winners: `KXBTC15M_longshot_winners_2026-0{6,7,8,9}_et.csv`
 - Cache: `.cache_market_result_by_ticker.json`
 
-Expected when YTD finishes:  
-`KXBTC15M_exact_cent_cum2500_limit0.01_2026-01-01_<END>_et.csv`
+YTD cum2500 (done):  
+`KXBTC15M_exact_cent_cum2500_limit0.01_2026-01-01_2026-10-17_et*.csv` — monthly table in `docs/BACKTEST_KXBTC15M_YTD_2026_EXACT_CENT_CUM2500.md`.
 
 ### Packages
 
@@ -320,3 +322,4 @@ Expected when YTD finishes:
 | Date | Note |
 |------|------|
 | 2026-10-17 | Initial handoff from exact-cent / maker / package-v4 research session. YTD cum2500 still in flight. |
+| 2026-10-19 | Live place path: open_time arm + prefetch/rewarm + parallel dual post; log fire/send/ack lags. |

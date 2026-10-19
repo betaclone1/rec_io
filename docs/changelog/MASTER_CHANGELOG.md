@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-19 — Release v3.12.14: Maker Edge open_time hot path + fill booking hardening
+
+**Summary**
+- **Release: v3.12.14**
+- **Plans:** `maker-edge-strategy` (`.cursor/plans/maker-edge-strategy.md`); handoff `docs/MAKER_EDGE_STRATEGY.md`.
+- **Maker Edge place path:** Prefetch floor/monitor plans, V2 prices, JSON bodies, PEM + TLS warm (re-warm ~1s before open); busy-spin into Kalshi `open_time`; parallel BID/ASK POST of prebuilt bytes via persistent pool; foreign-cycle cleanup deferred until after wire. Logs `fire_lag_ms` / `send_lag_ms` / `ack_lag_ms` / RTT so open→wire is separable from venue ACK.
+- **Kalshi cancel routing:** ME + TE cancel paths require `market_ticker` for V2 shard auto-route (avoids 404 leaving sibling rests live).
+- **TM Maker Edge booking:** Cumulative venue fill sync by `ticket_id` (raise `position` monotonically; no duplicate open row).
+- **ATS:** Explicit hold-to-settlement for Maker Edge (refuse auto-stop / spike exits).
+- **Research:** YTD exact-cent cum2500 docs (BTC/ETH); month `market_results` export + package hook; span CLI series support.
+- **DB:** None (no new migrations).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-19`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Regenerate supervisor + full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `maker_edge_agent_*` RUNNING; TM/TE/ATS RUNNING; next open_time place log shows `fire_lag_ms` / `send_lag_ms` / `ack_lag_ms`
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.14`
+
+---
+
 ## 2026-10-18 — Release v3.12.13: Maker Edge + per-subaccount drawdown halt
 
 **Summary**

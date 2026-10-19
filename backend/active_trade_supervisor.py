@@ -5096,12 +5096,17 @@ def start_monitoring_loop():
                             check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades)
                 
                         # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
-                        # Skip momentum spike logic for Momentum Scalp and Momentum Reversal monitors
+                        # Skip momentum spike for Momentum Scalp / Reversal / Maker Edge
+                        # (Maker Edge holds to settlement — no ATS exits).
                         strategy = get_trade_strategy()
+                        from backend.core.aes_btc15m_maker_edge_cutout import (
+                            STRATEGY_NAME as _ME_STRAT,
+                        )
                         if (
                             not is_reverse_monitor()
                             and strategy != "Momentum Scalp"
                             and strategy != "Momentum Reversal"
+                            and str(strategy or "").strip() != _ME_STRAT
                         ):
                             # Get momentum spike settings from monitor's assigned strategy
                             try:
@@ -6952,6 +6957,16 @@ def trigger_auto_stop_close(
     if should_suppress_auto_close_past_kalshi_settlement(trade.get("ticker"), tid):
         return False
 
+    from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
+
+    strat_row = str(trade.get("trade_strategy") or get_trade_strategy() or "").strip()
+    if strat_row == MAKER_EDGE_STRATEGY:
+        log(
+            f"[AUTO STOP] refused Maker Edge trade={tid} "
+            f"(hold to settlement; trigger={trigger_reason})"
+        )
+        return False
+
     from backend.core.high_water_scalp import is_high_water_family
 
     if is_high_water_family(get_trade_strategy()):
@@ -7924,12 +7939,18 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
         return
 
     strategy = get_trade_strategy()
-    
+
+    from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
     from backend.core.high_water_scalp import (
         is_expiration_scalp_entry_strategy,
         is_high_water_scalp,
         is_high_water_test_1,
     )
+
+    # Maker Edge: hold filled leg to settlement (market_result). Never HTC/prob/floor auto-close.
+    if str(strategy or "").strip() == MAKER_EDGE_STRATEGY:
+        log_debug("[AUTO STOP] skipped — Maker Edge holds to settlement")
+        return
 
     if strategy == "Momentum Scalp":
         check_auto_stop_conditions_momentum_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
@@ -7948,7 +7969,7 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
         check_auto_stop_conditions_expiration_scalp(active_trades, auto_stop_triggered_trades, verification_pending_trades)
     else:
         # Default to Hourly HTC (fallback for any other strategy or missing strategy)
-        check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades        )
+        check_auto_stop_conditions_hourly_htc(active_trades, auto_stop_triggered_trades, verification_pending_trades)
 
 
 def _hws_stop_floor_for_trade(st: dict) -> float:

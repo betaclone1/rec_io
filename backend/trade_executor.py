@@ -322,8 +322,17 @@ def _v2_buy_leg_from_legacy_intent_side(intent: str, legacy_side: str) -> str:
     return s
 
 
-def kalshi_cancel_hero_order(order_id: str, *, subaccount: int = 1) -> bool:
-    """Cancel a Kalshi order on the hero (AES/TM) subaccount. True if gone or already gone."""
+def kalshi_cancel_hero_order(
+    order_id: str,
+    *,
+    subaccount: int = 1,
+    market_ticker: Optional[str] = None,
+    exchange_index: int = -1,
+) -> bool:
+    """Cancel a Kalshi V2 event-market order. True if cancelled or already gone.
+
+    ``market_ticker`` is required for shard auto-routing when exchange_index is -1.
+    """
     oid = str(order_id or "").strip()
     if not oid:
         return False
@@ -346,10 +355,27 @@ def kalshi_cancel_hero_order(order_id: str, *, subaccount: int = 1) -> bool:
         "KALSHI-ACCESS-TIMESTAMP": timestamp,
         "KALSHI-ACCESS-SIGNATURE": signature,
     }
-    url = f"{get_base_url()}{path}?subaccount={int(subaccount)}"
+    ticker = str(market_ticker or "").strip()
+    q = [f"subaccount={int(subaccount)}"]
+    if ticker:
+        q.append(f"market_ticker={ticker}")
+        q.append(f"exchange_index={int(exchange_index)}")
+    elif int(exchange_index) >= 0:
+        q.append(f"exchange_index={int(exchange_index)}")
+    else:
+        log_event(
+            "UNKNOWN",
+            f"CANCEL refused order_id={oid}: market_ticker required for V2 auto-route",
+        )
+        return False
+    url = f"{get_base_url()}{path}?{'&'.join(q)}"
     try:
         resp = requests.delete(url, headers=headers, timeout=5)
-        log_event("UNKNOWN", f"CANCEL {oid} status={resp.status_code} body={resp.text[:400]}")
+        log_event(
+            "UNKNOWN",
+            f"CANCEL {oid} ticker={ticker or '-'} status={resp.status_code} body={resp.text[:400]}",
+        )
+        # 404 only counts as success when we routed correctly (order already gone).
         return resp.status_code in (200, 201, 204, 404)
     except Exception as e:
         log_event("UNKNOWN", f"CANCEL {oid} failed: {e}")
@@ -792,7 +818,14 @@ def cancel_order():
         data = request.get_json() or {}
         oid = str(data.get("order_id") or "").strip()
         sub = int(data.get("subaccount", 1) or 1)
-        ok = kalshi_cancel_hero_order(oid, subaccount=sub)
+        ticker = str(data.get("market_ticker") or data.get("ticker") or "").strip() or None
+        try:
+            ex_idx = int(data.get("exchange_index", -1))
+        except (TypeError, ValueError):
+            ex_idx = -1
+        ok = kalshi_cancel_hero_order(
+            oid, subaccount=sub, market_ticker=ticker, exchange_index=ex_idx
+        )
         return jsonify({"ok": ok, "order_id": oid}), (200 if ok else 502)
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500

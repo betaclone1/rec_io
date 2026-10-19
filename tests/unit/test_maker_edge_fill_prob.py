@@ -67,7 +67,7 @@ def test_on_first_fill_cancels_before_snapshot_and_books_prob():
         return 99
 
     with (
-        patch.object(me, "cancel_order", side_effect=_cancel),
+        patch.object(me, "_cancel_order_routed", side_effect=lambda *a, **k: (order.append("cancel") or True)),
         patch.object(me, "ladder_prob_diff_at_fill", side_effect=_snap),
         patch.object(me, "_book_fill_to_tm", side_effect=_book),
     ):
@@ -119,3 +119,64 @@ def test_book_fill_payload_includes_fill_snapshot():
     assert captured["prob"] == 4.25
     assert captured["diff"] == -1.0
     assert captured["intent"] == "maker_edge_fill"
+    assert captured["initial_count"] == 2500.0
+
+
+def test_on_first_fill_live_keeps_fill_sync_open():
+    st = me.DualRestState(
+        monitor_id="10064",
+        ticker="KXBTC15M-x",
+        event_ticker="KXBTC15M-x",
+        limit_px=0.01,
+        contracts=25,
+        subaccount=3,
+        paper=False,
+        floor_strike=100000.0,
+        bid_order_id="bid1",
+        ask_order_id="ask1",
+    )
+    with (
+        patch.object(me, "_cancel_order_routed", return_value=True),
+        patch.object(me, "ladder_prob_diff_at_fill", return_value=(None, None)),
+        patch.object(me, "_book_fill_to_tm", return_value=42),
+    ):
+        me._on_first_fill(st, side="yes", fill_qty=10.0)
+    assert st.done is True
+    assert st.fill_sync_done is False
+    assert st.fill_qty == 10.0
+    assert st.trade_id == 42
+
+
+def test_sync_live_fill_totals_raises_tm_position():
+    st = me.DualRestState(
+        monitor_id="10064",
+        ticker="KXBTC15M-x",
+        event_ticker="KXBTC15M-x",
+        limit_px=0.01,
+        contracts=25,
+        subaccount=3,
+        paper=False,
+        floor_strike=100000.0,
+        bid_order_id="bid1",
+        ask_order_id="ask1",
+        filled_side="yes",
+        fill_qty=10.0,
+        trade_id=42,
+        done=True,
+        fill_sync_done=False,
+    )
+    books: list[float] = []
+
+    def _book(_st, *, side, fill_qty):
+        books.append(fill_qty)
+        return 42
+
+    with (
+        patch.object(me, "_order_fill_qty", return_value=25.0),
+        patch.object(me, "_order_remaining_qty", return_value=0.0),
+        patch.object(me, "_book_fill_to_tm", side_effect=_book),
+    ):
+        me._sync_live_fill_totals(st)
+    assert books == [25.0]
+    assert st.fill_qty == 25.0
+    assert st.fill_sync_done is True

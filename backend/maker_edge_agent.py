@@ -29,9 +29,14 @@ from backend.core.aes_btc15m_maker_edge_cutout import (
     resolve_monitor_limit_dollars,
 )
 from backend.core.maker_edge_kalshi import (
+    PlaceResult,
+    build_place_body,
     cancel_order,
+    encode_place_body,
     extract_order_id,
     place_post_only_gtc,
+    warm_kalshi_http,
+    v2_price_for_limit_side,
 )
 from backend.core.maker_edge_open import (
     LATE_PLACE_GRACE_SEC,
@@ -52,6 +57,10 @@ log = logging.getLogger("maker_edge_agent")
 
 FAILSAFE_POLL_SEC = float(os.getenv("MAKER_EDGE_FAILSAFE_POLL_SEC", "1.0"))
 MAX_CONCURRENT_MARKETS = int(os.getenv("MAKER_EDGE_MAX_CONCURRENT", "1"))
+# Re-warm TLS/signing ~1s before open so a long arm sleep does not leave a cold pool.
+_REWARM_BEFORE_OPEN_SEC = float(os.getenv("MAKER_EDGE_REWARM_BEFORE_OPEN_SEC", "1.0"))
+# Persistent pool — avoid ThreadPoolExecutor construct/teardown on every open.
+_PLACE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="me_place")
 # How often to refresh the next open_time target while waiting.
 OPEN_DISCOVER_POLL_SEC = float(os.getenv("MAKER_EDGE_OPEN_DISCOVER_POLL_SEC", "5.0"))
 
@@ -85,7 +94,10 @@ class DualRestState:
     fill_prob: Optional[float] = None
     fill_diff: Optional[float] = None
     trade_id: Optional[int] = None
+    # Placement/sibling work finished for this cycle (do not re-arm dual rests).
     done: bool = False
+    # Live: keep pushing venue cumulative fill_count to TM until order residual is 0.
+    fill_sync_done: bool = False
 
 
 # monitor_id -> active dual rest for current cycle
@@ -102,6 +114,26 @@ _placed_events: set[str] = set()
 # Events finished for this process (fill booked or min_ttc cancel) — do not recovery-place.
 _completed_events: set[str] = set()
 _last_discover_mono: float = 0.0
+
+
+@dataclass
+class _PreparedPlace:
+    """Hot-path place plan built before open_time (no I/O after fire)."""
+
+    monitor_id: str
+    ticker: str
+    event_ticker: str
+    limit_px: float
+    contracts: int
+    subaccount: int
+    paper: bool
+    floor_strike: Optional[float]
+    bankroll_cents: Optional[float]
+    min_time: int
+    bid_price: str
+    ask_price: str
+    bid_body_bytes: bytes
+    ask_body_bytes: bytes
 
 
 def _log(msg: str) -> None:
@@ -255,15 +287,33 @@ def should_cancel_unfilled_at_min_ttc(*, min_time: int, ttc: Optional[int]) -> b
     return int(ttc) <= int(min_time)
 
 
+def _cancel_order_routed(order_id: Optional[str], *, ticker: str, subaccount: int) -> bool:
+    """Cancel with V2 market_ticker routing; retry once on failure."""
+    oid = str(order_id or "").strip()
+    if not oid:
+        return False
+    ok = cancel_order(oid, subaccount=subaccount, market_ticker=ticker)
+    if ok:
+        return True
+    ok = cancel_order(oid, subaccount=subaccount, market_ticker=ticker)
+    if not ok:
+        _log(f"CANCEL FAILED oid={oid} ticker={ticker} sa={subaccount}")
+    return ok
+
+
 def _cancel_unfilled_rests(st: DualRestState, *, reason: str) -> None:
     """Cancel both resting legs; mark cycle done with no fill (no TM book)."""
     if st.done:
         return
     if not st.paper:
         if st.bid_order_id:
-            cancel_order(st.bid_order_id, subaccount=st.subaccount)
+            _cancel_order_routed(
+                st.bid_order_id, ticker=st.ticker, subaccount=st.subaccount
+            )
         if st.ask_order_id:
-            cancel_order(st.ask_order_id, subaccount=st.subaccount)
+            _cancel_order_routed(
+                st.ask_order_id, ticker=st.ticker, subaccount=st.subaccount
+            )
     st.done = True
     _completed_events.add(st.event_ticker)
     _log(
@@ -272,18 +322,42 @@ def _cancel_unfilled_rests(st: DualRestState, *, reason: str) -> None:
     )
 
 
-def _order_fill_qty(order_id: Optional[str]) -> float:
+def _order_portfolio_rec(order_id: Optional[str]) -> Optional[Dict[str, Any]]:
     if not order_id:
-        return 0.0
+        return None
     try:
         from backend.core.live_state_kalshi_portfolio import get_order
 
         rec = get_order(_user_no(), order_id)
-        if not rec:
-            return 0.0
-        return float(rec.get("fill_count_fp") or 0)
+        return rec if isinstance(rec, dict) else None
     except Exception:
+        return None
+
+
+def _order_fill_qty(order_id: Optional[str]) -> float:
+    rec = _order_portfolio_rec(order_id)
+    if not rec:
         return 0.0
+    try:
+        return float(rec.get("fill_count_fp") or 0)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _order_remaining_qty(order_id: Optional[str]) -> Optional[float]:
+    """Remaining resting size from portfolio hot state; None if unknown."""
+    rec = _order_portfolio_rec(order_id)
+    if not rec:
+        return None
+    raw = rec.get("remaining_count_fp")
+    if raw is None:
+        raw = rec.get("remaining_count")
+    if raw is None:
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
 
 
 def _ladder_row_for_ticker(ticker: str) -> Optional[Dict[str, Any]]:
@@ -387,6 +461,8 @@ def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Option
         "buy_price": st.limit_px,
         "position": fill_qty,
         "count_fp": f"{fill_qty:.2f}",
+        # Resting size placed (may exceed cumulative fill until fully filled).
+        "initial_count": float(st.contracts),
         "monitor": monitor_key,
         "subaccount": int(st.subaccount),
         "paper_trade": bool(st.paper),
@@ -421,12 +497,13 @@ def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Option
         return None
 
 
-def _place_dual(
+def _prepare_place(
     monitor: Dict[str, Any],
     ticker: str,
     event_ticker: str,
     floor_strike: Optional[float],
-) -> Optional[DualRestState]:
+) -> Optional[_PreparedPlace]:
+    """Build a place plan before open_time (DB / price map / validation only)."""
     limit_px = resolve_monitor_limit_dollars(monitor)
     if limit_px is None or limit_px <= 0 or limit_px >= 1:
         _log(f"skip monitor={monitor.get('monitor_id')}: invalid limit min/max ask")
@@ -456,7 +533,34 @@ def _place_dual(
     except (TypeError, ValueError):
         bankroll_cents = None
     mid = str(monitor["monitor_id"])
-    st = DualRestState(
+    bid_price = ask_price = ""
+    bid_body = ask_body = b""
+    if not paper:
+        try:
+            bid_price = v2_price_for_limit_side(side="bid", limit_dollars=limit_px)
+            ask_price = v2_price_for_limit_side(side="ask", limit_dollars=limit_px)
+        except ValueError as exc:
+            _log(f"skip monitor={mid}: price map failed: {exc}")
+            return None
+        bid_body = encode_place_body(
+            build_place_body(
+                ticker=ticker,
+                side="bid",
+                price=bid_price,
+                count=contracts,
+                subaccount=subaccount,
+            )
+        )
+        ask_body = encode_place_body(
+            build_place_body(
+                ticker=ticker,
+                side="ask",
+                price=ask_price,
+                count=contracts,
+                subaccount=subaccount,
+            )
+        )
+    return _PreparedPlace(
         monitor_id=mid,
         ticker=ticker,
         event_ticker=event_ticker,
@@ -467,56 +571,124 @@ def _place_dual(
         floor_strike=floor,
         bankroll_cents=bankroll_cents,
         min_time=_parse_min_time(monitor.get("min_time")),
+        bid_price=bid_price,
+        ask_price=ask_price,
+        bid_body_bytes=bid_body,
+        ask_body_bytes=ask_body,
     )
-    if paper:
+
+
+def _fire_prepared_place(
+    plan: _PreparedPlace,
+) -> Tuple[Optional[DualRestState], Optional[PlaceResult], Optional[PlaceResult]]:
+    """Hot path: send dual rests. Returns (state, bid_result, ask_result)."""
+    st = DualRestState(
+        monitor_id=plan.monitor_id,
+        ticker=plan.ticker,
+        event_ticker=plan.event_ticker,
+        limit_px=plan.limit_px,
+        contracts=plan.contracts,
+        subaccount=plan.subaccount,
+        paper=plan.paper,
+        floor_strike=plan.floor_strike,
+        bankroll_cents=plan.bankroll_cents,
+        min_time=plan.min_time,
+    )
+    if plan.paper:
         st.bid_order_id = f"paper_bid_{uuid.uuid4().hex[:12]}"
         st.ask_order_id = f"paper_ask_{uuid.uuid4().hex[:12]}"
         _log(
-            f"PAPER dual rest monitor={mid} ticker={ticker} "
-            f"BID+ASK @{limit_px:.4f} ct={contracts} sa={subaccount} "
+            f"PAPER dual rest monitor={plan.monitor_id} ticker={plan.ticker} "
+            f"BID+ASK @{plan.limit_px:.4f} ct={plan.contracts} sa={plan.subaccount} "
             f"(open_time place)"
         )
-        return st
+        return st, None, None
 
-    # Parallel place — open_time path must not serialize BID then ASK.
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        fut_bid = pool.submit(
-            place_post_only_gtc,
-            ticker=ticker,
-            side="bid",
-            limit_dollars=limit_px,
-            count=contracts,
-            subaccount=subaccount,
-        )
-        fut_ask = pool.submit(
-            place_post_only_gtc,
-            ticker=ticker,
-            side="ask",
-            limit_dollars=limit_px,
-            count=contracts,
-            subaccount=subaccount,
-        )
-        bid_resp = fut_bid.result()
-        ask_resp = fut_ask.result()
-    bid_oid = extract_order_id(bid_resp)
-    ask_oid = extract_order_id(ask_resp)
+    fut_bid = _PLACE_POOL.submit(
+        place_post_only_gtc,
+        ticker=plan.ticker,
+        side="bid",
+        limit_dollars=plan.limit_px,
+        count=plan.contracts,
+        subaccount=plan.subaccount,
+        prebuilt_price=plan.bid_price,
+        prebuilt_body_bytes=plan.bid_body_bytes,
+    )
+    fut_ask = _PLACE_POOL.submit(
+        place_post_only_gtc,
+        ticker=plan.ticker,
+        side="ask",
+        limit_dollars=plan.limit_px,
+        count=plan.contracts,
+        subaccount=plan.subaccount,
+        prebuilt_price=plan.ask_price,
+        prebuilt_body_bytes=plan.ask_body_bytes,
+    )
+    bid_res = fut_bid.result()
+    ask_res = fut_ask.result()
+    bid_oid = extract_order_id(bid_res.api_json if bid_res else None)
+    ask_oid = extract_order_id(ask_res.api_json if ask_res else None)
     if not bid_oid or not ask_oid:
         _log(
-            f"place incomplete monitor={mid} bid={bid_oid} ask={ask_oid} — canceling orphans"
+            f"place incomplete monitor={plan.monitor_id} bid={bid_oid} ask={ask_oid} "
+            f"— canceling orphans"
         )
         if bid_oid:
-            cancel_order(bid_oid, subaccount=subaccount)
+            _cancel_order_routed(
+                bid_oid, ticker=plan.ticker, subaccount=plan.subaccount
+            )
         if ask_oid:
-            cancel_order(ask_oid, subaccount=subaccount)
-        return None
+            _cancel_order_routed(
+                ask_oid, ticker=plan.ticker, subaccount=plan.subaccount
+            )
+        return None, bid_res, ask_res
     st.bid_order_id = bid_oid
     st.ask_order_id = ask_oid
     _log(
-        f"LIVE dual rest monitor={mid} ticker={ticker} "
-        f"BID={bid_oid} ASK={ask_oid} @{limit_px:.4f} ct={contracts} sa={subaccount} "
-        f"(open_time place)"
+        f"LIVE dual rest monitor={plan.monitor_id} ticker={plan.ticker} "
+        f"BID={bid_oid} ASK={ask_oid} @{plan.limit_px:.4f} ct={plan.contracts} "
+        f"sa={plan.subaccount} (open_time place)"
     )
+    return st, bid_res, ask_res
+
+
+def _place_dual(
+    monitor: Dict[str, Any],
+    ticker: str,
+    event_ticker: str,
+    floor_strike: Optional[float],
+) -> Optional[DualRestState]:
+    plan = _prepare_place(monitor, ticker, event_ticker, floor_strike)
+    if plan is None:
+        return None
+    st, _, _ = _fire_prepared_place(plan)
     return st
+
+
+def _cleanup_foreign_cycle_rests(keep_event: str) -> None:
+    """Cancel / drop rests for other cycles. Safe after new places are in flight."""
+    with _lock:
+        foreign = [
+            (mid, st)
+            for mid, st in list(_active.items())
+            if st.event_ticker != keep_event
+        ]
+    for mid, st in foreign:
+        if st.done and not st.paper and not st.fill_sync_done:
+            _sync_live_fill_totals(st)
+        elif not st.done and not st.paper:
+            if st.bid_order_id:
+                _cancel_order_routed(
+                    st.bid_order_id, ticker=st.ticker, subaccount=st.subaccount
+                )
+            if st.ask_order_id:
+                _cancel_order_routed(
+                    st.ask_order_id, ticker=st.ticker, subaccount=st.subaccount
+                )
+        with _lock:
+            cur = _active.get(mid)
+            if cur is st or (cur and cur.event_ticker != keep_event):
+                _active.pop(mid, None)
 
 
 def _on_first_fill(st: DualRestState, *, side: str, fill_qty: float) -> None:
@@ -526,8 +698,11 @@ def _on_first_fill(st: DualRestState, *, side: str, fill_qty: float) -> None:
     st.fill_qty = float(fill_qty)
     # Cancel sibling first — ladder snapshot / TM book must not delay cancel.
     sibling_oid = st.ask_order_id if side == "yes" else st.bid_order_id
+    sibling_ok = True
     if sibling_oid and not st.paper:
-        cancel_order(sibling_oid, subaccount=st.subaccount)
+        sibling_ok = _cancel_order_routed(
+            sibling_oid, ticker=st.ticker, subaccount=st.subaccount
+        )
     elif sibling_oid and st.paper:
         _log(f"PAPER cancel sibling {sibling_oid} after {side} fill")
     prob, diff = ladder_prob_diff_at_fill(st.ticker, side)
@@ -543,9 +718,13 @@ def _on_first_fill(st: DualRestState, *, side: str, fill_qty: float) -> None:
     # Always mark done for this cycle so we do not re-arm dual rests while ask<=L.
     st.done = True
     _completed_events.add(st.event_ticker)
+    # Paper books full size once; live keeps syncing venue cumulative fills to TM.
+    st.fill_sync_done = bool(st.paper)
+    sib_msg = "sibling canceled" if sibling_ok else "SIBLING CANCEL FAILED"
     _log(
         f"first fill side={side} qty={fill_qty} monitor={st.monitor_id} "
-        f"trade_id={tid} sibling canceled prob={prob} diff={diff}"
+        f"trade_id={tid} {sib_msg} sibling_oid={sibling_oid} "
+        f"prob={prob} diff={diff}"
     )
 
 
@@ -560,9 +739,38 @@ def _retry_book_if_needed(st: DualRestState) -> None:
         _log(f"TM book retry ok monitor={st.monitor_id} trade_id={tid}")
 
 
+def _sync_live_fill_totals(st: DualRestState) -> None:
+    """Push cumulative venue fill_count for the filled leg into TM trade.position."""
+    if st.paper or st.fill_sync_done or not st.filled_side:
+        return
+    oid = st.bid_order_id if st.filled_side == "yes" else st.ask_order_id
+    qty = _order_fill_qty(oid)
+    if qty <= 0:
+        return
+    prev = float(st.fill_qty or 0.0)
+    if qty > prev + 1e-9 or st.trade_id is None:
+        st.fill_qty = float(qty)
+        tid = _book_fill_to_tm(st, side=st.filled_side, fill_qty=float(qty))
+        if tid is not None:
+            st.trade_id = tid
+            if qty > prev + 1e-9:
+                _log(
+                    f"fill total sync monitor={st.monitor_id} side={st.filled_side} "
+                    f"qty {prev} → {qty} trade_id={tid}"
+                )
+    rem = _order_remaining_qty(oid)
+    if rem is not None and rem <= 1e-9 and qty > 0:
+        st.fill_sync_done = True
+        _log(
+            f"fill sync complete monitor={st.monitor_id} side={st.filled_side} "
+            f"qty={qty} remaining=0"
+        )
+
+
 def _check_fills(st: DualRestState, *, ttc: Optional[int] = None) -> None:
     if st.done:
         _retry_book_if_needed(st)
+        _sync_live_fill_totals(st)
         return
     if st.paper:
         yes_ask = _ladder_side_ask(st.ticker, "yes")
@@ -597,13 +805,34 @@ def _check_fills(st: DualRestState, *, ttc: Optional[int] = None) -> None:
 
 
 def _place_at_open(target: OpenTarget) -> None:
-    """Runs on arm thread: wait for open_ts, then place dual rests immediately."""
+    """Runs on arm thread: prefetch, wait for open_ts, fire dual rests, then cleanup."""
     global _armed_event, _armed_target, _last_event_ticker
     et = target.event_ticker
     _log(
         f"armed open_time place event={et} ticker={target.market_ticker} "
         f"open_ts={target.open_ts:.6f} in={target.open_ts - time.time():.3f}s"
     )
+
+    # --- Prefetch (before open): all work we control that is not the send ---
+    floor = _resolve_floor_strike(target.market_ticker, target.floor_strike)
+    monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
+    plans: list[_PreparedPlace] = []
+    for mon in monitors:
+        plan = _prepare_place(mon, target.market_ticker, et, floor)
+        if plan is not None:
+            plans.append(plan)
+    # Cap to concurrency before open so hot path does not decide under the gun.
+    if len(plans) > MAX_CONCURRENT_MARKETS:
+        plans = plans[:MAX_CONCURRENT_MARKETS]
+    warm_kalshi_http()
+    # Sleep until ~1s before open, then re-warm so TLS is fresh after a long arm.
+    while True:
+        rem = target.open_ts - time.time()
+        if rem <= _REWARM_BEFORE_OPEN_SEC:
+            break
+        time.sleep(min(rem - _REWARM_BEFORE_OPEN_SEC, 0.5))
+    warm_kalshi_http()
+
     ok = wait_until_open_ts(target.open_ts)
     if not ok:
         _log(
@@ -617,39 +846,68 @@ def _place_at_open(target: OpenTarget) -> None:
             _placed_events.add(et)
         return
 
-    place_wall = time.time()
-    lag_ms = (place_wall - target.open_ts) * 1000.0
-    floor = _resolve_floor_strike(target.market_ticker, target.floor_strike)
-    monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
-    with _lock:
-        # Drop foreign-cycle rests
-        for mid, st in list(_active.items()):
-            if st.event_ticker != et:
-                if not st.done and not st.paper:
-                    if st.bid_order_id:
-                        cancel_order(st.bid_order_id, subaccount=st.subaccount)
-                    if st.ask_order_id:
-                        cancel_order(st.ask_order_id, subaccount=st.subaccount)
-                _active.pop(mid, None)
-        active_count = sum(1 for s in _active.values() if not s.done)
-        for mon in monitors:
-            mid = str(mon["monitor_id"])
-            if mid in _active:
+    # --- Hot path: fire only (no DB, no foreign cancel, no lock around HTTP) ---
+    t_fire = time.time()
+    fire_lag_ms = (t_fire - target.open_ts) * 1000.0
+    fired: list[
+        Tuple[_PreparedPlace, Optional[DualRestState], Optional[PlaceResult], Optional[PlaceResult]]
+    ] = []
+    t_send_first: Optional[float] = None
+    t_ack_last: Optional[float] = None
+    for plan in plans:
+        st, bid_res, ask_res = _fire_prepared_place(plan)
+        fired.append((plan, st, bid_res, ask_res))
+        for res in (bid_res, ask_res):
+            if res is None:
                 continue
-            if active_count >= MAX_CONCURRENT_MARKETS:
-                break
-            st = _place_dual(mon, target.market_ticker, et, floor)
-            if st:
-                _active[mid] = st
-                active_count += 1
+            if t_send_first is None or res.t_send < t_send_first:
+                t_send_first = res.t_send
+            if t_ack_last is None or res.t_ack > t_ack_last:
+                t_ack_last = res.t_ack
+
+    with _lock:
+        for plan, st, _, _ in fired:
+            if st is not None:
+                _active[plan.monitor_id] = st
         _placed_events.add(et)
         if _armed_event == et:
             _armed_event = None
             _armed_target = None
         _last_event_ticker = et
+
+    # Foreign-cycle cleanup after new rests are on the wire / booked.
+    try:
+        _cleanup_foreign_cycle_rests(et)
+    except Exception as exc:
+        _log(f"foreign cleanup failed event={et}: {exc}")
+
+    def _ms(v: Optional[float], nd: int = 2) -> str:
+        return f"{v:.{nd}f}" if v is not None else "n/a"
+
+    send_lag_ms = (
+        (t_send_first - target.open_ts) * 1000.0 if t_send_first is not None else None
+    )
+    ack_lag_ms = (
+        (t_ack_last - target.open_ts) * 1000.0 if t_ack_last is not None else None
+    )
+    prep_after_fire_ms = (
+        (t_send_first - t_fire) * 1000.0 if t_send_first is not None else None
+    )
+    bid_rtt = ask_rtt = None
+    for _, _, bid_res, ask_res in fired:
+        if bid_res is not None:
+            bid_rtt = bid_res.rtt_ms
+        if ask_res is not None:
+            ask_rtt = ask_res.rtt_ms
+    placed_n = sum(1 for _, st, _, _ in fired if st is not None)
+    # lag_ms kept for existing log parsers (= fire_lag; send is send_lag_ms).
     _log(
         f"open_time place done event={et} ticker={target.market_ticker} "
-        f"lag_ms={lag_ms:.2f} floor={floor}"
+        f"lag_ms={fire_lag_ms:.2f} fire_lag_ms={fire_lag_ms:.2f} "
+        f"send_lag_ms={_ms(send_lag_ms)} ack_lag_ms={_ms(ack_lag_ms)} "
+        f"prep_after_fire_ms={_ms(prep_after_fire_ms)} "
+        f"bid_rtt_ms={_ms(bid_rtt, 1)} ask_rtt_ms={_ms(ask_rtt, 1)} "
+        f"floor={floor} plans={len(plans)} placed={placed_n}"
     )
 
 
@@ -657,26 +915,33 @@ def _place_for_target_now(target: OpenTarget, *, reason: str) -> None:
     """Immediate dual-rest place (no open_time wait). Used for live-cycle recovery."""
     global _last_event_ticker
     et = target.event_ticker
-    floor = _resolve_floor_strike(target.market_ticker, target.floor_strike)
-    monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
     with _lock:
         if et in _completed_events:
             return
         if any(s.event_ticker == et and not s.done for s in _active.values()):
             return
-        active_count = sum(1 for s in _active.values() if not s.done)
-        placed = 0
-        for mon in monitors:
-            mid = str(mon["monitor_id"])
+    floor = _resolve_floor_strike(target.market_ticker, target.floor_strike)
+    monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
+    plans: list[_PreparedPlace] = []
+    for mon in monitors:
+        mid = str(mon["monitor_id"])
+        with _lock:
             if mid in _active and not _active[mid].done:
                 continue
-            if active_count >= MAX_CONCURRENT_MARKETS:
-                break
-            st = _place_dual(mon, target.market_ticker, et, floor)
-            if st:
-                _active[mid] = st
-                active_count += 1
-                placed += 1
+        plan = _prepare_place(mon, target.market_ticker, et, floor)
+        if plan is not None:
+            plans.append(plan)
+        if len(plans) >= MAX_CONCURRENT_MARKETS:
+            break
+    warm_kalshi_http()
+    placed = 0
+    for plan in plans:
+        st, _, _ = _fire_prepared_place(plan)
+        if st is not None:
+            with _lock:
+                _active[plan.monitor_id] = st
+            placed += 1
+    with _lock:
         _placed_events.add(et)
         _last_event_ticker = et
     if placed:
@@ -695,15 +960,19 @@ def _ensure_armed_for_next_open() -> None:
         has_live_rest = any(not s.done for s in _active.values())
     # Live-cycle recovery: if we have no rests for the open market, place now.
     # (Does not wait for open_time — that market is already open.)
+    # Skip if this process already attempted place for the event (_placed_events),
+    # including failed attempts — avoids hammering Kalshi on persistent 4xx.
+    # Fresh process restart clears _placed_events so mid-cycle recovery still works.
     if not has_live_rest:
         live = fetch_live_market()
         if live is not None and live.event_ticker not in _completed_events:
             with _lock:
+                already_attempted = live.event_ticker in _placed_events
                 already = any(
                     s.event_ticker == live.event_ticker and not s.done
                     for s in _active.values()
                 )
-            if not already:
+            if not already_attempted and not already:
                 _place_for_target_now(live, reason="live_recovery")
 
     with _lock:
