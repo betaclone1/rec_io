@@ -523,6 +523,90 @@ def test_apply_balance_snapshot_subaccount_table_slot_match():
     assert insert_calls
 
 
+def _sab_snapshot_cursor(*, prev_portfolio, prev_bankroll):
+    """Cursor stub: prev row, then insert-dedupe last-row miss, then INSERT."""
+
+    class Cur:
+        def __init__(self):
+            self.calls = []
+            self._fetch = [
+                (prev_portfolio, prev_bankroll),  # SELECT portfolio, bankroll_current
+                None,  # SELECT last row for throttle/dedupe
+            ]
+            self.last_insert_params = None
+
+        def execute(self, q, p=None):
+            qs = str(q)
+            self.calls.append((qs, p))
+            if "INSERT INTO" in qs:
+                self.last_insert_params = p
+
+        def fetchone(self):
+            if self._fetch:
+                return self._fetch.pop(0)
+            return None
+
+    return Cur()
+
+
+def test_sab_ratchet_holds_hwm_while_open_marks(monkeypatch):
+    """Open position MTM peak must not raise sticky bankroll (SA3 regression)."""
+    monkeypatch.setattr(
+        "backend.core.subaccount_drawdown.get_subaccount_drawdown_controls",
+        lambda *a, **k: (False, 50),
+    )
+    cur = _sab_snapshot_cursor(prev_portfolio=11011, prev_bankroll=12152)
+    inserted, stepped = apply_balance_snapshot(
+        cur,
+        balance_amount=11011,
+        portfolio_value_raw=1590,
+        positions_value=1590,
+        total_exposure=1590,
+        portfolio_value=12601,
+        account_balance_table="users_0001.subaccount_balance_0001_3",
+        subaccounts_table="users_0001.subaccounts_0001",
+        current_timestamp="2026-10-19T13:44:38",
+        throttle=False,
+        record_internal_transfers=False,
+        notify_frontend=False,
+        notify_monitors=False,
+    )
+    assert inserted is True
+    assert stepped is False
+    assert cur.last_insert_params is not None
+    # (balance, exposure, positions, portfolio, bankroll_current, ...)
+    bal, exp, pos, port, br = cur.last_insert_params[:5]
+    assert (bal, exp, pos, port, br) == (11011, 1590, 1590, 12601, 12152)
+
+
+def test_sab_ratchet_raises_on_flat_settled_cash(monkeypatch):
+    """When flat, settled cash above HWM ratchets bankroll up."""
+    monkeypatch.setattr(
+        "backend.core.subaccount_drawdown.get_subaccount_drawdown_controls",
+        lambda *a, **k: (False, 50),
+    )
+    cur = _sab_snapshot_cursor(prev_portfolio=10323, prev_bankroll=10323)
+    inserted, stepped = apply_balance_snapshot(
+        cur,
+        balance_amount=11424,
+        portfolio_value_raw=0,
+        positions_value=0,
+        total_exposure=0,
+        portfolio_value=11424,
+        account_balance_table="users_0001.subaccount_balance_0001_3",
+        subaccounts_table="users_0001.subaccounts_0001",
+        current_timestamp="2026-10-19T10:15:05",
+        throttle=False,
+        record_internal_transfers=False,
+        notify_frontend=False,
+        notify_monitors=False,
+    )
+    assert inserted is True
+    assert stepped is False
+    bal, exp, pos, port, br = cur.last_insert_params[:5]
+    assert (bal, exp, pos, port, br) == (11424, 0, 0, 11424, 11424)
+
+
 def test_fetch_portfolio_balance_detail_subaccount_query(monkeypatch):
     captured = {}
 

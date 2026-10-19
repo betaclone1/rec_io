@@ -1241,12 +1241,9 @@ def apply_balance_snapshot(
     bankroll_stepped_down = False
     transfer_triggered = False
     if is_subaccount_balance and subaccount_number is not None:
-        # Equity for sticky bankroll / drawdown: portfolio (cash + marks) on this SA.
-        master_bankroll_balance = (
-            int(live_mtb_balance_cents)
-            if live_mtb_balance_cents is not None
-            else int(portfolio_value)
-        )
+        # Per-SA sticky bankroll matches pre-multi-SA hero behavior:
+        # - while open marks exist, hold HWM (do not ratchet on MTM peaks)
+        # - when flat, ratchet / drawdown-step from settled cash only
         if force_bankroll_to_mtb_base:
             _, mtb_base_for_bankroll = get_mtb_snapshot_from_subaccounts(
                 cursor, subaccounts_table
@@ -1257,7 +1254,15 @@ def apply_balance_snapshot(
                 )
             bankroll_current = int(mtb_base_for_bankroll)
             bankroll_stepped_down = False
+        elif int(positions_value or 0) > 0:
+            bankroll_current = (
+                int(prev_bankroll)
+                if prev_bankroll is not None
+                else int(balance_amount)
+            )
+            bankroll_stepped_down = False
         else:
+            master_bankroll_balance = int(balance_amount)
             bankroll_current, bankroll_stepped_down = compute_bankroll_current_ratchet_from_mtb(
                 int(master_bankroll_balance),
                 int(prev_bankroll) if prev_bankroll is not None else None,
@@ -1792,7 +1797,6 @@ def _write_polled_subaccount_balances(
             cash = int(detail["balance_cents"])
         pos = int(detail["portfolio_value_cents"])
         total = cash + pos
-        live_mtb = total if n == 1 else None
         if ex_map is None and matrix_cash_by_number is None:
             # No matrix: attribute detail cash to shard 0 (pre-shard / fallback path).
             ex_map = {0: cash}
@@ -1809,7 +1813,8 @@ def _write_polled_subaccount_balances(
             throttle=False,
             notify_db_name="account_balance",
             record_internal_transfers=False,
-            live_mtb_balance_cents=live_mtb,
+            # Sab ratchet uses settled cash when flat; open marks hold sticky HWM.
+            live_mtb_balance_cents=None,
             force_bankroll_to_mtb_base=force_bankroll_to_mtb_base and int(n) == 1,
             notify_frontend=False,
             notify_monitors=False,

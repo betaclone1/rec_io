@@ -6,6 +6,26 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-19 — Release v3.12.16: ME dual-lane place + per-SA bankroll ratchet fix
+
+**Summary**
+- **Release: v3.12.16**
+- **Plans:** `maker-edge-strategy`; subaccount drawdown / portfolio sync docs (`docs/PORTFOLIO_ACCOUNT_SYNC.md`).
+- **Maker Edge:** Dedicated warm TLS lanes for BID vs ASK place (parallel prefetch); log `lane=` plus per-leg `bid_send_lag_ms` / `ask_send_lag_ms` so dual-rest path asymmetry is measurable.
+- **Subaccount balancing:** Sticky `bankroll_current` on `subaccount_balance_*` holds HWM while open marks exist (no MTM peak ratchet); when flat, ratchet / drawdown-step from settled cash only. Stops SA3-style bankroll inflation from unrealized marks.
+- **DB:** None.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-19`**. Code: `git revert` + restart `maker_edge_agent_*` and account-sync / balance poller.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart Maker Edge: `./venv/bin/supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
+- [ ] Restart account sync (loads `balance_snapshot`): `./venv/bin/supervisorctl -c backend/supervisord.conf restart kalshi_account_sync_0001`
+- [ ] Verify: `maker_edge_agent_0001` and `kalshi_account_sync_0001` RUNNING; PLACE logs show `lane=bid|ask`; next open logs `bid_send_lag_ms` / `ask_send_lag_ms`; no new balance_snapshot errors
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.16`
+
+---
+
 ## 2026-10-19 — Release v3.12.15: Remove Maker Edge mid-cycle live_recovery place
 
 **Summary**

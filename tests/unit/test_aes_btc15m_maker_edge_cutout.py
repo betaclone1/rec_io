@@ -110,7 +110,7 @@ def test_place_post_only_gtc_sends_count_as_string(monkeypatch):
             return _Resp()
 
     monkeypatch.setattr(mek, "_auth_headers", lambda method, path: {"Accept": "application/json"})
-    monkeypatch.setattr(mek, "_http_session", lambda: _Sess())
+    monkeypatch.setattr(mek, "_http_session_for_lane", lambda lane: _Sess())
     out = mek.place_post_only_gtc(
         ticker="KXBTC15M-TEST",
         side="bid",

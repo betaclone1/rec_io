@@ -893,11 +893,14 @@ def _place_at_open(target: OpenTarget) -> None:
         (t_send_first - t_fire) * 1000.0 if t_send_first is not None else None
     )
     bid_rtt = ask_rtt = None
+    bid_send_lag = ask_send_lag = None
     for _, _, bid_res, ask_res in fired:
         if bid_res is not None:
             bid_rtt = bid_res.rtt_ms
+            bid_send_lag = (bid_res.t_send - target.open_ts) * 1000.0
         if ask_res is not None:
             ask_rtt = ask_res.rtt_ms
+            ask_send_lag = (ask_res.t_send - target.open_ts) * 1000.0
     placed_n = sum(1 for _, st, _, _ in fired if st is not None)
     # lag_ms kept for existing log parsers (= fire_lag; send is send_lag_ms).
     _log(
@@ -905,6 +908,7 @@ def _place_at_open(target: OpenTarget) -> None:
         f"lag_ms={fire_lag_ms:.2f} fire_lag_ms={fire_lag_ms:.2f} "
         f"send_lag_ms={_ms(send_lag_ms)} ack_lag_ms={_ms(ack_lag_ms)} "
         f"prep_after_fire_ms={_ms(prep_after_fire_ms)} "
+        f"bid_send_lag_ms={_ms(bid_send_lag)} ask_send_lag_ms={_ms(ask_send_lag)} "
         f"bid_rtt_ms={_ms(bid_rtt, 1)} ask_rtt_ms={_ms(ask_rtt, 1)} "
         f"floor={floor} plans={len(plans)} placed={placed_n}"
     )

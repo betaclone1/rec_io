@@ -33,8 +33,11 @@ MAX_SUBMIT = Decimal("0.9999")
 _cred_lock = threading.Lock()
 _cached_key_id: Optional[str] = None
 _cached_private_key: Any = None
-_session: Optional[requests.Session] = None
+# Dedicated keep-alive lanes so dual BID/ASK posts do not share one TLS socket.
+# "misc" = cancel / list / non-hot-path; "bid" / "ask" = dual place only.
+_sessions: Dict[str, requests.Session] = {}
 _session_lock = threading.Lock()
+_PLACE_LANES = ("bid", "ask")
 
 
 @dataclass
@@ -48,6 +51,38 @@ class PlaceResult:
     @property
     def rtt_ms(self) -> float:
         return max(0.0, (self.t_ack - self.t_send) * 1000.0)
+
+
+def _new_session() -> requests.Session:
+    """One connection per lane — dual place must not contend on a shared pool."""
+    from requests.adapters import HTTPAdapter
+
+    sess = requests.Session()
+    adapter = HTTPAdapter(pool_connections=1, pool_maxsize=1, max_retries=0)
+    sess.mount("https://", adapter)
+    sess.mount("http://", adapter)
+    return sess
+
+
+def _http_session_for_lane(lane: str) -> requests.Session:
+    key = str(lane or "misc").strip().lower() or "misc"
+    if key not in ("bid", "ask", "misc"):
+        key = "misc"
+    with _session_lock:
+        sess = _sessions.get(key)
+        if sess is None:
+            sess = _new_session()
+            _sessions[key] = sess
+        return sess
+
+
+def _place_lane(side: str) -> str:
+    return "ask" if str(side).strip().lower() == "ask" else "bid"
+
+
+def _http_session() -> requests.Session:
+    """Non-place lane (cancel / list). Hot-path place uses ``_http_session_for_lane``."""
+    return _http_session_for_lane("misc")
 
 
 def _load_credentials() -> Tuple[Optional[str], Optional[Path]]:
@@ -104,31 +139,36 @@ def _auth_headers(method: str, path: str) -> Dict[str, str]:
     }
 
 
-def _http_session() -> requests.Session:
-    global _session
-    with _session_lock:
-        if _session is None:
-            _session = requests.Session()
-        return _session
-
-
 def warm_kalshi_http() -> None:
-    """Prefetch signing material and warm TLS to Kalshi (call before open_time)."""
+    """Prefetch signing material and warm TLS on bid + ask (+ misc) lanes."""
     try:
         _get_signing_material()
     except Exception as exc:
         log.warning("warm credentials failed: %s", exc)
         return
-    try:
-        # Cheap authenticated ping — establishes TCP/TLS on the pooled session.
-        path = "/exchange/status"
-        _http_session().get(
-            f"{KALSHI_BASE_URL}{path}",
-            headers=_auth_headers("GET", path),
-            timeout=5,
-        )
-    except Exception as exc:
-        log.warning("warm HTTP session failed: %s", exc)
+
+    path = "/exchange/status"
+    url = f"{KALSHI_BASE_URL}{path}"
+
+    def _warm_lane(lane: str) -> None:
+        try:
+            # Fresh auth per lane; establishes keep-alive on that session only.
+            _http_session_for_lane(lane).get(
+                url,
+                headers=_auth_headers("GET", path),
+                timeout=5,
+            )
+        except Exception as exc:
+            log.warning("warm HTTP session lane=%s failed: %s", lane, exc)
+
+    # Parallel warm so both place sockets are ready before open_time.
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    lanes = (*_PLACE_LANES, "misc")
+    with ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="me_warm") as pool:
+        futs = [pool.submit(_warm_lane, lane) for lane in lanes]
+        for fut in as_completed(futs):
+            fut.result()
 
 
 def clamp_submit_price(px: Decimal) -> Decimal:
@@ -233,9 +273,10 @@ def place_post_only_gtc(
         )
         body_bytes = encode_place_body(body)
     try:
+        lane = _place_lane(side)
         headers = _auth_headers("POST", path)
         t_send = time.time()
-        resp = _http_session().post(
+        resp = _http_session_for_lane(lane).post(
             f"{KALSHI_BASE_URL}{path}",
             headers=headers,
             data=body_bytes,
@@ -243,13 +284,15 @@ def place_post_only_gtc(
         )
         t_ack = time.time()
         log.info(
-            "PLACE %s %s ct=%s @ %s (limit=%s) sa=%s status=%s send_lag_prep_ms=%.1f rtt_ms=%.1f body=%s",
+            "PLACE %s %s ct=%s @ %s (limit=%s) sa=%s lane=%s status=%s "
+            "send_lag_prep_ms=%.1f rtt_ms=%.1f body=%s",
             side,
             ticker,
             count,
             price or "?",
             limit_dollars,
             subaccount,
+            lane,
             resp.status_code,
             (t_send - t0) * 1000.0,
             (t_ack - t_send) * 1000.0,
