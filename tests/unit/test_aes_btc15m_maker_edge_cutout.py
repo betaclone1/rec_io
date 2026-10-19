@@ -156,6 +156,50 @@ def test_place_post_only_gtc_sends_count_as_string(monkeypatch):
     assert body2["side"] == "ask"
 
 
+def test_select_oldest_me_dual_rests_cancels_newer():
+    from backend.core.maker_edge_kalshi import select_oldest_me_dual_rests
+
+    ticker = "KXBTC15M-TEST"
+    orders = [
+        {
+            "order_id": "bid_new",
+            "ticker": ticker,
+            "book_side": "bid",
+            "yes_price_dollars": "0.0100",
+            "created_time": "2026-10-19T17:17:31Z",
+        },
+        {
+            "order_id": "bid_old",
+            "ticker": ticker,
+            "book_side": "bid",
+            "yes_price_dollars": "0.0100",
+            "created_time": "2026-10-19T17:15:00Z",
+        },
+        {
+            "order_id": "ask_old",
+            "ticker": ticker,
+            "book_side": "ask",
+            "no_price_dollars": "0.0100",
+            "yes_price_dollars": "0.9900",
+            "created_time": "2026-10-19T17:15:00Z",
+        },
+        {
+            "order_id": "ask_new",
+            "ticker": ticker,
+            "book_side": "ask",
+            "no_price_dollars": "0.0100",
+            "yes_price_dollars": "0.9900",
+            "created_time": "2026-10-19T17:17:31Z",
+        },
+    ]
+    keep_bid, keep_ask, cancel_ids = select_oldest_me_dual_rests(
+        orders, market_ticker=ticker, limit_dollars=0.01
+    )
+    assert keep_bid["order_id"] == "bid_old"
+    assert keep_ask["order_id"] == "ask_old"
+    assert set(cancel_ids) == {"bid_new", "ask_new"}
+
+
 def test_maker_edge_auto_trade_status():
     from backend.maker_edge_agent import determine_maker_edge_auto_trade_status
 

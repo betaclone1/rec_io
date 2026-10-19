@@ -41,7 +41,6 @@ from backend.core.maker_edge_kalshi import (
 from backend.core.maker_edge_open import (
     LATE_PLACE_GRACE_SEC,
     OpenTarget,
-    fetch_live_market,
     fetch_next_open_target,
     wait_until_open_ts,
 )
@@ -911,71 +910,15 @@ def _place_at_open(target: OpenTarget) -> None:
     )
 
 
-def _place_for_target_now(target: OpenTarget, *, reason: str) -> None:
-    """Immediate dual-rest place (no open_time wait). Used for live-cycle recovery."""
-    global _last_event_ticker
-    et = target.event_ticker
-    with _lock:
-        if et in _completed_events:
-            return
-        if any(s.event_ticker == et and not s.done for s in _active.values()):
-            return
-    floor = _resolve_floor_strike(target.market_ticker, target.floor_strike)
-    monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
-    plans: list[_PreparedPlace] = []
-    for mon in monitors:
-        mid = str(mon["monitor_id"])
-        with _lock:
-            if mid in _active and not _active[mid].done:
-                continue
-        plan = _prepare_place(mon, target.market_ticker, et, floor)
-        if plan is not None:
-            plans.append(plan)
-        if len(plans) >= MAX_CONCURRENT_MARKETS:
-            break
-    warm_kalshi_http()
-    placed = 0
-    for plan in plans:
-        st, _, _ = _fire_prepared_place(plan)
-        if st is not None:
-            with _lock:
-                _active[plan.monitor_id] = st
-            placed += 1
-    with _lock:
-        _placed_events.add(et)
-        _last_event_ticker = et
-    if placed:
-        _log(
-            f"{reason} place event={et} ticker={target.market_ticker} "
-            f"n={placed} floor={floor}"
-        )
-
-
 def _ensure_armed_for_next_open() -> None:
-    """Recovery-place live cycle if needed; arm waiter for the next open_time."""
+    """Arm a waiter for the next Kalshi open_time. No mid-cycle recovery place.
+
+    Restart during an open cycle intentionally skips that cycle; next open arms normally.
+    """
     global _armed_event, _armed_target, _arm_thread, _last_discover_mono
     now_m = time.monotonic()
     with _lock:
         arm_alive = _arm_thread is not None and _arm_thread.is_alive()
-        has_live_rest = any(not s.done for s in _active.values())
-    # Live-cycle recovery: if we have no rests for the open market, place now.
-    # (Does not wait for open_time — that market is already open.)
-    # Skip if this process already attempted place for the event (_placed_events),
-    # including failed attempts — avoids hammering Kalshi on persistent 4xx.
-    # Fresh process restart clears _placed_events so mid-cycle recovery still works.
-    if not has_live_rest:
-        live = fetch_live_market()
-        if live is not None and live.event_ticker not in _completed_events:
-            with _lock:
-                already_attempted = live.event_ticker in _placed_events
-                already = any(
-                    s.event_ticker == live.event_ticker and not s.done
-                    for s in _active.values()
-                )
-            if not already_attempted and not already:
-                _place_for_target_now(live, reason="live_recovery")
-
-    with _lock:
         if arm_alive or (_arm_thread is not None and _arm_thread.is_alive()):
             return
         if now_m - _last_discover_mono < OPEN_DISCOVER_POLL_SEC and _armed_event:
@@ -990,10 +933,6 @@ def _ensure_armed_for_next_open() -> None:
         if any(s.event_ticker == target.event_ticker for s in _active.values()):
             _placed_events.add(target.event_ticker)
             return
-        # If target is already live (open grace), place immediately rather than wait.
-        now = time.time()
-        if target.open_ts <= now:
-            pass  # fall through to thread which wait_until will pass immediately
         _armed_event = target.event_ticker
         _armed_target = target
         th = threading.Thread(

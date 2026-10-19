@@ -16,7 +16,7 @@ import uuid
 from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 
 import requests
 from cryptography.hazmat.backends import default_backend
@@ -262,6 +262,96 @@ def place_post_only_gtc(
         t_ack = time.time()
         log.error("PLACE failed: %s", exc)
         return PlaceResult(api_json=None, t_send=t0, t_ack=t_ack)
+
+
+def list_resting_orders(*, subaccount: int, limit: int = 100) -> List[Dict[str, Any]]:
+    """GET resting portfolio orders for a subaccount (empty list on failure)."""
+    path = "/portfolio/orders"
+    url = (
+        f"{KALSHI_BASE_URL}{path}"
+        f"?status=resting&limit={int(limit)}&subaccount={int(subaccount)}"
+    )
+    try:
+        resp = _http_session().get(
+            url, headers=_auth_headers("GET", path), timeout=8
+        )
+        if resp.status_code != 200:
+            log.warning(
+                "list resting orders sa=%s status=%s body=%s",
+                subaccount,
+                resp.status_code,
+                (resp.text or "")[:300],
+            )
+            return []
+        data = resp.json() if resp.text else {}
+        orders = data.get("orders") if isinstance(data, dict) else None
+        if not isinstance(orders, list):
+            return []
+        return [o for o in orders if isinstance(o, dict)]
+    except Exception as exc:
+        log.warning("list resting orders sa=%s failed: %s", subaccount, exc)
+        return []
+
+
+def _order_created_key(order: Dict[str, Any]) -> str:
+    return str(order.get("created_time") or order.get("created_ts") or "")
+
+
+def _order_limit_dollars(order: Dict[str, Any]) -> Optional[float]:
+    """Internal limit L for a Maker Edge style rest (yes@L bid or no@L ask)."""
+    book = str(order.get("book_side") or "").strip().lower()
+    try:
+        if book == "bid":
+            return float(order.get("yes_price_dollars"))
+        if book == "ask":
+            # ASK @ L is buy-no @ L → no_price_dollars == L
+            np = order.get("no_price_dollars")
+            if np is not None:
+                return float(np)
+            yp = order.get("yes_price_dollars")
+            if yp is not None:
+                return float(Decimal("1") - Decimal(str(yp)))
+    except (TypeError, ValueError, InvalidOperation):
+        return None
+    return None
+
+
+def select_oldest_me_dual_rests(
+    orders: Sequence[Dict[str, Any]],
+    *,
+    market_ticker: str,
+    limit_dollars: float,
+    price_tol: float = 1e-6,
+) -> Tuple[Optional[Dict[str, Any]], Optional[Dict[str, Any]], List[str]]:
+    """Pick oldest BID and ASK rests at ``limit_dollars``; cancel ids are the rest.
+
+    Queue priority: older orders win. When deduping, always cancel newer ids.
+    Returns ``(keep_bid, keep_ask, cancel_order_ids)``.
+    """
+    ticker = str(market_ticker or "").strip()
+    bids: List[Dict[str, Any]] = []
+    asks: List[Dict[str, Any]] = []
+    for o in orders:
+        if str(o.get("ticker") or "").strip() != ticker:
+            continue
+        L = _order_limit_dollars(o)
+        if L is None or abs(L - float(limit_dollars)) > price_tol:
+            continue
+        book = str(o.get("book_side") or "").strip().lower()
+        if book == "bid":
+            bids.append(o)
+        elif book == "ask":
+            asks.append(o)
+    bids.sort(key=_order_created_key)
+    asks.sort(key=_order_created_key)
+    keep_bid = bids[0] if bids else None
+    keep_ask = asks[0] if asks else None
+    cancel_ids: List[str] = []
+    for o in bids[1:] + asks[1:]:
+        oid = str(o.get("order_id") or "").strip()
+        if oid:
+            cancel_ids.append(oid)
+    return keep_bid, keep_ask, cancel_ids
 
 
 def cancel_order(

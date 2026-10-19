@@ -157,6 +157,8 @@ prediscover next open_time (Kalshi /markets)
 
 **Latency target (ours):** minimize ``open_time → first byte on the wire`` (`fire_lag_ms`, `send_lag_ms`, `prep_after_fire_ms` in agent logs). Venue ACK RTT (`bid_rtt_ms` / `ask_rtt_ms`, typically ~200–370 ms) is out of our control.
 
+**Queue position (ops law):** Older rests beat newer ones at the same price. If duplicate rests exist, **cancel the newer** ids and keep the oldest. Never cancel the older pair to “clean up” after a mistaken re-place. **No mid-cycle live recovery place** — restart during an open cycle skips that cycle; next `open_time` arms normally.
+
 **No fallbacks:** if book depth unknown, do not place; if fill ambiguous, do not invent side; `market_result` NULL until venue.
 
 ### 5.4 Data plane (already shipping)
