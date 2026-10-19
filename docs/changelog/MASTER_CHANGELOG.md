@@ -20,11 +20,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-19`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Regenerate supervisor + full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `maker_edge_agent_*` RUNNING; TM/TE/ATS RUNNING; next open_time place log shows `fire_lag_ms` / `send_lag_ms` / `ack_lag_ms`
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.14`
+- [x] Regenerate supervisor + full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; `maker_edge_agent_*` RUNNING; TM/TE/ATS RUNNING; next open_time place log shows `fire_lag_ms` / `send_lag_ms` / `ack_lag_ms`
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.14`
 
 ---
 
