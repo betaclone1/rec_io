@@ -16,11 +16,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-19-b`**. Code: `git revert` + restart `maker_edge_agent_*`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart Maker Edge agents: `supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
-- [ ] Verify: `maker_edge_agent_0001` RUNNING; no `live_recovery place` in new logs; next open_time place still logs `fire_lag_ms` / `send_lag_ms`
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.15`
+- [x] Restart Maker Edge agents: `supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
+- [x] Verify: `maker_edge_agent_0001` RUNNING; no `live_recovery place` in new logs; next open_time place still logs `fire_lag_ms` / `send_lag_ms`
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.15`
 
 ---
 
