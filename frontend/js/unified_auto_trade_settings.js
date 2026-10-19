@@ -46,7 +46,8 @@
       if (uatIsMakerEdge(strategy) || uatIsHighWaterFamily(strategy)) {
         return uatMonitorMarketIs15m(market) ? 900 : 3600;
       }
-      if (uatIsExpirationScalpEntry(strategy)) return 300;
+      // Expiration Scalp / Expiration Reversal: full 15m window 00:00–15:00.
+      if (uatIsExpirationScalpEntry(strategy)) return 900;
       if (String(strategy || '').toUpperCase().includes('15M HTC')) return 900;
       return 3600;
     }

@@ -9803,7 +9803,8 @@
         if (uatMobileIsMakerEdge(strategy) || uatMobileIsHighWaterFamily(strategy)) {
           return uatMobileMonitorMarketIs15m(market) ? 900 : 3600;
         }
-        if (uatMobileIsExpirationScalpEntry(strategy)) return 300;
+        // Expiration Scalp / Expiration Reversal: full 15m window 00:00–15:00.
+        if (uatMobileIsExpirationScalpEntry(strategy)) return 900;
         if (String(strategy || '').toUpperCase().includes('15M HTC')) return 900;
         return 3600;
       }
@@ -11462,7 +11463,7 @@
           return Number.isFinite(n) ? n : null;
         }
 
-        // Common settings — High Water Scalp uses full cycle (900s / 3600s); Expiration Scalp max 300s; 15m HTC 900s
+        // Common settings — High Water / Expiration / 15m HTC use full 15m cycle (900s); hourly HWS 3600s
         const timeMax = uatMobileTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
         window.dashboardMobileTimeWindowMaxSeconds = timeMax;
         // Authoritative only — never invent 0/timeMax when API omits times.
