@@ -17,12 +17,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-19`**. Code: `git revert` + restart `maker_edge_agent_*` and account-sync / balance poller.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart Maker Edge: `./venv/bin/supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
-- [ ] Restart account sync (loads `balance_snapshot`): `./venv/bin/supervisorctl -c backend/supervisord.conf restart kalshi_account_sync_0001`
-- [ ] Verify: `maker_edge_agent_0001` and `kalshi_account_sync_0001` RUNNING; PLACE logs show `lane=bid|ask`; next open logs `bid_send_lag_ms` / `ask_send_lag_ms`; no new balance_snapshot errors
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.16`
+- [x] Restart Maker Edge: `./venv/bin/supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
+- [x] Restart account sync (loads `balance_snapshot`): `./venv/bin/supervisorctl -c backend/supervisord.conf restart kalshi_account_sync_0001`
+- [x] Verify: `maker_edge_agent_0001` and `kalshi_account_sync_0001` RUNNING; PLACE logs show `lane=bid|ask`; next open logs `bid_send_lag_ms` / `ask_send_lag_ms`; no new balance_snapshot errors
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.16`
 
 ---
 
