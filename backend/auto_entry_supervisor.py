@@ -2209,13 +2209,15 @@ def periodic_status_sync():
     """
     try:
         if AES_UNIFIED_POOL:
-            for r in _aes_list_lane_monitor_rows():
+            for r in _aes_lane_membership_rows():
                 u = r["user_number"]
                 m = r["monitor_id"]
                 with aes_monitor_bind(u, m):
-                    if is_auto_trade_enabled():
-                        status = determine_auto_entry_status()
-                        update_auto_entry_status_in_db(status)
+                    if not r.get("auto_trade"):
+                        update_auto_entry_status_in_db("DISABLED")
+                        continue
+                    status = determine_auto_entry_status()
+                    update_auto_entry_status_in_db(status)
             return
 
         auto_trade_enabled = is_auto_trade_enabled()
@@ -3775,14 +3777,52 @@ def check_simulated_15m_entry_hourly_htc():
         log(f"[SIMULATED 15m] Error: {e}")
 
 
+def _aes_lane_membership_rows() -> List[dict]:
+    """Monitors owned by this AES process, including auto_trade off.
+
+    Hot-path fanout filters to auto_trade=true. Status sync still needs the
+    off rows so a toggle-off badge becomes DISABLED.
+    """
+    from backend.core.aes_btc15m_exp_scalp_cutout import (
+        filter_out_cutout_rows,
+        list_active_btc15m_exp_scalp_cutout_rows,
+    )
+    from backend.core.aes_btc15m_maker_edge_cutout import filter_out_maker_edge_rows
+    from backend.core.taker_edge import filter_out_taker_edge_rows
+
+    if AES_BTC15M_EXP_SCALP:
+        return list_active_btc15m_exp_scalp_cutout_rows()
+    if AES_UNIFIED_15M:
+        from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
+
+        return filter_out_taker_edge_rows(
+            filter_out_maker_edge_rows(
+                filter_out_cutout_rows(list_active_15m_monitor_rows())
+            )
+        )
+    if AES_UNIFIED_HOURLY:
+        from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
+
+        return list_active_hourly_monitor_rows()
+    if AES_UNIFIED_ALL:
+        from backend.core.unified_all_monitors import list_active_unified_monitor_rows
+
+        return filter_out_taker_edge_rows(
+            filter_out_maker_edge_rows(
+                filter_out_cutout_rows(list_active_unified_monitor_rows())
+            )
+        )
+    return []
+
+
 def _aes_list_lane_monitor_rows() -> List[dict]:
     """Active monitors owned by this AES process (cutout membership or general excl. cutout).
 
     Short TTL cache: ladder wakes still evaluate every tick; only the membership
     query is coalesced so we do not hit PG twice (15m+hourly) on every wake.
 
-    Lane bind fanout only includes ``auto_trade=true`` rows (disabled monitors
-    get status via toggle / periodic_status_sync, not every ladder tick).
+    Lane bind fanout only includes ``auto_trade=true`` rows. auto_trade off is
+    marked DISABLED by periodic_status_sync, not every ladder tick.
     """
     global _aes_lane_monitor_rows_cache, _aes_lane_monitor_rows_at
     now = time.monotonic()
@@ -3790,33 +3830,7 @@ def _aes_list_lane_monitor_rows() -> List[dict]:
     if _aes_lane_monitor_rows_cache is not None and (now - _aes_lane_monitor_rows_at) < ttl:
         return _aes_lane_monitor_rows_cache
 
-    from backend.core.aes_btc15m_exp_scalp_cutout import (
-        filter_out_cutout_rows,
-        list_active_btc15m_exp_scalp_cutout_rows,
-    )
-    from backend.core.aes_btc15m_maker_edge_cutout import filter_out_maker_edge_rows
-
-    if AES_BTC15M_EXP_SCALP:
-        rows = list_active_btc15m_exp_scalp_cutout_rows()
-    elif AES_UNIFIED_15M:
-        from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
-
-        rows = filter_out_maker_edge_rows(
-            filter_out_cutout_rows(list_active_15m_monitor_rows())
-        )
-    elif AES_UNIFIED_HOURLY:
-        from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
-
-        rows = list_active_hourly_monitor_rows()
-    elif AES_UNIFIED_ALL:
-        from backend.core.unified_all_monitors import list_active_unified_monitor_rows
-
-        rows = filter_out_maker_edge_rows(
-            filter_out_cutout_rows(list_active_unified_monitor_rows())
-        )
-    else:
-        rows = []
-    rows = [r for r in rows if r.get("auto_trade") is True]
+    rows = [r for r in _aes_lane_membership_rows() if r.get("auto_trade") is True]
     _aes_lane_monitor_rows_cache = rows
     _aes_lane_monitor_rows_at = now
     return rows

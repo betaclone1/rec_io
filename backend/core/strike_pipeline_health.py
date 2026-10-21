@@ -1,4 +1,11 @@
-"""Keys and upserts for live_data.strike_pipeline_health (exchange + market + symbol)."""
+"""Keys and upserts for live_data.strike_pipeline_health (exchange + market + symbol).
+
+Symbol category (``live_data.symbols_list.category``) selects the required package:
+
+- ``crypto`` — full Kalshi strike/market WS + spot (this table + spot gate)
+- ``commodity`` — lean market meta + public trades + pyth spot
+  (``live_data.commodity_pipeline_health`` + spot gate)
+"""
 
 from __future__ import annotations
 
@@ -11,12 +18,17 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 TABLE = "strike_pipeline_health"
+COMMODITY_TABLE = "commodity_pipeline_health"
 MARKET_15M = "15m"
 MARKET_HOURLY = "hourly"
 
+CATEGORY_CRYPTO = "crypto"
+CATEGORY_COMMODITY = "commodity"
+VALID_SYMBOL_CATEGORIES = frozenset({CATEGORY_CRYPTO, CATEGORY_COMMODITY})
+
 # Coalesce identical health upserts (no LISTEN/NOTIFY on this table; write volume was the cost).
 _upsert_coalesce_lock = threading.Lock()
-_upsert_coalesce_state: dict[tuple[str, str, str], tuple[bool, str, float]] = {}
+_upsert_coalesce_state: dict[tuple[str, ...], tuple[bool, str, float]] = {}
 
 
 def strike_pipeline_health_strict_mode_enabled() -> bool:
@@ -302,9 +314,43 @@ def floor_strike_vs_spot_check(
     return True, "ok", drift
 
 
-def upsert_strike_pipeline_health(
+def get_symbol_category_conn(conn, symbol: str) -> tuple[str | None, str]:
+    """
+    Resolve ``live_data.symbols_list.category`` for a monitor symbol.
+
+    Missing row or invalid category → ``(None, reason)`` (fail closed; no guessed package).
+    """
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return None, "missing_symbol_for_category"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT LOWER(TRIM(category::text))
+                FROM live_data.symbols_list
+                WHERE UPPER(TRIM(symbol::text)) = %s
+                LIMIT 1
+                """,
+                (sym,),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        _rollback_conn(conn)
+        return None, f"symbol_category_lookup_failed:{e}"
+    if not row or row[0] is None or str(row[0]).strip() == "":
+        return None, "symbol_category_missing"
+    cat = str(row[0]).strip().lower()
+    if cat not in VALID_SYMBOL_CATEGORIES:
+        return None, f"symbol_category_invalid:{cat}"
+    return cat, "ok"
+
+
+def _upsert_pipeline_health_table(
     conn,
     *,
+    table: str,
+    coalesce_prefix: str,
     exchange: str,
     market: str,
     symbol: str,
@@ -313,16 +359,16 @@ def upsert_strike_pipeline_health(
     max_age_sec: int,
 ) -> None:
     """
-    Upsert health row. Coalesce identical (healthy, reason) writes so STG regen
-    storms do not hammer Postgres (table has no NOTIFY trigger; write volume
-    was the cost). State *changes* always write immediately.
+    Upsert health row. Coalesce identical (healthy, reason) writes so regen
+    storms do not hammer Postgres (tables have no NOTIFY; write volume was the cost).
+    State *changes* always write immediately.
     """
     ex = exchange.strip().lower()
     mk = market.strip().lower()
     sy = symbol.strip().upper()
     h = bool(healthy)
     r = str(reason or "")
-    key = (ex, mk, sy)
+    key = (coalesce_prefix, ex, mk, sy)
     try:
         min_iv = float(
             os.getenv("STRIKE_PIPELINE_HEALTH_UPSERT_MIN_INTERVAL_SEC", "5.0")
@@ -341,7 +387,7 @@ def upsert_strike_pipeline_health(
     with conn.cursor() as cur:
         cur.execute(
             f"""
-            INSERT INTO live_data.{TABLE}
+            INSERT INTO live_data.{table}
                 (exchange, market, symbol, pipeline_healthy, pipeline_health_reason,
                  pipeline_health_checked_at, pipeline_health_max_age_sec, updated_at)
             VALUES (%s, %s, %s, %s, %s, NOW(), %s, NOW())
@@ -362,6 +408,57 @@ def upsert_strike_pipeline_health(
             ),
         )
     conn.commit()
+
+
+def upsert_strike_pipeline_health(
+    conn,
+    *,
+    exchange: str,
+    market: str,
+    symbol: str,
+    healthy: bool,
+    reason: str,
+    max_age_sec: int,
+) -> None:
+    """Upsert crypto/full-package health into ``live_data.strike_pipeline_health``."""
+    _upsert_pipeline_health_table(
+        conn,
+        table=TABLE,
+        coalesce_prefix="strike",
+        exchange=exchange,
+        market=market,
+        symbol=symbol,
+        healthy=healthy,
+        reason=reason,
+        max_age_sec=max_age_sec,
+    )
+
+
+def upsert_commodity_pipeline_health(
+    conn,
+    *,
+    exchange: str,
+    market: str,
+    symbol: str,
+    healthy: bool,
+    reason: str,
+    max_age_sec: int,
+) -> None:
+    """
+    Upsert lean commodity package health (market meta + public trades) into
+    ``live_data.commodity_pipeline_health``. Spot/pyth is checked at gate time.
+    """
+    _upsert_pipeline_health_table(
+        conn,
+        table=COMMODITY_TABLE,
+        coalesce_prefix="commodity",
+        exchange=exchange,
+        market=market,
+        symbol=symbol,
+        healthy=healthy,
+        reason=reason,
+        max_age_sec=max_age_sec,
+    )
 
 
 def row_passes_trade_gate(
@@ -395,6 +492,139 @@ def row_passes_trade_gate(
     return True, "ok"
 
 
+def _fetch_pipeline_health_row(
+    conn,
+    *,
+    table: str,
+    exchange: str,
+    market: str,
+    symbol: str,
+) -> tuple | None:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                pipeline_healthy,
+                pipeline_health_reason,
+                EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
+                EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
+            FROM live_data.{table}
+            WHERE LOWER(TRIM(exchange::text)) = %s
+              AND LOWER(TRIM(market::text)) = %s
+              AND UPPER(TRIM(symbol::text)) = %s
+            LIMIT 1
+            """,
+            (exchange, market, symbol),
+        )
+        return cur.fetchone()
+
+
+def _fetch_pipeline_health_rows_for_symbol(
+    conn,
+    *,
+    table: str,
+    exchange: str,
+    symbol: str,
+) -> list:
+    with conn.cursor() as cur:
+        cur.execute(
+            f"""
+            SELECT
+                market,
+                pipeline_healthy,
+                pipeline_health_reason,
+                EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
+                EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
+            FROM live_data.{table}
+            WHERE LOWER(TRIM(exchange::text)) = %s
+              AND UPPER(TRIM(symbol::text)) = %s
+            """,
+            (exchange, symbol),
+        )
+        return list(cur.fetchall() or [])
+
+
+def _evaluate_package_gate_conn(
+    conn,
+    *,
+    table: str,
+    missing_row_reason: str,
+    missing_symbol_reason: str,
+    exchange: str,
+    market: str | None,
+    symbol: str,
+    per_market: bool,
+) -> tuple[bool, str]:
+    """Shared crypto/commodity package + spot gate."""
+    ex = (exchange or "kalshi").strip().lower()
+    sym = (symbol or "").strip().upper()
+    if per_market:
+        mkt = (market or "").strip().lower()
+        row = _fetch_pipeline_health_row(
+            conn, table=table, exchange=ex, market=mkt, symbol=sym
+        )
+        ok, reason = row_passes_trade_gate(row)
+        if not ok:
+            if reason == "missing_health_row":
+                return False, missing_row_reason
+            return ok, reason
+        return _spot_series_passes_gate(conn, sym)
+
+    rows = _fetch_pipeline_health_rows_for_symbol(
+        conn, table=table, exchange=ex, symbol=sym
+    )
+    if not rows:
+        return False, missing_symbol_reason
+    for mkt, ph, pr, cage, tage in rows:
+        ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
+        if not ok:
+            return False, f"market_{str(mkt).strip().lower()}:{rsn}"
+    return _spot_series_passes_gate(conn, sym)
+
+
+def evaluate_crypto_pipeline_gate_conn(
+    conn,
+    *,
+    exchange: str = "kalshi",
+    market: str,
+    symbol: str,
+) -> tuple[bool, str]:
+    """Full crypto package: strike_pipeline_health + spot."""
+    return _evaluate_package_gate_conn(
+        conn,
+        table=TABLE,
+        missing_row_reason="missing_health_row",
+        missing_symbol_reason="pipeline_health_missing_symbol",
+        exchange=exchange,
+        market=market,
+        symbol=symbol,
+        per_market=True,
+    )
+
+
+def evaluate_commodity_pipeline_gate_conn(
+    conn,
+    *,
+    exchange: str = "kalshi",
+    market: str,
+    symbol: str,
+) -> tuple[bool, str]:
+    """
+    Lean commodity package: market meta + public trades (commodity_pipeline_health)
+    plus pyth/live spot gate.
+    """
+    return _evaluate_package_gate_conn(
+        conn,
+        table=COMMODITY_TABLE,
+        missing_row_reason="commodity_pipeline_health_missing",
+        missing_symbol_reason="commodity_pipeline_health_missing_symbol",
+        exchange=exchange,
+        market=market,
+        symbol=symbol,
+        per_market=True,
+    )
+
+
 def evaluate_pipeline_gate_conn(
     conn,
     *,
@@ -403,35 +633,23 @@ def evaluate_pipeline_gate_conn(
     symbol: str,
 ) -> tuple[bool, str]:
     """
-    Trade / auto-stop gate: writer-alive + WS transport freshness.
+    Trade / auto-stop gate. Package selected by ``symbols_list.category``.
+
     When STRIKE_PIPELINE_HEALTH_STRICT_MODE is off, returns (True, 'ok') without querying.
     """
     if not strike_pipeline_health_strict_mode_enabled():
         return True, "ok"
-    ex = (exchange or "kalshi").strip().lower()
-    mkt = (market or "").strip().lower()
     sym = (symbol or "").strip().upper()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                pipeline_healthy,
-                pipeline_health_reason,
-                EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
-                EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
-            FROM live_data.strike_pipeline_health
-            WHERE LOWER(TRIM(exchange::text)) = %s
-              AND LOWER(TRIM(market::text)) = %s
-              AND UPPER(TRIM(symbol::text)) = %s
-            LIMIT 1
-            """,
-            (ex, mkt, sym),
+    cat, cat_rsn = get_symbol_category_conn(conn, sym)
+    if cat is None:
+        return False, cat_rsn
+    if cat == CATEGORY_COMMODITY:
+        return evaluate_commodity_pipeline_gate_conn(
+            conn, exchange=exchange, market=market, symbol=sym
         )
-        row = cur.fetchone()
-    ok, reason = row_passes_trade_gate(row)
-    if not ok:
-        return ok, reason
-    return _spot_series_passes_gate(conn, sym)
+    return evaluate_crypto_pipeline_gate_conn(
+        conn, exchange=exchange, market=market, symbol=sym
+    )
 
 
 def evaluate_symbol_pipeline_gate_conn(
@@ -444,39 +662,30 @@ def evaluate_symbol_pipeline_gate_conn(
     Symbol-level gate for monitor health: if a symbol's spot feed is degraded, every monitor
     using that symbol (hourly and 15m) must be degraded.
 
-    Rule:
-      1) strict mode off -> pass
-      2) require at least one strike_pipeline_health row for symbol
-      3) every present market row must pass row_passes_trade_gate
-      4) spot flatline/freshness gate must pass
+    Package table follows ``symbols_list.category`` (crypto vs commodity).
     """
     if not strike_pipeline_health_strict_mode_enabled():
         return True, "ok"
-    ex = (exchange or "kalshi").strip().lower()
     sym = (symbol or "").strip().upper()
-    with conn.cursor() as cur:
-        cur.execute(
-            """
-            SELECT
-                market,
-                pipeline_healthy,
-                pipeline_health_reason,
-                EXTRACT(EPOCH FROM (NOW() - pipeline_health_checked_at)),
-                EXTRACT(EPOCH FROM (NOW() - ws_transport_ok_at))
-            FROM live_data.strike_pipeline_health
-            WHERE LOWER(TRIM(exchange::text)) = %s
-              AND UPPER(TRIM(symbol::text)) = %s
-            """,
-            (ex, sym),
-        )
-        rows = cur.fetchall()
-    if not rows:
-        return False, "pipeline_health_missing_symbol"
-    for market, ph, pr, cage, tage in rows:
-        ok, rsn = row_passes_trade_gate((ph, pr, cage, tage))
-        if not ok:
-            return False, f"market_{str(market).strip().lower()}:{rsn}"
-    return _spot_series_passes_gate(conn, sym)
+    cat, cat_rsn = get_symbol_category_conn(conn, sym)
+    if cat is None:
+        return False, cat_rsn
+    table = COMMODITY_TABLE if cat == CATEGORY_COMMODITY else TABLE
+    missing = (
+        "commodity_pipeline_health_missing_symbol"
+        if cat == CATEGORY_COMMODITY
+        else "pipeline_health_missing_symbol"
+    )
+    return _evaluate_package_gate_conn(
+        conn,
+        table=table,
+        missing_row_reason=missing,
+        missing_symbol_reason=missing,
+        exchange=exchange,
+        market=None,
+        symbol=sym,
+        per_market=False,
+    )
 
 
 # ---------------------------------------------------------------------------

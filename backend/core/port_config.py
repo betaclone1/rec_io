@@ -161,6 +161,7 @@ DEFAULT_PORTS = {
     "read_api": 3050,
 
     "cfbenchmarks_price_watchdog": 8008,
+    "pyth_price_watchdog": 8009,
 
     "kalshi_account_sync": 8004,
     "market_watchdog_ws_kalshi_hourly": 8005,
@@ -176,6 +177,7 @@ DEFAULT_PORTS = {
     "auto_entry_supervisor_0001_btc15m_exp_scalp": 8039,
     "active_trade_supervisor_0001_btc15m_exp_scalp": 8041,
     "maker_edge_agent_0001": 8050,
+    "taker_edge_agent_0001": 8052,
     "auto_entry_supervisor_hourly": 8037,
     "active_trade_supervisor_hourly": 8038,
     "trade_manager_0001": 4000,
@@ -191,6 +193,7 @@ DEFAULT_PORTS = {
     "auto_entry_supervisor_0002_btc15m_exp_scalp": 8045,
     "active_trade_supervisor_0002_btc15m_exp_scalp": 8046,
     "maker_edge_agent_0002": 8051,
+    "taker_edge_agent_0002": 8053,
 }
 
 def ensure_port_config_exists():

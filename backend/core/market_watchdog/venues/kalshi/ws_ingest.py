@@ -35,6 +35,7 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from backend.core.market_watchdog.config import IngestConfig
 from backend.core.market_watchdog.venues.kalshi.schedule import (
     EST,
+    LEAN_15M_SYMBOLS,
     MON_SHORT,
     SERIES_15M_BY_SYMBOL,
     SERIES_HOURLY_BY_SYMBOL,
@@ -43,6 +44,7 @@ from backend.core.market_watchdog.venues.kalshi.schedule import (
     est_15m_period_end as _est_15m_period_end,
     hour_boundary_key as _hour_boundary_key,
     hourly_event_ticker_for_clock as _hourly_event_ticker_for_clock,
+    is_lean_market_symbol,
     on_15m_rollover_boundary as _on_15m_rollover_boundary,
     on_hour_boundary as _on_hour_boundary,
     rollover_boundary_key as _rollover_boundary_key,
@@ -280,8 +282,56 @@ def _rkey_ticker(market_ticker: str) -> str:
     return f"{REDIS_PREFIX}ticker:v1:{_sanitize_ticker_key(market_ticker)}"
 
 
+def _rkey_public_trade(market_ticker: str) -> str:
+    return f"{REDIS_PREFIX}public_trade:v1:{_sanitize_ticker_key(market_ticker)}"
+
+
 def _rkey_meta() -> str:
     return f"{REDIS_PREFIX}meta:v1"
+
+
+def _publish_public_trade(
+    master: KalshiMarketWsMaster, market_ticker: str, msg: dict[str, Any]
+) -> None:
+    """Store latest public trade + notify live_state consumers (lean commodity tape)."""
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return
+    payload = {
+        "market_ticker": mt,
+        "symbol": _symbol_for_ticker(mt),
+        "yes_price_dollars": msg.get("yes_price_dollars") or msg.get("yes_price"),
+        "no_price_dollars": msg.get("no_price_dollars") or msg.get("no_price"),
+        "count_fp": msg.get("count_fp") or msg.get("count"),
+        "taker_side": msg.get("taker_side"),
+        "ts": msg.get("ts") or msg.get("created_time"),
+        "raw": msg,
+        "received_at": datetime.now(timezone.utc).isoformat(),
+    }
+    try:
+        from backend.core.live_state_cache import redis_client_optional
+
+        r = redis_client_optional()
+        if r:
+            blob = json.dumps(payload, default=str)
+            recent_key = (
+                f"{REDIS_PREFIX}public_trade_recent:v1:{_sanitize_ticker_key(mt)}"
+            )
+            pipe = r.pipeline()
+            pipe.setex(_rkey_public_trade(mt), 7200, blob)
+            pipe.lpush(recent_key, blob)
+            pipe.ltrim(recent_key, 0, 49)
+            pipe.expire(recent_key, 7200)
+            pipe.execute()
+            r.publish(
+                f"{REDIS_PREFIX.rstrip(':')}:updated",
+                json.dumps(
+                    {"kind": "public_trade", "market_ticker": mt, "symbol": payload["symbol"]},
+                    default=str,
+                ),
+            )
+    except Exception:
+        log.debug("public_trade redis publish failed %s", mt, exc_info=True)
 
 
 def _rkey_settled(master: KalshiMarketWsMaster) -> str:
@@ -535,13 +585,18 @@ class KalshiMarketWsMaster:
     books: dict[str, dict[str, Any]] = field(default_factory=dict)
     ticker_sid: Optional[int] = None
     orderbook_sid: Optional[int] = None
+    trade_sid: Optional[int] = None
     lifecycle_sid: Optional[int] = None
     last_market_result: Optional[dict[str, Any]] = None
     last_rollover_boundary_key: Optional[str] = None
     ticker_subscribed: set[str] = field(default_factory=set)
     orderbook_subscribed: set[str] = field(default_factory=set)
+    trade_subscribed: set[str] = field(default_factory=set)
     outgoing_tickers: set[str] = field(default_factory=set)
     settled_tickers: set[str] = field(default_factory=set)
+    # Lean commodity: last public-trade / ticker mono for package health.
+    last_trade_mono_by_ticker: dict[str, float] = field(default_factory=dict)
+    last_lean_ticker_mono_by_symbol: dict[str, float] = field(default_factory=dict)
     ws_connected: bool = False
     ws_last_msg_mono: float = 0.0
     ws_send: Any = None
@@ -786,12 +841,19 @@ def _ticker_chunks(tickers: Iterable[str]) -> list[list[str]]:
 
 def _lifecycle_sets(
     master: KalshiMarketWsMaster, now: float
-) -> tuple[set[str], set[str], set[str]]:
-    """15m current quarter per symbol + hourly ATM window on current event."""
+) -> tuple[set[str], set[str], set[str], set[str]]:
+    """15m current quarter per symbol + hourly ATM window on current event.
+
+    Returns ``(ticker_sub, ob_sub, trade_sub, new_ob)``.
+    Every live and outgoing 15m market gets the public ``trade`` channel.
+    Lean commodity symbols still skip orderbook.
+    """
     ticker_sub: set[str] = set()
     ob_sub: set[str] = set()
+    trade_sub: set[str] = set()
     track_outgoing: set[str] = set()
     for sym in master.symbols:
+        lean = is_lean_market_symbol(sym)
         if master.cfg.includes_15m:
             entries_15m = master.schedule_by_symbol.get(sym, {}).get("15m", [])
             current = _resolve_live_15m_current(sym, entries_15m, now, master)
@@ -800,8 +862,10 @@ def _lifecycle_sets(
                 track_outgoing.add(prev)
             if current:
                 ticker_sub.add(current)
-                ob_sub.add(current)
-        if master.cfg.includes_hourly:
+                trade_sub.add(current)
+                if not lean:
+                    ob_sub.add(current)
+        if master.cfg.includes_hourly and not lean:
             entries_h = master.schedule_by_symbol.get(sym, {}).get("hourly", [])
             for mt in _hourly_live_ob_tickers(sym, entries_h, now, master):
                 ticker_sub.add(mt)
@@ -810,7 +874,8 @@ def _lifecycle_sets(
     for mt in track_outgoing:
         if mt not in master.settled_tickers:
             ticker_sub.add(mt)
-    return ticker_sub, ob_sub, ob_sub - master.orderbook_subscribed
+            trade_sub.add(mt)
+    return ticker_sub, ob_sub, trade_sub, ob_sub - master.orderbook_subscribed
 
 
 # --- orderbook (channel seq on orderbook_sid) ---
@@ -1658,12 +1723,13 @@ async def _get_snapshot(master: KalshiMarketWsMaster, tickers: list[str]) -> Non
 async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
     async with master.lock:
         now = time.time()
-        want_ticker, want_ob, new_ob = _lifecycle_sets(master, now)
+        want_ticker, want_ob, want_trade, new_ob = _lifecycle_sets(master, now)
 
     if master.ws_send is None:
         async with master.lock:
             master.ticker_subscribed = set()
             master.orderbook_subscribed = set()
+            master.trade_subscribed = set()
         return
 
     async with master.lock:
@@ -1762,9 +1828,54 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
                 },
             )
 
+    # Public trades for lean commodity markets (taker-edge tape).
+    if master.trade_sid is None and want_trade:
+        await _ws_json(
+            master,
+            {
+                "id": _next_cmd(master),
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["trade"],
+                    "market_tickers": sorted(want_trade),
+                },
+            },
+        )
+    else:
+        add_tr = want_trade - master.trade_subscribed
+        rem_tr = master.trade_subscribed - want_trade
+        if master.trade_sid and rem_tr:
+            await _ws_json(
+                master,
+                {
+                    "id": _next_cmd(master),
+                    "cmd": "update_subscription",
+                    "params": {
+                        "sid": master.trade_sid,
+                        "action": "delete_markets",
+                        "market_tickers": sorted(rem_tr),
+                    },
+                },
+            )
+        if add_tr and master.trade_sid:
+            for chunk in _ticker_chunks(add_tr):
+                await _ws_json(
+                    master,
+                    {
+                        "id": _next_cmd(master),
+                        "cmd": "update_subscription",
+                        "params": {
+                            "sid": master.trade_sid,
+                            "action": "add_markets",
+                            "market_tickers": chunk,
+                        },
+                    },
+                )
+
     async with master.lock:
         master.ticker_subscribed = want_ticker
         master.orderbook_subscribed = want_ob
+        master.trade_subscribed = want_trade
 
     if master.lifecycle_sid is None:
         await _ws_json(
@@ -2096,6 +2207,9 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 if master.orderbook_sid != sid:
                     master.ob_channel_last_seq = None
                 master.orderbook_sid = sid
+            elif ch == "trade":
+                master.trade_sid = sid
+                log.info("subscribed trade sid=%s", sid)
             elif ch == "market_lifecycle_v2":
                 master.lifecycle_sid = sid
                 log.info("subscribed market_lifecycle_v2 sid=%s", sid)
@@ -2103,6 +2217,17 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
 
     if dtype == "market_lifecycle_v2":
         asyncio.create_task(_handle_lifecycle_v2(master, data.get("msg") or {}))
+        return
+
+    if dtype == "trade":
+        msg = data.get("msg") or {}
+        mt = str(msg.get("market_ticker") or msg.get("ticker") or "").strip()
+        if mt and mt in master.trade_subscribed:
+            now_mono = time.monotonic()
+            async with master.lock:
+                master.last_trade_mono_by_ticker[mt] = now_mono
+            _publish_public_trade(master, mt, msg)
+            _emit_event("trade", market_ticker=mt)
         return
 
     if dtype == "ticker":
@@ -2113,8 +2238,12 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 _maybe_apply_market_result_from_ticker(master, mt, msg)
                 b = _book(master, mt)
                 now_wall = time.time()
-                b["last_ticker_mono"] = time.monotonic()
+                now_mono = time.monotonic()
+                b["last_ticker_mono"] = now_mono
                 b["last_ticker_wall_at"] = now_wall
+                sym = _symbol_for_ticker(mt)
+                if is_lean_market_symbol(sym):
+                    master.last_lean_ticker_mono_by_symbol[sym] = now_mono
             _mark_ticker_dirty(master, mt, msg)
             _emit_event("ticker", market_ticker=mt)
             from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
@@ -2171,9 +2300,10 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
                 master.ws_connected = False
                 master.ticker_sid = None
                 master.orderbook_sid = None
+                master.trade_sid = None
                 master.lifecycle_sid = None
                 master.ob_channel_last_seq = None
-                log.info("connected symbols=%s", master.symbols)
+                log.info("connected symbols=%s lean=%s", master.symbols, sorted(LEAN_15M_SYMBOLS))
                 await _subscription_sync(master)
                 master.ws_connected = True
                 await asyncio.to_thread(_write_meta, master)
@@ -2200,6 +2330,7 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
             master.ws_send = None
             master.ticker_sid = None
             master.orderbook_sid = None
+            master.trade_sid = None
             master.lifecycle_sid = None
             master.ob_channel_last_seq = None
             for mt in sorted(master.orderbook_subscribed):
@@ -2227,8 +2358,46 @@ def _bind_cfg_globals(cfg: IngestConfig) -> None:
     PUBLISH_COALESCE_SEC = cfg.publish_coalesce_sec
 
 
+def _lean_package_healthy(
+    master: KalshiMarketWsMaster, symbol: str, *, now_mono: float
+) -> tuple[bool, str]:
+    """Market meta + public trades freshness for lean commodity symbols."""
+    sym = symbol.strip().upper()
+    if not master.ws_connected:
+        return False, "ws_disconnected"
+    current = _clock_current_15m_ticker(sym, time.time())
+    if not current:
+        return False, "no_current_15m_ticker"
+    if current not in master.ticker_subscribed:
+        return False, "ticker_not_subscribed"
+    if current not in master.trade_subscribed:
+        return False, "trade_not_subscribed"
+    _ensure_ticker_rest_meta(master, current)
+    meta = master.ticker_rest_meta.get(current) or {}
+    if meta.get("floor_strike") is None and meta.get("open_time") is None:
+        # Allow brief window after subscribe before REST meta lands.
+        return False, "market_meta_pending"
+    ticker_age = now_mono - float(
+        master.last_lean_ticker_mono_by_symbol.get(sym) or 0.0
+    )
+    trade_age = now_mono - float(master.last_trade_mono_by_ticker.get(current) or 0.0)
+    # Quiet tape is OK; require ticker heartbeat. Trades may be sparse.
+    if master.last_lean_ticker_mono_by_symbol.get(sym) is None or ticker_age > 120.0:
+        return False, f"ticker_stale:{ticker_age:.1f}s"
+    if master.last_trade_mono_by_ticker.get(current) is None:
+        # Subscribed but no print yet this cycle — still OK if ticker is live.
+        return True, "ok_awaiting_first_trade"
+    if trade_age > 900.0:
+        return False, f"trade_stale:{trade_age:.1f}s"
+    return True, "ok"
+
+
 def _touch_ws_transport_sync(master: KalshiMarketWsMaster) -> None:
     from backend.core.config.database import get_system_postgresql_connection
+    from backend.core.strike_pipeline_health import (
+        default_max_age_15m_sec,
+        upsert_commodity_pipeline_health,
+    )
 
     conn = get_system_postgresql_connection()
     if not conn:
@@ -2239,8 +2408,12 @@ def _touch_ws_transport_sync(master: KalshiMarketWsMaster) -> None:
             markets.append("15m")
         if master.cfg.includes_hourly:
             markets.append("hourly")
+        ex = master.cfg.exchange.strip().lower()
+        now_mono = time.monotonic()
         with conn.cursor() as cur:
             for sym in master.symbols:
+                if is_lean_market_symbol(sym):
+                    continue
                 for mk in markets:
                     cur.execute(
                         """
@@ -2248,13 +2421,35 @@ def _touch_ws_transport_sync(master: KalshiMarketWsMaster) -> None:
                         SET ws_transport_ok_at = NOW(), updated_at = NOW()
                         WHERE exchange = %s AND market = %s AND symbol = %s
                         """,
-                        (
-                            master.cfg.exchange.strip().lower(),
-                            mk,
-                            sym.upper(),
-                        ),
+                        (ex, mk, sym.upper()),
                     )
         conn.commit()
+
+        # Lean commodities: transport + package health on commodity_pipeline_health.
+        if master.cfg.includes_15m:
+            for sym in master.symbols:
+                if not is_lean_market_symbol(sym):
+                    continue
+                ok, reason = _lean_package_healthy(master, sym, now_mono=now_mono)
+                upsert_commodity_pipeline_health(
+                    conn,
+                    exchange=ex,
+                    market="15m",
+                    symbol=sym,
+                    healthy=ok,
+                    reason=reason,
+                    max_age_sec=default_max_age_15m_sec(),
+                )
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        UPDATE live_data.commodity_pipeline_health
+                        SET ws_transport_ok_at = NOW(), updated_at = NOW()
+                        WHERE exchange = %s AND market = %s AND symbol = %s
+                        """,
+                        (ex, "15m", sym.upper()),
+                    )
+                conn.commit()
     except Exception:
         try:
             conn.rollback()

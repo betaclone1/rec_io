@@ -12,6 +12,10 @@ SERIES_15M_BY_SYMBOL: dict[str, str] = {
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
     "DOGE": "KXDOGE15M",
+    # Lean commodity package: ticker + public trades + lifecycle (no orderbook / strike).
+    "GOLD": "KXGOLD15M",
+    "SILVER": "KXSILVER15M",
+    "WTI": "KXWTI15M",
 }
 SERIES_HOURLY_BY_SYMBOL: dict[str, str] = {
     "BTC": "KXBTCD",
@@ -19,6 +23,13 @@ SERIES_HOURLY_BY_SYMBOL: dict[str, str] = {
     "SOL": "KXSOLD",
     "DOGE": "KXDOGED",
 }
+
+# Commodities: market meta + public trades only (no orderbook_delta / strike tables).
+LEAN_15M_SYMBOLS: frozenset[str] = frozenset({"GOLD", "SILVER", "WTI"})
+
+
+def is_lean_market_symbol(symbol: str) -> bool:
+    return str(symbol or "").strip().upper() in LEAN_15M_SYMBOLS
 
 EST = ZoneInfo("America/New_York")
 MON_SHORT = (

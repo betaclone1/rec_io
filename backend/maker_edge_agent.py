@@ -24,6 +24,7 @@ import uvicorn
 from fastapi import FastAPI
 
 from backend.core.aes_btc15m_maker_edge_cutout import (
+    MAKER_EDGE_SYMBOLS,
     STRATEGY_NAME,
     list_active_maker_edge_monitor_rows,
     resolve_monitor_limit_dollars,
@@ -41,7 +42,10 @@ from backend.core.maker_edge_kalshi import (
 from backend.core.maker_edge_open import (
     LATE_PLACE_GRACE_SEC,
     OpenTarget,
-    fetch_next_open_target,
+    fetch_maker_edge_markets,
+    select_next_open_target,
+    select_targets_co_opening,
+    symbol_from_market_ticker,
     wait_until_open_ts,
 )
 from backend.core.port_config import default_pool_user_number, get_port
@@ -55,7 +59,10 @@ logging.basicConfig(
 log = logging.getLogger("maker_edge_agent")
 
 FAILSAFE_POLL_SEC = float(os.getenv("MAKER_EDGE_FAILSAFE_POLL_SEC", "1.0"))
-MAX_CONCURRENT_MARKETS = int(os.getenv("MAKER_EDGE_MAX_CONCURRENT", "1"))
+# Default allows one dual-rest per Maker Edge symbol (BTC/ETH/GOLD/SILVER/WTI).
+MAX_CONCURRENT_MARKETS = int(
+    os.getenv("MAKER_EDGE_MAX_CONCURRENT", str(max(5, len(MAKER_EDGE_SYMBOLS))))
+)
 # Re-warm TLS/signing ~1s before open so a long arm sleep does not leave a cold pool.
 _REWARM_BEFORE_OPEN_SEC = float(os.getenv("MAKER_EDGE_REWARM_BEFORE_OPEN_SEC", "1.0"))
 # Persistent pool — avoid ThreadPoolExecutor construct/teardown on every open.
@@ -82,6 +89,8 @@ class DualRestState:
     subaccount: int
     paper: bool
     floor_strike: Optional[float]
+    symbol: str = "BTC"
+    close_ts: Optional[float] = None
     bankroll_cents: Optional[float] = None
     # min_time > 0: cancel unfilled rests when TTC <= min_time. min_time == 0: never.
     min_time: int = 0
@@ -133,6 +142,8 @@ class _PreparedPlace:
     ask_price: str
     bid_body_bytes: bytes
     ask_body_bytes: bytes
+    symbol: str = "BTC"
+    close_ts: Optional[float] = None
 
 
 def _log(msg: str) -> None:
@@ -262,10 +273,21 @@ def _resolve_floor_strike(ticker: str, hint: Optional[float] = None) -> Optional
     return None
 
 
-def _current_ttc_seconds() -> Optional[int]:
+def _ttc_seconds_for_state(st: DualRestState) -> Optional[int]:
+    """TTC for min_time cancel: prefer market close_ts, else symbol strike ladder."""
+    if st.close_ts is not None:
+        try:
+            return max(0, int(round(float(st.close_ts) - time.time())))
+        except (TypeError, ValueError):
+            pass
+    return _current_ttc_seconds(st.symbol)
+
+
+def _current_ttc_seconds(symbol: str = "BTC") -> Optional[int]:
     from backend.core.tradeflow_live_reads import strike_ladder, ttc_seconds_from_ladder
 
-    ladder = strike_ladder("BTC", "15m", "kalshi")
+    sym = str(symbol or "BTC").strip().upper() or "BTC"
+    ladder = strike_ladder(sym, "15m", "kalshi")
     if not ladder:
         return None
     ttc = ttc_seconds_from_ladder(ladder, "15m")
@@ -362,7 +384,8 @@ def _order_remaining_qty(order_id: Optional[str]) -> Optional[float]:
 def _ladder_row_for_ticker(ticker: str) -> Optional[Dict[str, Any]]:
     from backend.core.tradeflow_live_reads import strike_ladder
 
-    ladder = strike_ladder("BTC", "15m", "kalshi")
+    sym = symbol_from_market_ticker(ticker) or "BTC"
+    ladder = strike_ladder(sym, "15m", "kalshi")
     if not ladder:
         return None
     want = str(ticker or "").strip()
@@ -372,6 +395,45 @@ def _ladder_row_for_ticker(ticker: str) -> Optional[Dict[str, Any]]:
         if str(row.get("ticker") or "").strip() == want:
             return row
     return None
+
+
+def paper_fill_side_from_print(
+    *,
+    yes_price: Optional[float],
+    no_price: Optional[float],
+    limit_px: float,
+) -> Optional[str]:
+    """Side filled by one public print at/under the dual-rest limit.
+
+    A YES print at ``yes_price <= L`` hits the YES bid. A NO print at
+    ``no_price <= L`` hits the NO bid. Both sides at/under L on one print
+    is not a binary trade — return None rather than pick a side.
+    """
+    yes_hit = yes_price is not None and float(yes_price) <= float(limit_px) + 1e-9
+    no_hit = no_price is not None and float(no_price) <= float(limit_px) + 1e-9
+    if yes_hit and no_hit:
+        return None
+    if yes_hit:
+        return "yes"
+    if no_hit:
+        return "no"
+    return None
+
+
+def _parse_trade_px(raw: Any) -> Optional[float]:
+    if raw is None or str(raw).strip() == "":
+        return None
+    try:
+        return float(raw)
+    except (TypeError, ValueError):
+        return None
+
+
+def _public_trade_prints(ticker: str) -> list[dict[str, Any]]:
+    """Recent Kalshi public prints for ``ticker`` (lean tape). Empty if Redis has none."""
+    from backend.core.kalshi_public_trade_redis import load_public_trade_prints
+
+    return load_public_trade_prints(ticker)
 
 
 def _ladder_side_ask(ticker: str, side: str) -> Optional[float]:
@@ -446,14 +508,15 @@ def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Option
     # Stable per monitor/ticker/side so retries are idempotent in TM.
     ticket_id = f"me_{un}_{st.monitor_id}_{st.ticker}_{side}"
     monitor_key = f"mon_{un}_{st.monitor_id}"
+    sym = str(st.symbol or symbol_from_market_ticker(st.ticker) or "BTC").strip().upper()
     payload = {
         "intent": "maker_edge_fill",
         "ticket_id": ticket_id,
-        "symbol": "BTC",
+        "symbol": sym,
         "market": "15m",
         "exchange": "kalshi",
         "trade_strategy": STRATEGY_NAME,
-        # contract label derived in TM from ticker (do not send bare "BTC")
+        # contract label derived in TM from ticker (do not send bare symbol)
         "strike": float(st.floor_strike),
         "side": side,
         "ticker": st.ticker,
@@ -501,6 +564,8 @@ def _prepare_place(
     ticker: str,
     event_ticker: str,
     floor_strike: Optional[float],
+    *,
+    close_ts: Optional[float] = None,
 ) -> Optional[_PreparedPlace]:
     """Build a place plan before open_time (DB / price map / validation only)."""
     limit_px = resolve_monitor_limit_dollars(monitor)
@@ -532,6 +597,11 @@ def _prepare_place(
     except (TypeError, ValueError):
         bankroll_cents = None
     mid = str(monitor["monitor_id"])
+    symbol = (
+        str(monitor.get("symbol") or symbol_from_market_ticker(ticker) or "BTC")
+        .strip()
+        .upper()
+    )
     bid_price = ask_price = ""
     bid_body = ask_body = b""
     if not paper:
@@ -574,6 +644,8 @@ def _prepare_place(
         ask_price=ask_price,
         bid_body_bytes=bid_body,
         ask_body_bytes=ask_body,
+        symbol=symbol,
+        close_ts=close_ts,
     )
 
 
@@ -590,6 +662,8 @@ def _fire_prepared_place(
         subaccount=plan.subaccount,
         paper=plan.paper,
         floor_strike=plan.floor_strike,
+        symbol=plan.symbol,
+        close_ts=plan.close_ts,
         bankroll_cents=plan.bankroll_cents,
         min_time=plan.min_time,
     )
@@ -664,13 +738,14 @@ def _place_dual(
     return st
 
 
-def _cleanup_foreign_cycle_rests(keep_event: str) -> None:
+def _cleanup_foreign_cycle_rests(keep_events) -> None:
     """Cancel / drop rests for other cycles. Safe after new places are in flight."""
+    keep = {str(e) for e in (keep_events or set())}
     with _lock:
         foreign = [
             (mid, st)
             for mid, st in list(_active.items())
-            if st.event_ticker != keep_event
+            if st.event_ticker not in keep
         ]
     for mid, st in foreign:
         if st.done and not st.paper and not st.fill_sync_done:
@@ -686,7 +761,7 @@ def _cleanup_foreign_cycle_rests(keep_event: str) -> None:
                 )
         with _lock:
             cur = _active.get(mid)
-            if cur is st or (cur and cur.event_ticker != keep_event):
+            if cur is st or (cur and cur.event_ticker not in keep):
                 _active.pop(mid, None)
 
 
@@ -781,6 +856,22 @@ def _check_fills(st: DualRestState, *, ttc: Optional[int] = None) -> None:
         if no_ask is not None and no_ask <= st.limit_px + 1e-9:
             _on_first_fill(st, side="no", fill_qty=float(st.contracts))
             return
+        # Lean commodities have ticker + public tape, no orderbook. A print at
+        # or under L is the venue fill signal (empty-book ticker ask stays $1).
+        from backend.core.market_watchdog.venues.kalshi.schedule import (
+            is_lean_market_symbol,
+        )
+
+        if is_lean_market_symbol(st.symbol) and yes_ask is None and no_ask is None:
+            for rec in _public_trade_prints(st.ticker):
+                side = paper_fill_side_from_print(
+                    yes_price=_parse_trade_px(rec.get("yes_price_dollars")),
+                    no_price=_parse_trade_px(rec.get("no_price_dollars")),
+                    limit_px=st.limit_px,
+                )
+                if side:
+                    _on_first_fill(st, side=side, fill_qty=float(st.contracts))
+                    return
     else:
         bid_fill = _order_fill_qty(st.bid_order_id)
         ask_fill = _order_fill_qty(st.ask_order_id)
@@ -804,25 +895,60 @@ def _check_fills(st: DualRestState, *, ttc: Optional[int] = None) -> None:
 
 
 def _place_at_open(target: OpenTarget) -> None:
-    """Runs on arm thread: prefetch, wait for open_ts, fire dual rests, then cleanup."""
+    """Runs on arm thread: prefetch, wait for open_ts, fire dual rests, then cleanup.
+
+    Co-opening: when BTC/ETH/commodity 15m windows share the same open_ts, place
+    each auto_trade monitor against its matching symbol's market in one fire.
+    """
     global _armed_event, _armed_target, _last_event_ticker
     et = target.event_ticker
     _log(
         f"armed open_time place event={et} ticker={target.market_ticker} "
-        f"open_ts={target.open_ts:.6f} in={target.open_ts - time.time():.3f}s"
+        f"symbol={target.symbol or '?'} open_ts={target.open_ts:.6f} "
+        f"in={target.open_ts - time.time():.3f}s"
     )
 
     # --- Prefetch (before open): all work we control that is not the send ---
-    floor = _resolve_floor_strike(target.market_ticker, target.floor_strike)
+    markets = fetch_maker_edge_markets()
+    co_targets = select_targets_co_opening(markets, primary=target)
+    by_symbol: Dict[str, OpenTarget] = {}
+    for tgt in co_targets:
+        sym = str(tgt.symbol or "").strip().upper()
+        if not sym or sym in by_symbol:
+            continue
+        by_symbol[sym] = tgt
+    # Always include the armed primary even if markets fetch was thin.
+    primary_sym = str(target.symbol or "").strip().upper()
+    if primary_sym and primary_sym not in by_symbol:
+        by_symbol[primary_sym] = target
+
     monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
     plans: list[_PreparedPlace] = []
     for mon in monitors:
-        plan = _prepare_place(mon, target.market_ticker, et, floor)
+        mon_sym = str(mon.get("symbol") or "").strip().upper()
+        tgt = by_symbol.get(mon_sym)
+        if tgt is None:
+            continue
+        floor = _resolve_floor_strike(tgt.market_ticker, tgt.floor_strike)
+        plan = _prepare_place(
+            mon,
+            tgt.market_ticker,
+            tgt.event_ticker,
+            floor,
+            close_ts=tgt.close_ts,
+        )
         if plan is not None:
             plans.append(plan)
     # Cap to concurrency before open so hot path does not decide under the gun.
     if len(plans) > MAX_CONCURRENT_MARKETS:
         plans = plans[:MAX_CONCURRENT_MARKETS]
+    keep_events = {p.event_ticker for p in plans} | {et}
+    for tgt in by_symbol.values():
+        keep_events.add(tgt.event_ticker)
+    _log(
+        f"co-open targets={[t.market_ticker for t in by_symbol.values()]} "
+        f"plans={len(plans)} symbols={sorted(by_symbol)}"
+    )
     warm_kalshi_http()
     # Sleep until ~1s before open, then re-warm so TLS is fresh after a long arm.
     while True:
@@ -842,7 +968,7 @@ def _place_at_open(target: OpenTarget) -> None:
             if _armed_event == et:
                 _armed_event = None
                 _armed_target = None
-            _placed_events.add(et)
+            _placed_events.update(keep_events)
         return
 
     # --- Hot path: fire only (no DB, no foreign cancel, no lock around HTTP) ---
@@ -868,7 +994,7 @@ def _place_at_open(target: OpenTarget) -> None:
         for plan, st, _, _ in fired:
             if st is not None:
                 _active[plan.monitor_id] = st
-        _placed_events.add(et)
+        _placed_events.update(keep_events)
         if _armed_event == et:
             _armed_event = None
             _armed_target = None
@@ -876,9 +1002,9 @@ def _place_at_open(target: OpenTarget) -> None:
 
     # Foreign-cycle cleanup after new rests are on the wire / booked.
     try:
-        _cleanup_foreign_cycle_rests(et)
+        _cleanup_foreign_cycle_rests(keep_events)
     except Exception as exc:
-        _log(f"foreign cleanup failed event={et}: {exc}")
+        _log(f"foreign cleanup failed events={sorted(keep_events)}: {exc}")
 
     def _ms(v: Optional[float], nd: int = 2) -> str:
         return f"{v:.{nd}f}" if v is not None else "n/a"
@@ -902,15 +1028,16 @@ def _place_at_open(target: OpenTarget) -> None:
             ask_rtt = ask_res.rtt_ms
             ask_send_lag = (ask_res.t_send - target.open_ts) * 1000.0
     placed_n = sum(1 for _, st, _, _ in fired if st is not None)
+    tickers = ",".join(sorted({p.ticker for p, _, _, _ in fired})) or target.market_ticker
     # lag_ms kept for existing log parsers (= fire_lag; send is send_lag_ms).
     _log(
-        f"open_time place done event={et} ticker={target.market_ticker} "
+        f"open_time place done event={et} tickers={tickers} "
         f"lag_ms={fire_lag_ms:.2f} fire_lag_ms={fire_lag_ms:.2f} "
         f"send_lag_ms={_ms(send_lag_ms)} ack_lag_ms={_ms(ack_lag_ms)} "
         f"prep_after_fire_ms={_ms(prep_after_fire_ms)} "
         f"bid_send_lag_ms={_ms(bid_send_lag)} ask_send_lag_ms={_ms(ask_send_lag)} "
         f"bid_rtt_ms={_ms(bid_rtt, 1)} ask_rtt_ms={_ms(ask_rtt, 1)} "
-        f"floor={floor} plans={len(plans)} placed={placed_n}"
+        f"plans={len(plans)} placed={placed_n}"
     )
 
 
@@ -918,6 +1045,7 @@ def _ensure_armed_for_next_open() -> None:
     """Arm a waiter for the next Kalshi open_time. No mid-cycle recovery place.
 
     Restart during an open cycle intentionally skips that cycle; next open arms normally.
+    Skips events already placed/completed so a co-open sibling can still arm if needed.
     """
     global _armed_event, _armed_target, _arm_thread, _last_discover_mono
     now_m = time.monotonic()
@@ -927,8 +1055,11 @@ def _ensure_armed_for_next_open() -> None:
             return
         if now_m - _last_discover_mono < OPEN_DISCOVER_POLL_SEC and _armed_event:
             return
+        exclude = set(_placed_events) | set(_completed_events)
+        exclude.update(s.event_ticker for s in _active.values())
     _last_discover_mono = now_m
-    target = fetch_next_open_target()
+    markets = fetch_maker_edge_markets()
+    target = select_next_open_target(markets, exclude_events=exclude)
     if target is None:
         return
     with _lock:
@@ -953,11 +1084,10 @@ def _tick() -> None:
     all_me = list_active_maker_edge_monitor_rows()
     _sync_monitor_statuses(all_me)
     _ensure_armed_for_next_open()
-    ttc = _current_ttc_seconds()
 
     with _lock:
         for st in list(_active.values()):
-            _check_fills(st, ttc=ttc)
+            _check_fills(st, ttc=_ttc_seconds_for_state(st))
         # Bound placed_events memory
         if len(_placed_events) > 64:
             # Keep most recent-ish by clearing when oversized; arming uses live API.
@@ -981,15 +1111,20 @@ def _start_listeners() -> None:
             start_tradeflow_live_state_listener,
         )
 
+        def _me_sym_mkt(symbol: str, market: str) -> bool:
+            return (
+                str(symbol).upper() in MAKER_EDGE_SYMBOLS
+                and str(market).lower() == "15m"
+            )
+
         def _on_ladder(symbol: str, market: str) -> None:
-            if str(symbol).upper() == "BTC" and str(market).lower() == "15m":
+            if _me_sym_mkt(symbol, market):
                 _wake.set()
 
         start_tradeflow_live_state_listener(
             on_ladder_update=_on_ladder,
             service="maker_edge_agent",
-            symbol_market_filter=lambda s, m: str(s).upper() == "BTC"
-            and str(m).lower() == "15m",
+            symbol_market_filter=_me_sym_mkt,
         )
     except Exception as exc:
         _log(f"live_state listener not started: {exc}")

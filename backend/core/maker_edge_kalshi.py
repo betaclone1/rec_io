@@ -188,8 +188,10 @@ def build_place_body(
     subaccount: int,
     exchange_index: int = -1,
     client_order_id: Optional[str] = None,
+    post_only: bool = True,
+    self_trade_prevention_type: str = "maker",
 ) -> Dict[str, Any]:
-    """Build a Kalshi V2 post-only GTC body (safe to construct before open_time)."""
+    """Build a Kalshi V2 GTC body. Maker Edge stays post-only; Taker Edge crosses."""
     count_fp = f"{float(int(count)):.2f}"
     return {
         "ticker": str(ticker).strip(),
@@ -198,9 +200,9 @@ def build_place_body(
         "count": count_fp,
         "price": str(price),
         "time_in_force": "good_till_canceled",
-        "self_trade_prevention_type": "maker",
+        "self_trade_prevention_type": str(self_trade_prevention_type),
         "cancel_order_on_pause": True,
-        "post_only": True,
+        "post_only": bool(post_only),
         "subaccount": int(subaccount),
         "exchange_index": int(exchange_index),
     }
@@ -232,7 +234,7 @@ def v2_price_for_limit_side(*, side: str, limit_dollars: float) -> str:
     return f"{clamp_submit_price(out):.4f}"
 
 
-def place_post_only_gtc(
+def place_limit_gtc(
     *,
     ticker: str,
     side: str,
@@ -242,8 +244,12 @@ def place_post_only_gtc(
     exchange_index: int = -1,
     prebuilt_price: Optional[str] = None,
     prebuilt_body_bytes: Optional[bytes] = None,
+    post_only: bool = True,
+    self_trade_prevention_type: str = "maker",
 ) -> PlaceResult:
-    """Place one post-only GTC. side is 'bid' or 'ask'.
+    """Place one GTC. side is 'bid' (yes @ L) or 'ask' (no @ L).
+
+    ``post_only=False`` lets the order cross (Taker Edge). Maker Edge passes True.
 
     Prefetch path: pass ``prebuilt_body_bytes`` (and optionally ``prebuilt_price``)
     so the hot path only signs + POSTs. ``t_send`` is stamped immediately before
@@ -270,6 +276,8 @@ def place_post_only_gtc(
             count=count,
             subaccount=subaccount,
             exchange_index=exchange_index,
+            post_only=post_only,
+            self_trade_prevention_type=self_trade_prevention_type,
         )
         body_bytes = encode_place_body(body)
     try:
@@ -305,6 +313,32 @@ def place_post_only_gtc(
         t_ack = time.time()
         log.error("PLACE failed: %s", exc)
         return PlaceResult(api_json=None, t_send=t0, t_ack=t_ack)
+
+
+def place_post_only_gtc(
+    *,
+    ticker: str,
+    side: str,
+    limit_dollars: float,
+    count: int,
+    subaccount: int,
+    exchange_index: int = -1,
+    prebuilt_price: Optional[str] = None,
+    prebuilt_body_bytes: Optional[bytes] = None,
+) -> PlaceResult:
+    """Maker Edge dual rest: post-only GTC."""
+    return place_limit_gtc(
+        ticker=ticker,
+        side=side,
+        limit_dollars=limit_dollars,
+        count=count,
+        subaccount=subaccount,
+        exchange_index=exchange_index,
+        prebuilt_price=prebuilt_price,
+        prebuilt_body_bytes=prebuilt_body_bytes,
+        post_only=True,
+        self_trade_prevention_type="maker",
+    )
 
 
 def list_resting_orders(*, subaccount: int, limit: int = 100) -> List[Dict[str, Any]]:

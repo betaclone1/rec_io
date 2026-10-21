@@ -21,6 +21,9 @@
     function uatIsMakerEdge(strategy) {
       return String(strategy || '').toUpperCase().includes('MAKER EDGE');
     }
+    function uatIsTakerEdge(strategy) {
+      return String(strategy || '').toUpperCase().includes('TAKER EDGE');
+    }
     function uatIsExpirationReversal(strategy) {
       return String(strategy || '').toUpperCase().includes('EXPIRATION REVERSAL');
     }
@@ -43,7 +46,7 @@
       return String(market || '').trim().toLowerCase() === '15m';
     }
     function uatTimeWindowMaxSeconds(strategy, market) {
-      if (uatIsMakerEdge(strategy) || uatIsHighWaterFamily(strategy)) {
+      if (uatIsMakerEdge(strategy) || uatIsTakerEdge(strategy) || uatIsHighWaterFamily(strategy)) {
         return uatMonitorMarketIs15m(market) ? 900 : 3600;
       }
       // Expiration Scalp / Expiration Reversal: full 15m window 00:00–15:00.
@@ -1198,7 +1201,7 @@
       document.removeEventListener('touchend', handleDashboardExpirationScalpAskMouseUp);
     }
 
-    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge) {
+    function dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge, isTakerEdge) {
       const isHighWaterFamily = !!(isHighWaterScalp || isHighWaterTest1);
       const makerEdge = !!isMakerEdge;
       const disp = (on) => (on ? '' : 'none');
@@ -1258,7 +1261,9 @@
       if (hwsPt) hwsPt.style.display = (isHighWaterScalp || makerEdge) ? 'block' : 'none';
       const hwsPtLabel = document.getElementById('highWaterScalpPriceTargetLabel');
       if (hwsPtLabel) {
-        hwsPtLabel.textContent = makerEdge ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:';
+        hwsPtLabel.textContent = isTakerEdge
+          ? 'Target Price:'
+          : (makerEdge ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:');
       }
       const esMov = document.getElementById('expirationScalpMovementWindowSection');
       if (esMov) esMov.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
@@ -2175,7 +2180,8 @@
       const isHighWaterScalp = uatIsHighWaterScalp(currentStrategy);
       const isHighWaterTest1 = uatIsHighWaterTest1(currentStrategy);
       const isHighWaterFamily = uatIsHighWaterFamily(currentStrategy);
-      const isMakerEdge = uatIsMakerEdge(currentStrategy);
+      const isTakerEdge = uatIsTakerEdge(currentStrategy);
+      const isMakerEdge = uatIsMakerEdge(currentStrategy) || isTakerEdge;
       const isExpirationScalp = uatIsExpirationScalpEntry(currentStrategy);
       window.dashboardTimeWindowMaxSeconds = uatTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
 
@@ -2274,7 +2280,7 @@
         const showGenericSlip = !isRisingDevil && !isExpirationScalp && !isMakerEdge;
         if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
       }
-      dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge);
+      dashboardUatApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge, isTakerEdge);
 
       const populate = async (data) => {
         const setVal = (id,v) => { 
@@ -2529,7 +2535,7 @@
 
         // Maker Edge: Limit Price slider is shared HWS chrome (HTML default 0.90). Must load
         // from monitor min_ask here — NOT inside Expiration Scalp gate (Maker Edge is not ES).
-        if (uatIsMakerEdge(currentStrategy)) {
+        if (uatIsMakerEdge(currentStrategy) || uatIsTakerEdge(currentStrategy)) {
           const meAsk = uatFiniteOrNull(data.min_ask) != null
             ? uatFiniteOrNull(data.min_ask)
             : uatFiniteOrNull(data.max_ask);
@@ -2541,7 +2547,7 @@
               : null
           );
           if (!meOk) {
-            throw new Error('Maker Edge min_ask missing from monitor API — refusing UI defaults');
+            throw new Error('Limit price missing from monitor API — refusing UI defaults');
           }
         }
         
@@ -3063,7 +3069,8 @@
       const isHighWaterScalp = uatIsHighWaterScalp(currentStrategy);
       const isHighWaterTest1 = uatIsHighWaterTest1(currentStrategy);
       const isHighWaterFamily = uatIsHighWaterFamily(currentStrategy);
-      const isMakerEdge = uatIsMakerEdge(currentStrategy);
+      const isTakerEdge = uatIsTakerEdge(currentStrategy);
+      const isMakerEdge = uatIsMakerEdge(currentStrategy) || isTakerEdge;
       const isExpirationScalp = uatIsExpirationScalpEntry(currentStrategy);
         
         const payload = {
@@ -3075,12 +3082,12 @@
         if (isMakerEdge) {
           const ptEl = document.getElementById('highWaterScalpPriceTargetSlider');
           if (!ptEl || ptEl.dataset.uatAskFromMonitor !== '1') {
-            alert('Maker Edge limit price did not load from the monitor. Nothing was saved.');
+            alert('Limit price did not load from the monitor. Nothing was saved.');
             return;
           }
           const ptRaw = parseInt(ptEl.value, 10) / 100;
           if (!Number.isFinite(ptRaw) || ptRaw <= 0 || ptRaw >= 1) {
-            alert('Limit price is required for Maker Edge.');
+            alert('Limit price is required.');
             return;
           }
           const pt = parseFloat(ptRaw.toFixed(4));

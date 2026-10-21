@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from backend.core.aes_btc15m_maker_edge_cutout import (
+    MAKER_EDGE_SYMBOLS,
     STRATEGY_NAME,
     filter_maker_edge_rows_only,
     filter_out_maker_edge_rows,
     is_maker_edge_row,
+    is_maker_edge_symbol,
     resolve_monitor_limit_dollars,
     row_matches_maker_edge_fields,
 )
@@ -23,9 +25,21 @@ def test_membership_exact():
     assert STRATEGY_NAME == "Maker Edge"
 
 
+def test_membership_multi_symbol():
+    for sym in ("BTC", "ETH", "GOLD", "SILVER", "WTI"):
+        assert is_maker_edge_symbol(sym)
+        assert is_maker_edge_row(
+            {"symbol": sym, "market": "15m", "strategy": "Maker Edge"}
+        )
+    assert MAKER_EDGE_SYMBOLS == frozenset(
+        {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
+    )
+    assert not is_maker_edge_symbol("SOL")
+
+
 def test_membership_rejects_near_misses():
     assert not is_maker_edge_row(
-        {"symbol": "ETH", "market": "15m", "strategy": "Maker Edge"}
+        {"symbol": "SOL", "market": "15m", "strategy": "Maker Edge"}
     )
     assert not is_maker_edge_row(
         {"symbol": "BTC", "market": "hourly", "strategy": "Maker Edge"}
@@ -40,10 +54,12 @@ def test_filters_partition():
         {"monitor_id": "1", "symbol": "BTC", "market": "15m", "strategy": "Maker Edge"},
         {"monitor_id": "2", "symbol": "BTC", "market": "15m", "strategy": "Rising Devil"},
         {"monitor_id": "3", "symbol": "BTC", "market": "15m", "strategy": "Expiration Scalp"},
+        {"monitor_id": "4", "symbol": "ETH", "market": "15m", "strategy": "Maker Edge"},
+        {"monitor_id": "5", "symbol": "GOLD", "market": "15m", "strategy": "Maker Edge"},
     ]
     only = filter_maker_edge_rows_only(rows)
     rest = filter_out_maker_edge_rows(rows)
-    assert [r["monitor_id"] for r in only] == ["1"]
+    assert [r["monitor_id"] for r in only] == ["1", "4", "5"]
     assert [r["monitor_id"] for r in rest] == ["2", "3"]
 
 

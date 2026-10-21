@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-20 — Release v3.12.17: Commodity category, Taker Edge, commodity symbol close
+
+**Summary**
+- **Release: v3.12.17**
+- **Plans:** `maker-edge-strategy`; handoff `docs/TAKER_EDGE_STRATEGY.md`, `docs/MAKER_EDGE_STRATEGY.md`.
+- **Commodity category:** `live_data.symbols_list.category` is `crypto` or `commodity`. GOLD / SILVER / WTI are commodity: lean Kalshi capture (market meta + public trades + lifecycle, no orderbook or strike ladder), Pyth spot, and `commodity_pipeline_health`. Crypto keeps the full strike package.
+- **Taker Edge:** Strategy seed on `system.strategy_list_default` and every tenant `strategy_list_%`. `taker_edge_agent_*` places one GTC after a public print at or above the monitor target and books via `intent=taker_edge_fill`. AES/ATS stay off these monitors. When the symbol has a strike ladder, the fill stamps side-aware `prob` and `diff`.
+- **Commodity symbol close:** Pyth ticks land on `live_data.live_price_ring_90m_{symbol}` with `avg_60s` = tick `one_minute_avg`. Trade manager reads that field for `symbol_close` / `symbol_expiration`. NULL until the close-second tick exists.
+- **Maker Edge:** Same 15m symbol set, including lean commodities. Settings UI (desktop and mobile) recognizes Taker Edge.
+- **DB:** Migrations **`20261020_1130_symbols_list_category`**, **`20261020_1145_symbols_list_commodities`**, **`20261020_1645_taker_edge_strategy`**, **`20261020_1935_commodity_price_rings`** (apply in that order).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-20`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down` the four migrations newest-first.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migrations in order:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1130_symbols_list_category`
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1145_symbols_list_commodities`
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1645_taker_edge_strategy`
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1935_commodity_price_rings`
+- [ ] Regenerate supervisor and full restart (new `pyth_price_watchdog` and `taker_edge_agent_*`): `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `pyth_price_watchdog`, `taker_edge_agent_0001`, `trade_manager_0001`, `maker_edge_agent_0001`, `market_watchdog_ws_kalshi` RUNNING
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.17`
+
+---
+
 ## 2026-10-19 — Release v3.12.16: ME dual-lane place + per-SA bankroll ratchet fix
 
 **Summary**

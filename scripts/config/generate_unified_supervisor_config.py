@@ -44,6 +44,7 @@ _KALSHI_STREAM_OVERLAY_KEYS = (
     "STRIKE_TABLE_SYMBOLS",
     "STRIKE_SNAPSHOT_SYMBOLS",
     "CFBENCHMARKS_INDEX_IDS",
+    "PYTH_UNDERLYING_TICKERS",
     "MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE",
 )
 
@@ -98,10 +99,17 @@ def _cfbenchmarks_index_ids_for_symbols(symbols_csv: str) -> str:
 
 
 def _strike_symbols_cli_suffix(overlay: dict) -> str:
+    """Strike-table CLI symbols: crypto package only (exclude lean commodities)."""
+    from backend.core.market_watchdog.venues.kalshi.schedule import LEAN_15M_SYMBOLS
+
     raw = (overlay.get("STRIKE_TABLE_SYMBOLS") or overlay.get("MARKET_WATCHDOG_SYMBOLS") or "").strip()
     if not raw:
         return ""
-    parts = [s.strip().upper() for s in raw.split(",") if s.strip()]
+    parts = [
+        s.strip().upper()
+        for s in raw.split(",")
+        if s.strip() and s.strip().upper() not in LEAN_15M_SYMBOLS
+    ]
     if not parts:
         return ""
     return " --symbols " + " ".join(parts)
@@ -118,6 +126,7 @@ def global_core_service_specs():
         {"name": "read_api", "script": "read_api.py"},
         {"name": "redis_switchboard", "script": "redis_switchboard.py"},
         {"name": "cfbenchmarks_price_watchdog", "script": "cfbenchmarks_price_watchdog.py"},
+        {"name": "pyth_price_watchdog", "script": "pyth_price_watchdog.py"},
         {
             "name": "market_watchdog_ws_kalshi",
             "script": f"market_watchdog_ws.py --exchange kalshi --market {mw_market}",
@@ -361,6 +370,7 @@ class SupervisorConfigGenerator:
                 "active_trade_supervisor": 6000,
                 "auto_entry_supervisor": 8002,
                 "cfbenchmarks_price_watchdog": 8008,
+                "pyth_price_watchdog": 8009,
                 "symbol_price_watchdog_spx": 8017,
                 "symbol_price_watchdog_ndx": 8019,
                 "kalshi_account_sync_0001": 8004,
@@ -544,6 +554,25 @@ class SupervisorConfigGenerator:
                 "script": "cfbenchmarks_price_watchdog.py",
                 "port": ports.get("cfbenchmarks_price_watchdog", 8008),
                 "environment": cfb_env,
+                "autostart": True,
+            }
+        )
+        pyth_under = (stream_overlay.get("PYTH_UNDERLYING_TICKERS") or "").strip()
+        if not pyth_under:
+            pyth_under = (
+                "Metal.Index.1OZGOLD/USD,Metal.Index.SILVER/USD,Commodities.Index.PYTHOIL/USD"
+            )
+        pyth_env = (
+            env_global
+            + ',PYTH_PUBLISH_MODE="live_state"'
+            + f',PYTH_UNDERLYING_TICKERS="{pyth_under}"'
+        )
+        services.append(
+            {
+                "name": "pyth_price_watchdog",
+                "script": "pyth_price_watchdog.py",
+                "port": ports.get("pyth_price_watchdog", 8009),
+                "environment": pyth_env,
                 "autostart": True,
             }
         )
@@ -776,6 +805,20 @@ class SupervisorConfigGenerator:
                         "name": me_name,
                         "script": "maker_edge_agent.py",
                         "port": me_port,
+                        "environment": env_u,
+                        "autostart": True,
+                    }
+                )
+                te_name = f"taker_edge_agent_{user_no}"
+                try:
+                    te_port = int(ports.get(te_name) or (8052 if user_no == "0001" else 8053))
+                except (TypeError, ValueError):
+                    te_port = 8052 if user_no == "0001" else 8053
+                services.append(
+                    {
+                        "name": te_name,
+                        "script": "taker_edge_agent.py",
+                        "port": te_port,
                         "environment": env_u,
                         "autostart": True,
                     }

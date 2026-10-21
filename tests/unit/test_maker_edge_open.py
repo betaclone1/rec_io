@@ -5,7 +5,10 @@ from __future__ import annotations
 import time
 
 from backend.core.maker_edge_open import (
+    maker_edge_series_tickers,
     select_next_open_target,
+    select_targets_co_opening,
+    symbol_from_market_ticker,
     wait_until_open_ts,
 )
 
@@ -40,6 +43,61 @@ def test_select_next_open_prefers_soonest_future():
     assert abs(tgt.open_ts - (now + 60)) < 1.0
 
 
+def test_symbol_from_market_ticker_multi():
+    assert symbol_from_market_ticker("KXBTC15M-26OCT181200-00") == "BTC"
+    assert symbol_from_market_ticker("KXETH15M-26OCT181200-00") == "ETH"
+    assert symbol_from_market_ticker("KXGOLD15M-26OCT181200-00") == "GOLD"
+    assert symbol_from_market_ticker("KXSILVER15M-26OCT181200-00") == "SILVER"
+    assert symbol_from_market_ticker("KXWTI15M-26OCT181200-00") == "WTI"
+
+
+def test_maker_edge_series_tickers():
+    assert maker_edge_series_tickers() == [
+        "KXBTC15M",
+        "KXETH15M",
+        "KXGOLD15M",
+        "KXSILVER15M",
+        "KXWTI15M",
+    ]
+
+
+def test_select_targets_co_opening_multi_symbol():
+    now = 1_700_000_000.0
+    open_ts = now + 30
+    markets = [
+        _m("KXBTC15M-B-15", open_ts, open_ts + 900),
+        _m("KXETH15M-B-15", open_ts, open_ts + 900),
+        _m("KXGOLD15M-B-15", open_ts, open_ts + 900),
+        _m("KXBTC15M-C-30", open_ts + 900, open_ts + 1800),
+    ]
+    primary = select_next_open_target(markets, now=now, late_grace_sec=0.25)
+    assert primary is not None
+    co = select_targets_co_opening(markets, primary=primary, now=now)
+    tickers = {t.market_ticker for t in co}
+    assert "KXBTC15M-B-15" in tickers
+    assert "KXETH15M-B-15" in tickers
+    assert "KXGOLD15M-B-15" in tickers
+    assert "KXBTC15M-C-30" not in tickers
+
+
+def test_select_next_skips_exclude_events():
+    now = 1_700_000_000.0
+    markets = [
+        _m("KXBTC15M-B-15", now + 60, now + 960),
+        _m("KXETH15M-B-15", now + 60, now + 960),
+    ]
+    primary = select_next_open_target(markets, now=now, late_grace_sec=0.25)
+    assert primary is not None
+    nxt = select_next_open_target(
+        markets,
+        now=now,
+        late_grace_sec=0.25,
+        exclude_events={primary.event_ticker},
+    )
+    assert nxt is not None
+    assert nxt.event_ticker != primary.event_ticker
+
+
 def test_select_allows_just_opened_within_grace():
     now = 1_700_000_000.0
     markets = [
@@ -65,6 +123,27 @@ def test_wait_until_open_ts_spin():
     open_ts = time.time() + 0.08
     assert wait_until_open_ts(open_ts, late_grace_sec=0.5, spin_before_sec=0.05) is True
     assert time.time() >= open_ts
+
+
+def test_paper_fill_side_from_public_print():
+    from backend.maker_edge_agent import paper_fill_side_from_print
+
+    assert (
+        paper_fill_side_from_print(yes_price=0.001, no_price=0.999, limit_px=0.01)
+        == "yes"
+    )
+    assert (
+        paper_fill_side_from_print(yes_price=0.999, no_price=0.001, limit_px=0.01)
+        == "no"
+    )
+    assert (
+        paper_fill_side_from_print(yes_price=0.17, no_price=0.83, limit_px=0.01)
+        is None
+    )
+    assert (
+        paper_fill_side_from_print(yes_price=0.01, no_price=0.01, limit_px=0.01)
+        is None
+    )
 
 
 def test_min_ttc_cancel_gate():

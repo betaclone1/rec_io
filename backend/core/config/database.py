@@ -1124,6 +1124,31 @@ def init_database():
             CREATE INDEX IF NOT EXISTS strike_pipeline_health_transport_idx
             ON live_data.strike_pipeline_health USING btree (ws_transport_ok_at DESC NULLS LAST);
         """))
+        # Lean commodity package (market meta + public trades); spot/pyth checked at gate.
+        # Category on symbols_list selects this vs strike_pipeline_health (migration 20261020_1130).
+        cursor.execute(_us("""
+            CREATE TABLE IF NOT EXISTS live_data.commodity_pipeline_health (
+                exchange VARCHAR(20) NOT NULL,
+                market VARCHAR(20) NOT NULL,
+                symbol VARCHAR(10) NOT NULL,
+                pipeline_healthy BOOLEAN NOT NULL DEFAULT FALSE,
+                pipeline_health_reason TEXT,
+                pipeline_health_checked_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                pipeline_health_max_age_sec INTEGER NOT NULL DEFAULT 900,
+                ws_transport_ok_at TIMESTAMP WITH TIME ZONE,
+                updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (exchange, market, symbol)
+            );
+        """))
+        cursor.execute(_us("""
+            CREATE INDEX IF NOT EXISTS commodity_pipeline_health_checked_idx
+            ON live_data.commodity_pipeline_health USING btree (pipeline_health_checked_at DESC);
+        """))
+        cursor.execute(_us("""
+            CREATE INDEX IF NOT EXISTS commodity_pipeline_health_transport_idx
+            ON live_data.commodity_pipeline_health USING btree (ws_transport_ok_at DESC NULLS LAST);
+        """))
+
         # Add status and external_transfer_id to transfers_0001 if table exists
         cursor.execute(_us("""
             DO $$

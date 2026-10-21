@@ -53,7 +53,20 @@ def retention_minutes() -> int:
 
 
 def _table_for_symbol(symbol: str) -> Optional[str]:
-    return _TABLE_BY_SYMBOL.get(str(symbol or "").strip().upper())
+    """CFB rings are mapped by name. Pyth commodity rings are ``live_price_ring_90m_{symbol}``."""
+    sym = str(symbol or "").strip().upper()
+    mapped = _TABLE_BY_SYMBOL.get(sym)
+    if mapped:
+        return mapped
+    if not sym.isalpha():
+        return None
+    try:
+        from backend.symbol_price_watchdog import COMMODITY_LIVE_STATE_SYMBOLS
+    except Exception:
+        return None
+    if sym not in COMMODITY_LIVE_STATE_SYMBOLS:
+        return None
+    return f"live_price_ring_90m_{sym.lower()}"
 
 
 def _utc_wall_str(dt: datetime) -> str:
@@ -374,7 +387,7 @@ def hydrate_startup_buffers(symbols: List[str]) -> None:
 
     for sym in symbols:
         s = str(sym or "").strip().upper()
-        if s not in _TRACKED:
+        if _table_for_symbol(s) is None:
             continue
         rows = _load_ring_rows(s)
         if not rows:

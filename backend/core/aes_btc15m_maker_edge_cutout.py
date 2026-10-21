@@ -1,8 +1,9 @@
 """
-BTC 15m Maker Edge membership — exclude from unified AES/ATS.
+Maker Edge membership — exclude from unified AES/ATS.
 
 Config rule (not hard-coded monitor ids):
-  symbol=BTC, market=15m, strategy=Maker Edge
+  market=15m, strategy=Maker Edge, symbol in MAKER_EDGE_SYMBOLS
+  (BTC, ETH, GOLD, SILVER, WTI)
 
 Entry place/cancel runs in maker_edge_agent, not AES→TM→TE.
 """
@@ -11,18 +12,31 @@ from __future__ import annotations
 
 import threading
 import time
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 STRATEGY_NAME = "Maker Edge"
-CUTOUT_SYMBOL = "BTC"
 CUTOUT_MARKET = "15m"
+# v1 was BTC-only; expanded to crypto + commodity 15m underlyings in symbols_list.
+MAKER_EDGE_SYMBOLS: frozenset[str] = frozenset(
+    {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
+)
+# Back-compat alias (older call sites / docs).
+CUTOUT_SYMBOL = "BTC"
+
+
+def is_maker_edge_symbol(symbol: Any) -> bool:
+    return str(symbol or "").strip().upper() in MAKER_EDGE_SYMBOLS
 
 
 def is_maker_edge_row(row: Dict[str, Any]) -> bool:
     sym = str(row.get("symbol") or "").strip().upper()
     mkt = str(row.get("market") or "").strip().lower()
     strat = str(row.get("strategy") or "").strip()
-    return sym == CUTOUT_SYMBOL and mkt == CUTOUT_MARKET and strat == STRATEGY_NAME
+    return (
+        sym in MAKER_EDGE_SYMBOLS
+        and mkt == CUTOUT_MARKET
+        and strat == STRATEGY_NAME
+    )
 
 
 def row_matches_maker_edge_fields(
@@ -44,8 +58,14 @@ def filter_maker_edge_rows_only(rows: List[Dict[str, Any]]) -> List[Dict[str, An
     return [r for r in rows if is_maker_edge_row(r)]
 
 
+def _sql_symbol_in_clause() -> Tuple[str, Tuple[str, ...]]:
+    syms = tuple(sorted(MAKER_EDGE_SYMBOLS))
+    placeholders = ", ".join(["%s"] * len(syms))
+    return placeholders, syms
+
+
 def list_active_maker_edge_monitor_rows() -> List[Dict[str, Any]]:
-    """Active BTC 15m Maker Edge monitors with settings needed by the agent."""
+    """Active 15m Maker Edge monitors (allowed symbols) with settings needed by the agent."""
     from backend.core.config.database import get_postgresql_connection
     from backend.core.port_config import default_pool_user_number
     from backend.core.tenant_legacy_sql import legacy_users_monitor_list
@@ -57,6 +77,7 @@ def list_active_maker_edge_monitor_rows() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     try:
         ml = legacy_users_monitor_list(un)
+        sym_ph, syms = _sql_symbol_in_clause()
         with conn.cursor() as cur:
             cur.execute(
                 f"""
@@ -78,11 +99,11 @@ def list_active_maker_edge_monitor_rows() -> List[Dict[str, Any]]:
                 FROM {ml}
                 WHERE status = 'active'
                   AND LOWER(TRIM(COALESCE(NULLIF(TRIM(market), ''), 'hourly'))) = '15m'
-                  AND UPPER(TRIM(symbol)) = 'BTC'
+                  AND UPPER(TRIM(symbol)) IN ({sym_ph})
                   AND TRIM(strategy) = %s
                 ORDER BY id
                 """,
-                (STRATEGY_NAME,),
+                (*syms, STRATEGY_NAME),
             )
             for row in cur.fetchall():
                 br = row[14]

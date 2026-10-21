@@ -8666,9 +8666,9 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 
 ---
 
-### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`)
+### Table: `live_data.live_price_ring_90m_btc` (and `_eth`, `_sol`, `_xrp`, `_doge`, plus `live_price_ring_90m_{symbol}` for each pyth-method commodity)
 
-**Population:** `backend/core/live_price_ring_90m.py` hands rows to `backend/core/live_ring_pg_writer.py` (one background thread, one long-lived connection, batched upserts, prune on a timer) from `cfbenchmarks_price_watchdog` (~1 Hz while connected). The WS loop never opens a connection or waits on a commit. Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only (UTC→EST conversion for in-memory buffers). Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. CFB averages via `20260725_1300_live_price_ring_cfb_avgs`. UTC timestamp semantics + truncate cutover: `20260725_1035_live_price_ring_utc_timestamps`; ISO `Z` suffix: `20260725_1045_live_price_ring_iso_z`. Full API decimal width: `20260725_1350_live_price_ring_full_precision` (`NUMERIC(20,8)` for `price` / `avg_60s` / `last_60s_windowed_average_15min` on all symbols).
+**Population:** `backend/core/live_price_ring_90m.py` hands rows to `backend/core/live_ring_pg_writer.py` (one background thread, one long-lived connection, batched upserts, prune on a timer). Crypto rings come from `cfbenchmarks_price_watchdog` (~1 Hz while connected). Commodity rings come from `pyth_price_watchdog` for every `SYMBOL_CONFIG` entry with `method=pyth` (`20261020_1935_commodity_price_rings`); `avg_60s` is that tick's `one_minute_avg` (no CFB `avg_60s_data` on those feeds). The WS loop never opens a connection or waits on a commit. Rolling ~90 minutes; startup hydration into `symbol_tick_buffer` only (UTC→EST conversion for in-memory buffers). Migration `20260603_1200_live_price_ring_90m` (BTC/ETH/SOL/XRP); DOGE via `20260713_1500_doge_live_tables`. CFB averages via `20260725_1300_live_price_ring_cfb_avgs`. UTC timestamp semantics + truncate cutover: `20260725_1035_live_price_ring_utc_timestamps`; ISO `Z` suffix: `20260725_1045_live_price_ring_iso_z`. Full API decimal width: `20260725_1350_live_price_ring_full_precision` (`NUMERIC(20,8)` for `price` / `avg_60s` / `last_60s_windowed_average_15min` on all symbols).
 
 #### Columns
 
@@ -8676,7 +8676,7 @@ Same as `live_data.live_price_log_1s_sol` (including `numeric(10,6)` for spot pr
 |-------------|-----------|----------|---------|-------------|
 | `timestamp` | `text` | NO | - | CFB `data.time` as ISO-8601 UTC `YYYY-MM-DDTHH:MM:SS.mmmZ` |
 | `price` | `numeric(20,8)` | NO | - | Index print (`cfbenchmarks_value` `data.value`) at full API decimal specificity |
-| `avg_60s` | `numeric(20,8)` | YES | - | Kalshi `avg_60s_data.value` at full API specificity; expected every tick. Source for **all** `trade_manager` `symbol_close` writes: the exact `:00`/`:15`/`:30`/`:45` tick at expiration, and the tick as of the close instant for early closes |
+| `avg_60s` | `numeric(20,8)` | YES | - | Crypto: Kalshi `avg_60s_data.value`. Pyth-method commodities: tick `one_minute_avg`. Source for `trade_manager` `symbol_close`: the exact `:00`/`:15`/`:30`/`:45` tick at expiration, and the tick as of the close instant for early closes |
 | `last_60s_windowed_average_15min` | `numeric(20,8)` | YES | - | Kalshi settlement-minute average at full API specificity; only in final minute before `:00`/`:15`/`:30`/`:45`; NULL otherwise |
 
 #### Constraints
@@ -9016,9 +9016,9 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 
 ### Table: `live_data.strike_pipeline_health`
 
-Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, trading gates, and dashboard power-light display (when `STRIKE_PIPELINE_HEALTH_STRICT_MODE` is on). Rows are keyed by **`(exchange, market, symbol)`** where **`market`** is `15m` or `hourly`. **`ws_transport_ok_at`** is updated by the market WS path (ping/recv) for catastrophic transport detection; strike WS writers update **`pipeline_health_checked_at`** and boolean health.
+Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, trading gates, and dashboard power-light display (when `STRIKE_PIPELINE_HEALTH_STRICT_MODE` is on). Used when **`live_data.symbols_list.category = 'crypto'`** (full package). Commodity symbols use `live_data.commodity_pipeline_health` instead. Rows are keyed by **`(exchange, market, symbol)`** where **`market`** is `15m` or `hourly`. **`ws_transport_ok_at`** is updated by the market WS path (ping/recv) for catastrophic transport detection; strike WS writers update **`pipeline_health_checked_at`** and boolean health.
 
-**Migrations:** `20260329_2359_unified_hourly_pipeline_health` (creates table, backfills `market='15m'` from legacy `strike_pipeline_health_15m`, drops legacy table). Older migration `20260326_1335_strike_pipeline_health_15m` applies only on DBs that have not yet run the unified migration.
+**Migrations:** `20260329_2359_unified_hourly_pipeline_health` (creates table, backfills `market='15m'` from legacy `strike_pipeline_health_15m`, drops legacy table). Older migration `20260326_1335_strike_pipeline_health_15m` applies only on DBs that have not yet run the unified migration. Category routing: `20261020_1130_symbols_list_category`.
 
 #### Columns
 
@@ -9043,6 +9043,35 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
 
 ---
 
+### Table: `live_data.commodity_pipeline_health`
+
+Lean commodity live-data package health (market meta + public trades WS). Trading gates and monitor power lights use this table when `live_data.symbols_list.category = 'commodity'`; pyth/live spot freshness is checked at gate time (same spot path as crypto). Keyed by **`(exchange, market, symbol)`**.
+
+**Migration:** `20261020_1130_symbols_list_category`.
+
+#### Columns
+
+- `exchange` VARCHAR(20) NOT NULL
+- `market` VARCHAR(20) NOT NULL
+- `symbol` VARCHAR(10) NOT NULL
+- `pipeline_healthy` BOOLEAN NOT NULL DEFAULT FALSE
+- `pipeline_health_reason` TEXT
+- `pipeline_health_checked_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+- `pipeline_health_max_age_sec` INTEGER NOT NULL DEFAULT 900
+- `ws_transport_ok_at` TIMESTAMPTZ
+- `updated_at` TIMESTAMPTZ NOT NULL DEFAULT NOW()
+
+#### Constraints
+
+- Primary key on `(exchange, market, symbol)`
+
+#### Indexes
+
+- `commodity_pipeline_health_checked_idx` on `(pipeline_health_checked_at DESC)`
+- `commodity_pipeline_health_transport_idx` on `(ws_transport_ok_at DESC NULLS LAST)`
+
+---
+
 ### Table: `live_data.symbols_list`
 
 #### Columns
@@ -9053,10 +9082,12 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
 | `symbol` | `text` | YES | - | |
 | `analytics_updated` | `timestamp without time zone` | YES | - | |
 | `date_added` | `timestamp without time zone` | YES | - | |
+| `category` | `text` | NO | `'crypto'` | Live-data package: `crypto` (full strike/market/spot) or `commodity` (market meta + public trades + pyth spot). |
 
 #### Constraints
 
 - **Primary Key:** `symbols_list_pkey` on `id`
+- **Check:** `symbols_list_category_check` — `category IN ('crypto', 'commodity')`
 
 #### Indexes
 
@@ -9065,7 +9096,10 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
   CREATE UNIQUE INDEX symbols_list_pkey ON live_data.symbols_list USING btree (id)
   ```
 
+**Migration:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`).
+
 ---
+
 
 ## Schema: `public`
 
@@ -9414,7 +9448,7 @@ Legacy-only columns **`is_active`**, **`server_ip`**, **`server_hostname`**, and
 
 ### Table: `system.strategy_list_default`
 
-Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20261017_1500_maker_edge_strategy`** seeds **Maker Edge** (min_time/max_time 0–900, min_ask=max_ask 0.01, limit GTC dual-rest via maker_edge_agent). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). **`20261010_1100_expiration_reversal_strategy`** seeds **Expiration Reversal** (copy of each table's own Expiration Scalp row, `flip_sell_floor=TRUE`, `flip_sell_floor_mult` default `1x`) into `system.strategy_list_default` and every tenant `strategy_list_%`, plus CHECK `expiration_reversal_flip_floor_chk`. Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
+Mirror of `users.strategy_list_0001` at migration time: same shape as `users.strategy_list_0001` (see that table’s column list), with a full row copy. Not a merge of all per-user `users.strategy_list_*` tables. Migrations `20260409_2200_system_master_users_strategy_list` (create) and `20260409_2300_system_strategy_list_rename_to_default` (rename from `system.strategy_list` on older installs). **`20260501_1200_strategy_list_unified_auto_trade_columns`** adds the same unified auto-trade / symbol-wide / flip-sell columns as tenant `strategy_list_%` when missing (idempotent). **`20260612_1200_expiration_scalp_strategy`** seeds **Expiration Scalp** defaults (`min_time`/`max_time` 0–60s, probability 90–100%, ask $0.90–$0.99, no spike/loss-prevention defaults) into `system.strategy_list_default` and every tenant `strategy_list_%`. **`20260828_1635_high_water_scalp`** adds `limit_close_price` and seeds **High Water Scalp** (same entry defaults plus `limit_close_price=0.9900`). **`20261017_1500_maker_edge_strategy`** seeds **Maker Edge** (min_time/max_time 0–900, min_ask=max_ask 0.01, limit GTC dual-rest via maker_edge_agent). **`20261020_1645_taker_edge_strategy`** seeds **Taker Edge** (min_time/max_time 0–900, min_ask=max_ask 0.99, one GTC after a public print at or above the target via taker_edge_agent). **`20260829_1815_hws_stop_verification`** adds `stop_verification_period_enabled` / `stop_verification_period_seconds` (HWS floor auto-stop dwell; distinct from entry `verification_period_*`). **`20261010_1100_expiration_reversal_strategy`** seeds **Expiration Reversal** (copy of each table's own Expiration Scalp row, `flip_sell_floor=TRUE`, `flip_sell_floor_mult` default `1x`) into `system.strategy_list_default` and every tenant `strategy_list_%`, plus CHECK `expiration_reversal_flip_floor_chk`. Refreshing row data after app changes to `users.strategy_list_0001` is a separate operational step unless a sync job is added.
 
 ---
 
@@ -10925,7 +10959,7 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `fees` | `real(24)` | YES | - | |
 | `pnl` | `numeric(12,6)` | YES | - | Dollars net of fees; stored at **6dp** to align with price/fee precision from the API. Trade history UIs use 2dp; dashboard monitor tiles show **nearest dollar**. Migration `20260503_1500_trades_pnl_numeric_6dp`. |
 | `symbol_open` | `numeric(18,5)` | YES | - | Spot at open. **5dp** for SOL/XRP; 2dp for BTC/ETH (`trade_manager.normalize_trade_spot_price`). Migration `20260324_1000_trades_symbol_spot_numeric_precision`. |
-| `symbol_close` | `numeric(18,5)` | YES | - | Underlying at close from CFB ring `avg_60s` (never raw spot); same precision rules as `symbol_open`. At expiration: the exact `:00`/`:15`/`:30`/`:45` tick. Early close: newest ring tick at or before the close instant (`live_price_ring_90m.avg_60s_as_of`). NULL until present in the ring — repair pass samples at `closed_at`. |
+| `symbol_close` | `numeric(18,5)` | YES | - | Underlying at close from price-ring `avg_60s` (never raw spot); same precision rules as `symbol_open`. Crypto ring is CFB `avg_60s_data`. Pyth-method commodities use `one_minute_avg` on `live_price_ring_90m_{symbol}` (`20261020_1935_commodity_price_rings`). At expiration: the exact `:00`/`:15`/`:30`/`:45` tick. Early close: newest ring tick at or before the close instant (`live_price_ring_90m.avg_60s_as_of`). NULL until present in the ring — repair pass samples at `closed_at`. |
 | `symbol_expiration` | `numeric(18,5)` | YES | - | Spot at **contract cycle end** (`one_minute_avg` at expiration sweep). Same normalization as `symbol_close`. Written for **paper and live** rows when the ticker’s cycle is processed; for early closes, may be backfilled from `symbol_close` or historical price logs. Migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`. **Not** on `trades_simulated_0001`. |
 | `win_loss_confirmed` | `boolean` | YES | - | If nullable: not yet computable. When set: `TRUE` if recorded `win_loss` (W/L) matches hypothetical W/L from `strike`+`side` vs `symbol_expiration` (hold-to-expiration); `FALSE` if they differ. **Paper and live** on `trades_0001`. Draws (`D`) and missing `win_loss` stay null. Migration `20260328_1500_trades_symbol_expiration_win_loss_confirmed`. |
 | `market_result` | `text` | YES | - | Normalized `yes` / `no` from Kalshi **`market_lifecycle_v2`** (`market_watchdog_ws` on `determined` / `settled`). Distinct from `market` (cadence). Mismatch vs recorded `win_loss` on closed trades may set `win_loss_confirmed = FALSE`. Live **close/finalization** still uses settlement polling in `trade_manager`. Column added `20260402_1400_trades_market_result_from_outcome_check`; comment updated `20260403_1000_trades_drop_outcome_checked_at`. **`trades_0001` only.** |

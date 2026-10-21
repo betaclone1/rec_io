@@ -1,9 +1,9 @@
-# Maker Edge — strategy handoff (KXBTC15M dual-rest)
+# Maker Edge — strategy handoff (15m dual-rest)
 
 **Product name:** Maker Edge  
 **Audience:** operators + implementers.  
-**Status:** live wiring in progress via `maker_edge_agent` (outside TE); research backtests remain valid for edge thesis.  
-**Series:** Kalshi `KXBTC15M` (BTC 15-minute binary markets).  
+**Status:** live wiring via `maker_edge_agent` (outside TE); research backtests remain valid for edge thesis.  
+**Series:** Kalshi 15m binaries for `BTC` / `ETH` / `GOLD` / `SILVER` / `WTI` (`KXBTC15M`, `KXETH15M`, `KXGOLD15M`, `KXSILVER15M`, `KXWTI15M`). Commodities use lean market capture (ticker + public trades + lifecycle; no OB/strike ladder).  
 **Session context:** agent transcript [KXBTC15M longshot sweeps](50be246f-d7ea-4e39-80ed-56ada09254d0).
 
 This note consolidates thesis, fill models, architecture, measured results, and data plumbing. Prefer numbers from the CSV paths below over re-deriving from chat.
@@ -125,7 +125,7 @@ Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Monthly table: `docs/BACKTEST_KXBT
 | Concern | Implementation |
 |---------|----------------|
 | Process | Dedicated `maker_edge_agent` per tenant (outside TE); AES/ATS exclude Maker Edge monitors |
-| Symbols | `BTC` / `15m` only (`KXBTC15M`) v1 |
+| Symbols | `MAKER_EDGE_SYMBOLS`: BTC, ETH, GOLD, SILVER, WTI (`15m`). Co-opening windows place in one fire. |
 | Entry | At Kalshi ``open_time``: place **two** post-only GTC at monitor limit `L` — **BID @ L** and **ASK @ L** (yes/no constructs). Arming is open_time-driven, not TTC. |
 | Size | Standard bankroll pct/contracts from `monitor_list.subaccount` (v3.12.12) |
 | TTC | `min_time` used only to cancel **unfilled** rests near expiry; not a place gate |
@@ -199,7 +199,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 | `cancel_other_on_first_fill` | true | Mandatory |
 | `ttc_min_entry` | **none** | Research: TTC filter hurts |
 | `cum_vol_gate` | optional offline; live use book+partial fills | Live: allow partial; cap N by depth |
-| `max_concurrent_markets` | 1 | Soak |
+| `max_concurrent_markets` | ≥5 (one per symbol) | `MAKER_EDGE_MAX_CONCURRENT` |
 | `max_outlay_usd` | `contracts * 0.01` | Hard cap |
 | `order_type` | maker / post-only GTC | Prefer maker fee path |
 
@@ -312,8 +312,8 @@ YTD cum2500 (done):
 
 ## 11. Non-goals for first ship
 
-- Multi-symbol portfolio optimization.
-- Using proprietary strike probs as entry filter for this edge (tape/book only for v1).
+- Cross-symbol portfolio optimization / shared bankroll caps across underlyings.
+- Using proprietary strike probs as entry filter for this edge (tape/book only for v1; lean commodities leave prob/diff NULL when ladder absent).
 - Selling data until ToS review complete.
 - Replacing Expiration Scalp / HWS — parallel product.
 
@@ -325,3 +325,4 @@ YTD cum2500 (done):
 |------|------|
 | 2026-10-17 | Initial handoff from exact-cent / maker / package-v4 research session. YTD cum2500 still in flight. |
 | 2026-10-19 | Live place path: open_time arm + prefetch/rewarm + parallel dual post; log fire/send/ack lags. |
+| 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout `MAKER_EDGE_SYMBOLS`. |

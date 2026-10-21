@@ -3366,23 +3366,40 @@ def _maker_edge_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional
             pass
 
 
-def book_maker_edge_external_fill(data: dict) -> dict:
+def book_taker_edge_external_fill(data: dict) -> dict:
+    """Book a Taker Edge fill the same way as Maker Edge (no trade_executor)."""
+    return book_maker_edge_external_fill(
+        data,
+        expected_strategy="Taker Edge",
+        log_tag="TAKER EDGE",
+        entry_default="taker_edge",
+    )
+
+
+def book_maker_edge_external_fill(
+    data: dict,
+    *,
+    expected_strategy: Optional[str] = None,
+    log_tag: str = "MAKER EDGE",
+    entry_default: str = "maker_edge",
+) -> dict:
     """
-    Book / update an open Maker Edge trade from venue fill totals.
+    Book / update an open Maker Edge or Taker Edge trade from venue fill totals.
 
     Does not call trade_executor. Status is open; order_id_open stamped when provided.
-    ``position`` must be the cumulative venue fill qty for the resting order (not a delta).
+    ``position`` must be the cumulative venue fill qty for the order (not a delta).
     Re-posts with the same ``ticket_id`` raise ``position`` monotonically to match the
     latest venue total so trade logs reflect actual live fills.
-    Paper maker fees are 0.00 (live uses venue fee fields when known — never invented).
+    Paper fees are 0.00 (live uses venue fee fields when known — never invented).
     """
     from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME
 
+    strat_expected = expected_strategy or STRATEGY_NAME
     strat = str(data.get("trade_strategy") or "").strip()
-    if strat != STRATEGY_NAME:
+    if strat != strat_expected:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="maker_edge_fill requires trade_strategy=Maker Edge",
+            detail=f"{entry_default}_fill requires trade_strategy={strat_expected}",
         )
     side_raw = str(data.get("side") or "").strip().lower()
     # Persist Y/N like AES so UI / settlement match the rest of trades_*.
@@ -3495,12 +3512,12 @@ def book_maker_edge_external_fill(data: dict) -> dict:
                         pg_exist.commit()
                         if pos_raised:
                             log(
-                                f"[MAKER EDGE] fill total updated id={trade_id} "
+                                f"[{log_tag}] fill total updated id={trade_id} "
                                 f"qty {prev_pos} → {new_pos} ticker={ticker}"
                             )
                             log_event(
                                 ticket_id,
-                                f"MANAGER: MAKER_EDGE fill total id={trade_id} "
+                                f"MANAGER: {log_tag} fill total id={trade_id} "
                                 f"qty {prev_pos} → {new_pos}",
                                 trade_id=trade_id,
                             )
@@ -3515,7 +3532,7 @@ def book_maker_edge_external_fill(data: dict) -> dict:
                             "updated": new_pos > prev_pos + 1e-9,
                         }
             except Exception as e:
-                log(f"[MAKER EDGE] ticket_id upsert lookup failed: {e}")
+                log(f"[{log_tag}] ticket_id upsert lookup failed: {e}")
             finally:
                 try:
                     pg_exist.close()
@@ -3531,12 +3548,12 @@ def book_maker_edge_external_fill(data: dict) -> dict:
         row["initial_count"] = initial_count
     row["strike"] = strike
     row["symbol"] = symbol
-    row["trade_strategy"] = STRATEGY_NAME
+    row["trade_strategy"] = strat_expected
     row["market"] = data.get("market") or "15m"
     # Critical: must be venue slug (kalshi), not market cadence (15m). Lifecycle / market_result
     # backfill filters on exchange='kalshi'.
     row["exchange"] = "kalshi"
-    row["entry_method"] = data.get("entry_method") or "maker_edge"
+    row["entry_method"] = data.get("entry_method") or entry_default
     row["time_in_force"] = data.get("time_in_force") or "good_till_canceled"
     row["order_type"] = data.get("order_type") or "limit"
     row["subaccount"] = subaccount
@@ -3607,7 +3624,7 @@ def book_maker_edge_external_fill(data: dict) -> dict:
                     )
             pg.commit()
         except Exception as e:
-            log(f"[MAKER EDGE] post-insert stamp failed id={trade_id}: {e}")
+            log(f"[{log_tag}] post-insert stamp failed id={trade_id}: {e}")
         finally:
             try:
                 pg.close()
@@ -3615,12 +3632,12 @@ def book_maker_edge_external_fill(data: dict) -> dict:
                 pass
 
     log(
-        f"[MAKER EDGE] booked fill id={trade_id} inserted={inserted} "
+        f"[{log_tag}] booked fill id={trade_id} inserted={inserted} "
         f"side={side} qty={position} px={buy_price} sa={subaccount} ticker={ticker}"
     )
     log_event(
         data.get("ticket_id") or str(trade_id),
-        f"MANAGER: MAKER_EDGE fill booked id={trade_id} side={side} qty={position}",
+        f"MANAGER: {log_tag} fill booked id={trade_id} side={side} qty={position}",
         trade_id=trade_id,
     )
     try:
@@ -7706,6 +7723,9 @@ async def add_trade(request: Request):
 
     if intent == "maker_edge_fill":
         return book_maker_edge_external_fill(data)
+
+    if intent == "taker_edge_fill":
+        return book_taker_edge_external_fill(data)
 
     if intent == "close":
         log(f"CLOSE TICKET RECEIVED")

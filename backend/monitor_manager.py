@@ -3429,16 +3429,21 @@ def toggle_auto_trade():
         try:
             ml_ident = sql_ident_qualified_table(monitor_list_fqn(user_number))
             with conn.cursor() as cursor:
-                # Update ONLY auto_trade boolean - do NOT change auto_trade_status
+                # Turning auto trade off must badge DISABLED immediately.
+                # Turning it on leaves status for AES / the edge agent to set.
                 cursor.execute(
                     sql.SQL(
                         """
                 UPDATE {}
-                SET auto_trade = %s
+                SET auto_trade = %s,
+                    auto_trade_status = CASE
+                        WHEN %s IS FALSE THEN 'DISABLED'
+                        ELSE auto_trade_status
+                    END
                 WHERE id = %s
             """
                     ).format(ml_ident),
-                    (auto_trade, db_monitor_id),
+                    (auto_trade, bool(auto_trade), db_monitor_id),
                 )
 
                 if cursor.rowcount == 0:
@@ -3456,6 +3461,25 @@ def toggle_auto_trade():
             invalidate_monitor_settings_cache(user_number, int(db_monitor_id))
         except Exception:
             pass
+
+        if not bool(auto_trade):
+            try:
+                from backend.core.trading_redis_comms import (
+                    publish_preferences_event,
+                    use_trading_redis_comms,
+                )
+
+                if use_trading_redis_comms():
+                    publish_preferences_event(
+                        "auto_trade_status_change",
+                        {
+                            "monitor_id": f"mon_{user_number}_{db_monitor_id}",
+                            "auto_trade_status": "DISABLED",
+                        },
+                        tenant_user_no=user_number,
+                    )
+            except Exception:
+                _logger.exception("auto_trade_status notify failed for %s", monitor_id)
 
         monitor_manager._notify_frontend_monitor_list_updated("Auto trade toggled")
         return jsonify({"status": "ok", "message": f"Auto trade {'enabled' if auto_trade else 'disabled'} for monitor {monitor_id}"})

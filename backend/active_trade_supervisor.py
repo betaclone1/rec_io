@@ -3945,14 +3945,17 @@ def _ats_list_lane_monitor_rows() -> List[dict]:
         list_active_btc15m_exp_scalp_cutout_rows,
     )
     from backend.core.aes_btc15m_maker_edge_cutout import filter_out_maker_edge_rows
+    from backend.core.taker_edge import filter_out_taker_edge_rows
 
     if ATS_BTC15M_EXP_SCALP:
         return list_active_btc15m_exp_scalp_cutout_rows()
     if ATS_UNIFIED_15M:
         from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
-        return filter_out_maker_edge_rows(
-            filter_out_cutout_rows(list_active_15m_monitor_rows())
+        return filter_out_taker_edge_rows(
+            filter_out_maker_edge_rows(
+                filter_out_cutout_rows(list_active_15m_monitor_rows())
+            )
         )
     if ATS_UNIFIED_HOURLY:
         from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
@@ -3961,8 +3964,10 @@ def _ats_list_lane_monitor_rows() -> List[dict]:
     if ATS_UNIFIED_ALL:
         from backend.core.unified_all_monitors import list_active_unified_monitor_rows
 
-        return filter_out_maker_edge_rows(
-            filter_out_cutout_rows(list_active_unified_monitor_rows())
+        return filter_out_taker_edge_rows(
+            filter_out_maker_edge_rows(
+                filter_out_cutout_rows(list_active_unified_monitor_rows())
+            )
         )
     return []
 
@@ -5102,11 +5107,12 @@ def start_monitoring_loop():
                         from backend.core.aes_btc15m_maker_edge_cutout import (
                             STRATEGY_NAME as _ME_STRAT,
                         )
+                        from backend.core.taker_edge import STRATEGY_NAME as _TE_STRAT
                         if (
                             not is_reverse_monitor()
                             and strategy != "Momentum Scalp"
                             and strategy != "Momentum Reversal"
-                            and str(strategy or "").strip() != _ME_STRAT
+                            and str(strategy or "").strip() not in (_ME_STRAT, _TE_STRAT)
                         ):
                             # Get momentum spike settings from monitor's assigned strategy
                             try:
@@ -6958,11 +6964,12 @@ def trigger_auto_stop_close(
         return False
 
     from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
+    from backend.core.taker_edge import STRATEGY_NAME as TAKER_EDGE_STRATEGY
 
     strat_row = str(trade.get("trade_strategy") or get_trade_strategy() or "").strip()
-    if strat_row == MAKER_EDGE_STRATEGY:
+    if strat_row in (MAKER_EDGE_STRATEGY, TAKER_EDGE_STRATEGY):
         log(
-            f"[AUTO STOP] refused Maker Edge trade={tid} "
+            f"[AUTO STOP] refused {strat_row} trade={tid} "
             f"(hold to settlement; trigger={trigger_reason})"
         )
         return False
@@ -7941,15 +7948,16 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
     strategy = get_trade_strategy()
 
     from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
+    from backend.core.taker_edge import STRATEGY_NAME as TAKER_EDGE_STRATEGY
     from backend.core.high_water_scalp import (
         is_expiration_scalp_entry_strategy,
         is_high_water_scalp,
         is_high_water_test_1,
     )
 
-    # Maker Edge: hold filled leg to settlement (market_result). Never HTC/prob/floor auto-close.
-    if str(strategy or "").strip() == MAKER_EDGE_STRATEGY:
-        log_debug("[AUTO STOP] skipped — Maker Edge holds to settlement")
+    # Maker Edge / Taker Edge: hold the filled leg to settlement (market_result).
+    if str(strategy or "").strip() in (MAKER_EDGE_STRATEGY, TAKER_EDGE_STRATEGY):
+        log_debug("[AUTO STOP] skipped — edge strategy holds to settlement")
         return
 
     if strategy == "Momentum Scalp":

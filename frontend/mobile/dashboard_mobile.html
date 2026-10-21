@@ -9761,6 +9761,9 @@
       function uatMobileIsMakerEdge(strategy) {
         return String(strategy || '').toUpperCase().includes('MAKER EDGE');
       }
+      function uatMobileIsTakerEdge(strategy) {
+        return String(strategy || '').toUpperCase().includes('TAKER EDGE');
+      }
       function uatMobileIsExpirationReversal(strategy) {
         return String(strategy || '').toUpperCase().includes('EXPIRATION REVERSAL');
       }
@@ -9800,7 +9803,7 @@
         return String(market || '').trim().toLowerCase() === '15m';
       }
       function uatMobileTimeWindowMaxSeconds(strategy, market) {
-        if (uatMobileIsMakerEdge(strategy) || uatMobileIsHighWaterFamily(strategy)) {
+        if (uatMobileIsMakerEdge(strategy) || uatMobileIsTakerEdge(strategy) || uatMobileIsHighWaterFamily(strategy)) {
           return uatMobileMonitorMarketIs15m(market) ? 900 : 3600;
         }
         // Expiration Scalp / Expiration Reversal: full 15m window 00:00–15:00.
@@ -9809,7 +9812,7 @@
         return 3600;
       }
 
-      function mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge) {
+      function mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge, isTakerEdge) {
         const isHighWaterFamily = !!(isHighWaterScalp || isHighWaterTest1);
         const makerEdge = !!isMakerEdge;
         const disp = (on) => (on ? '' : 'none');
@@ -9877,7 +9880,9 @@
         if (hwsPt) hwsPt.style.display = (isHighWaterScalp || makerEdge) ? 'block' : 'none';
         const hwsPtLabel = document.getElementById('m_highWaterScalpPriceTargetLabel');
         if (hwsPtLabel) {
-          hwsPtLabel.textContent = makerEdge ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:';
+          hwsPtLabel.textContent = isTakerEdge
+            ? 'Target Price:'
+            : (makerEdge ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:');
         }
         const esMov = document.getElementById('m_expirationScalpMovementWindowSection');
         if (esMov) esMov.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
@@ -11293,7 +11298,8 @@
         const isHighWaterScalp = uatMobileIsHighWaterScalp(currentStrategy);
         const isHighWaterTest1 = uatMobileIsHighWaterTest1(currentStrategy);
         const isHighWaterFamily = uatMobileIsHighWaterFamily(currentStrategy);
-        const isMakerEdge = uatMobileIsMakerEdge(currentStrategy);
+        const isTakerEdge = uatMobileIsTakerEdge(currentStrategy);
+        const isMakerEdge = uatMobileIsMakerEdge(currentStrategy) || isTakerEdge;
         const isExpirationScalp = uatMobileIsExpirationScalpEntry(currentStrategy);
         window.dashboardMobileTimeWindowMaxSeconds = uatMobileTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
         
@@ -11378,7 +11384,7 @@
           const showGenericSlip = !isRisingDevil && !isExpirationScalp;
           if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
         }
-        mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge);
+        mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge, isTakerEdge);
 
         const data = await mobileFetchSettings(apiId);
         const meAskA = data ? Number(data.min_ask) : NaN;
@@ -11660,7 +11666,7 @@
               saveBtnEarly.disabled = true;
               saveBtnEarly.title = 'Settings failed to load';
             }
-            alert('Could not load Maker Edge limit price from monitor. Save is disabled.');
+            alert('Could not load limit price from monitor. Save is disabled.');
             return;
           }
         }
@@ -11940,7 +11946,7 @@
             payload.test_filter = mTfEl ? mTfEl.checked : false;
             const mRevEl = document.getElementById('m_uatMonitorReverse');
             payload.reverse = mRevEl ? mRevEl.checked : false;
-            if (uatMobileIsMakerEdge(currentStrategy)) {
+            if (uatMobileIsMakerEdge(currentStrategy) || uatMobileIsTakerEdge(currentStrategy)) {
               payload.order_type = 'limit';
               payload.time_in_force = 'good_till_canceled';
             } else {
@@ -11977,17 +11983,17 @@
             const saveIsHWS = uatMobileIsHighWaterScalp(currentStrategy);
             const saveIsHWT1 = uatMobileIsHighWaterTest1(currentStrategy);
             const saveIsHWSFamily = uatMobileIsHighWaterFamily(currentStrategy);
-            const saveIsME = uatMobileIsMakerEdge(currentStrategy);
+            const saveIsME = uatMobileIsMakerEdge(currentStrategy) || uatMobileIsTakerEdge(currentStrategy);
 
             if (saveIsME) {
               const ptEl = document.getElementById('m_highWaterScalpPriceTargetSlider');
               if (!ptEl || ptEl.dataset.uatAskFromMonitor !== '1') {
-                alert('Maker Edge limit price did not load from the monitor. Nothing was saved.');
+                alert('Limit price did not load from the monitor. Nothing was saved.');
                 return;
               }
               const ptRaw = parseInt(ptEl.value, 10) / 100;
               if (!Number.isFinite(ptRaw) || ptRaw <= 0 || ptRaw >= 1) {
-                alert('Limit price is required for Maker Edge.');
+                alert('Limit price is required.');
                 return;
               }
               const pt = parseFloat(ptRaw.toFixed(4));

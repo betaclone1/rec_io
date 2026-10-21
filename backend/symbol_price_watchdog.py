@@ -116,6 +116,25 @@ SYMBOL_CONFIG = {
         'heartbeat_file': 'doge_logger_heartbeat_postgresql.txt',
         'price_change_file': 'doge_price_change_postgresql.json'
     },
+    # Commodities: ticks from Kalshi pyth_value (pyth_price_watchdog), not Coinbase.
+    'GOLD': {
+        'method': 'pyth',
+        'table_name': 'live_price_log_1s_gold',
+        'heartbeat_file': 'gold_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'gold_price_change_postgresql.json',
+    },
+    'SILVER': {
+        'method': 'pyth',
+        'table_name': 'live_price_log_1s_silver',
+        'heartbeat_file': 'silver_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'silver_price_change_postgresql.json',
+    },
+    'WTI': {
+        'method': 'pyth',
+        'table_name': 'live_price_log_1s_wti',
+        'heartbeat_file': 'wti_logger_heartbeat_postgresql.txt',
+        'price_change_file': 'wti_price_change_postgresql.json',
+    },
     'SPX': {
         'method': 'yahoo_finance',
         'yahoo_symbol': '^SPX',
@@ -145,6 +164,14 @@ VOLATILITY_CACHE = {}
 MOVEMENT_PROFILES = {}
 
 CRYPTO_LIVE_STATE_SYMBOLS = frozenset({"BTC", "ETH", "SOL", "XRP", "DOGE"})
+# Any SYMBOL_CONFIG entry whose price method is pyth (not a fixed ticker list).
+COMMODITY_LIVE_STATE_SYMBOLS = frozenset(
+    sym
+    for sym, cfg in SYMBOL_CONFIG.items()
+    if str((cfg or {}).get("method") or "") == "pyth"
+)
+# Buffer-first deltas/momentum for any live_state hot-path symbol (crypto CFB + pyth commodities).
+LIVE_STATE_TICK_BUFFER_SYMBOLS = CRYPTO_LIVE_STATE_SYMBOLS | COMMODITY_LIVE_STATE_SYMBOLS
 
 # Per-symbol monotonic time of last live_state publish (hot path throttle).
 _last_hot_publish_mono: Dict[str, float] = {}
@@ -376,7 +403,10 @@ def _metrics_use_buffer(symbol: str) -> bool:
     try:
         from backend.core.live_state_config import live_state_use_tick_buffer
 
-        return live_state_use_tick_buffer() and symbol in CRYPTO_LIVE_STATE_SYMBOLS
+        return (
+            live_state_use_tick_buffer()
+            and str(symbol or "").strip().upper() in LIVE_STATE_TICK_BUFFER_SYMBOLS
+        )
     except Exception:
         return False
 
