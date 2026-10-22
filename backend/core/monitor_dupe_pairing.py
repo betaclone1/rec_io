@@ -165,3 +165,48 @@ def apply_monitor_dupe_pairing_position_cap(
         return True, detail
 
     return True, None
+
+
+def reversal_flip_blocked_by_dupe_pairing(
+    cursor,
+    *,
+    monitor_list_table: str,
+    trades_table: str,
+    user_slot: str,
+    monitor_id: int,
+    ticker: str,
+) -> Tuple[bool, Optional[str]]:
+    """Block an Expiration Reversal flip when a paired monitor was in this cycle.
+
+    Any peer trade on the same ticker blocks the flip. The flip is not sized down.
+    An empty pairing list allows the flip. A missing ticker cannot prove the peer
+    was absent, so the flip is blocked.
+    """
+    sym = str(ticker or "").strip()
+    cursor.execute(
+        f"SELECT monitor_dupe_pairing FROM {monitor_list_table} WHERE id = %s",
+        (int(monitor_id),),
+    )
+    row = cursor.fetchone()
+    paired = normalize_monitor_dupe_pairing(
+        row[0] if row else None,
+        self_monitor_id=int(monitor_id),
+    )
+    if not paired:
+        return False, None
+    if not sym:
+        return True, f"reversal_dupe_pairing_blocked peers={paired} ticker_missing"
+    keys = monitor_keys_for_dupe_pairs(user_slot, paired)
+    cursor.execute(
+        f"""
+        SELECT 1
+        FROM {trades_table}
+        WHERE monitor = ANY(%s)
+          AND ticker = %s
+        LIMIT 1
+        """,
+        (keys, sym),
+    )
+    if cursor.fetchone() is None:
+        return False, None
+    return True, f"reversal_dupe_pairing_blocked peers={paired} ticker={sym}"

@@ -552,6 +552,53 @@ def _reject_expiration_family_second_open(data: dict) -> None:
         )
 
 
+def _tm_reversal_flip_blocked(flip_meta: dict) -> bool:
+    """True when an Expiration Reversal flip must not be inserted or sent.
+
+    A database miss blocks the flip. An empty pairing list does not.
+    """
+    from backend.core.monitor_dupe_pairing import reversal_flip_blocked_by_dupe_pairing
+
+    mk = flip_meta.get("monitor")
+    slot, mid = _monitor_slot_and_id(mk)
+    ticker = str(flip_meta.get("ticker") or "").strip()
+    if not slot or not mid:
+        log(f"[FLIP SELL] reversal dupe pairing blocked: monitor missing on flip ticker={ticker}")
+        return True
+    pg = get_postgresql_connection()
+    if not pg:
+        log(
+            f"[FLIP SELL] reversal dupe pairing check failed monitor={mid}: "
+            "no database connection — flip blocked"
+        )
+        return True
+    try:
+        with pg.cursor() as cursor:
+            blocked, detail = reversal_flip_blocked_by_dupe_pairing(
+                cursor,
+                monitor_list_table=_tm_monitor_list_table(),
+                trades_table=_tm_trades_table(),
+                user_slot=slot,
+                monitor_id=int(mid),
+                ticker=ticker,
+            )
+        if blocked:
+            log(f"[FLIP SELL] {detail} monitor={mid}")
+            log_event(
+                flip_meta.get("ticket_id"),
+                f"MANAGER: {detail}",
+            )
+        return blocked
+    except Exception as exc:
+        log(f"[FLIP SELL] reversal dupe pairing check failed monitor={mid}: {exc} — flip blocked")
+        return True
+    finally:
+        try:
+            pg.close()
+        except Exception:
+            pass
+
+
 def _apply_monitor_dupe_pairing_for_open(data: dict) -> None:
     """Cap or block open size when paired monitors already hold the same ticker+side."""
     mk = data.get("monitor")
@@ -7782,42 +7829,45 @@ async def add_trade(request: Request):
                 er_live_flip = False
                 if flip_meta:
                     try:
-                        flip_row = dict(flip_meta)
-                        flip_row.pop("expiration_reversal", None)
-                        if flip_meta.get("expiration_reversal") and paper_trade:
-                            from backend.trading_mode import effective_paper_trade
+                        if flip_meta.get("expiration_reversal") and _tm_reversal_flip_blocked(flip_meta):
+                            flip_meta = None
+                        else:
+                            flip_row = dict(flip_meta)
+                            flip_row.pop("expiration_reversal", None)
+                            if flip_meta.get("expiration_reversal") and paper_trade:
+                                from backend.trading_mode import effective_paper_trade
 
-                            er_test = _normalize_boolean_flag(flip_meta.get("test_filter"))
-                            er_paper = effective_paper_trade(
-                                _normalize_boolean_flag(flip_meta.get("paper_trade")) or er_test
-                            )
-                            flip_row["paper_trade"] = er_paper
-                            flip_row["test_filter"] = er_test
-                            er_live_flip = not er_paper
-                        else:
-                            flip_row.pop("test_filter", None)
-                            flip_row["paper_trade"] = paper_trade
-                        flip_row["status"] = "pending"
-                        if not flip_row.get("symbol"):
-                            flip_row["symbol"] = trade_symbol
-                        # Same Kalshi subaccount as the source open/close trade.
-                        flip_row["subaccount"] = int(trade_subaccount or 1)
-                        flip_trade_id, flip_inserted = insert_trade(flip_row)
-                        if flip_trade_id is None:
-                            log(f"[FLIP SELL] failed to insert pending flip for close trade_id={trade_id}")
-                            flip_trade_id = None
-                        else:
-                            log(
-                                f"[FLIP SELL] pending flip id={flip_trade_id} "
-                                f"for close trade_id={trade_id} qty={flip_meta.get('position')} "
-                                f"inserted_new={flip_inserted} er_live_flip={er_live_flip}"
-                            )
-                            log_event(
-                                flip_meta.get("ticket_id") or data.get("ticket_id"),
-                                f"MANAGER: FLIP_SELL pending created id={flip_trade_id} "
-                                f"source_close={trade_id}",
-                                trade_id=flip_trade_id,
-                            )
+                                er_test = _normalize_boolean_flag(flip_meta.get("test_filter"))
+                                er_paper = effective_paper_trade(
+                                    _normalize_boolean_flag(flip_meta.get("paper_trade")) or er_test
+                                )
+                                flip_row["paper_trade"] = er_paper
+                                flip_row["test_filter"] = er_test
+                                er_live_flip = not er_paper
+                            else:
+                                flip_row.pop("test_filter", None)
+                                flip_row["paper_trade"] = paper_trade
+                            flip_row["status"] = "pending"
+                            if not flip_row.get("symbol"):
+                                flip_row["symbol"] = trade_symbol
+                            # Same Kalshi subaccount as the source open/close trade.
+                            flip_row["subaccount"] = int(trade_subaccount or 1)
+                            flip_trade_id, flip_inserted = insert_trade(flip_row)
+                            if flip_trade_id is None:
+                                log(f"[FLIP SELL] failed to insert pending flip for close trade_id={trade_id}")
+                                flip_trade_id = None
+                            else:
+                                log(
+                                    f"[FLIP SELL] pending flip id={flip_trade_id} "
+                                    f"for close trade_id={trade_id} qty={flip_meta.get('position')} "
+                                    f"inserted_new={flip_inserted} er_live_flip={er_live_flip}"
+                                )
+                                log_event(
+                                    flip_meta.get("ticket_id") or data.get("ticket_id"),
+                                    f"MANAGER: FLIP_SELL pending created id={flip_trade_id} "
+                                    f"source_close={trade_id}",
+                                    trade_id=flip_trade_id,
+                                )
                     except Exception as flip_ins_err:
                         log(f"[FLIP SELL] insert pending failed: {flip_ins_err}")
                         flip_trade_id = None

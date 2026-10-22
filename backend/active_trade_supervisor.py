@@ -6864,6 +6864,9 @@ def prepare_flip_sell_meta_for_auto_stop(
         log(f"[FLIP SELL] skip trade_id={tid}: no bankroll_allotment_total on monitor")
         return None
 
+    if expiration_reversal and _ats_reversal_flip_blocked(str(trade.get("ticker") or "")):
+        return None
+
     monitor_key = trade.get("monitor") or f"mon_{ctx_user()}_{ctx_mid()}"
     prob_out = trade.get("current_probability")
     diff_out = trade.get("diff")
@@ -6909,6 +6912,46 @@ def prepare_flip_sell_meta_for_auto_stop(
         )
     )
     return meta
+
+
+def _ats_reversal_flip_blocked(ticker: str) -> bool:
+    """True when this reversal monitor's flip must not be created.
+
+    A database miss blocks the flip. An empty pairing list does not.
+    """
+    from backend.core.monitor_dupe_pairing import reversal_flip_blocked_by_dupe_pairing
+
+    conn = get_postgresql_connection()
+    if not conn:
+        log(
+            f"[FLIP SELL] reversal dupe pairing check failed monitor={ctx_mid()}: "
+            "no database connection — flip blocked"
+        )
+        return True
+    try:
+        with conn.cursor() as cur:
+            blocked, detail = reversal_flip_blocked_by_dupe_pairing(
+                cur,
+                monitor_list_table=legacy_users_monitor_list(ctx_user()),
+                trades_table=legacy_users_trades(ctx_user()),
+                user_slot=str(ctx_user()),
+                monitor_id=int(ctx_mid()),
+                ticker=ticker,
+            )
+        if blocked:
+            log(f"[FLIP SELL] {detail} monitor={ctx_mid()}")
+        return blocked
+    except Exception as exc:
+        log(
+            f"[FLIP SELL] reversal dupe pairing check failed monitor={ctx_mid()}: "
+            f"{exc} — flip blocked"
+        )
+        return True
+    finally:
+        try:
+            conn.close()
+        except Exception:
+            pass
 
 
 def trigger_flip_sell_open_after_auto_stop(

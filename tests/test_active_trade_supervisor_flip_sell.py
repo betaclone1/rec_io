@@ -117,6 +117,7 @@ def _er_patches(ats_mod, row):
         patch.object(ats_mod, "get_current_monitor_symbol", return_value="BTC"),
         patch.object(ats_mod, "ctx_user", return_value="0001"),
         patch.object(ats_mod, "ctx_mid", return_value="10066"),
+        patch.object(ats_mod, "_ats_reversal_flip_blocked", return_value=False),
     ]
 
 
@@ -171,6 +172,24 @@ def test_prepare_flip_meta_expiration_reversal_prob_stop_respects_flag(ats_mod):
             )
             is None
         )
+
+
+def test_prepare_flip_meta_expiration_reversal_dupe_pairing_blocks(ats_mod):
+    from contextlib import ExitStack
+
+    for mon_paper in (False, True):
+        with ExitStack() as stack:
+            for p in _er_patches(ats_mod, (False, "1x", True, "1x", mon_paper, False)):
+                stack.enter_context(p)
+            stack.enter_context(
+                patch.object(ats_mod, "_ats_reversal_flip_blocked", return_value=True)
+            )
+            assert (
+                ats_mod.prepare_flip_sell_meta_for_auto_stop(
+                    _er_trade(), "stop_loss_floor", 100, "N"
+                )
+                is None
+            )
 
 
 def test_prepare_flip_meta_expiration_reversal_no_flip_of_flip(ats_mod):
