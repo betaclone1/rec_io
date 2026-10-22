@@ -4,18 +4,72 @@
 doc_id: AUDIT_V3_BASELINE
 initiative: VER4_DEVELOPMENT
 audit_date: 2026-10-21
+deploy_refresh: 2026-10-22
 auditor: master agent (chat), repo read + read-only SSH
-prod_observed_at_utc: 2026-10-21T23:43:59Z
+prod_observed_at_utc: 2026-10-22T01:54:05Z
 repo_root_local: /Users/ericwais1/rec_io_local/3_0
-prod_git_commit: 869e3baf
-prod_git_subject: "Release v3.12.17 — Commodity category, Taker Edge, commodity symbol close"
-changelog_head: docs/changelog/MASTER_CHANGELOG.md ## 2026-10-20 — Release v3.12.17
-local_tree: dirty relative to that release (live_data_level and other uncommitted work). Prod does not have live_data_level.
+prod_git_commit: 3279d767
+prod_git_subject: "Block an Expiration Reversal flip when a paired monitor was already in that cycle."
+recorded_release: 3.12.18
+recorded_release_at_utc: 2026-10-22T00:40:11Z
+changelog_head: docs/changelog/MASTER_CHANGELOG.md ## 2026-10-21 — Release v3.12.18
+version_lag: system.version_control is 3.12.18. Production git is four commits past the checklist commit c23bc2c2. Those four are deployed and have no release entry.
 secrets_policy: names and paths only. No token or password values.
 not_this_doc: v4 target architecture, migration plan, or deploy steps.
 ```
 
-Authority when docs disagree: running code and the production host beat older narrative. `docs/MASTER_DB_SCHEMA_REFERENCE.md` is broad but stale in places (see `drift`).
+Authority when docs disagree: running code and the production host beat older narrative. `docs/MASTER_DB_SCHEMA_REFERENCE.md` is broad but stale in places (see `drift`). Sections below describe the 2026-10-21 pass. Where a later deploy changed a fact, **§0 wins**.
+
+---
+
+## 0. Deploy delta (2026-10-22)
+
+Read-only check of `/opt/rec_io_server` and `system.version_control`. No restart, no merge.
+
+| Item | Value |
+|------|--------|
+| Host | `rec-io-server-new-york-1` |
+| Git HEAD | `3279d767` (same as local `main` at the check) |
+| Recorded version | `3.12.18` at `2026-10-22 00:40:11+00` |
+| Last checklist commit | `c23bc2c2` — mark v3.12.18 production checklist complete |
+| Snapshot named in that release | `rec-io-prod-pre-update-2026-10-21` |
+| Schema in v3.12.18 | none |
+
+`3.12.18` (changelog 2026-10-21): Taker Edge floor stop and flip sell. Unified ATS watches Taker Edge monitors. `stop_loss_price` above 0 closes on the same opposite-ask floor as Expiration Scalp, and floor flip sell follows when the monitor enables it. A stop price of 0 holds to settlement. Momentum spike and probability stops stay off. Desktop and mobile settings show Stop Loss Price and its Flip Sell control. Maker Edge stays outside ATS. `docs/TAKER_EDGE_STRATEGY.md` on `main` matches this.
+
+Deployed after that checklist, with no new version row:
+
+| Commit | Subject |
+|--------|---------|
+| `83f9e13c` | Drive feed depth from `symbols_list.live_data_level`. Adds subaccount `category` and `base_value_factor` for later consumers |
+| `ee96b105` | Hide volume and win-prob controls on Taker Edge settings |
+| `78172615` | Taker Edge follows `live_data_level`. New market symbols leave DISABLED |
+| `3279d767` | Block an Expiration Reversal flip when a paired monitor was already in that cycle |
+
+`live_data.symbols_list` on production now has `live_data_level`. Rows at the check:
+
+| symbol | category | live_data_level |
+|--------|----------|-----------------|
+| BTC | crypto | full |
+| ETH | crypto | full |
+| SOL | crypto | market |
+| XRP | crypto | market |
+| DOGE | crypto | none |
+| GOLD | commodity | market |
+| SILVER | commodity | market |
+| WTI | commodity | market |
+
+Levels (`backend/core/live_data_level.py`): `full` is price, metrics, orderbook, and the rest of the market feed. `market` is price plus lean market data (public trades, lifecycle, market meta). `price_only` is price only. `none` is no live tracking. Pipelines re-read the table. Strike generator commands no longer take `--symbols`. Observed prod commands:
+
+```
+market_watchdog_ws.py --exchange kalshi --market 15m
+strike_table_generator_ws.py --exchange kalshi --market 15m
+strike_table_generator_ws.py --exchange kalshi --market hourly
+```
+
+`REC_ENABLE_HOURLY_LIVE` is still `0`. `strike_table_generator_ws_hourly` was still `RUNNING`. Supervisor program list is otherwise the same 24 programs as the first pass, all `RUNNING`.
+
+Taker Edge entry is still `taker_edge_agent`, not AES. ATS now supervises the open leg for the floor stop and floor flip sell. Symbols are any 15m underlying whose level is `full` or `market`.
 
 ---
 
@@ -124,7 +178,7 @@ Bookkeeper and backup are **not** supervisor programs.
 
 ### 2.5 Deploy path (repo, not re-verified live this audit)
 
-Current production code matches changelog **v3.12.17** (`869e3baf`). Routine update path in-repo is git on the server plus supervisor regen, not the old full-image `scripts/deploy_digital_ocean.sh` (that guide still describes a greenfield install and is easy to misread).
+Current production git is **`3279d767`**. The recorded release is **v3.12.18**. See §0. The first pass of this file matched **v3.12.17** (`869e3baf`). Routine update path in-repo is git on the server plus supervisor regen, not the old full-image `scripts/deploy_digital_ocean.sh` (that guide still describes a greenfield install and is easy to misread).
 
 Operator skills (do not run unless instructed): `.cursor/skills/prepare-update`, `apply-update`, `apply-update-from-local`, `simple-pull`, `push-commits-and-update-production`, `system-restart-production`.
 
@@ -146,8 +200,8 @@ Global:
 | `cfbenchmarks_price_watchdog` | `backend/cfbenchmarks_price_watchdog.py` | Kalshi `cfbenchmarks_value` index WS → live_state. Port 8008 |
 | `pyth_price_watchdog` | `backend/pyth_price_watchdog.py` | Commodity underlyings. Port 8009 in generator |
 | `market_watchdog_ws_kalshi` | `backend/market_watchdog_ws.py --exchange kalshi --market 15m` | Hourly parked because `REC_ENABLE_HOURLY_LIVE=0`, so argv is `15m` not `all` |
-| `strike_table_generator_ws_15m` | `strike_table_generator_ws.py --exchange kalshi --market 15m --symbols BTC ETH SOL` | autostart true. Port 8036 |
-| `strike_table_generator_ws_hourly` | `... --market hourly --symbols BTC ETH SOL` | **autostart=false** in conf, but process **RUNNING** pid 4083238 for ~19h55m. Stale relative to the park flag. Not stopped during this audit |
+| `strike_table_generator_ws_15m` | `strike_table_generator_ws.py --exchange kalshi --market 15m` | No `--symbols`. Membership is `live_data_level`. See §0 |
+| `strike_table_generator_ws_hourly` | `... --market hourly` | `REC_ENABLE_HOURLY_LIVE=0`. Process was still **RUNNING** on 2026-10-22. Not stopped during the check |
 | `strike_snapshot_publisher` | `backend/strike_snapshot_publisher.py` | |
 | `cycle_packager` | `backend/cycle_packager.py` | Seals cycle packages |
 | `position_risk_engine` | `backend/position_risk_engine.py` | PRE. ATS remains the closer |
@@ -178,7 +232,7 @@ Stream overlay observed in supervisor env (not a secret):
 MARKET_WATCHDOG_SYMBOLS: BTC,ETH,SOL,GOLD,SILVER,WTI
 STRIKE_SNAPSHOT_SYMBOLS: BTC,ETH,SOL,GOLD,SILVER,WTI
 STRIKE_SNAPSHOT_MARKETS: 15m
-strike_generator_cli_symbols: BTC ETH SOL
+strike_generator_cli_symbols: none (live_data_level inside the generator; §0)
 PYTH_UNDERLYING_TICKERS_default: Metal.Index.1OZGOLD/USD,Metal.Index.SILVER/USD,Commodities.Index.PYTHOIL/USD
 CFBENCHMARKS_PUBLISH_MODE: live_state
 PYTH_PUBLISH_MODE: live_state
@@ -280,7 +334,7 @@ Prod rows:
 | BTC, ETH, SOL, XRP, DOGE | crypto |
 | GOLD, SILVER, WTI | commodity |
 
-Local uncommitted migration `scripts/migrations/20261021_1322_symbols_list_live_data_level` adds `live_data_level` (`full` \| `market` \| `price_only` \| `none`). **Not on production.** Schema reference in the dirty tree already documents it. Seed intent in that doc: BTC and ETH `full`; GOLD, SILVER, WTI `market`; SOL, XRP, DOGE `none`. Prod strike CLI is still `--symbols BTC ETH SOL`, which does not match that seed and does not include GOLD/SILVER/WTI on the strike generator command line. Market watchdog env **does** list GOLD, SILVER, WTI.
+`live_data_level` is on production as of the 2026-10-22 check. Values and meanings are in §0. The 2026-10-21 pass below recorded the column as local-only. That sentence is superseded.
 
 ---
 
@@ -510,7 +564,7 @@ AES code routes at least: `Momentum Scalp`, `Momentum Reversal`, `Reverse HTC`, 
 | Rising Devil | AES. Differential gates plus `min_ask_range` |
 | Momentum Scalp / Reversal / Breakout / Contain, Reverse HTC | AES branches |
 | Maker Edge | `maker_edge_agent`. **Not** AES/ATS. Dual resting bids. Doc: `docs/MAKER_EDGE_STRATEGY.md`. Seed `20261017_1500_maker_edge_strategy`. Monitors: 15m, `min_ask=max_ask` default 0.01, `min_time`–`max_time`. Symbols in the doc: BTC, ETH, GOLD, SILVER, WTI |
-| Taker Edge | `taker_edge_agent`. **Not** AES/ATS. One GTC after a public print at/above target. Doc: `docs/TAKER_EDGE_STRATEGY.md`. Seed `20261020_1645_taker_edge_strategy`. Default target 0.99. Hold to settlement |
+| Taker Edge | `taker_edge_agent` places the GTC. AES does not enter. As of v3.12.18, ATS applies the floor stop and floor flip sell (`docs/TAKER_EDGE_STRATEGY.md`). Stop price 0 holds to settlement. Seed `20261020_1645_taker_edge_strategy`. Default target 0.99. Eligible symbols: `live_data_level` `full` or `market` |
 
 Maker/Taker membership filters: `backend/core/maker_edge_kalshi.py`, `backend/core/taker_edge.py` (`STRATEGY_NAME`, exclude from unified AES/ATS).
 
@@ -672,12 +726,12 @@ Ordered by how easily an agent will cargo-cult the wrong generation.
 
 1. **Two generations of market ingest in the docs.** `KALSHI_MARKET_INGEST.md` (Redis live_state, one watchdog, no PG orderbook) is current. `ARCHITECTURE.md` still says `market_watchdog_ws_kalshi_15m` and `market_kalshi_*` tables. Schema reference still lists those tables. Port manifest still lists both split and unified program names.
 2. **Hourly is parked in env and autostart, but the hourly strike process was RUNNING** on prod at audit time (~20h). Flag `REC_ENABLE_HOURLY_LIVE=0`, conf `autostart=false`.
-3. **Strike CLI symbols ≠ watchdog symbols ≠ local `live_data_level` seed.** Prod strike generators: `BTC ETH SOL`. Watchdog env: `BTC,ETH,SOL,GOLD,SILVER,WTI`. `live_data_level` is local-only and not migrated on prod.
+3. **Feed depth is `live_data_level` on production** (deployed after v3.12.18, §0). Only BTC and ETH are `full`. SOL, XRP, GOLD, SILVER, and WTI are `market`. DOGE is `none`. Supervisor env lists from the 2026-10-21 pass are not the membership source.
 4. **Single droplet, public Postgres :5432, public app ports, secrets inside `supervisord.conf`.** Redis is the only data port bound to loopback.
 5. **CPU headroom is thin.** Load ~7–9 on 8 vCPU with ~12Gi RAM free. The box is CPU-bound, not RAM-bound. May 2026 audit already said this; the disk grew, the core count did not.
 6. **Tenant model is half-migrated.** Schemas `users`, `users_0001`, `users_0002`, `users_0003`. Only 0001 is an active Kalshi trader and the only supervised tenant. `REC_SINGLE_USER_MODE=1`. Hardcoded `0001` remains a named backlog item.
 7. **Strategy table ≠ AES router.** Three momentum/reverse names exist in code and not in `strategy_list_default`. Unknown strategy strings fall through to Hourly HTC.
-8. **Maker Edge and Taker Edge are a second execution path** (own processes, own Kalshi REST in `maker_edge_kalshi.py` / taker agent) beside `trade_executor`.
+8. **Maker Edge and Taker Edge still place outside `trade_executor`.** Taker Edge exits for the floor stop go through unified ATS after v3.12.18. Maker Edge stays outside ATS.
 9. **`win_loss_confirmed` wording in the schema reference is unsafe.** Code + no-fallback rule win.
 10. **Schema how-to that tells operators to call `init_database()` for alters is unsafe.** Migrations only.
 11. **`docs/DIGITAL_OCEAN_DEPLOYMENT_GUIDE.md` describes a greenfield `deploy_digital_ocean.sh`**, not the current git-pull update path.
@@ -722,6 +776,6 @@ Ordered by how easily an agent will cargo-cult the wrong generation.
 - Read-only SSH. No `supervisorctl` restart, no SQL writes, no credential file reads.
 - Nginx upstream map not captured.
 - QBO `.env` not opened, so production-vs-sandbox realm was not confirmed from disk. Cron user is `0001`.
-- Local git dirty tree was not fully diffed. The one schema delta called out is `live_data_level` absent on prod.
+- The 2026-10-21 pass did not diff the whole dirty tree. `live_data_level` has since been deployed (§0). The 2026-10-22 check did not re-measure CPU, disk, or Postgres size.
 - Droplet size/region slug was not pulled from the DigitalOcean API. RAM, disk, and hostname were read from the guest.
 - This file is a baseline, not a v4 proposal.

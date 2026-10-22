@@ -57,14 +57,13 @@ Within 15m, scope widens:
 - More commodity markets.
 - Other Kalshi categories are possible and not selected.
 
-v3 symbol facts to carry forward (`AUDIT_V3_BASELINE.md` §3.4):
+v3 symbol facts as of the 2026-10-22 production check (`AUDIT_V3_BASELINE.md` §0):
 
-- Prod `symbols_list`: BTC, ETH, SOL, XRP, DOGE (`crypto`); GOLD, SILVER, WTI (`commodity`).
-- Prod strike generator CLI: `BTC ETH SOL`.
-- Prod market-watchdog env: `BTC,ETH,SOL,GOLD,SILVER,WTI`.
-- Local uncommitted `live_data_level` (`full` | `market` | `price_only` | `none`) is not on production. It is the current idea for per-symbol feed depth, not a v4 decision.
+- Prod `symbols_list` with `live_data_level`: BTC and ETH `full`; SOL, XRP, GOLD, SILVER, WTI `market`; DOGE `none`.
+- Strike generators take no `--symbols` list. Depth comes from that column.
+- `live_data_level` is deployed. It is the current feed switch, not a v4 decision about which new symbols to add.
 
-Maker Edge and Taker Edge already target 15m BTC, ETH, GOLD, SILVER, WTI outside the unified auto-entry supervisor. Any 15m expansion has to say which execution path a new symbol uses.
+Maker Edge places outside the auto-entry supervisor. Taker Edge places in `taker_edge_agent` and, since v3.12.18, uses unified ATS for the floor stop and floor flip sell. Any 15m expansion has to say which execution path a new symbol uses and which `live_data_level` it gets.
 
 Kalshi collateral stays per shard. Crypto orders debit `(exchange_index=2, subaccount=1)` today. A new category may be a different shard (`docs/KALSHI_EXCHANGE_SHARDING.md`). Do not assume one cash pool covers every new series.
 

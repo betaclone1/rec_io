@@ -4,7 +4,7 @@ Machine-oriented notes for the v3 → v4 initiative. Written for agents. Not a u
 
 | File | Role |
 |------|------|
-| [AUDIT_V3_BASELINE.md](AUDIT_V3_BASELINE.md) | As-built v3 snapshot. Facts only. |
+| [AUDIT_V3_BASELINE.md](AUDIT_V3_BASELINE.md) | As-built v3 snapshot. §0 is the 2026-10-22 deploy refresh. |
 | [V4_DIRECTION.md](V4_DIRECTION.md) | Owner constraints for v4. Not a design. Read after the audit. |
 | [PG_AND_HOST_OPTIONS.md](PG_AND_HOST_OPTIONS.md) | Working assumption: self-managed Postgres on its own lean droplet. Managed DO/AWS prices kept as the alternative. Not executed. |
 
