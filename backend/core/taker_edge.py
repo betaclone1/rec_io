@@ -2,7 +2,8 @@
 Taker Edge membership — exclude from unified AES.
 
 Config rule:
-  market=15m, strategy=Taker Edge, symbol in TAKER_EDGE_SYMBOLS
+  market=15m, strategy=Taker Edge, symbol has a 15m series and
+  live_data_level full or market (public tape exists)
 
 Entry is a live public-trade trigger in taker_edge_agent, not AES→TM→TE.
 One GTC limit on the side whose print is at or above the monitor target.
@@ -15,20 +16,45 @@ from typing import Any, Dict, List, Optional, Tuple
 
 STRATEGY_NAME = "Taker Edge"
 CUTOUT_MARKET = "15m"
-TAKER_EDGE_SYMBOLS: frozenset[str] = frozenset(
-    {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
-)
+
+
+def taker_edge_symbols() -> frozenset[str]:
+    """15m underlyings whose live feed includes the public tape.
+
+    ``full`` and ``market`` both carry public trades. ``price_only`` and
+    ``none`` do not, so a Taker Edge monitor on those symbols stays outside
+    this agent (and outside the AES cutout) until the level changes.
+    """
+    from backend.core.live_data_level import market_feed_symbols
+    from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+
+    return frozenset(s for s in market_feed_symbols() if s in SERIES_15M_BY_SYMBOL)
+
+
+def taker_edge_series_tickers() -> list[str]:
+    from backend.core.maker_edge_open import series_15m_for_symbol
+
+    out: list[str] = []
+    for sym in sorted(taker_edge_symbols()):
+        ser = series_15m_for_symbol(sym)
+        if ser:
+            out.append(ser)
+    return out
 
 
 def is_taker_edge_symbol(symbol: Any) -> bool:
-    return str(symbol or "").strip().upper() in TAKER_EDGE_SYMBOLS
+    return str(symbol or "").strip().upper() in taker_edge_symbols()
 
 
 def is_taker_edge_row(row: Dict[str, Any]) -> bool:
     sym = str(row.get("symbol") or "").strip().upper()
     mkt = str(row.get("market") or "").strip().lower()
     strat = str(row.get("strategy") or "").strip()
-    return sym in TAKER_EDGE_SYMBOLS and mkt == CUTOUT_MARKET and strat == STRATEGY_NAME
+    return (
+        mkt == CUTOUT_MARKET
+        and strat == STRATEGY_NAME
+        and sym in taker_edge_symbols()
+    )
 
 
 def filter_out_taker_edge_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -82,8 +108,10 @@ def ttc_in_entry_window(*, ttc: Optional[float], min_time: int, max_time: int) -
     return int(min_time) <= t <= int(max_time)
 
 
-def _sql_symbol_in_clause() -> Tuple[str, Tuple[str, ...]]:
-    syms = tuple(sorted(TAKER_EDGE_SYMBOLS))
+def _sql_symbol_in_clause() -> Optional[Tuple[str, Tuple[str, ...]]]:
+    syms = tuple(sorted(taker_edge_symbols()))
+    if not syms:
+        return None
     placeholders = ", ".join(["%s"] * len(syms))
     return placeholders, syms
 
@@ -101,7 +129,10 @@ def list_active_taker_edge_monitor_rows() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     try:
         ml = legacy_users_monitor_list(un)
-        sym_ph, syms = _sql_symbol_in_clause()
+        clause = _sql_symbol_in_clause()
+        if clause is None:
+            return []
+        sym_ph, syms = clause
         with conn.cursor() as cur:
             cur.execute(
                 f"""

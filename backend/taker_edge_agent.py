@@ -30,7 +30,7 @@ from backend.core.maker_edge_kalshi import (
     v2_price_for_limit_side,
 )
 from backend.core.maker_edge_open import (
-    fetch_maker_edge_markets,
+    fetch_series_15m_markets,
     select_live_targets_by_symbol,
 )
 from backend.core.port_config import default_pool_user_number, get_port
@@ -38,6 +38,7 @@ from backend.core.taker_edge import (
     STRATEGY_NAME,
     floor_strike_from_market,
     list_active_taker_edge_monitor_rows,
+    taker_edge_series_tickers,
     taker_edge_side_from_print,
     ttc_in_entry_window,
 )
@@ -372,10 +373,17 @@ def _on_fill(cy: _Cycle, *, side: str, qty: float) -> None:
     )
 
 
+def _live_markets() -> list:
+    out: list = []
+    for series in taker_edge_series_tickers():
+        out.extend(fetch_series_15m_markets(series))
+    return out
+
+
 def _tick() -> None:
     monitors = list_active_taker_edge_monitor_rows()
     _sync_statuses(monitors)
-    live = select_live_targets_by_symbol(fetch_maker_edge_markets())
+    live = select_live_targets_by_symbol(_live_markets())
     now = time.time()
     active_ids = set()
     for mon in monitors:

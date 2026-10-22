@@ -11,9 +11,22 @@ from backend.core.taker_edge import (
 )
 
 
-def test_membership():
+def test_membership(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: ("ETH", "SOL", "XRP"),
+    )
     assert is_taker_edge_row(
         {"symbol": "ETH", "market": "15m", "strategy": "Taker Edge"}
+    )
+    assert is_taker_edge_row(
+        {"symbol": "SOL", "market": "15m", "strategy": "Taker Edge"}
+    )
+    assert is_taker_edge_row(
+        {"symbol": "XRP", "market": "15m", "strategy": "Taker Edge"}
+    )
+    assert not is_taker_edge_row(
+        {"symbol": "DOGE", "market": "15m", "strategy": "Taker Edge"}
     )
     assert not is_taker_edge_row(
         {"symbol": "ETH", "market": "15m", "strategy": "Maker Edge"}
