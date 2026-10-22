@@ -16,11 +16,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-21`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. No schema change.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Full restart so ATS and the dashboard pick up the stop path: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `active_trade_supervisor_0001` and `taker_edge_agent_0001` RUNNING
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.18`
+- [x] Full restart so ATS and the dashboard pick up the stop path: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; `active_trade_supervisor_0001` and `taker_edge_agent_0001` RUNNING
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.18`
 
 ---
 
