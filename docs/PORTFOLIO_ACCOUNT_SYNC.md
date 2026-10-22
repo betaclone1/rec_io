@@ -48,9 +48,9 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 | Function | HTTP | When it runs |
 |----------|------|--------------|
-| `sync_balance` | `GET /portfolio/subaccounts/balances` | Step 1: upsert live `users.subaccounts_*` cash per Kalshi subaccount (matrix → `exchange_*_balance`, `balance` = sum) |
-| `sync_balance` | `GET /portfolio/balance?subaccount=N` | Step 2: position marks; sab history gets matrix cash + these marks → `subaccount_balance_*_<n>` |
-| `sync_balance` (aggregate) | — | Step 3: sum latest sab snapshots → hero `account_balance_*`; bankroll from subaccount 1 |
+| `sync_balance` | `GET /portfolio/subaccounts/balances` | One call: upsert live `users.subaccounts_*` cash and sab `balance` / `exchange_*_balance`. Hero `account_balance_*` `balance` is the sum of those subaccounts |
+| `sync_balance` | positions hot hash | Open-position marks on sab rows (`positions` / `portfolio_value`). No `GET /portfolio/balance` |
+| `sync_balance` (aggregate) | — | Sum the subaccounts written this tick → hero `account_balance_*`; bankroll from subaccount 1 |
 | `sync_balance(full=True)` | same as above | **Startup baseline only** — disables 120s hero throttle so every subaccount + hero row is refreshed after `MASTER_RESTART` |
 | `sync_portfolio_hot_state_baseline` | positions + fills + orders REST | **Startup only** — positions snapshot; fills/orders paginated with `min_ts` = retention window |
 | `sync_positions_prune_hot_state` | `GET .../portfolio/positions?limit=200` | Every `ACCOUNT_SYNC_POSITIONS_PRUNE_SEC` (default 300s); **prune only** (no hot upsert) |
@@ -66,7 +66,7 @@ Env: `LIVE_STATE_KALSHI_PORTFOLIO_RETENTION_HOURS` (default 1, fills/orders hot 
 
 **Automatic subaccount rake (live):** Each non-CASH subaccount with `automatic_transfers` on is evaluated independently (`target_pnl__pct` / `transfer_amt` / `base_value` on that row). When met, `poll_live_account_balances` posts `POST /portfolio/subaccounts/transfer` **source → #0 (CASH)** for `transfer_amt × base_value` cents, updates that source’s `base_value`, then **repolls** (no throttle). MTB (#1) still uses home-shard cash for eligibility; other sources use total balance. Paper mode simulates the same destination (**CASH**) in `subaccounts_update`. CASH (#0) is never a rake source.
 
-**Settlement balance glitch guard (live):** Kalshi `GET /portfolio/balance?subaccount=1` can race around settlement in two ways:
+**Settlement balance glitch guard (live):** Matrix cash and the positions-hash mark can race around settlement in two ways:
 
 1. **Overstatement:** settlement cash in `balance` while `portfolio_value` still includes the settled mark (cash up, PV flat/up).
 2. **Understatement:** buys already debited and marks cleared before settlement credits land (large one-tick portfolio drop; e.g. ~50% false drawdown).

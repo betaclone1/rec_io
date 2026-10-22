@@ -50,22 +50,23 @@ def test_bump_mtb_base_value_for_cash_funding_increments_base():
 
 
 def test_poll_live_account_balances_skips_rake_when_requested(monkeypatch):
-    calls = {"rake": 0, "write": 0}
+    calls = {"rake": 0, "write": 0, "skip_mtb": None}
 
-    def fake_rake(cursor, user_no, *, subaccounts_table):
+    def fake_rake(cursor, user_no, *, subaccounts_table, skip_mtb_source=False):
         calls["rake"] += 1
-        return False
+        calls["skip_mtb"] = skip_mtb_source
+        return False, False
 
     def fake_write(*args, **kwargs):
         calls["write"] += 1
-        return True, False
+        return True, False, []
 
     monkeypatch.setattr(
         "backend.kalshi_account_sync_ws._sync_subaccounts_from_kalshi_poll",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(bs, "refresh_mtb_realized_pnl_from_balance", lambda *a, **k: 100)
-    monkeypatch.setattr(bs, "maybe_execute_live_automatic_mtb_rake", fake_rake)
+    monkeypatch.setattr(bs, "maybe_execute_live_automatic_subaccount_rakes", fake_rake)
     monkeypatch.setattr(bs, "_write_polled_subaccount_balances", fake_write)
     monkeypatch.setattr(bs, "_subaccount_numbers_from_subaccounts_table", lambda *a, **k: [0, 1])
     monkeypatch.setattr(
@@ -76,12 +77,8 @@ def test_poll_live_account_balances_skips_rake_when_requested(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
-        lambda user_no, subaccount=0: {
-            "balance_cents": 100,
-            "portfolio_value_cents": 0,
-            "total_portfolio_cents": 100,
-        },
+        "backend.balance_snapshot.open_position_mark_cents_by_subaccount",
+        lambda user_no: {},
     )
 
     class Cur:
@@ -100,24 +97,26 @@ def test_poll_live_account_balances_skips_rake_when_requested(monkeypatch):
         throttle=False,
         skip_automatic_mtb_rake=True,
     )
-    assert calls["rake"] == 0
+    assert calls["rake"] == 1
+    assert calls["skip_mtb"] is True
     assert calls["write"] == 1
 
 
 def test_poll_live_account_balances_runs_rake_by_default(monkeypatch):
-    calls = {"rake": 0}
+    calls = {"rake": 0, "skip_mtb": None}
 
-    def fake_rake(cursor, user_no, *, subaccounts_table):
+    def fake_rake(cursor, user_no, *, subaccounts_table, skip_mtb_source=False):
         calls["rake"] += 1
-        return False
+        calls["skip_mtb"] = skip_mtb_source
+        return False, False
 
     monkeypatch.setattr(
         "backend.kalshi_account_sync_ws._sync_subaccounts_from_kalshi_poll",
         lambda *a, **k: None,
     )
     monkeypatch.setattr(bs, "refresh_mtb_realized_pnl_from_balance", lambda *a, **k: 100)
-    monkeypatch.setattr(bs, "maybe_execute_live_automatic_mtb_rake", fake_rake)
-    monkeypatch.setattr(bs, "_write_polled_subaccount_balances", lambda *a, **k: (True, False))
+    monkeypatch.setattr(bs, "maybe_execute_live_automatic_subaccount_rakes", fake_rake)
+    monkeypatch.setattr(bs, "_write_polled_subaccount_balances", lambda *a, **k: (True, False, []))
     monkeypatch.setattr(bs, "_subaccount_numbers_from_subaccounts_table", lambda *a, **k: [0, 1])
     monkeypatch.setattr(
         "backend.bookkeeper.kalshi_portfolio_balance.fetch_subaccount_balances_matrix",
@@ -127,12 +126,8 @@ def test_poll_live_account_balances_runs_rake_by_default(monkeypatch):
         },
     )
     monkeypatch.setattr(
-        "backend.bookkeeper.kalshi_portfolio_balance.fetch_portfolio_balance_detail",
-        lambda user_no, subaccount=0: {
-            "balance_cents": 100,
-            "portfolio_value_cents": 0,
-            "total_portfolio_cents": 100,
-        },
+        "backend.balance_snapshot.open_position_mark_cents_by_subaccount",
+        lambda user_no: {},
     )
 
     class Cur:
@@ -147,3 +142,4 @@ def test_poll_live_account_balances_runs_rake_by_default(monkeypatch):
 
     bs.poll_live_account_balances(Cur(), "0001", throttle=False)
     assert calls["rake"] == 1
+    assert calls["skip_mtb"] is False

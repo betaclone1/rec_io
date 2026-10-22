@@ -14,10 +14,11 @@ HYBRID APPROACH:
 This balances responsiveness with data freshness and API efficiency.
 
 SUBACCOUNTS (Kalshi-native):
-On each balance poll: GET /portfolio/subaccounts/balances → users.subaccounts_*; then
-GET /portfolio/balance?subaccount=N per active subaccount → subaccount_balance_*_<n>;
-aggregate sums into account_balance_* with bankroll fields from subaccount 1 (MTB).
-Kalshi #0 = CASH, #1 = Master Trading Bankroll, #2 = undefined_2. Paper mode unchanged.
+On each balance poll: GET /portfolio/subaccounts/balances → users.subaccounts_* cash and
+subaccount_balance_*_<n> cash. Open-position marks come from the positions hot hash.
+The hero account_balance_* row is the sum of those subaccounts, with bankroll fields
+from subaccount 1 (MTB). Kalshi #0 = CASH, #1 = Master Trading Bankroll, #2+ ancillary.
+Paper mode unchanged.
 """
 
 import sys

@@ -1755,6 +1755,57 @@ def detect_mtb_balance_glitch(
     return detect_settlement_portfolio_understatement(prev_row, cash_cents, pv_cents)
 
 
+def open_position_mark_cents_by_subaccount(user_no: str) -> Optional[Dict[int, int]]:
+    """
+    Open-position cost in cents, keyed by Kalshi subaccount, from the positions hot hash.
+
+    ``{}`` means the book was read and nothing is open. ``None`` means the hash could
+    not be read, so callers must not treat the book as flat.
+    """
+    from backend.core.kalshi_money import dollars_to_cents
+    from backend.core.live_state_kalshi_portfolio import list_positions, redis_client_optional
+
+    if redis_client_optional() is None:
+        _LOG.warning("Position hot hash unavailable; open marks not read for user %s", user_no)
+        return None
+    try:
+        rows = list_positions(user_no)
+    except Exception as exc:
+        _LOG.warning("Position hot hash read failed for user %s: %s", user_no, exc)
+        return None
+
+    out: Dict[int, int] = {}
+    for rec in rows:
+        try:
+            fp = abs(float(rec.get("position_fp") or 0))
+        except (TypeError, ValueError):
+            fp = 0.0
+        if fp < 1e-9:
+            continue
+        try:
+            n = int(rec.get("subaccount") if rec.get("subaccount") is not None else 0)
+        except (TypeError, ValueError):
+            _LOG.warning("Open position missing subaccount for user %s; marks unread", user_no)
+            return None
+        cents = dollars_to_cents(rec.get("position_cost_dollars"))
+        if cents is None:
+            _LOG.warning(
+                "Open position missing position_cost_dollars user=%s subaccount=%s; marks unread",
+                user_no,
+                n,
+            )
+            return None
+        out[n] = int(out.get(n, 0)) + int(cents)
+    return out
+
+
+def _previous_position_mark_cents(cursor, sab_fqn: str) -> int:
+    prev = _latest_subaccount_balance_row(cursor, sab_fqn)
+    if not prev or prev.get("portfolio_value") is None:
+        return 0
+    return int(prev["portfolio_value"])
+
+
 def _write_polled_subaccount_balances(
     cursor,
     *,
@@ -1762,44 +1813,43 @@ def _write_polled_subaccount_balances(
     sa_fqn: str,
     ab_fqn: str,
     active_numbers: List[int],
-    details_by_number: Dict[int, dict],
     current_timestamp: str,
     throttle: bool,
     force_bankroll_to_mtb_base: bool = False,
     exchange_by_number: Optional[Dict[int, Dict[int, int]]] = None,
     matrix_cash_by_number: Optional[Dict[int, int]] = None,
+    marks_by_number: Optional[Dict[int, int]] = None,
 ) -> Tuple[bool, bool, List[int]]:
     """
-    Persist per-subaccount rows and hero aggregate.
+    Persist per-subaccount rows and the hero aggregate.
 
-    Cash ``balance`` and ``exchange_*_balance`` come from the Kalshi matrix
-    (``GET /portfolio/subaccounts/balances``) when present so ``balance`` equals the
-    shard sum. Open-position marks still come from ``GET /portfolio/balance?subaccount=N``.
+    Cash comes from ``GET /portfolio/subaccounts/balances``. The hero ``balance`` is the
+    sum of those subaccounts. Open-position marks come from the positions hot hash
+    (``marks_by_number``). ``None`` means that hash could not be read; the previous
+    mark is kept so a missed read is not stored as a flat book.
 
     Returns ``(hero_inserted, any_drawdown_step, drawdown_halt_subaccount_ids)``.
     """
     from backend.trading_mode import subaccount_balance_table_fqn
 
+    if not matrix_cash_by_number:
+        _LOG.warning("No subaccount cash rows to write for user %s", slot)
+        return False, False, []
+
     polled: list[int] = []
     drawdown_halt_subaccounts: list[int] = []
     for n in active_numbers:
-        detail = details_by_number.get(n)
-        if detail is None:
+        if int(n) not in matrix_cash_by_number:
             continue
         sab_fqn = subaccount_balance_table_fqn(slot, n)
         ensure_subaccount_balance_table(cursor, sab_fqn)
         ex_map = (exchange_by_number or {}).get(int(n))
-        if matrix_cash_by_number is not None and int(n) in matrix_cash_by_number:
-            cash = int(matrix_cash_by_number[int(n)])
-        elif ex_map is not None:
-            cash = int(sum(int(v) for v in ex_map.values()))
+        cash = int(matrix_cash_by_number[int(n)])
+        if marks_by_number is None:
+            pos = _previous_position_mark_cents(cursor, sab_fqn)
         else:
-            cash = int(detail["balance_cents"])
-        pos = int(detail["portfolio_value_cents"])
+            pos = int(marks_by_number.get(int(n), 0))
         total = cash + pos
-        if ex_map is None and matrix_cash_by_number is None:
-            # No matrix: attribute detail cash to shard 0 (pre-shard / fallback path).
-            ex_map = {0: cash}
         _inserted, stepped = apply_balance_snapshot(
             cursor,
             balance_amount=cash,
@@ -1852,8 +1902,9 @@ def poll_live_account_balances(
     _force_bankroll_to_mtb_base: bool = False,
 ) -> Tuple[bool, bool, List[int]]:
     """
-    Live Kalshi balance pipeline: matrix cash (``subaccounts`` + sab ``balance`` /
-    ``exchange_*``) → per-subaccount GET for position marks → hero aggregate.
+    Live Kalshi balance pipeline: one ``GET /portfolio/subaccounts/balances`` supplies
+    every subaccount's cash. The hero ``account_balance`` row sums those subaccounts.
+    Open-position marks come from the positions hot hash, not ``GET /portfolio/balance``.
 
     Returns ``(hero_inserted, any_drawdown_step, drawdown_halt_subaccount_ids)``.
 
@@ -1861,18 +1912,16 @@ def poll_live_account_balances(
     repolls once (full refresh). If MTB was among sources, the post-rake write sets
     ``bankroll_current`` (MTB sab + hero) to the new MTB ``base_value``.
 
-    On suspected settlement races (cash up + stale PV, or large one-tick portfolio
-    understatement), skips the DB write, logs WARNING, and repolls with
-    REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff. Overstatement that persists keeps the
-    last good row; understatement that persists is written (API consistently low).
+    On suspected settlement races (cash up + stale position mark, or large one-tick
+    portfolio understatement), skips the DB write, logs WARNING, and repolls the same
+    subaccount-balances endpoint with REC_BALANCE_GLITCH_REPOLL_DELAYS_SEC backoff.
+    Overstatement that persists keeps the last good row; understatement that persists
+    is written.
 
     ``skip_automatic_mtb_rake``: set after manual CASH→MTB funding (skip MTB source only;
     other subaccounts may still rake).
     """
-    from backend.bookkeeper.kalshi_portfolio_balance import (
-        fetch_portfolio_balance_detail,
-        fetch_subaccount_balances_matrix,
-    )
+    from backend.bookkeeper.kalshi_portfolio_balance import fetch_subaccount_balances_matrix
     from backend.core.time_eastern import now_est
     from backend.kalshi_account_sync_ws import _sync_subaccounts_from_kalshi_poll
     from backend.trading_mode import (
@@ -1919,12 +1968,10 @@ def poll_live_account_balances(
             )
 
     balances_by_number, exchange_by_number = _matrix_maps(balances_matrix)
-    active_numbers = sorted(
-        set(int(n) for n in balances_by_number.keys())
-        | set(_subaccount_numbers_from_subaccounts_table(cursor, sa_fqn))
-    )
+    active_numbers = sorted(int(n) for n in balances_by_number.keys())
     if not active_numbers:
-        active_numbers = [0, 1]
+        _LOG.warning("Kalshi subaccount balances empty for user %s", slot)
+        return False, False, []
 
     repoll_delays = _balance_glitch_repoll_delays_sec()
     max_attempts = 1 + len(repoll_delays)
@@ -1937,36 +1984,29 @@ def poll_live_account_balances(
             if refreshed is not None:
                 balances_matrix = refreshed
                 balances_by_number, exchange_by_number = _matrix_maps(balances_matrix)
+                active_numbers = sorted(int(n) for n in balances_by_number.keys())
                 _sync_subaccounts_from_kalshi_poll(cursor, sa_fqn, balances_matrix)
                 refresh_mtb_realized_pnl_from_balance(cursor, sa_fqn)
 
         ts = now_est().isoformat()
-        details_by_number: Dict[int, dict] = {}
-        for n in active_numbers:
-            detail = fetch_portfolio_balance_detail(slot, subaccount=n)
-            if detail is None:
-                _LOG.warning("Kalshi balance poll failed for user %s subaccount %s", slot, n)
-                continue
-            details_by_number[n] = detail
+        marks_by_number = open_position_mark_cents_by_subaccount(slot)
 
-        if not details_by_number:
-            return False, False, []
-
-        def _mtb_cash_and_pv() -> Tuple[int, int]:
-            d1 = details_by_number[1]
-            pv = int(d1["portfolio_value_cents"])
-            if 1 in balances_by_number:
-                return int(balances_by_number[1]), pv
-            return int(d1["balance_cents"]), pv
+        def _mtb_cash_and_pv() -> Tuple[int, Optional[int]]:
+            cash = int(balances_by_number[1])
+            if marks_by_number is None:
+                return cash, None
+            return cash, int(marks_by_number.get(1, 0))
 
         glitch_detected = False
         glitch_reason = ""
+        api_pv: Optional[int] = None
         if (
             _balance_glitch_guard_enabled()
             and not skip_automatic_mtb_rake
             and not _after_automatic_rake
             and not deposit_cycle
-            and 1 in details_by_number
+            and 1 in balances_by_number
+            and marks_by_number is not None
         ):
             mtb_fqn = subaccount_balance_table_fqn(slot, 1)
             prev_mtb = _latest_subaccount_balance_row(cursor, mtb_fqn)
@@ -1975,7 +2015,7 @@ def poll_live_account_balances(
                 glitch_detected, glitch_reason = detect_mtb_balance_glitch(
                     prev_mtb,
                     api_cash,
-                    api_pv,
+                    int(api_pv or 0),
                 )
 
         if glitch_detected:
@@ -1985,7 +2025,8 @@ def poll_live_account_balances(
             prev_cash = int(prev_mtb.get("balance") or 0)
             prev_pv = int(prev_mtb.get("portfolio_value") or 0)
             prev_portfolio = int(prev_mtb.get("portfolio") or (prev_cash + prev_pv))
-            api_cash, api_pv = _mtb_cash_and_pv()
+            api_cash, api_pv_raw = _mtb_cash_and_pv()
+            api_pv = int(api_pv_raw or 0)
             api_portfolio = api_cash + api_pv
             cash_delta = api_cash - prev_cash
             portfolio_delta = api_portfolio - prev_portfolio
@@ -2043,12 +2084,12 @@ def poll_live_account_balances(
             sa_fqn=sa_fqn,
             ab_fqn=ab_fqn,
             active_numbers=active_numbers,
-            details_by_number=details_by_number,
             current_timestamp=ts,
             throttle=throttle,
             force_bankroll_to_mtb_base=_force_bankroll_to_mtb_base,
             exchange_by_number=exchange_by_number,
             matrix_cash_by_number=balances_by_number,
+            marks_by_number=marks_by_number,
         )
 
 
