@@ -1300,13 +1300,23 @@
         const el = document.getElementById(id);
         if (el) el.style.display = disp(nonScalpShow);
       });
-      // Maker Edge: hide HTC-style auto-stop / spike / volume / win-prob that do not apply.
-      // Taker Edge keeps the Expiration Scalp floor stop and its flip sell.
-      if (makerEdge && !isTakerEdge) {
+      // Volume and win-prob are not Taker Edge or Maker Edge gates.
+      // The label rule is display:block !important, so a plain display:none leaves an empty heading.
+      if (makerEdge) {
         ['autoEntryMinVolumeSlider', 'autoEntryDifferentialSlider', 'autoEntryMaxDifferentialSlider'].forEach((id) => {
           setForId(id, false);
         });
         if (minVolSection) minVolSection.style.display = 'none';
+        const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
+        if (probWindowLabel) probWindowLabel.style.setProperty('display', 'none', 'important');
+        const probWindowContainer = document.getElementById('probabilityWindowSliderContainer');
+        const probWindowWrap = probWindowContainer && probWindowContainer.closest('.value-bubble-container');
+        if (probWindowWrap) probWindowWrap.style.display = 'none';
+        else if (probWindowContainer) probWindowContainer.style.display = 'none';
+      }
+      // Maker Edge: hide HTC-style auto-stop / spike that do not apply.
+      // Taker Edge keeps the Expiration Scalp floor stop and its flip sell.
+      if (makerEdge && !isTakerEdge) {
         if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = 'none';
         if (spikeGroup) spikeGroup.style.display = 'none';
         const cooldownSecMaker = document.getElementById('uatCooldownWindowSection');
@@ -1316,12 +1326,6 @@
         if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = 'none';
         if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = 'none';
         if (stopVerifyControls) stopVerifyControls.style.display = 'none';
-        const probWindowLabel = document.querySelector('label[for="probabilityWindowSlider"]');
-        if (probWindowLabel) probWindowLabel.style.display = 'none';
-        const probWindowContainer = document.getElementById('probabilityWindowSliderContainer');
-        const probWindowWrap = probWindowContainer && probWindowContainer.closest('.value-bubble-container');
-        if (probWindowWrap) probWindowWrap.style.display = 'none';
-        else if (probWindowContainer) probWindowContainer.style.display = 'none';
         if (autoStopSection) autoStopSection.style.display = 'none';
       }
       if (isTakerEdge) {
@@ -2258,11 +2262,11 @@
       const probWindowWrap = probWindowContainer && probWindowContainer.closest('.value-bubble-container');
       if (probWindowLabel) {
         if (isMakerEdge) {
-          probWindowLabel.style.display = 'none';
+          probWindowLabel.style.setProperty('display', 'none', 'important');
           if (probWindowWrap) probWindowWrap.style.display = 'none';
           else if (probWindowContainer) probWindowContainer.style.display = 'none';
         } else {
-          probWindowLabel.style.display = '';
+          probWindowLabel.style.removeProperty('display');
           if (probWindowWrap) probWindowWrap.style.display = '';
           else if (probWindowContainer) probWindowContainer.style.display = '';
           if (isMomentumBreakout || isMomentumContain) {

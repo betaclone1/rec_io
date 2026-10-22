@@ -9919,11 +9919,19 @@
           const el = document.getElementById(id);
           if (el) el.style.display = disp(nonScalpShow);
         });
-        if (makerEdge && !isTakerEdge) {
+        if (makerEdge) {
           setForId('m_autoEntryMinVolume', false);
           setForId('m_autoEntryDiff', false);
           setForId('m_autoEntryMaxDiff', false);
           if (minVolSection) minVolSection.style.display = 'none';
+          const probLabel = document.querySelector('label[for="m_probabilityWindowSlider"]');
+          if (probLabel) probLabel.style.setProperty('display', 'none', 'important');
+          const probContainer = document.getElementById('m_probabilityWindowSliderContainer');
+          const probWrap = probContainer && probContainer.closest('.value-bubble-container');
+          if (probWrap) probWrap.style.display = 'none';
+          else if (probContainer) probContainer.style.display = 'none';
+        }
+        if (makerEdge && !isTakerEdge) {
           if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = 'none';
           if (spikeGroup) spikeGroup.style.display = 'none';
           const cooldownSecMaker = document.getElementById('m_uatCooldownWindowSection');
@@ -9933,12 +9941,6 @@
           if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = 'none';
           if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = 'none';
           if (stopVerifyControls) stopVerifyControls.style.display = 'none';
-          const probLabel = document.querySelector('label[for="m_probabilityWindowSlider"]');
-          if (probLabel) probLabel.style.display = 'none';
-          const probContainer = document.getElementById('m_probabilityWindowSliderContainer');
-          const probWrap = probContainer && probContainer.closest('.value-bubble-container');
-          if (probWrap) probWrap.style.display = 'none';
-          else if (probContainer) probContainer.style.display = 'none';
           if (autoStopSection) autoStopSection.style.display = 'none';
         }
         if (isTakerEdge) {
@@ -11348,11 +11350,11 @@
         const mProbContainer = document.getElementById('m_probabilityWindowSliderContainer');
         const mProbWrap = mProbContainer && mProbContainer.closest('.value-bubble-container');
         if (isMakerEdge) {
-          if (probLabel) probLabel.style.display = 'none';
+          if (probLabel) probLabel.style.setProperty('display', 'none', 'important');
           if (mProbWrap) mProbWrap.style.display = 'none';
           else if (mProbContainer) mProbContainer.style.display = 'none';
         } else {
-          if (probLabel) probLabel.style.display = '';
+          if (probLabel) probLabel.style.removeProperty('display');
           if (mProbWrap) mProbWrap.style.display = '';
           else if (mProbContainer) mProbContainer.style.display = '';
         }
