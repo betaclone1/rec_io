@@ -6,6 +6,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-21 — Release v3.12.18: Taker Edge floor stop and flip sell
+
+**Summary**
+- **Release: v3.12.18**
+- **Plans:** none. Follow-up to `docs/TAKER_EDGE_STRATEGY.md`. Maker Edge is unchanged.
+- **Taker Edge exits:** Unified ATS watches Taker Edge monitors. A stop-loss price above 0 closes the leg on the same opposite-ask floor as Expiration Scalp, and floor flip sell follows that close when the monitor enables it. A stop price of 0 holds to settlement. Momentum spike and probability stops stay off.
+- **Settings:** Desktop and mobile Taker Edge modals show Stop Loss Price and its Flip Sell control. The target price and entry window stay as they are. Maker Edge still hides Auto Stop and stays outside ATS.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-21`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. No schema change.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Full restart so ATS and the dashboard pick up the stop path: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `active_trade_supervisor_0001` and `taker_edge_agent_0001` RUNNING
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.18`
+
+---
+
 ## 2026-10-20 — Release v3.12.17: Commodity category, Taker Edge, commodity symbol close
 
 **Summary**
@@ -19,16 +37,16 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-20`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`. Schema: `down` the four migrations newest-first.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migrations in order:
+- [x] Apply migrations in order:
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1130_symbols_list_category`
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1145_symbols_list_commodities`
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1645_taker_edge_strategy`
   `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261020_1935_commodity_price_rings`
-- [ ] Regenerate supervisor and full restart (new `pyth_price_watchdog` and `taker_edge_agent_*`): `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `pyth_price_watchdog`, `taker_edge_agent_0001`, `trade_manager_0001`, `maker_edge_agent_0001`, `market_watchdog_ws_kalshi` RUNNING
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.17`
+- [x] Regenerate supervisor and full restart (new `pyth_price_watchdog` and `taker_edge_agent_*`): `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; `pyth_price_watchdog`, `taker_edge_agent_0001`, `trade_manager_0001`, `maker_edge_agent_0001`, `market_watchdog_ws_kalshi` RUNNING
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.17`
 
 ---
 

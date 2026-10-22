@@ -9895,7 +9895,7 @@
         const hwt1Close = document.getElementById('m_highWaterTest1LimitCloseOffsetSection');
         if (hwt1Close) hwt1Close.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
         const hwsStop = document.getElementById('m_highWaterScalpStopLossPriceSection');
-        if (hwsStop) hwsStop.style.display = (makerEdge || isHighWaterTest1) ? 'none' : '';
+        if (hwsStop) hwsStop.style.display = ((makerEdge && !isTakerEdge) || isHighWaterTest1) ? 'none' : '';
         const hwt1Stop = document.getElementById('m_highWaterTest1StopLossOffsetSection');
         if (hwt1Stop) hwt1Stop.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
         const hwsPre = document.getElementById('m_highWaterPositionRiskSection');
@@ -9919,7 +9919,7 @@
           const el = document.getElementById(id);
           if (el) el.style.display = disp(nonScalpShow);
         });
-        if (makerEdge) {
+        if (makerEdge && !isTakerEdge) {
           setForId('m_autoEntryMinVolume', false);
           setForId('m_autoEntryDiff', false);
           setForId('m_autoEntryMaxDiff', false);
@@ -9940,6 +9940,13 @@
           if (probWrap) probWrap.style.display = 'none';
           else if (probContainer) probContainer.style.display = 'none';
           if (autoStopSection) autoStopSection.style.display = 'none';
+        }
+        if (isTakerEdge) {
+          if (autoStopSection) autoStopSection.style.display = '';
+          if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = 'none';
+          if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = 'none';
+          if (stopVerifyControls) stopVerifyControls.style.display = 'none';
+          if (hwsStop) hwsStop.style.display = '';
         }
       }
 

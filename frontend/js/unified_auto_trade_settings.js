@@ -1276,7 +1276,7 @@
       const hwt1Close = document.getElementById('highWaterTest1LimitCloseOffsetSection');
       if (hwt1Close) hwt1Close.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
       const hwsStop = document.getElementById('highWaterScalpStopLossPriceSection');
-      if (hwsStop) hwsStop.style.display = (makerEdge || isHighWaterTest1) ? 'none' : '';
+      if (hwsStop) hwsStop.style.display = ((makerEdge && !isTakerEdge) || isHighWaterTest1) ? 'none' : '';
       const hwt1Stop = document.getElementById('highWaterTest1StopLossOffsetSection');
       if (hwt1Stop) hwt1Stop.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
       const hwsPre = document.getElementById('highWaterPositionRiskSection');
@@ -1300,8 +1300,9 @@
         const el = document.getElementById(id);
         if (el) el.style.display = disp(nonScalpShow);
       });
-      // Maker Edge: hide HTC-style auto-stop / spike / volume / win-prob that do not apply
-      if (makerEdge) {
+      // Maker Edge: hide HTC-style auto-stop / spike / volume / win-prob that do not apply.
+      // Taker Edge keeps the Expiration Scalp floor stop and its flip sell.
+      if (makerEdge && !isTakerEdge) {
         ['autoEntryMinVolumeSlider', 'autoEntryDifferentialSlider', 'autoEntryMaxDifferentialSlider'].forEach((id) => {
           setForId(id, false);
         });
@@ -1322,6 +1323,13 @@
         if (probWindowWrap) probWindowWrap.style.display = 'none';
         else if (probWindowContainer) probWindowContainer.style.display = 'none';
         if (autoStopSection) autoStopSection.style.display = 'none';
+      }
+      if (isTakerEdge) {
+        if (autoStopSection) autoStopSection.style.display = '';
+        if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = 'none';
+        if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = 'none';
+        if (stopVerifyControls) stopVerifyControls.style.display = 'none';
+        if (hwsStop) hwsStop.style.display = '';
       }
     }
 

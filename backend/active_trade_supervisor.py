@@ -3945,17 +3945,15 @@ def _ats_list_lane_monitor_rows() -> List[dict]:
         list_active_btc15m_exp_scalp_cutout_rows,
     )
     from backend.core.aes_btc15m_maker_edge_cutout import filter_out_maker_edge_rows
-    from backend.core.taker_edge import filter_out_taker_edge_rows
 
     if ATS_BTC15M_EXP_SCALP:
         return list_active_btc15m_exp_scalp_cutout_rows()
     if ATS_UNIFIED_15M:
         from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
-        return filter_out_taker_edge_rows(
-            filter_out_maker_edge_rows(
-                filter_out_cutout_rows(list_active_15m_monitor_rows())
-            )
+        # Taker Edge stays in this lane (floor stop + flip sell). Maker Edge does not.
+        return filter_out_maker_edge_rows(
+            filter_out_cutout_rows(list_active_15m_monitor_rows())
         )
     if ATS_UNIFIED_HOURLY:
         from backend.core.unified_hourly_monitors import list_active_hourly_monitor_rows
@@ -3964,10 +3962,8 @@ def _ats_list_lane_monitor_rows() -> List[dict]:
     if ATS_UNIFIED_ALL:
         from backend.core.unified_all_monitors import list_active_unified_monitor_rows
 
-        return filter_out_taker_edge_rows(
-            filter_out_maker_edge_rows(
-                filter_out_cutout_rows(list_active_unified_monitor_rows())
-            )
+        return filter_out_maker_edge_rows(
+            filter_out_cutout_rows(list_active_unified_monitor_rows())
         )
     return []
 
@@ -5102,7 +5098,8 @@ def start_monitoring_loop():
                 
                         # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
                         # Skip momentum spike for Momentum Scalp / Reversal / Maker Edge
-                        # (Maker Edge holds to settlement — no ATS exits).
+                        # / Taker Edge. Maker Edge holds to settlement. Taker Edge uses
+                        # the Expiration Scalp floor stop only.
                         strategy = get_trade_strategy()
                         from backend.core.aes_btc15m_maker_edge_cutout import (
                             STRATEGY_NAME as _ME_STRAT,
@@ -6964,10 +6961,9 @@ def trigger_auto_stop_close(
         return False
 
     from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
-    from backend.core.taker_edge import STRATEGY_NAME as TAKER_EDGE_STRATEGY
 
     strat_row = str(trade.get("trade_strategy") or get_trade_strategy() or "").strip()
-    if strat_row in (MAKER_EDGE_STRATEGY, TAKER_EDGE_STRATEGY):
+    if strat_row == MAKER_EDGE_STRATEGY:
         log(
             f"[AUTO STOP] refused {strat_row} trade={tid} "
             f"(hold to settlement; trigger={trigger_reason})"
@@ -7955,9 +7951,15 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
         is_high_water_test_1,
     )
 
-    # Maker Edge / Taker Edge: hold the filled leg to settlement (market_result).
-    if str(strategy or "").strip() in (MAKER_EDGE_STRATEGY, TAKER_EDGE_STRATEGY):
-        log_debug("[AUTO STOP] skipped — edge strategy holds to settlement")
+    # Maker Edge holds the filled leg to settlement (market_result).
+    if str(strategy or "").strip() == MAKER_EDGE_STRATEGY:
+        log_debug("[AUTO STOP] skipped — Maker Edge holds to settlement")
+        return
+
+    if str(strategy or "").strip() == TAKER_EDGE_STRATEGY:
+        check_auto_stop_conditions_expiration_scalp(
+            active_trades, auto_stop_triggered_trades, verification_pending_trades
+        )
         return
 
     if strategy == "Momentum Scalp":

@@ -1,11 +1,12 @@
 """
-Taker Edge membership — exclude from unified AES/ATS.
+Taker Edge membership — exclude from unified AES.
 
 Config rule:
   market=15m, strategy=Taker Edge, symbol in TAKER_EDGE_SYMBOLS
 
 Entry is a live public-trade trigger in taker_edge_agent, not AES→TM→TE.
 One GTC limit on the side whose print is at or above the monitor target.
+ATS supervises the open leg with the Expiration Scalp floor stop and flip sell.
 """
 
 from __future__ import annotations
