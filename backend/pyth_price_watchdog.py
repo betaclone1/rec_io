@@ -319,6 +319,13 @@ class PythPriceWatchdog:
         feed_error: Optional[str] = None
         try:
             async for message in ws:
+                if self._price_level_changed():
+                    logger.info("live_data_level price set changed; reconnecting pyth")
+                    try:
+                        await ws.close(code=1012, reason="live_data_level")
+                    except Exception:
+                        pass
+                    return "live_data_level"
                 await self._handle_message(message)
         except (ConnectionClosedOK, ConnectionClosedError):
             pass
@@ -337,8 +344,38 @@ class PythPriceWatchdog:
                 feed_error = str(feed_error)
         return feed_error
 
+    def _price_level_changed(self) -> bool:
+        from backend.core.live_data_level import pyth_underlyings_for_price_feed
+
+        return list(pyth_underlyings_for_price_feed()) != list(self.underlyings)
+
+    def _install_price_subscription(self) -> None:
+        from backend.core.pyth_feed_health import PythFeedHealth
+        from backend.core.live_data_level import pyth_underlyings_for_price_feed
+        from backend.symbol_price_watchdog import COMMODITY_LIVE_STATE_SYMBOLS
+
+        underlyings = [
+            u
+            for u in pyth_underlyings_for_price_feed()
+            if symbol_for_underlying(u) in COMMODITY_LIVE_STATE_SYMBOLS
+        ]
+        if underlyings == list(self.underlyings):
+            return
+        self.underlyings = underlyings
+        self.symbols = [symbol_for_underlying(u) for u in underlyings]
+        self.tick_seq_by_underlying = {
+            u: self.tick_seq_by_underlying.get(u, 0) for u in underlyings
+        }
+        self._feed_health = PythFeedHealth(self.underlyings)
+        logger.info("pyth price symbols=%s underlyings=%s", self.symbols, self.underlyings)
+
     async def run_forever(self) -> None:
         while True:
+            self._install_price_subscription()
+            if not self.underlyings:
+                logger.info("no commodity symbols at a price live_data_level; pyth idle")
+                await asyncio.sleep(5.0)
+                continue
             last_error: Optional[str] = None
             try:
                 headers = kalshi_ws_connect_headers()

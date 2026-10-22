@@ -19,12 +19,7 @@ from zoneinfo import ZoneInfo
 import redis
 
 from backend.core.config.database import get_system_postgresql_connection
-from backend.strike_table_generator import (
-    DEFAULT_KALSHI_15M_SYMBOL_ORDER,
-    KALSHI_15M_SYMBOLS,
-    StrikeTableGenerator,
-    fetch_kalshi_15m_symbols_ordered_from_db,
-)
+from backend.strike_table_generator import StrikeTableGenerator
 from backend.core.exchange_ids import normalize_exchange
 from backend.core.strike_pipeline_health import (
     MARKET_15M,
@@ -622,6 +617,26 @@ def _refresh_symbol(
         )
 
 
+def _full_symbols_for_market(market_kind: str, cap: tuple[str, ...] | None) -> list[str]:
+    """Kalshi symbols currently at live_data_level=full. ``cap`` limits a one-off CLI run."""
+    from backend.core.live_data_level import full_package_symbols
+    from backend.core.market_watchdog.venues.kalshi.schedule import (
+        SERIES_15M_BY_SYMBOL,
+        SERIES_HOURLY_BY_SYMBOL,
+    )
+
+    universe = SERIES_HOURLY_BY_SYMBOL if market_kind == "hourly" else SERIES_15M_BY_SYMBOL
+    cap_set = {s.strip().upper() for s in cap} if cap else None
+    out: list[str] = []
+    for sym in full_package_symbols():
+        if sym not in universe:
+            continue
+        if cap_set is not None and sym not in cap_set:
+            continue
+        out.append(sym)
+    return out
+
+
 def run_redis_triggered(
     *,
     data_exchange: str,
@@ -630,6 +645,7 @@ def run_redis_triggered(
     redis_channel: str = DEFAULT_REDIS_CHANNEL,
     pipeline_max_age_sec: int = DEFAULT_PIPELINE_MAX_AGE_SEC,
     degrade_confirm_sec: int = DEFAULT_DEGRADE_CONFIRM_SEC,
+    symbol_cap: tuple[str, ...] | None = None,
 ) -> None:
     mk = (market_kind or "15m").strip().lower()
     # Market ingest is live_state only — no PG market_kalshi_* writer (see docs/KALSHI_MARKET_INGEST.md).
@@ -643,29 +659,53 @@ def run_redis_triggered(
     else:
         raise ValueError("market_kind must be 15m or hourly")
 
-    syms = tuple(s.upper() for s in symbols)
-    if not syms:
-        syms = DEFAULT_KALSHI_15M_SYMBOL_ORDER if mk == "15m" else tuple(sorted(KALSHI_HOURLY_SYMBOLS))
-    if mk == "hourly":
-        syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
+    cap = symbol_cap
+    if cap is None and symbols:
+        cap = tuple(s.upper() for s in symbols)
+    generators: dict[str, StrikeTableGeneratorWS] = {}
+    raw_unhealthy_since: dict[str, float | None] = {}
+    active: set[str] = set()
+    schema_ready = False
 
-    generators = {
-        s: StrikeTableGeneratorWS(
-            s.lower(),
-            interval="15m" if mk == "15m" else "hourly",
-            data_exchange=data_exchange,
-            strike_table_name=default_strike,
-            market_table_name=default_market,
-            pipeline_max_age_sec=pipeline_max_age_sec,
-            degrade_confirm_sec=degrade_confirm_sec,
-        )
-        for s in syms
-    }
-    raw_unhealthy_since: dict[str, float | None] = {s: None for s in syms}
-    # Ensure schema once.
-    next(iter(generators.values())).setup_live_data_schema()
+    def _sync_full_generators() -> None:
+        nonlocal schema_ready
+        desired = _full_symbols_for_market(mk, cap)
+        for s in desired:
+            if s not in generators:
+                try:
+                    gen = StrikeTableGeneratorWS(
+                        s.lower(),
+                        interval="15m" if mk == "15m" else "hourly",
+                        data_exchange=data_exchange,
+                        strike_table_name=default_strike,
+                        market_table_name=default_market,
+                        pipeline_max_age_sec=pipeline_max_age_sec,
+                        degrade_confirm_sec=degrade_confirm_sec,
+                    )
+                    if not schema_ready:
+                        gen.setup_live_data_schema()
+                        schema_ready = True
+                    generators[s] = gen
+                    raw_unhealthy_since[s] = None
+                    _last_regen_mono.pop(s, None)
+                    _last_dead_regen_skip_mono.pop(s, None)
+                    _refresh_symbol(
+                        generators,
+                        s,
+                        raw_unhealthy_since=raw_unhealthy_since,
+                        degrade_confirm_sec=degrade_confirm_sec,
+                    )
+                    logger.info("[%s] live_data_level full; strike tracking on", s)
+                except Exception:
+                    logger.exception("[%s] could not start full strike tracking", s)
+                    continue
+            active.add(s)
+        for s in list(active):
+            if s not in desired:
+                active.discard(s)
+                logger.info("[%s] live_data_level left full; strike tracking off", s)
 
-    subscribed = frozenset(syms)
+    _sync_full_generators()
 
     # Hourly preload is optional (default skip): BTC 15m HWS owns startup priority;
     # hourly attaches shared mmap lazily on first lookup.
@@ -677,30 +717,19 @@ def run_redis_triggered(
             "probability_lookup_cache preload skipped for hourly "
             "(STRIKE_HOURLY_SKIP_PROB_PRELOAD; shared mmap on first use)"
         )
-    else:
+    elif active:
         try:
             from backend.core.probability_lookup_cache import preload_symbols
 
-            preload_symbols(syms)
+            preload_symbols(tuple(sorted(active)))
         except Exception as e:
             logger.warning("probability_lookup_cache preload skipped: %s", e)
-
-    for s in syms:
-        _last_regen_mono.pop(s, None)
-        _last_dead_regen_skip_mono.pop(s, None)
-        _refresh_symbol(
-            generators,
-            s,
-            raw_unhealthy_since=raw_unhealthy_since,
-            degrade_confirm_sec=degrade_confirm_sec,
-        )
-        logger.info("[%s] startup prime complete", s)
 
     logger.info(
         "Event-driven WS strike generator market=%s exchange=%s symbols=%s channels=%s,%s",
         mk,
         data_exchange,
-        ",".join(syms),
+        ",".join(sorted(active)),
         redis_channel,
         "rec_io:live_state:updated",
     )
@@ -714,12 +743,13 @@ def run_redis_triggered(
 
     while True:
         try:
+            _sync_full_generators()
             to_regen = _collect_symbols_to_regenerate(
                 pubsub,
                 data_exchange=data_exchange,
                 market_kind=mk,
                 stream_db_names=stream_db_names,
-                subscribed_symbols=subscribed,
+                subscribed_symbols=frozenset(active),
             )
             if not to_regen:
                 continue
@@ -769,27 +799,10 @@ def main() -> None:
     if venue != "kalshi":
         raise SystemExit(f"Only kalshi supported for WS strike generator, got {venue}")
 
-    if args.symbols:
-        syms = tuple(s.strip().upper() for s in args.symbols if s.strip())
-    else:
-        env_syms = (
-            os.getenv("STRIKE_TABLE_SYMBOLS", "").strip()
-            or os.getenv("MARKET_WATCHDOG_SYMBOLS", "").strip()
-        )
-        if env_syms:
-            syms = tuple(s.strip().upper() for s in env_syms.split(",") if s.strip())
-        elif args.market == "hourly":
-            syms = tuple(sorted(KALSHI_HOURLY_SYMBOLS))
-        else:
-            syms = fetch_kalshi_15m_symbols_ordered_from_db()
-    if args.market == "hourly":
-        syms = tuple(s for s in syms if s in KALSHI_HOURLY_SYMBOLS)
-        if not syms:
-            raise SystemExit("No valid hourly symbols configured (BTC, ETH, SOL, DOGE)")
-    else:
-        syms = tuple(s for s in syms if s in KALSHI_15M_SYMBOLS)
-        if not syms:
-            raise SystemExit("No valid 15m symbols configured")
+    # CLI --symbols caps a one-off run. The long-running process follows live_data_level=full.
+    symbol_cap = (
+        tuple(s.strip().upper() for s in args.symbols if s.strip()) if args.symbols else None
+    )
 
     if args.pipeline_max_age_sec is not None:
         pipeline_max_age = max(5, int(args.pipeline_max_age_sec))
@@ -806,7 +819,8 @@ def main() -> None:
 
     run_redis_triggered(
         data_exchange=venue,
-        symbols=syms,
+        symbols=(),
+        symbol_cap=symbol_cap,
         market_kind=args.market,
         redis_channel=args.redis_channel,
         pipeline_max_age_sec=pipeline_max_age,

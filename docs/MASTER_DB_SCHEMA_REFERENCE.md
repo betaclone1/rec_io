@@ -9016,7 +9016,7 @@ Migrations: `20260325_1500_strike_table_15m_unified`, `20260325_1600_strike_tabl
 
 ### Table: `live_data.strike_pipeline_health`
 
-Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, trading gates, and dashboard power-light display (when `STRIKE_PIPELINE_HEALTH_STRICT_MODE` is on). Used when **`live_data.symbols_list.category = 'crypto'`** (full package). Commodity symbols use `live_data.commodity_pipeline_health` instead. Rows are keyed by **`(exchange, market, symbol)`** where **`market`** is `15m` or `hourly`. **`ws_transport_ok_at`** is updated by the market WS path (ping/recv) for catastrophic transport detection; strike WS writers update **`pipeline_health_checked_at`** and boolean health.
+Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, trading gates, and dashboard power-light display (when `STRIKE_PIPELINE_HEALTH_STRICT_MODE` is on). Used when **`live_data.symbols_list.live_data_level = 'full'`**. `market` level uses `live_data.commodity_pipeline_health` instead. `price_only` is spot-only. `none` is not tracked. Rows are keyed by **`(exchange, market, symbol)`** where **`market`** is `15m` or `hourly`. **`ws_transport_ok_at`** is updated by the market WS path (ping/recv) for catastrophic transport detection; strike WS writers update **`pipeline_health_checked_at`** and boolean health.
 
 **Migrations:** `20260329_2359_unified_hourly_pipeline_health` (creates table, backfills `market='15m'` from legacy `strike_pipeline_health_15m`, drops legacy table). Older migration `20260326_1335_strike_pipeline_health_15m` applies only on DBs that have not yet run the unified migration. Category routing: `20261020_1130_symbols_list_category`.
 
@@ -9045,7 +9045,7 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
 
 ### Table: `live_data.commodity_pipeline_health`
 
-Lean commodity live-data package health (market meta + public trades WS). Trading gates and monitor power lights use this table when `live_data.symbols_list.category = 'commodity'`; pyth/live spot freshness is checked at gate time (same spot path as crypto). Keyed by **`(exchange, market, symbol)`**.
+Lean commodity live-data package health (market meta + public trades WS). Trading gates and monitor power lights use this table when `live_data.symbols_list.live_data_level = 'market'`; spot freshness is checked at gate time on the same path as `full`. Keyed by **`(exchange, market, symbol)`**.
 
 **Migration:** `20261020_1130_symbols_list_category`.
 
@@ -9082,12 +9082,14 @@ Lean commodity live-data package health (market meta + public trades WS). Tradin
 | `symbol` | `text` | YES | - | |
 | `analytics_updated` | `timestamp without time zone` | YES | - | |
 | `date_added` | `timestamp without time zone` | YES | - | |
-| `category` | `text` | NO | `'crypto'` | Live-data package: `crypto` (full strike/market/spot) or `commodity` (market meta + public trades + pyth spot). |
+| `category` | `text` | NO | `'crypto'` | Asset class: `crypto` or `commodity`. Feed depth is `live_data_level`. |
+| `live_data_level` | `text` | NO | `'none'` | Live feed depth: `full`, `market`, `price_only`, or `none`. Pipelines follow this value and switch when it changes. |
 
 #### Constraints
 
 - **Primary Key:** `symbols_list_pkey` on `id`
 - **Check:** `symbols_list_category_check` — `category IN ('crypto', 'commodity')`
+- **Check:** `symbols_list_live_data_level_check` — `live_data_level IN ('full', 'market', 'price_only', 'none')`
 
 #### Indexes
 
@@ -9096,7 +9098,7 @@ Lean commodity live-data package health (market meta + public trades WS). Tradin
   CREATE UNIQUE INDEX symbols_list_pkey ON live_data.symbols_list USING btree (id)
   ```
 
-**Migration:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`).
+**Migrations:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`). `20261021_1322_symbols_list_live_data_level` (adds `live_data_level`). Seeded levels: BTC and ETH `full`; GOLD, SILVER, and WTI `market`; SOL, XRP, and DOGE `none`.
 
 ---
 
@@ -9899,6 +9901,9 @@ Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`a
 | `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Paper drawdown threshold (percent). |
 | `trading_halt_active` | `boolean` | NO | false | Paper drawdown halt latch. |
 | `drawdown_halt_monitor_snapshot` | `jsonb` | YES | - | Paper drawdown monitor snapshot. |
+| `category` | `text` | NO | `'crypto'` | `crypto` or `commodity`. Migration `20261020_1200_subaccount_category_base_value_factor`. |
+| `base_value_format` | `text` | NO | `'percent'` | `percent` (factor is percent of balance) or `amount` (factor is dollars). |
+| `base_value_factor` | `double precision` | NO | 100 | Factor for `base_value_format`. Default 100 with `percent` = 100% of balance. Existing `base_value` (cents) is unchanged until consumers are wired. |
 
 #### Indexes
 
@@ -10815,6 +10820,9 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `drawdown_reset_threshold_pct` | `numeric(5,2)` | NO | 50.00 | Percent drawdown from this subaccount’s sticky `bankroll_current` that triggers step-down (exclusive 0–100). |
 | `trading_halt_active` | `boolean` | NO | false | Latch set true when drawdown emergency halt is applied for this subaccount. |
 | `drawdown_halt_monitor_snapshot` | `jsonb` | YES | - | Pre-halt `paper_trade` / `test_filter` snapshot for monitors on this subaccount. |
+| `category` | `text` | NO | `'crypto'` | `crypto` or `commodity`. Migration `20261020_1200_subaccount_category_base_value_factor`. |
+| `base_value_format` | `text` | NO | `'percent'` | `percent` (factor is percent of this subaccount’s balance) or `amount` (factor is a hard dollar amount). |
+| `base_value_factor` | `double precision` | NO | 100 | Factor for `base_value_format`. Default 100 with `percent` = 100% of balance. Existing `base_value` (integer cents) stays the operational rake base until format/factor are wired. |
 
 #### Constraints
 

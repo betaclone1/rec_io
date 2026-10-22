@@ -34,33 +34,14 @@ def _sleep_until_next_second_boundary() -> None:
 
 
 def _discover_symbols() -> list[str]:
-    raw = (
-        os.getenv("STRIKE_SNAPSHOT_SYMBOLS", "").strip()
-        or os.getenv("MARKET_WATCHDOG_SYMBOLS", "").strip()
-    )
-    if raw:
-        return [s.strip().upper() for s in raw.split(",") if s.strip()]
-    try:
-        from backend.core.config.database import get_system_postgresql_connection
+    """Strike snapshots follow symbols at live_data_level=full."""
+    from backend.core.live_data_level import full_package_symbols
+    from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
 
-        conn = get_system_postgresql_connection()
-        if not conn:
-            return ["BTC", "ETH", "SOL", "XRP", "DOGE"]
-        with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT DISTINCT UPPER(TRIM(symbol::text))
-                FROM live_data.symbols_list
-                WHERE symbol IS NOT NULL AND TRIM(symbol::text) <> ''
-                ORDER BY 1
-                """
-            )
-            rows = [r[0] for r in cur.fetchall() if r and r[0]]
-        conn.close()
-        return rows if rows else ["BTC", "ETH", "SOL", "XRP", "DOGE"]
-    except Exception as e:
-        log.warning("symbol discovery failed: %s; using defaults", e)
-        return ["BTC", "ETH", "SOL", "XRP", "DOGE"]
+    rows = [s for s in full_package_symbols() if s in SERIES_15M_BY_SYMBOL]
+    if not rows:
+        log.warning("no symbols at live_data_level=full for strike snapshots")
+    return rows
 
 
 def _markets() -> list[str]:

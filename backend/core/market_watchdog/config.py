@@ -50,17 +50,14 @@ def load_config(*, exchange: str, market_interval: str = "all") -> IngestConfig:
     iv = market_interval.strip().lower()
     if iv not in ("all", "15m", "hourly"):
         raise ValueError("market must be all, 15m, or hourly")
-    raw = _env("MARKET_WATCHDOG_SYMBOLS", "SANDBOX_KALSHI_SYMBOLS", ",".join(SERIES_15M_BY_SYMBOL))
-    symbols = tuple(s.strip().upper() for s in raw.split(",") if s.strip()) or ("BTC",)
-    for sym in symbols:
-        if sym not in SERIES_15M_BY_SYMBOL:
-            raise ValueError(f"Unknown symbol {sym!r}; supported: {sorted(SERIES_15M_BY_SYMBOL)}")
+    from backend.core.live_data_level import market_feed_symbols
+
+    # Membership follows symbols_list.live_data_level (full and market). price_only and none stay off.
+    symbols = tuple(s for s in market_feed_symbols() if s in SERIES_15M_BY_SYMBOL)
     if iv == "hourly":
         from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_HOURLY_BY_SYMBOL
 
         symbols = tuple(s for s in symbols if s in SERIES_HOURLY_BY_SYMBOL)
-        if not symbols:
-            symbols = ("BTC",)
     elif iv == "all":
         pass
     prefix = _env("MARKET_WATCHDOG_REDIS_PREFIX", "SANDBOX_KALSHI_REDIS_PREFIX", "rec_io:market_watchdog:")

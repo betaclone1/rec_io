@@ -24,12 +24,18 @@ SERIES_HOURLY_BY_SYMBOL: dict[str, str] = {
     "DOGE": "KXDOGED",
 }
 
-# Commodities: market meta + public trades only (no orderbook_delta / strike tables).
-LEAN_15M_SYMBOLS: frozenset[str] = frozenset({"GOLD", "SILVER", "WTI"})
+def lean_market_symbols() -> frozenset[str]:
+    """Symbols whose ``live_data_level`` is ``market`` (lean Kalshi feed, no orderbook)."""
+    from backend.core.live_data_level import LEVEL_MARKET, symbols_at_levels
+
+    return frozenset(symbols_at_levels(LEVEL_MARKET))
 
 
 def is_lean_market_symbol(symbol: str) -> bool:
-    return str(symbol or "").strip().upper() in LEAN_15M_SYMBOLS
+    """True when this symbol's live feed is the lean market package."""
+    from backend.core.live_data_level import LEVEL_MARKET, level_of
+
+    return level_of(symbol) == LEVEL_MARKET
 
 EST = ZoneInfo("America/New_York")
 MON_SHORT = (

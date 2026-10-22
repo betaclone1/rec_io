@@ -69,51 +69,14 @@ DEFAULT_KALSHI_15M_SYMBOL_ORDER = ("BTC", "ETH", "SOL", "XRP", "DOGE")
 
 
 def fetch_kalshi_15m_symbols_ordered_from_db() -> tuple[str, ...]:
-    """Same order as live_data.symbols_list (by id); Kalshi 15m subset only."""
-    conn = None
-    try:
-        conn = get_postgresql_connection()
-        if not conn:
-            logger.warning(
-                "Could not load symbols_list (no DB); using default order %s",
-                DEFAULT_KALSHI_15M_SYMBOL_ORDER,
-            )
-            return DEFAULT_KALSHI_15M_SYMBOL_ORDER
-        cursor = conn.cursor()
-        cursor.execute(
-            """
-            SELECT symbol FROM live_data.symbols_list
-            WHERE symbol IS NOT NULL AND trim(symbol) <> ''
-            ORDER BY id
-            """
-        )
-        seen: set[str] = set()
-        ordered: list[str] = []
-        for (raw,) in cursor.fetchall():
-            u = raw.strip().upper()
-            if u in KALSHI_15M_SYMBOLS and u not in seen:
-                seen.add(u)
-                ordered.append(u)
-        conn.close()
-        if not ordered:
-            logger.warning(
-                "symbols_list has no Kalshi 15m symbols; using default order %s",
-                DEFAULT_KALSHI_15M_SYMBOL_ORDER,
-            )
-            return DEFAULT_KALSHI_15M_SYMBOL_ORDER
-        return tuple(ordered)
-    except Exception as e:
-        logger.warning(
-            "symbols_list read failed (%s); using default order %s",
-            e,
-            DEFAULT_KALSHI_15M_SYMBOL_ORDER,
-        )
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-        return DEFAULT_KALSHI_15M_SYMBOL_ORDER
+    """``symbols_list`` id order, Kalshi 15m symbols whose live_data_level is full."""
+    from backend.core.live_data_level import full_package_symbols
+    from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+
+    ordered = tuple(s for s in full_package_symbols() if s in SERIES_15M_BY_SYMBOL)
+    if not ordered:
+        logger.warning("symbols_list has no Kalshi 15m symbols at live_data_level=full")
+    return ordered
 
 
 # SOL/XRP/DOGE: spot and strike spacing need sub-cent precision in strike tables and lookup interpolation.
@@ -743,8 +706,12 @@ class StrikeTableGenerator:
         self.interval = interval.lower()  # "hourly" or "15m"
         if self.unified_15m and self.interval != "15m":
             raise ValueError("unified_15m requires interval 15m")
-        if self.interval == "15m" and self.symbol not in ("btc", "eth", "sol", "xrp", "doge"):
-            raise ValueError("15m interval only supported for BTC, ETH, SOL, XRP, DOGE")
+        from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+
+        if self.interval == "15m" and self.symbol.upper() not in SERIES_15M_BY_SYMBOL:
+            raise ValueError(
+                f"15m interval only supported for {sorted(SERIES_15M_BY_SYMBOL)}, got {self.symbol}"
+            )
         logger.debug("Initializing strike table generator for %s (%s)", symbol.upper(), self.interval)
         self.calculator = LookupProbabilityCalculator(symbol, database_conn=database_conn)
         logger.debug("Strike table generator initialized for %s (%s)", symbol.upper(), self.interval)
@@ -2611,9 +2578,14 @@ def main():
             syms = tuple(s.strip().upper() for s in args.symbols if s and str(s).strip())
         else:
             syms = fetch_kalshi_15m_symbols_ordered_from_db()
+        from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+
         for s in syms:
-            if s not in KALSHI_15M_SYMBOLS:
-                parser.error('Invalid symbol %s for --master-15m (expected subset of BTC, ETH, SOL, XRP, DOGE)' % s)
+            if s not in SERIES_15M_BY_SYMBOL:
+                parser.error(
+                    'Invalid symbol %s for --master-15m (expected subset of %s)'
+                    % (s, ", ".join(sorted(SERIES_15M_BY_SYMBOL)))
+                )
         run_master_15m_continuous(args.master_interval_sec, data_exchange, syms)
         return
 
@@ -2624,8 +2596,12 @@ def main():
     if not args.symbol:
         parser.error('symbol is required unless --master-15m')
     symbol = args.symbol.upper()
-    if interval == '15m' and symbol.lower() not in ('btc', 'eth', 'sol', 'xrp', 'doge'):
-        parser.error('--interval 15m only supported for BTC, ETH, SOL, XRP, DOGE')
+    from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+
+    if interval == '15m' and symbol.upper() not in SERIES_15M_BY_SYMBOL:
+        parser.error(
+            '--interval 15m only supported for %s' % ", ".join(sorted(SERIES_15M_BY_SYMBOL))
+        )
     if mode == "continuous":
         run_continuous_generation(interval_sec, symbol, interval=interval)
     else:

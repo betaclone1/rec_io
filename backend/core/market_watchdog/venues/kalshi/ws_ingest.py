@@ -35,7 +35,6 @@ from cryptography.hazmat.primitives.asymmetric import padding
 from backend.core.market_watchdog.config import IngestConfig
 from backend.core.market_watchdog.venues.kalshi.schedule import (
     EST,
-    LEAN_15M_SYMBOLS,
     MON_SHORT,
     SERIES_15M_BY_SYMBOL,
     SERIES_HOURLY_BY_SYMBOL,
@@ -45,6 +44,7 @@ from backend.core.market_watchdog.venues.kalshi.schedule import (
     hour_boundary_key as _hour_boundary_key,
     hourly_event_ticker_for_clock as _hourly_event_ticker_for_clock,
     is_lean_market_symbol,
+    lean_market_symbols,
     on_15m_rollover_boundary as _on_15m_rollover_boundary,
     on_hour_boundary as _on_hour_boundary,
     rollover_boundary_key as _rollover_boundary_key,
@@ -2123,12 +2123,35 @@ async def _schedule_loop(master: KalshiMarketWsMaster) -> None:
             log.exception("schedule: %s", e)
 
 
+def _sync_market_symbols(master: KalshiMarketWsMaster) -> bool:
+    """Apply ``live_data_level`` membership. True when the tracked symbol set changed."""
+    from backend.core.live_data_level import market_feed_symbols
+
+    desired = [s for s in market_feed_symbols() if s in SERIES_15M_BY_SYMBOL]
+    if master.cfg.market_interval == "hourly":
+        desired = [s for s in desired if s in SERIES_HOURLY_BY_SYMBOL]
+    current = [str(s).strip().upper() for s in master.symbols]
+    if current == desired:
+        return False
+    removed = [s for s in current if s not in set(desired)]
+    master.symbols = desired
+    for sym in removed:
+        master.schedule_by_symbol.pop(sym, None)
+        master.hourly_markets_raw.pop(sym, None)
+        master.hourly_ob_tickers_cache.pop(sym, None)
+        master.hourly_ob_cache_key.pop(sym, None)
+    log.info("live_data_level market symbols %s -> %s", current, desired)
+    return True
+
+
 async def _lifecycle_loop(master: KalshiMarketWsMaster) -> None:
     last_periodic = 0.0
     while True:
         await asyncio.sleep(LIFECYCLE_SYNC_SEC)
         try:
             now = time.time()
+            if _sync_market_symbols(master):
+                await _refresh_all_schedules(master)
             async with master.lock:
                 if (
                     PERIODIC_SNAPSHOT_SEC > 0
@@ -2303,7 +2326,11 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
                 master.trade_sid = None
                 master.lifecycle_sid = None
                 master.ob_channel_last_seq = None
-                log.info("connected symbols=%s lean=%s", master.symbols, sorted(LEAN_15M_SYMBOLS))
+                log.info(
+                    "connected symbols=%s lean=%s",
+                    master.symbols,
+                    sorted(lean_market_symbols()),
+                )
                 await _subscription_sync(master)
                 master.ws_connected = True
                 await asyncio.to_thread(_write_meta, master)

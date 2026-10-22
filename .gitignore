@@ -222,3 +222,15 @@ backend/data/historical_data/cfbenchmarks/BRTI_2026-09-14_utc.csv
 # Large Kalshi public-tape day dumps (local analysis)
 backend/data/historical_data/kalshi_public_trades/
 backend/data/historical_data/kalshi_public_trades/.cache_*/
+
+# Local exact-cent writeups and the one-off pull/doc scripts that generate them
+docs/backtest_2610/BACKTEST_KXGOLD15M_EXACT_CENT_CUM2500.md
+docs/backtest_2610/BACKTEST_KXSILVER15M_EXACT_CENT_CUM2500.md
+docs/backtest_2610/BACKTEST_KXSILVER15M_EXACT_CENT_CUM2500_LIMIT0.99.md
+docs/backtest_2610/BACKTEST_KXSOL15M_EXACT_CENT_CUM2500_LIMIT0.99.md
+docs/backtest_2610/BACKTEST_KXWTI15M_EXACT_CENT_CUM2500.md
+docs/backtest_2610/BACKTEST_KXWTI15M_EXACT_CENT_CUM2500_LIMIT0.99.md
+docs/backtest_2610/BACKTEST_KXXRP15M_EXACT_CENT_CUM2500_LIMIT0.99.md
+scripts/backtest/pull_commod_15m_public_trades_range.py
+scripts/backtest/run_commod_exact_cent_cum2500_after_pull.py
+scripts/backtest/write_exact_cent_cum2500_doc.py

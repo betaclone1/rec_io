@@ -1124,8 +1124,8 @@ def init_database():
             CREATE INDEX IF NOT EXISTS strike_pipeline_health_transport_idx
             ON live_data.strike_pipeline_health USING btree (ws_transport_ok_at DESC NULLS LAST);
         """))
-        # Lean commodity package (market meta + public trades); spot/pyth checked at gate.
-        # Category on symbols_list selects this vs strike_pipeline_health (migration 20261020_1130).
+        # Lean market package (market meta + public trades); spot checked at gate.
+        # symbols_list.live_data_level = market uses this table; full uses strike_pipeline_health.
         cursor.execute(_us("""
             CREATE TABLE IF NOT EXISTS live_data.commodity_pipeline_health (
                 exchange VARCHAR(20) NOT NULL,

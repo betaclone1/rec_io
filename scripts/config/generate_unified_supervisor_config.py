@@ -99,20 +99,9 @@ def _cfbenchmarks_index_ids_for_symbols(symbols_csv: str) -> str:
 
 
 def _strike_symbols_cli_suffix(overlay: dict) -> str:
-    """Strike-table CLI symbols: crypto package only (exclude lean commodities)."""
-    from backend.core.market_watchdog.venues.kalshi.schedule import LEAN_15M_SYMBOLS
-
-    raw = (overlay.get("STRIKE_TABLE_SYMBOLS") or overlay.get("MARKET_WATCHDOG_SYMBOLS") or "").strip()
-    if not raw:
-        return ""
-    parts = [
-        s.strip().upper()
-        for s in raw.split(",")
-        if s.strip() and s.strip().upper() not in LEAN_15M_SYMBOLS
-    ]
-    if not parts:
-        return ""
-    return " --symbols " + " ".join(parts)
+    """Strike membership follows symbols_list.live_data_level=full inside the generator."""
+    del overlay
+    return ""
 
 
 def global_core_service_specs():

@@ -350,6 +350,13 @@ class CfBenchmarksWatchdog:
         feed_error: Optional[str] = None
         try:
             async for message in ws:
+                if self._price_level_changed():
+                    logger.info("live_data_level price set changed; reconnecting cfbenchmarks")
+                    try:
+                        await ws.close(code=1012, reason="live_data_level")
+                    except Exception:
+                        pass
+                    return "live_data_level"
                 await self._handle_message(message)
         except (ConnectionClosedOK, ConnectionClosedError):
             pass
@@ -368,8 +375,31 @@ class CfBenchmarksWatchdog:
                 feed_error = str(feed_error)
         return feed_error
 
+    def _price_level_changed(self) -> bool:
+        from backend.core.live_data_level import cfb_index_ids_for_price_feed
+
+        return list(cfb_index_ids_for_price_feed()) != list(self.index_ids)
+
+    def _install_price_subscription(self) -> None:
+        from backend.core.cfbenchmarks_feed_health import CfBenchmarksFeedHealth
+        from backend.core.live_data_level import cfb_index_ids_for_price_feed
+
+        ids = list(cfb_index_ids_for_price_feed())
+        if ids == list(self.index_ids):
+            return
+        self.index_ids = ids
+        self.symbols = symbols_for_index_ids(self.index_ids)
+        self.tick_seq_by_index = {iid: self.tick_seq_by_index.get(iid, 0) for iid in ids}
+        self._feed_health = CfBenchmarksFeedHealth(self.index_ids)
+        logger.info("cfbenchmarks price symbols=%s index_ids=%s", self.symbols, self.index_ids)
+
     async def run_forever(self) -> None:
         while True:
+            self._install_price_subscription()
+            if not self.index_ids:
+                logger.info("no symbols at a price live_data_level; cfbenchmarks idle")
+                await asyncio.sleep(5.0)
+                continue
             last_error: Optional[str] = None
             try:
                 headers = kalshi_ws_connect_headers()

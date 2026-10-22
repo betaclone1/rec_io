@@ -1,10 +1,13 @@
 """Keys and upserts for live_data.strike_pipeline_health (exchange + market + symbol).
 
-Symbol category (``live_data.symbols_list.category``) selects the required package:
+Feed depth (``live_data.symbols_list.live_data_level``) selects the required package.
+``category`` is the asset class and does not choose the package.
 
-- ``crypto`` — full Kalshi strike/market WS + spot (this table + spot gate)
-- ``commodity`` — lean market meta + public trades + pyth spot
+- ``full`` — strike/market WS + spot (this table + spot gate)
+- ``market`` — lean market meta + public trades + spot
   (``live_data.commodity_pipeline_health`` + spot gate)
+- ``price_only`` — spot gate only
+- ``none`` — no live package (gate fails closed)
 """
 
 from __future__ import annotations
@@ -346,6 +349,38 @@ def get_symbol_category_conn(conn, symbol: str) -> tuple[str | None, str]:
     return cat, "ok"
 
 
+def get_symbol_live_data_level_conn(conn, symbol: str) -> tuple[str | None, str]:
+    """
+    Resolve ``live_data.symbols_list.live_data_level``.
+
+    Missing row or invalid level → ``(None, reason)`` (fail closed).
+    """
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return None, "missing_symbol_for_live_data_level"
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT LOWER(TRIM(live_data_level::text))
+                FROM live_data.symbols_list
+                WHERE UPPER(TRIM(symbol::text)) = %s
+                LIMIT 1
+                """,
+                (sym,),
+            )
+            row = cur.fetchone()
+    except Exception as e:
+        _rollback_conn(conn)
+        return None, f"live_data_level_lookup_failed:{e}"
+    if not row or row[0] is None or str(row[0]).strip() == "":
+        return None, "live_data_level_missing"
+    level = str(row[0]).strip().lower()
+    if level not in ("full", "market", "price_only", "none"):
+        return None, f"live_data_level_invalid:{level}"
+    return level, "ok"
+
+
 def _upsert_pipeline_health_table(
     conn,
     *,
@@ -633,7 +668,7 @@ def evaluate_pipeline_gate_conn(
     symbol: str,
 ) -> tuple[bool, str]:
     """
-    Trade / auto-stop gate. Package selected by ``symbols_list.category``.
+    Trade / auto-stop gate. Package selected by ``symbols_list.live_data_level``.
 
     When STRIKE_PIPELINE_HEALTH_STRICT_MODE is off, returns (True, 'ok') without querying.
     """
@@ -643,7 +678,14 @@ def evaluate_pipeline_gate_conn(
     cat, cat_rsn = get_symbol_category_conn(conn, sym)
     if cat is None:
         return False, cat_rsn
-    if cat == CATEGORY_COMMODITY:
+    level, level_rsn = get_symbol_live_data_level_conn(conn, sym)
+    if level is None:
+        return False, level_rsn
+    if level == "none":
+        return False, "live_data_level_none"
+    if level == "price_only":
+        return _spot_series_passes_gate(conn, sym)
+    if level == "market":
         return evaluate_commodity_pipeline_gate_conn(
             conn, exchange=exchange, market=market, symbol=sym
         )
@@ -662,7 +704,7 @@ def evaluate_symbol_pipeline_gate_conn(
     Symbol-level gate for monitor health: if a symbol's spot feed is degraded, every monitor
     using that symbol (hourly and 15m) must be degraded.
 
-    Package table follows ``symbols_list.category`` (crypto vs commodity).
+    Package table follows ``symbols_list.live_data_level``.
     """
     if not strike_pipeline_health_strict_mode_enabled():
         return True, "ok"
@@ -670,10 +712,17 @@ def evaluate_symbol_pipeline_gate_conn(
     cat, cat_rsn = get_symbol_category_conn(conn, sym)
     if cat is None:
         return False, cat_rsn
-    table = COMMODITY_TABLE if cat == CATEGORY_COMMODITY else TABLE
+    level, level_rsn = get_symbol_live_data_level_conn(conn, sym)
+    if level is None:
+        return False, level_rsn
+    if level == "none":
+        return False, "live_data_level_none"
+    if level == "price_only":
+        return _spot_series_passes_gate(conn, sym)
+    table = COMMODITY_TABLE if level == "market" else TABLE
     missing = (
         "commodity_pipeline_health_missing_symbol"
-        if cat == CATEGORY_COMMODITY
+        if level == "market"
         else "pipeline_health_missing_symbol"
     )
     return _evaluate_package_gate_conn(
