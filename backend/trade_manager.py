@@ -2489,6 +2489,23 @@ def estimate_kalshi_taker_fee(position, price: float) -> float:
     return math.ceil(raw * 100) / 100
 
 
+def _paper_open_fee_for_edge_strategy(
+    trade_strategy: str,
+    position,
+    buy_price: float,
+) -> float:
+    """
+    Paper open fee for Maker/Taker Edge booking.
+
+    Maker Edge rests as maker → $0. Taker Edge would take liquidity live → same
+    Kalshi taker schedule as Expiration / HTC paper opens.
+    """
+    strat = str(trade_strategy or "").strip()
+    if strat == "Taker Edge":
+        return float(estimate_kalshi_taker_fee(position, buy_price))
+    return 0.0
+
+
 def _load_kalshi_rest_credentials() -> tuple[Optional[str], Optional[Path]]:
     """Return Kalshi key id + private key path for current account mode."""
     try:
@@ -3437,7 +3454,10 @@ def book_maker_edge_external_fill(
     ``position`` must be the cumulative venue fill qty for the order (not a delta).
     Re-posts with the same ``ticket_id`` raise ``position`` monotonically to match the
     latest venue total so trade logs reflect actual live fills.
-    Paper fees are 0.00 (live uses venue fee fields when known — never invented).
+
+    Paper Maker Edge open fees are 0.00 (maker). Paper Taker Edge open fees use
+    ``estimate_kalshi_taker_fee`` (same schedule as Expiration / HTC). Live rows leave
+    fees NULL until venue fee fields are known — never invented for live.
     """
     from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME
 
@@ -3544,18 +3564,39 @@ def book_maker_edge_external_fill(
                             }
                         new_pos = position if position >= prev_pos - 1e-9 else prev_pos
                         pos_raised = new_pos > prev_pos + 1e-9
-                        if pos_raised or oid:
-                            cur.execute(
-                                f"""
-                                UPDATE {_tm_trades_table()}
-                                SET position = %s,
-                                    order_id_open = COALESCE(NULLIF(%s, ''), order_id_open),
-                                    exchange = 'kalshi',
-                                    updated_at = NOW()
-                                WHERE id = %s AND status IN ('open', 'partial')
-                                """,
-                                (new_pos, oid, trade_id),
+                        paper_open_fee = (
+                            _paper_open_fee_for_edge_strategy(
+                                strat_expected, new_pos, buy_price
                             )
+                            if paper_trade
+                            else None
+                        )
+                        if pos_raised or oid or paper_open_fee is not None:
+                            if paper_open_fee is not None:
+                                cur.execute(
+                                    f"""
+                                    UPDATE {_tm_trades_table()}
+                                    SET position = %s,
+                                        fees = %s,
+                                        order_id_open = COALESCE(NULLIF(%s, ''), order_id_open),
+                                        exchange = 'kalshi',
+                                        updated_at = NOW()
+                                    WHERE id = %s AND status IN ('open', 'partial')
+                                    """,
+                                    (new_pos, paper_open_fee, oid, trade_id),
+                                )
+                            else:
+                                cur.execute(
+                                    f"""
+                                    UPDATE {_tm_trades_table()}
+                                    SET position = %s,
+                                        order_id_open = COALESCE(NULLIF(%s, ''), order_id_open),
+                                        exchange = 'kalshi',
+                                        updated_at = NOW()
+                                    WHERE id = %s AND status IN ('open', 'partial')
+                                    """,
+                                    (new_pos, oid, trade_id),
+                                )
                         pg_exist.commit()
                         if pos_raised:
                             log(
@@ -3624,7 +3665,12 @@ def book_maker_edge_external_fill(
             detail="insert_trade failed",
         )
 
-    # insert_trade leaves fees NULL; paper maker fees are known zero.
+    # insert_trade leaves fees NULL. Paper: Maker Edge = $0; Taker Edge = taker schedule.
+    paper_open_fee = (
+        _paper_open_fee_for_edge_strategy(strat_expected, position, buy_price)
+        if paper_trade
+        else None
+    )
     pg = get_postgresql_connection()
     if pg:
         try:
@@ -3633,12 +3679,12 @@ def book_maker_edge_external_fill(
                     cur.execute(
                         f"""
                         UPDATE {_tm_trades_table()}
-                        SET fees = 0.0,
+                        SET fees = %s,
                             exchange = 'kalshi',
                             updated_at = NOW()
                         WHERE id = %s
                         """,
-                        (trade_id,),
+                        (float(paper_open_fee or 0.0), trade_id),
                     )
                 else:
                     cur.execute(
@@ -3678,13 +3724,21 @@ def book_maker_edge_external_fill(
             except Exception:
                 pass
 
+    if paper_trade and inserted and float(paper_open_fee or 0.0) > 0:
+        try:
+            _paper_ledger_on_open(float(buy_price), float(position), float(paper_open_fee))
+        except Exception as e:
+            log(f"[{log_tag}] paper ledger open failed id={trade_id}: {e}")
+
     log(
         f"[{log_tag}] booked fill id={trade_id} inserted={inserted} "
-        f"side={side} qty={position} px={buy_price} sa={subaccount} ticker={ticker}"
+        f"side={side} qty={position} px={buy_price} fees={paper_open_fee} "
+        f"sa={subaccount} ticker={ticker}"
     )
     log_event(
         data.get("ticket_id") or str(trade_id),
-        f"MANAGER: {log_tag} fill booked id={trade_id} side={side} qty={position}",
+        f"MANAGER: {log_tag} fill booked id={trade_id} side={side} qty={position}"
+        + (f" fees={paper_open_fee}" if paper_open_fee is not None else ""),
         trade_id=trade_id,
     )
     try:
