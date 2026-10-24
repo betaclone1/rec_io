@@ -9561,7 +9561,7 @@ Per enabled market ticker (quoted identifiers), six tables:
 
 **Writers:** Venue WS OB → snapshot/deltas + `market_result` on lifecycle; index/price publisher → price/metrics fan-out to hot tickers for the matching symbol (hot set **refreshed from PG** so new cycles are visible cross-process); strike snapshot publisher → strike rows + `floor_strike` / volume into `_market_meta`.
 
-**Packaging:** Hourly `cycle_packager` exports closed cycles (close + grace) to  
+**Packaging:** `cycle_packager` (default 5-min backlog wake; multi-pass retries) exports closed cycles (close + grace) to  
 `backend/data/historical_data/backtesting_data/{SERIES}/{YYYY}/{YYYY_MM_MON}/{TICKER}.tar.xz`. Members (`schema_version` 4): `meta.json` (`variant=full`, `proprietary_members`), `market_meta.json` (hot + seal-time venue enrich), hot CSVs (`snapshot`, `deltas`, `strike_table`, `price_ring`, `metrics_ring`), `public_trades.csv` (Kalshi `GET /markets/trades` at seal — not in hot PG), `volume_path.csv` (cum tape volume vs time), `quality.json` (capture QA). **Proprietary** (separable after the fact): `strike_table.csv`, `metrics_ring.csv` — strip via `scripts/backtest/export_cycle_package_variant.py`. **Quality gate** (non-force): non-empty deltas, price_ring, strike_table; `floor_strike` and `market_result` present; `public_trades.csv` + `volume_path.csv` + `quality.json` members — otherwise skip and leave PG tables for retry. Drops only after a passing package; post-seal Drive upload via `CYCLE_GDRIVE_UPLOAD`. Legacy on-disk v2/v3 packages remain valid for their original gates.
 Toggle: `CYCLE_HOT_PG=0` (legacy aliases `BTC15M_CYCLE_HOT_PG`, `TESTING_BTC15M_ORDERBOOK_CYCLE_PG`).
 
