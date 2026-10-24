@@ -1,0 +1,33 @@
+---
+description: Bedrock model of Kalshi 15m up/down cycles (floor strike, open odds, path, anomalies). Highest-priority market context for this project.
+alwaysApply: true
+---
+
+# 15m cycle bedrock (non-negotiable)
+
+This is the foundation of the trading system. Every strategy, backtest, fill model, and agent explanation must be consistent with it. Do not invent alternate microstructure stories.
+
+## What the market is
+
+1. **Every 15 minutes the cycle refreshes.** A new Kalshi 15m market opens for the symbol (e.g. `KXBTC15M`).
+2. **Floor strike = the asset price at that new market’s open.** That open price **is** the strike the contract is about.
+3. **The contract asks one question:** will the asset be **higher or lower** than that floor strike **exactly 15 minutes after open** (YES vs NO / up vs down as listed).
+
+## Why opens look like coin flips
+
+Because the strike is the price **at open**, every cycle starts with essentially **even odds**. Opening quotes are ~50/50 (modulo vig/spread). That is structural, not a coincidence of “fair mid.”
+
+## How the path behaves
+
+Over the 15 minutes, spot moves relative to the floor strike and time decays. Quotes are driven toward **one extreme or the other** (favorite → ~$0.99, longshot → ~$0.01). One outer limit becomes the live longshot; that is the side the path has chosen so far.
+
+## What we hunt (anomalies)
+
+The interesting outcomes are **not** “price went to an extreme and stayed.” They are cycles where price **reaches an extreme and then reverses**, so settlement is the **opposite** outcome from the extreme the market had priced. Those reversals are the anomalies this system cares about.
+
+## Agent obligations
+
+- When explaining fills, Maker Edge, longshots, or backtests: reason from **floor strike at open → 15m higher/lower → path to extreme → possible reverse**.
+- Do not claim both outer $0.01 rails are independently “raced” from mid as if the path could hit both extremes first in normal one-way repricing.
+- Do not hand-wave “BTC vs some strike” without this open-price floor-strike meaning.
+- If a backtest rule disagrees with this model, the model wins until the owner explicitly redefines the fill rule.

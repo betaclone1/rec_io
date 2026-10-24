@@ -403,14 +403,15 @@ def paper_fill_side_from_print(
     no_price: Optional[float],
     limit_px: float,
 ) -> Optional[str]:
-    """Side filled by one public print at/under the dual-rest limit.
+    """Side filled by one public print at the exact dual-rest limit L.
 
-    A YES print at ``yes_price <= L`` hits the YES bid. A NO print at
-    ``no_price <= L`` hits the NO bid. Both sides at/under L on one print
-    is not a binary trade — return None rather than pick a side.
+    Matches live Maker Edge rests: a YES print at exact ``L`` hits the YES bid;
+    a NO print at exact ``L`` hits the NO bid. ``<= L`` ask-touch is not a fill.
+    Both sides at L on one print is not a binary trade — return None.
     """
-    yes_hit = yes_price is not None and float(yes_price) <= float(limit_px) + 1e-9
-    no_hit = no_price is not None and float(no_price) <= float(limit_px) + 1e-9
+    L = round(float(limit_px), 2)
+    yes_hit = yes_price is not None and round(float(yes_price), 2) == L
+    no_hit = no_price is not None and round(float(no_price), 2) == L
     if yes_hit and no_hit:
         return None
     if yes_hit:
@@ -430,10 +431,30 @@ def _parse_trade_px(raw: Any) -> Optional[float]:
 
 
 def _public_trade_prints(ticker: str) -> list[dict[str, Any]]:
-    """Recent Kalshi public prints for ``ticker`` (lean tape). Empty if Redis has none."""
+    """Recent Kalshi public prints for ``ticker``, oldest first (first L print wins)."""
     from backend.core.kalshi_public_trade_redis import load_public_trade_prints
 
-    return load_public_trade_prints(ticker)
+    prints = list(load_public_trade_prints(ticker) or [])
+    prints.sort(
+        key=lambda r: (
+            str(r.get("created_time") or r.get("ts") or ""),
+            str(r.get("trade_id") or ""),
+        )
+    )
+    return prints
+
+
+def paper_fill_side_from_tape(ticker: str, limit_px: float) -> Optional[str]:
+    """First chronological exact-L public print side for paper dual-rest fill."""
+    for rec in _public_trade_prints(ticker):
+        side = paper_fill_side_from_print(
+            yes_price=_parse_trade_px(rec.get("yes_price_dollars")),
+            no_price=_parse_trade_px(rec.get("no_price_dollars")),
+            limit_px=limit_px,
+        )
+        if side:
+            return side
+    return None
 
 
 def _ladder_side_ask(ticker: str, side: str) -> Optional[float]:
@@ -847,31 +868,12 @@ def _check_fills(st: DualRestState, *, ttc: Optional[int] = None) -> None:
         _sync_live_fill_totals(st)
         return
     if st.paper:
-        yes_ask = _ladder_side_ask(st.ticker, "yes")
-        no_ask = _ladder_side_ask(st.ticker, "no")
-        # Fill when ask on that side drops to <= limit (market reached our rest).
-        if yes_ask is not None and yes_ask <= st.limit_px + 1e-9:
-            _on_first_fill(st, side="yes", fill_qty=float(st.contracts))
+        # Paper dual rests: fill on first exact-L public tape print (bid hit),
+        # not when displayed ask quotes <= L (that was a quote-touch proxy).
+        side = paper_fill_side_from_tape(st.ticker, st.limit_px)
+        if side:
+            _on_first_fill(st, side=side, fill_qty=float(st.contracts))
             return
-        if no_ask is not None and no_ask <= st.limit_px + 1e-9:
-            _on_first_fill(st, side="no", fill_qty=float(st.contracts))
-            return
-        # Lean commodities have ticker + public tape, no orderbook. A print at
-        # or under L is the venue fill signal (empty-book ticker ask stays $1).
-        from backend.core.market_watchdog.venues.kalshi.schedule import (
-            is_lean_market_symbol,
-        )
-
-        if is_lean_market_symbol(st.symbol) and yes_ask is None and no_ask is None:
-            for rec in _public_trade_prints(st.ticker):
-                side = paper_fill_side_from_print(
-                    yes_price=_parse_trade_px(rec.get("yes_price_dollars")),
-                    no_price=_parse_trade_px(rec.get("no_price_dollars")),
-                    limit_px=st.limit_px,
-                )
-                if side:
-                    _on_first_fill(st, side=side, fill_qty=float(st.contracts))
-                    return
     else:
         bid_fill = _order_fill_qty(st.bid_order_id)
         ask_fill = _order_fill_qty(st.ask_order_id)

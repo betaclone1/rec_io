@@ -10,9 +10,22 @@ This note consolidates thesis, fill models, architecture, measured results, and 
 
 ---
 
+## 0. Bedrock (read first)
+
+**Standing law:** `.cursor/rules/00-15m-cycle-bedrock.mdc` (always applied).
+
+1. Every 15m the cycle refreshes. **Floor strike = asset price at that open.**
+2. The market is only: **higher or lower than that price 15 minutes later.**
+3. That is why every open is ~**50/50** and opening quotes reflect it.
+4. Path + theta drive quotes toward **one extreme**; the anomalies we care about are when it **hits an extreme then reverses** and settles the **opposite** side.
+
+Do not design or interpret Maker Edge / backtests without this frame.
+
+---
+
 ## 1. Thesis (one paragraph)
 
-On each 15m BTC cycle, **both** YES and NO often trade at **exact $0.01** during the window. A strategy that **gets filled at $0.01 on the first side that prints** (and does **not** also hold the other side) wins when that side settles, paying ~$0.99 per contract after a $0.01 outlay. Empirical win rates are ~1.8–2.6% depending on model and span — far above the naïve “1¢ fair” story if fills were random — so **edge is in selection + fill realism**, not in buying near $1.00. Preferred live shape (current recommendation): **rest maker bids on both sides at $0.01 at cycle open**, join **behind** opening book depth, cancel the unfilled side on first fill, hold to settlement (zero maker fees on these rests). Cap size by **liquidity** (cum tape / book depth), not by TTC filters that cut winners.
+On each 15m cycle the floor strike is the open price, so the book starts near even money. As spot moves vs that strike, one side becomes the penny longshot. A strategy that **gets filled at $0.01 on that longshot side** (and does **not** also hold the other side) wins when settlement is that side after a possible extreme-then-reverse — paying ~$0.99 per contract after a $0.01 outlay. Empirical win rates are ~1.8–2.6% depending on model and span — far above the naïve “1¢ fair” story if fills were random — so **edge is in selection + fill realism**, not in buying near $1.00. Preferred live shape (current recommendation): **rest maker bids on both sides at $0.01 at cycle open**, join **behind** opening book depth, cancel the unfilled side on first fill, hold to settlement (zero maker fees on these rests). Cap size by **liquidity** (cum tape / book depth), not by TTC filters that cut winners.
 
 ---
 
@@ -130,6 +143,7 @@ Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Monthly table: `docs/BACKTEST_KXBT
 | Size | Standard bankroll pct/contracts from `monitor_list.subaccount` (v3.12.12) |
 | TTC | `min_time` used only to cancel **unfilled** rests near expiry; not a place gate |
 | One-fill rule | First fill → cancel sibling; book into TM `intent=maker_edge_fill` |
+| Paper fill | First chronological **exact-L** public tape print hits that side’s virtual bid (not ask-touch ≤ L). Live uses venue fill counts on resting order ids. |
 | Hold | TM monitors like any other trade; settlement via `market_result` only |
 | Subaccount | Same routing as all strats on every place/cancel/book |
 

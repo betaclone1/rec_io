@@ -125,15 +125,20 @@ def test_wait_until_open_ts_spin():
     assert time.time() >= open_ts
 
 
-def test_paper_fill_side_from_public_print():
+def test_paper_fill_side_from_public_print_exact_cent():
     from backend.maker_edge_agent import paper_fill_side_from_print
 
+    # Exact L only — sub-cent / cheaper than L is not a dual-rest fill.
     assert (
         paper_fill_side_from_print(yes_price=0.001, no_price=0.999, limit_px=0.01)
+        is None
+    )
+    assert (
+        paper_fill_side_from_print(yes_price=0.01, no_price=0.99, limit_px=0.01)
         == "yes"
     )
     assert (
-        paper_fill_side_from_print(yes_price=0.999, no_price=0.001, limit_px=0.01)
+        paper_fill_side_from_print(yes_price=0.99, no_price=0.01, limit_px=0.01)
         == "no"
     )
     assert (
@@ -144,6 +149,37 @@ def test_paper_fill_side_from_public_print():
         paper_fill_side_from_print(yes_price=0.01, no_price=0.01, limit_px=0.01)
         is None
     )
+
+
+def test_check_fills_paper_uses_tape_not_ask_touch():
+    from unittest.mock import patch
+
+    import backend.maker_edge_agent as me
+
+    st = me.DualRestState(
+        monitor_id="99027",
+        ticker="KXBTC15M-26OCT181300-00",
+        event_ticker="KXBTC15M-26OCT181300",
+        limit_px=0.01,
+        contracts=2500,
+        subaccount=1,
+        paper=True,
+        floor_strike=100000.0,
+        min_time=0,
+        bid_order_id="paper_bid",
+        ask_order_id="paper_ask",
+        symbol="BTC",
+    )
+    with (
+        patch.object(me, "paper_fill_side_from_tape", return_value="no") as tape,
+        patch.object(me, "_ladder_side_ask") as ask,
+        patch.object(me, "_on_first_fill") as on_fill,
+    ):
+        me._check_fills(st, ttc=500)
+
+    tape.assert_called_once_with(st.ticker, st.limit_px)
+    ask.assert_not_called()
+    on_fill.assert_called_once_with(st, side="no", fill_qty=2500.0)
 
 
 def test_min_ttc_cancel_gate():
