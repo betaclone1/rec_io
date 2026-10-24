@@ -16,11 +16,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-24`**. Code: `git revert` + restart `cycle_packager`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart cycle packager (picks up worker interval + seal logic): `./venv/bin/supervisorctl -c backend/supervisord.conf restart cycle_packager`
-- [ ] Verify: `cycle_packager` RUNNING; recent log shows backlog wake / `package_due_cycles pass` (not only hourly sleep); no crash loop
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.19`
+- [x] Restart cycle packager (picks up worker interval + seal logic): `./venv/bin/supervisorctl -c backend/supervisord.conf restart cycle_packager`
+- [x] Verify: `cycle_packager` RUNNING; recent log shows backlog wake / `package_due_cycles pass` (not only hourly sleep); no crash loop
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.19`
 
 ---
 
