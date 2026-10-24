@@ -19,7 +19,10 @@ External SKU: derive after the fact via
 ``backend.core.cycle_package_members.export_external_variant``.
 
 Drops PG tables only after a successful write + quality gate + member verification.
-Incomplete cycles are left in PG for the next pass (no silent empty packages).
+Incomplete cycles stay in PG and are retried on every packager wake (and within
+the same wake via multi-pass). Never abandon a cycle because of transient API
+delay, 429, or empty live OB capture when tape + settlement are still pending
+or recoverable from Kalshi.
 """
 from __future__ import annotations
 
@@ -29,6 +32,7 @@ import json
 import logging
 import os
 import tarfile
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -143,6 +147,31 @@ def _grace_sec() -> float:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 300.0
+
+
+def _due_max_passes() -> int:
+    """How many seal attempts per wake for tickers that deferred (API lag / 429)."""
+    try:
+        raw = (
+            os.getenv("CYCLE_PACKAGE_MAX_PASSES")
+            or os.getenv("BTC15M_CYCLE_PACKAGE_MAX_PASSES")
+            or "8"
+        )
+        return max(1, int(raw))
+    except (TypeError, ValueError):
+        return 8
+
+
+def _due_pass_pause_sec() -> float:
+    try:
+        raw = (
+            os.getenv("CYCLE_PACKAGE_PASS_PAUSE_SEC")
+            or os.getenv("BTC15M_CYCLE_PACKAGE_PASS_PAUSE_SEC")
+            or "20"
+        )
+        return max(0.0, float(raw))
+    except (TypeError, ValueError):
+        return 20.0
 
 
 def _system_conn():
@@ -269,28 +298,53 @@ def fetch_public_trades_csv_for_package(
     market_ticker: str,
     *,
     force_refresh: bool = True,
+    attempts: int = 8,
 ) -> Tuple[Optional[bytes], int, Optional[str], List[Dict[str, Any]]]:
     """
     Fetch Kalshi public tape for ``market_ticker``.
 
     Returns ``(csv_bytes, row_count, error, trades)``.
-    On API/cache failure returns ``(None, 0, reason, [])`` — caller must not seal a substitute.
+    Retries transient API failures. On exhaustion returns
+    ``(None, 0, reason, [])`` — caller must not seal a substitute; leave hot
+    tables and retry on the next pass. Never invent tape rows.
     """
+    import time
+
     from backend.core.cycle_recon.sources import fetch_public_trades
 
-    try:
-        res = fetch_public_trades(
-            market_ticker,
-            force_refresh=force_refresh,
-            offline=False,
-        )
-    except Exception as e:
-        return None, 0, f"public_trades fetch error: {e}", []
-    if not res.complete:
-        return None, 0, "public_trades fetch incomplete", []
-    trades = list(res.trades or [])
-    raw = public_trades_to_csv_bytes(trades)
-    return raw, len(trades), None, trades
+    last_err: Optional[str] = None
+    for i in range(max(1, int(attempts))):
+        try:
+            res = fetch_public_trades(
+                market_ticker,
+                force_refresh=force_refresh,
+                offline=False,
+            )
+        except Exception as e:
+            last_err = f"public_trades fetch error: {e}"
+            logger.warning(
+                "public_trades attempt %s/%s failed %s: %s",
+                i + 1,
+                attempts,
+                market_ticker,
+                e,
+            )
+            time.sleep(min(60.0, 2.0 * (2 ** min(i, 4))))
+            continue
+        if not res.complete:
+            last_err = "public_trades fetch incomplete"
+            logger.warning(
+                "public_trades incomplete attempt %s/%s %s",
+                i + 1,
+                attempts,
+                market_ticker,
+            )
+            time.sleep(min(60.0, 2.0 * (2 ** min(i, 4))))
+            continue
+        trades = list(res.trades or [])
+        raw = public_trades_to_csv_bytes(trades)
+        return raw, len(trades), None, trades
+    return None, 0, last_err or "public_trades fetch failed", []
 
 
 def quality_gate(
@@ -302,24 +356,19 @@ def quality_gate(
     require_v4_members: bool = False,
 ) -> Tuple[bool, str]:
     """
-    Require a usable cycle package. Incomplete captures stay in PG for retry.
+    Hard seal requirements (API-recoverable / settlement truth):
 
-    ``force`` bypasses the gate (ops / rebuild only).
-    ``require_public_trades``: schema v3+ seals must include a successful tape member
-    (row count may be 0). Legacy v2 packages omit this check.
-    ``require_v4_members``: also require volume_path.csv + quality.json keys.
+    - ``floor_strike`` and ``market_result`` from venue
+    - ``public_trades.csv`` member present (tape may be empty but fetch must succeed)
+    - v4: ``volume_path.csv`` + ``quality.json`` members present
+
+    Live-capture gaps (empty deltas / strike / price_ring) are recorded in
+    ``quality.json`` as DEGRADED — they must **not** permanently block seal.
+    Otherwise transient capture holes + rate limits leave months of tape unusable.
+    Incomplete *API* fields still fail the gate so the next packager pass retries.
     """
     if force:
         return True, "force"
-    deltas = int(row_counts.get("deltas.csv", 0))
-    price = int(row_counts.get("price_ring.csv", 0))
-    strike = int(row_counts.get("strike_table.csv", 0))
-    if deltas <= 0:
-        return False, "deltas empty"
-    if price <= 0:
-        return False, "price_ring empty"
-    if strike <= 0:
-        return False, "strike_table empty"
     if market_meta.get("floor_strike") is None:
         return False, "floor_strike missing"
     if not market_meta.get("market_result"):
@@ -503,7 +552,7 @@ def package_ticker(
         )
         if pt_bytes is None:
             logger.warning(
-                "skip package %s — public_trades unavailable: %s",
+                "defer package %s — public_trades unavailable (will retry): %s",
                 mt,
                 pt_err or "unknown",
             )
@@ -534,6 +583,23 @@ def package_ticker(
             open_utc=open_utc,
             close_utc=close_utc,
         )
+        # Live OB/strike holes are capture gaps — seal tape+settlement anyway,
+        # but mark DEGRADED so operators can see what was missing.
+        if int(row_counts.get("deltas.csv", 0) or 0) <= 0:
+            quality["status"] = "DEGRADED"
+            notes = list(quality.get("notes") or [])
+            notes.append("deltas empty (live capture gap; sealed without OB)")
+            quality["notes"] = notes
+        if int(row_counts.get("strike_table.csv", 0) or 0) <= 0:
+            quality["status"] = "DEGRADED"
+            notes = list(quality.get("notes") or [])
+            notes.append("strike_table empty (live capture gap)")
+            quality["notes"] = notes
+        if int(row_counts.get("price_ring.csv", 0) or 0) <= 0:
+            quality["status"] = "DEGRADED"
+            notes = list(quality.get("notes") or [])
+            notes.append("price_ring empty (live capture gap)")
+            quality["notes"] = notes
         q_bytes = (json.dumps(quality, indent=2, sort_keys=True) + "\n").encode("utf-8")
         members["quality.json"] = q_bytes
         meta["tables"]["quality.json"] = {
@@ -552,7 +618,7 @@ def package_ticker(
         )
         if not ok:
             logger.warning(
-                "skip package %s — quality gate failed: %s (counts=%s meta=%s)",
+                "defer package %s — quality gate failed (will retry): %s (counts=%s meta=%s)",
                 mt,
                 reason,
                 row_counts,
@@ -617,16 +683,64 @@ def package_due_cycles(
     *,
     drop_after: bool = True,
     force: bool = False,
+    max_passes: Optional[int] = None,
+    pass_pause_sec: Optional[float] = None,
 ) -> List[Path]:
-    """Package every DB-resident enabled 15m cycle past close+grace that passes the gate."""
-    tickers = list_hot_cycle_tickers_in_db()
+    """
+    Package every DB-resident enabled 15m cycle past close+grace.
+
+    Deferred seals (missing settlement, public_trades 429, etc.) stay pending and
+    are retried within this call for ``max_passes`` rounds — never dropped from the
+    backlog. Hot tables remain until a successful seal.
+    """
+    passes = _due_max_passes() if max_passes is None else max(1, int(max_passes))
+    pause = _due_pass_pause_sec() if pass_pause_sec is None else max(0.0, float(pass_pause_sec))
+    pending = [
+        mt
+        for mt in list_hot_cycle_tickers_in_db()
+        if force or is_cycle_ready_to_package(mt)
+    ]
     done: List[Path] = []
-    for mt in tickers:
-        if not force and not is_cycle_ready_to_package(mt):
-            continue
-        path = package_ticker(mt, drop_after=drop_after, force=force)
-        if path is not None:
-            done.append(path)
+    done_tickers: set[str] = set()
+
+    for pass_i in range(passes):
+        if not pending:
+            break
+        still: List[str] = []
+        sealed_this_pass = 0
+        for mt in pending:
+            path = package_ticker(mt, drop_after=drop_after, force=force)
+            if path is not None:
+                key = str(mt).strip().upper()
+                if key not in done_tickers:
+                    done_tickers.add(key)
+                    done.append(path)
+                sealed_this_pass += 1
+            else:
+                still.append(mt)
+        logger.info(
+            "package_due_cycles pass %s/%s: sealed=%s deferred=%s",
+            pass_i + 1,
+            passes,
+            sealed_this_pass,
+            len(still),
+        )
+        pending = still
+        if pending and pass_i + 1 < passes and pause > 0:
+            logger.info(
+                "deferring %s cycle(s) — sleeping %.0fs before retry pass",
+                len(pending),
+                pause,
+            )
+            time.sleep(pause)
+
+    if pending:
+        logger.warning(
+            "package_due_cycles still deferred after %s pass(es): %s — will retry next wake",
+            passes,
+            pending,
+        )
+
     if done:
         try:
             from backend.core.cycle_gdrive_upload import (

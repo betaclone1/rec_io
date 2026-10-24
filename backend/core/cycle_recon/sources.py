@@ -311,17 +311,32 @@ def _filter_trades_ts(
     return out
 
 
-def _request_with_retry(url: str, *, timeout_s: float, attempts: int = 5) -> requests.Response:
+def _request_with_retry(
+    url: str,
+    *,
+    timeout_s: float,
+    attempts: int = 25,
+) -> requests.Response:
+    """Retry Kalshi GETs until success. Never treat 429/5xx as permanent."""
     last: Optional[Exception] = None
-    for i in range(attempts):
+    for i in range(max(1, int(attempts))):
         try:
             resp = requests.get(url, timeout=timeout_s)
             if resp.status_code == 429 or resp.status_code >= 500:
-                time.sleep(min(8.0, 0.5 * (2**i)))
+                retry_after = resp.headers.get("Retry-After")
+                if retry_after:
+                    try:
+                        delay = min(90.0, float(retry_after))
+                    except (TypeError, ValueError):
+                        delay = min(90.0, 1.0 * (2**min(i, 6)))
+                else:
+                    delay = min(90.0, 1.0 * (2**min(i, 6)))
+                time.sleep(delay)
+                last = RuntimeError(f"HTTP {resp.status_code}")
                 continue
             resp.raise_for_status()
             return resp
         except Exception as e:
             last = e
-            time.sleep(min(8.0, 0.5 * (2**i)))
+            time.sleep(min(90.0, 1.0 * (2**min(i, 6))))
     raise RuntimeError(f"Kalshi trades fetch failed for {url}: {last}")

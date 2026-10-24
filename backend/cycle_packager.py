@@ -1,7 +1,11 @@
 """
-Long-running worker: package closed cycle hot tables on a UTC hourly schedule.
+Long-running worker: package closed cycle hot tables until every due cycle seals.
 
 Supervisor program: ``cycle_packager``.
+
+Wakes on a short backlog interval (default 5 min) so transient Kalshi delays /
+429s / late settlement never leave cycles abandoned for an hour. Each wake runs
+``package_due_cycles`` with multi-pass retries. Hot tables stay until seal.
 """
 
 from __future__ import annotations
@@ -27,38 +31,42 @@ def _env_first(*names: str, default: str = "") -> str:
     return default
 
 
-def _sleep_until_next_hour_utc(*, minute: int = 5) -> None:
-    """Wake at HH:{minute}:00 UTC (default :05 so cycles have grace after :00)."""
-    from datetime import timedelta
-
-    now = datetime.now(timezone.utc)
-    target_min = max(0, min(59, int(minute)))
-    target = now.replace(minute=target_min, second=0, microsecond=0)
-    if target <= now:
-        target = target + timedelta(hours=1)
-    wait = max(1.0, (target - now).total_seconds())
-    log.info("sleeping %.0fs until %s", wait, target.isoformat())
-    time.sleep(wait)
+def _backlog_interval_sec() -> float:
+    """Seconds between packager wakes. Keep short — deferred seals must drain."""
+    try:
+        raw = _env_first(
+            "CYCLE_PACKAGE_INTERVAL_SEC",
+            "BTC15M_CYCLE_PACKAGE_INTERVAL_SEC",
+            default="300",
+        )
+        return max(30.0, float(raw))
+    except (TypeError, ValueError):
+        return 300.0
 
 
 def main() -> int:
     from backend.core.cycle_packager import package_due_cycles, package_root
 
-    minute = int(
-        _env_first(
-            "CYCLE_PACKAGE_UTC_MINUTE",
-            "BTC15M_CYCLE_PACKAGE_UTC_MINUTE",
-            default="5",
-        )
-    )
+    interval = _backlog_interval_sec()
     run_once = _env_first(
         "CYCLE_PACKAGE_ONCE", "BTC15M_CYCLE_PACKAGE_ONCE", default=""
     ).lower() in ("1", "true", "yes")
-    log.info("starting package_root=%s utc_minute=%s", package_root(), minute)
+    # Legacy hourly-minute knob: if set and INTERVAL not set, keep old cadence
+    # only when explicitly requesting hour-aligned wakes via INTERVAL>=3600.
+    legacy_minute = _env_first(
+        "CYCLE_PACKAGE_UTC_MINUTE",
+        "BTC15M_CYCLE_PACKAGE_UTC_MINUTE",
+        default="",
+    )
+    log.info(
+        "starting package_root=%s interval_sec=%.0f legacy_utc_minute=%s",
+        package_root(),
+        interval,
+        legacy_minute or "(unused)",
+    )
 
     while True:
-        if not run_once:
-            _sleep_until_next_hour_utc(minute=minute)
+        started = time.monotonic()
         try:
             done = package_due_cycles()
             if done:
@@ -66,11 +74,15 @@ def main() -> int:
                 for p in done:
                     log.info("  %s (%.1f KB)", p, p.stat().st_size / 1024.0)
             else:
-                log.info("no cycles ready to package")
+                log.info("no cycles sealed this wake (%s)", datetime.now(timezone.utc).isoformat())
         except Exception:
             log.exception("package_due_cycles failed")
         if run_once:
             return 0
+        elapsed = time.monotonic() - started
+        wait = max(1.0, interval - elapsed)
+        log.info("sleeping %.0fs until next backlog wake", wait)
+        time.sleep(wait)
 
 
 if __name__ == "__main__":

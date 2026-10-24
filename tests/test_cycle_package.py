@@ -24,6 +24,7 @@ from backend.core.cycle_packager import (
     PACKAGE_SCHEMA_VERSION,
     _existing_package_complete,
     month_folder,
+    package_due_cycles,
     package_path_for_ticker,
     public_trades_to_csv_bytes,
     quality_gate,
@@ -131,6 +132,33 @@ def test_quality_gate_requires_public_trades_and_v4_members():
         require_public_trades=True,
     )
     assert ok2
+    # Live OB capture holes must NOT block seal — tape + settlement are the hard floor.
+    ok_soft, _ = quality_gate(
+        row_counts={
+            "deltas.csv": 0,
+            "price_ring.csv": 0,
+            "strike_table.csv": 0,
+            "public_trades.csv": 0,
+            "volume_path.csv": 0,
+            "quality.json": 1,
+        },
+        market_meta=mm,
+        require_public_trades=True,
+        require_v4_members=True,
+    )
+    assert ok_soft
+    ok_floor, reason_floor = quality_gate(
+        row_counts={**base, "public_trades.csv": 1},
+        market_meta={"floor_strike": None, "market_result": "yes"},
+        require_public_trades=True,
+    )
+    assert not ok_floor and reason_floor == "floor_strike missing"
+    ok_result, reason_result = quality_gate(
+        row_counts={**base, "public_trades.csv": 1},
+        market_meta={"floor_strike": 100.0, "market_result": None},
+        require_public_trades=True,
+    )
+    assert not ok_result and reason_result == "market_result missing"
     # Legacy v2 on-disk: no public_trades key still complete
     ok3, _ = _existing_package_complete(
         names={"meta.json", "market_meta.json", "deltas.csv"},
@@ -201,6 +229,59 @@ def test_quality_gate_requires_public_trades_and_v4_members():
         market_meta=mm,
     )
     assert not ok7 and "quality.json" in reason7
+
+
+def test_package_due_cycles_retries_deferred_until_seal():
+    """Deferred tickers stay pending across passes; never dropped from backlog."""
+    calls = {"n": 0}
+
+    def _fake_package(mt, drop_after=True, force=False, **kwargs):
+        calls["n"] += 1
+        # First two attempts defer; third seals.
+        if calls["n"] < 3:
+            return None
+        return Path(f"/tmp/{mt}.tar.xz")
+
+    with (
+        patch(
+            "backend.core.cycle_packager.list_hot_cycle_tickers_in_db",
+            return_value=["KXETH15M-26OCT210015-15"],
+        ),
+        patch(
+            "backend.core.cycle_packager.is_cycle_ready_to_package",
+            return_value=True,
+        ),
+        patch(
+            "backend.core.cycle_packager.package_ticker",
+            side_effect=_fake_package,
+        ),
+        patch(
+            "backend.core.cycle_gdrive_upload.upload_cycle_packages_best_effort",
+        ),
+    ):
+        done = package_due_cycles(max_passes=5, pass_pause_sec=0.0)
+    assert len(done) == 1
+    assert calls["n"] == 3
+
+
+def test_package_due_cycles_keeps_deferred_after_max_passes():
+    with (
+        patch(
+            "backend.core.cycle_packager.list_hot_cycle_tickers_in_db",
+            return_value=["KXETH15M-26OCT210015-15"],
+        ),
+        patch(
+            "backend.core.cycle_packager.is_cycle_ready_to_package",
+            return_value=True,
+        ),
+        patch(
+            "backend.core.cycle_packager.package_ticker",
+            return_value=None,
+        ) as pkg,
+    ):
+        done = package_due_cycles(max_passes=3, pass_pause_sec=0.0)
+    assert done == []
+    assert pkg.call_count == 3
 
 
 def test_volume_path_cumulates_by_second():

@@ -6,6 +6,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-24 — Release v3.12.19: Cycle packager never abandons deferred seals
+
+**Summary**
+- **Release: v3.12.19**
+- **Plans:** none (ops fix for backtesting cycle capture).
+- **Cycle packager:** Stop treating transient Kalshi delays / 429s / empty live OB capture as permanent skips. Hard seal gate is venue `floor_strike` + `market_result` + successful `public_trades` fetch (v4 members). Empty deltas/strike/price mark `DEGRADED` and still seal. API retries hardened (Retry-After, multi-attempt enrich including floor from Kalshi). `package_due_cycles` multi-pass keeps deferred tickers pending; worker wakes every 5 minutes (`CYCLE_PACKAGE_INTERVAL_SEC`) instead of once per UTC hour. Hot tables stay until seal.
+- **DB:** None.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-24`**. Code: `git revert` + restart `cycle_packager`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart cycle packager (picks up worker interval + seal logic): `./venv/bin/supervisorctl -c backend/supervisord.conf restart cycle_packager`
+- [ ] Verify: `cycle_packager` RUNNING; recent log shows backlog wake / `package_due_cycles pass` (not only hourly sleep); no crash loop
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.19`
+
+---
+
 ## 2026-10-21 — Release v3.12.18: Taker Edge floor stop and flip sell
 
 **Summary**

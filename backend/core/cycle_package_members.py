@@ -79,8 +79,18 @@ def _parse_ts(raw: Any) -> Optional[datetime]:
     return dt.astimezone(_UTC)
 
 
-def enrich_market_meta_from_api(market_meta: Dict[str, Any]) -> None:
-    """Merge selected Kalshi market fields into ``market_meta`` (in place)."""
+def enrich_market_meta_from_api(
+    market_meta: Dict[str, Any],
+    *,
+    attempts: int = 12,
+) -> None:
+    """Merge selected Kalshi market fields into ``market_meta`` (in place).
+
+    Retries on transient API failures. Venue settlement/floor are required for
+    seal — keep trying rather than leaving NULLs after one 429.
+    """
+    import time
+
     mt = str(market_meta.get("market_ticker") or "").strip()
     if not mt:
         return
@@ -92,21 +102,43 @@ def enrich_market_meta_from_api(market_meta: Dict[str, Any]) -> None:
     except Exception as e:
         logger.debug("market enrich import failed: %s", e)
         return
-    try:
-        market = fetch_market_payload(mt)
-    except Exception as e:
-        logger.warning("market enrich fetch failed %s: %s", mt, e)
-        return
+
+    last_err: Optional[BaseException] = None
+    market: Any = None
+    for i in range(max(1, int(attempts))):
+        try:
+            market = fetch_market_payload(mt)
+            if isinstance(market, dict):
+                break
+            last_err = RuntimeError(f"non-dict market payload: {type(market)}")
+        except Exception as e:
+            last_err = e
+            market = None
+        time.sleep(min(60.0, 1.0 * (2 ** min(i, 5))))
     if not isinstance(market, dict):
+        logger.warning(
+            "market enrich fetch failed %s after %s attempts: %s",
+            mt,
+            attempts,
+            last_err,
+        )
         return
     market_meta["venue_market_source"] = "kalshi_api"
+    # Floor strike is required for seal; fill from venue when hot meta is still NULL.
+    if market_meta.get("floor_strike") in (None, ""):
+        from backend.core.kalshi_market_normalize import exact_decimal_text
+
+        exact_fs = exact_decimal_text(market.get("floor_strike"))
+        if exact_fs is not None:
+            market_meta["floor_strike"] = exact_fs
+            market_meta["floor_strike_source"] = "kalshi_api"
     for k in _MARKET_META_API_KEYS:
         if k not in market:
             continue
         v = market.get(k)
         if v in (None, ""):
             continue
-        # Prefer existing floor_strike / market_result from hot tables when set.
+        # Prefer existing volume_fp / market_result from hot tables when set.
         if k == "volume_fp" and market_meta.get("volume_fp") not in (None, ""):
             continue
         if k == "result":
