@@ -232,15 +232,16 @@ def test_quality_gate_requires_public_trades_and_v4_members():
 
 
 def test_package_due_cycles_retries_deferred_until_seal():
-    """Deferred tickers stay pending across passes; never dropped from backlog."""
+    """Transient deferrals stay pending across passes until seal."""
+    from backend.core.cycle_packager import PackageAttempt
+
     calls = {"n": 0}
 
-    def _fake_package(mt, drop_after=True, force=False, **kwargs):
+    def _fake_attempt(mt, drop_after=True, force=False, **kwargs):
         calls["n"] += 1
-        # First two attempts defer; third seals.
         if calls["n"] < 3:
-            return None
-        return Path(f"/tmp/{mt}.tar.xz")
+            return PackageAttempt(reason="public_trades:429", retryable=True)
+        return PackageAttempt(path=Path(f"/tmp/{mt}.tar.xz"))
 
     with (
         patch(
@@ -252,8 +253,8 @@ def test_package_due_cycles_retries_deferred_until_seal():
             return_value=True,
         ),
         patch(
-            "backend.core.cycle_packager.package_ticker",
-            side_effect=_fake_package,
+            "backend.core.cycle_packager.package_ticker_attempt",
+            side_effect=_fake_attempt,
         ),
         patch(
             "backend.core.cycle_gdrive_upload.upload_cycle_packages_best_effort",
@@ -265,6 +266,8 @@ def test_package_due_cycles_retries_deferred_until_seal():
 
 
 def test_package_due_cycles_keeps_deferred_after_max_passes():
+    from backend.core.cycle_packager import PackageAttempt
+
     with (
         patch(
             "backend.core.cycle_packager.list_hot_cycle_tickers_in_db",
@@ -275,13 +278,65 @@ def test_package_due_cycles_keeps_deferred_after_max_passes():
             return_value=True,
         ),
         patch(
-            "backend.core.cycle_packager.package_ticker",
-            return_value=None,
+            "backend.core.cycle_packager.package_ticker_attempt",
+            return_value=PackageAttempt(reason="floor_strike missing", retryable=True),
         ) as pkg,
     ):
         done = package_due_cycles(max_passes=3, pass_pause_sec=0.0)
     assert done == []
     assert pkg.call_count == 3
+
+
+def test_package_due_cycles_newest_first_and_skips_non_retryable():
+    from backend.core.cycle_packager import PackageAttempt
+
+    order: list[str] = []
+
+    def _fake_attempt(mt, drop_after=True, force=False, **kwargs):
+        order.append(mt)
+        if "26OCT010315" in mt:
+            return PackageAttempt(reason="floor_strike missing", retryable=False)
+        return PackageAttempt(path=Path(f"/tmp/{mt}.tar.xz"))
+
+    with (
+        patch(
+            "backend.core.cycle_packager.list_hot_cycle_tickers_in_db",
+            return_value=[
+                "KXBTC15M-26OCT010315-15",  # older
+                "KXBTC15M-26OCT251200-00",  # newer
+            ],
+        ),
+        patch(
+            "backend.core.cycle_packager.is_cycle_ready_to_package",
+            return_value=True,
+        ),
+        patch(
+            "backend.core.cycle_packager.package_ticker_attempt",
+            side_effect=_fake_attempt,
+        ),
+        patch(
+            "backend.core.cycle_gdrive_upload.upload_cycle_packages_best_effort",
+        ),
+    ):
+        done = package_due_cycles(max_passes=3, pass_pause_sec=0.0)
+    assert order[0] == "KXBTC15M-26OCT251200-00"
+    assert len(done) == 1
+    # Non-retryable stub must not be hammered across passes.
+    assert order.count("KXBTC15M-26OCT010315-15") == 1
+
+
+def test_sort_newest_first():
+    from backend.core.cycle_packager import _sort_newest_first
+
+    got = _sort_newest_first(
+        [
+            "KXBTC15M-26OCT010315-15",
+            "KXBTC15M-26OCT251200-00",
+            "KXBTC15M-26OCT241245-45",
+        ]
+    )
+    assert got[0] == "KXBTC15M-26OCT251200-00"
+    assert got[-1] == "KXBTC15M-26OCT010315-15"
 
 
 def test_volume_path_cumulates_by_second():

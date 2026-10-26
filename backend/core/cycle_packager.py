@@ -19,10 +19,17 @@ External SKU: derive after the fact via
 ``backend.core.cycle_package_members.export_external_variant``.
 
 Drops PG tables only after a successful write + quality gate + member verification.
-Incomplete cycles stay in PG and are retried on every packager wake (and within
-the same wake via multi-pass). Never abandon a cycle because of transient API
-delay, 429, or empty live OB capture when tape + settlement are still pending
-or recoverable from Kalshi.
+
+Ordering: due cycles are sealed **newest-first** so a stuck ancient backlog can
+never starve live capture. Transient failures (429, late settlement, short API
+blips) stay pending and retry within the wake + on later wakes.
+
+Permanent unsealables: when Kalshi no longer returns the market (gone / None)
+**and** live OB deltas are empty **and** the cycle is older than
+``CYCLE_PACKAGE_UNSEALABLE_AGE_HOURS`` (default 48h), write a
+``{ticker}.unsealable.json`` receipt beside the package path and drop the hot
+stub. Non-empty OB without settlement is **never** dropped — it stays deferred
+at low priority (newest-first) until venue data appears or an operator acts.
 """
 from __future__ import annotations
 
@@ -33,6 +40,7 @@ import logging
 import os
 import tarfile
 import time
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -172,6 +180,120 @@ def _due_pass_pause_sec() -> float:
         return max(0.0, float(raw))
     except (TypeError, ValueError):
         return 20.0
+
+
+def _unsealable_age_hours() -> float:
+    """Age after close before empty-OB + market-gone stubs may be quarantined."""
+    try:
+        raw = (
+            os.getenv("CYCLE_PACKAGE_UNSEALABLE_AGE_HOURS")
+            or os.getenv("BTC15M_CYCLE_PACKAGE_UNSEALABLE_AGE_HOURS")
+            or "48"
+        )
+        return max(1.0, float(raw))
+    except (TypeError, ValueError):
+        return 48.0
+
+
+@dataclass
+class PackageAttempt:
+    """Result of one seal attempt."""
+
+    path: Optional[Path] = None
+    reason: Optional[str] = None
+    retryable: bool = True
+    quarantined: bool = False
+
+    @property
+    def ok(self) -> bool:
+        return self.path is not None
+
+
+def _cycle_close_sort_key(market_ticker: str) -> float:
+    """Newer cycles sort higher (descending sort → newest first)."""
+    win = cycle_window_utc(market_ticker)
+    if win is None:
+        return 0.0
+    return win[1].timestamp()
+
+
+def _sort_newest_first(tickers: List[str]) -> List[str]:
+    return sorted(tickers, key=_cycle_close_sort_key, reverse=True)
+
+
+def _cycle_age_hours(market_ticker: str, *, now: Optional[datetime] = None) -> Optional[float]:
+    win = cycle_window_utc(market_ticker)
+    if win is None:
+        return None
+    now_u = now or datetime.now(_UTC)
+    if now_u.tzinfo is None:
+        now_u = now_u.replace(tzinfo=_UTC)
+    else:
+        now_u = now_u.astimezone(_UTC)
+    return max(0.0, (now_u - win[1]).total_seconds() / 3600.0)
+
+
+def _unsealable_receipt_path(market_ticker: str) -> Optional[Path]:
+    pkg = package_path_for_ticker(market_ticker)
+    if pkg is None:
+        return None
+    # Path.with_suffix only strips the final ".xz"; name the receipt explicitly.
+    name = pkg.name
+    if name.endswith(".tar.xz"):
+        name = name[: -len(".tar.xz")] + ".unsealable.json"
+    else:
+        name = name + ".unsealable.json"
+    return pkg.parent / name
+
+
+def quarantine_unsealable_cycle(
+    market_ticker: str,
+    *,
+    reason: str,
+    row_counts: Optional[Dict[str, int]] = None,
+    market_meta: Optional[Dict[str, Any]] = None,
+    drop: bool = True,
+) -> Optional[Path]:
+    """
+    Record a permanent empty-OB stub that can never seal (venue market gone).
+
+    Writes ``{ticker}.unsealable.json`` next to the would-be package path and
+    drops hot tables when ``drop``. Does **not** invent settlement/floor.
+    """
+    mt = str(market_ticker).strip()
+    out = _unsealable_receipt_path(mt)
+    if out is None:
+        logger.warning("cannot resolve unsealable path for %s", mt)
+        return None
+    payload = {
+        "market_ticker": mt,
+        "status": "UNSEALABLE",
+        "reason": reason,
+        "recorded_at_utc": datetime.now(_UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z"),
+        "row_counts": row_counts or {},
+        "market_meta": {
+            "floor_strike": (market_meta or {}).get("floor_strike"),
+            "market_result": (market_meta or {}).get("market_result"),
+            "venue_market_fetch_ok": (market_meta or {}).get("venue_market_fetch_ok"),
+            "venue_market_fetch_error": (market_meta or {}).get(
+                "venue_market_fetch_error"
+            ),
+        },
+        "note": (
+            "Empty live OB + venue market gone after age gate. "
+            "Hot stub dropped; no package invented."
+        ),
+    }
+    out.parent.mkdir(parents=True, exist_ok=True)
+    tmp = out.with_suffix(out.suffix + ".tmp")
+    tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n")
+    tmp.replace(out)
+    logger.warning("quarantined unsealable cycle %s -> %s (%s)", mt, out, reason)
+    if drop:
+        drop_cycle_tables(mt)
+    return out
 
 
 def _system_conn():
@@ -438,17 +560,32 @@ def package_ticker(
     drop_after: bool = True,
     force: bool = False,
 ) -> Optional[Path]:
+    """Export one ticker's hot tables to ``.tar.xz``. Returns path on success."""
+    return package_ticker_attempt(
+        market_ticker, drop_after=drop_after, force=force
+    ).path
+
+
+def package_ticker_attempt(
+    market_ticker: str,
+    *,
+    drop_after: bool = True,
+    force: bool = False,
+) -> PackageAttempt:
     """
-    Export one ticker's hot tables to ``.tar.xz``. Returns path on success.
+    Export one ticker's hot tables to ``.tar.xz``.
 
     Skips if a *complete* package already exists (unless ``force``).
     Drops PG tables only after quality gate + verify when ``drop_after``.
+
+    Permanent empty-OB + market-gone stubs past the age gate are quarantined
+    (receipt + drop) and marked ``retryable=False``.
     """
     mt = str(market_ticker).strip()
     out = package_path_for_ticker(mt)
     if out is None:
         logger.warning("cannot resolve package path for %s", mt)
-        return None
+        return PackageAttempt(reason="path_unresolved", retryable=False)
     if out.exists() and not force:
         # Do not drop hot tables based on a prior incomplete artifact.
         try:
@@ -465,7 +602,7 @@ def package_ticker(
                 logger.info("complete package already exists %s — skipping", out)
                 if drop_after:
                     drop_cycle_tables(mt)
-                return out
+                return PackageAttempt(path=out)
             logger.warning(
                 "existing package incomplete (%s) %s — will rebuild when data ready",
                 reason,
@@ -476,7 +613,7 @@ def package_ticker(
 
     if not force and not is_cycle_ready_to_package(mt):
         logger.debug("cycle not ready %s", mt)
-        return None
+        return PackageAttempt(reason="not_ready", retryable=True)
 
     snap, deltas, strike, price, metrics, _meta_tbl = all_table_names(mt)
     table_csv = (
@@ -489,7 +626,7 @@ def package_ticker(
     conn = _system_conn()
     if conn is None:
         logger.error("no PG connection for package %s", mt)
-        return None
+        return PackageAttempt(reason="no_pg", retryable=True)
 
     end_est = parse_cycle_ticker_end_est(mt)
     win = cycle_window_utc(mt)
@@ -544,7 +681,45 @@ def package_ticker(
                 }
 
         _enrich_market_result_from_redis(market_meta)
-        enrich_market_meta_from_api(market_meta)
+        # When hot meta already has floor+result, one API attempt is enough.
+        # Aged cycles: never burn 12× backoff — market-gone returns None immediately.
+        have_settle = (
+            market_meta.get("floor_strike") not in (None, "")
+            and bool(market_meta.get("market_result"))
+        )
+        age_h = _cycle_age_hours(mt)
+        aged = age_h is not None and age_h >= _unsealable_age_hours()
+        enrich_attempts = 1 if (have_settle or aged) else 12
+        venue_ok = enrich_market_meta_from_api(
+            market_meta, attempts=enrich_attempts
+        )
+
+        # Fast path: aged empty-OB + venue gone → quarantine before public_trades
+        # fetch (that call is expensive and cannot invent floor/result).
+        early_counts = {k: int(v["rows"]) for k, v in meta["tables"].items()}
+        early_deltas = int(early_counts.get("deltas.csv", 0) or 0)
+        if (
+            not force
+            and not venue_ok
+            and early_deltas <= 0
+            and market_meta.get("floor_strike") in (None, "")
+            and aged
+        ):
+            receipt = quarantine_unsealable_cycle(
+                mt,
+                reason=(
+                    f"floor_strike missing; venue market gone; empty deltas; "
+                    f"age_h={age_h:.1f}"
+                ),
+                row_counts=early_counts,
+                market_meta=market_meta,
+                drop=drop_after,
+            )
+            return PackageAttempt(
+                reason="floor_strike missing",
+                retryable=False,
+                quarantined=receipt is not None,
+            )
 
         # Public tape is not in PG hot tables — fetch at seal time (authoritative API).
         pt_bytes, pt_rows, pt_err, trades = fetch_public_trades_csv_for_package(
@@ -556,7 +731,7 @@ def package_ticker(
                 mt,
                 pt_err or "unknown",
             )
-            return None
+            return PackageAttempt(reason=f"public_trades:{pt_err or 'unknown'}", retryable=True)
         members["public_trades.csv"] = pt_bytes
         meta["tables"]["public_trades.csv"] = {"rows": pt_rows, "bytes": len(pt_bytes)}
 
@@ -617,8 +792,31 @@ def package_ticker(
             require_v4_members=True,
         )
         if not ok:
+            deltas_n = int(row_counts.get("deltas.csv", 0) or 0)
+            age_h = _cycle_age_hours(mt)
+            can_quarantine = (
+                not force
+                and not venue_ok
+                and deltas_n <= 0
+                and reason in ("floor_strike missing", "market_result missing")
+                and age_h is not None
+                and age_h >= _unsealable_age_hours()
+            )
+            if can_quarantine:
+                receipt = quarantine_unsealable_cycle(
+                    mt,
+                    reason=f"{reason}; venue market gone; empty deltas; age_h={age_h:.1f}",
+                    row_counts=row_counts,
+                    market_meta=market_meta,
+                    drop=drop_after,
+                )
+                return PackageAttempt(
+                    reason=reason,
+                    retryable=False,
+                    quarantined=receipt is not None,
+                )
             logger.warning(
-                "defer package %s — quality gate failed (will retry): %s (counts=%s meta=%s)",
+                "defer package %s — quality gate failed (will retry): %s (counts=%s meta=%s venue_ok=%s)",
                 mt,
                 reason,
                 row_counts,
@@ -626,8 +824,20 @@ def package_ticker(
                     "floor_strike": market_meta.get("floor_strike"),
                     "market_result": market_meta.get("market_result"),
                 },
+                venue_ok,
             )
-            return None
+            # Settlement missing with non-empty OB: keep forever (low priority via
+            # newest-first). Market-gone + empty OB but still young: retry later.
+            retryable = True
+            if (
+                not venue_ok
+                and deltas_n <= 0
+                and reason in ("floor_strike missing", "market_result missing")
+            ):
+                # Young empty stub — retry next wake, but not within multi-pass
+                # (API will keep returning None for hours).
+                retryable = False
+            return PackageAttempt(reason=reason, retryable=retryable)
 
         meta["floor_strike"] = market_meta.get("floor_strike")
         meta["market_result"] = market_meta.get("market_result")
@@ -668,10 +878,10 @@ def package_ticker(
 
         if drop_after:
             drop_cycle_tables(mt, conn)
-        return out
+        return PackageAttempt(path=out)
     except Exception as e:
         logger.exception("package failed %s: %s", mt, e)
-        return None
+        return PackageAttempt(reason=f"exception:{type(e).__name__}", retryable=True)
     finally:
         try:
             conn.close()
@@ -689,19 +899,23 @@ def package_due_cycles(
     """
     Package every DB-resident enabled 15m cycle past close+grace.
 
-    Deferred seals (missing settlement, public_trades 429, etc.) stay pending and
-    are retried within this call for ``max_passes`` rounds — never dropped from the
-    backlog. Hot tables remain until a successful seal.
+    Newest cycles first so ancient deferred stubs cannot starve live capture.
+    Transient deferrals retry within ``max_passes``; permanent/market-gone empty
+    stubs are quarantined or skipped for multi-pass (still visible next wake
+    until age gate quarantines them).
     """
     passes = _due_max_passes() if max_passes is None else max(1, int(max_passes))
     pause = _due_pass_pause_sec() if pass_pause_sec is None else max(0.0, float(pass_pause_sec))
-    pending = [
-        mt
-        for mt in list_hot_cycle_tickers_in_db()
-        if force or is_cycle_ready_to_package(mt)
-    ]
+    pending = _sort_newest_first(
+        [
+            mt
+            for mt in list_hot_cycle_tickers_in_db()
+            if force or is_cycle_ready_to_package(mt)
+        ]
+    )
     done: List[Path] = []
     done_tickers: set[str] = set()
+    quarantined = 0
 
     for pass_i in range(passes):
         if not pending:
@@ -709,21 +923,32 @@ def package_due_cycles(
         still: List[str] = []
         sealed_this_pass = 0
         for mt in pending:
-            path = package_ticker(mt, drop_after=drop_after, force=force)
-            if path is not None:
+            attempt = package_ticker_attempt(mt, drop_after=drop_after, force=force)
+            if attempt.path is not None:
                 key = str(mt).strip().upper()
                 if key not in done_tickers:
                     done_tickers.add(key)
-                    done.append(path)
+                    done.append(attempt.path)
                 sealed_this_pass += 1
-            else:
+            elif attempt.quarantined:
+                quarantined += 1
+            elif attempt.retryable:
                 still.append(mt)
+            else:
+                # Non-retryable this wake (e.g. young market-gone empty stub) —
+                # leave hot tables; newest-first will prefer live cycles next wake.
+                logger.info(
+                    "skip multi-pass retry %s — %s",
+                    mt,
+                    attempt.reason or "non_retryable",
+                )
         logger.info(
-            "package_due_cycles pass %s/%s: sealed=%s deferred=%s",
+            "package_due_cycles pass %s/%s: sealed=%s deferred=%s quarantined_total=%s",
             pass_i + 1,
             passes,
             sealed_this_pass,
             len(still),
+            quarantined,
         )
         pending = still
         if pending and pass_i + 1 < passes and pause > 0:
@@ -738,7 +963,7 @@ def package_due_cycles(
         logger.warning(
             "package_due_cycles still deferred after %s pass(es): %s — will retry next wake",
             passes,
-            pending,
+            pending[:40] + (["…"] if len(pending) > 40 else []),
         )
 
     if done:

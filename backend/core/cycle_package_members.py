@@ -83,17 +83,22 @@ def enrich_market_meta_from_api(
     market_meta: Dict[str, Any],
     *,
     attempts: int = 12,
-) -> None:
+) -> bool:
     """Merge selected Kalshi market fields into ``market_meta`` (in place).
 
     Retries on transient API failures. Venue settlement/floor are required for
     seal — keep trying rather than leaving NULLs after one 429.
+
+    Returns True when a venue market dict was fetched (even if some fields are
+    already present on ``market_meta``). False when the market is gone / API
+    returned no dict after all attempts — callers may treat aged empty-OB stubs
+    as permanently unsealable.
     """
     import time
 
     mt = str(market_meta.get("market_ticker") or "").strip()
     if not mt:
-        return
+        return False
     try:
         from backend.core.kalshi_event_market_fetch import (
             fetch_market_payload,
@@ -101,7 +106,7 @@ def enrich_market_meta_from_api(
         )
     except Exception as e:
         logger.debug("market enrich import failed: %s", e)
-        return
+        return False
 
     last_err: Optional[BaseException] = None
     market: Any = None
@@ -114,7 +119,8 @@ def enrich_market_meta_from_api(
         except Exception as e:
             last_err = e
             market = None
-        time.sleep(min(60.0, 1.0 * (2 ** min(i, 5))))
+        if i + 1 < max(1, int(attempts)):
+            time.sleep(min(60.0, 1.0 * (2 ** min(i, 5))))
     if not isinstance(market, dict):
         logger.warning(
             "market enrich fetch failed %s after %s attempts: %s",
@@ -122,8 +128,11 @@ def enrich_market_meta_from_api(
             attempts,
             last_err,
         )
-        return
+        market_meta["venue_market_fetch_ok"] = False
+        market_meta["venue_market_fetch_error"] = str(last_err) if last_err else "no_market"
+        return False
     market_meta["venue_market_source"] = "kalshi_api"
+    market_meta["venue_market_fetch_ok"] = True
     # Floor strike is required for seal; fill from venue when hot meta is still NULL.
     if market_meta.get("floor_strike") in (None, ""):
         from backend.core.kalshi_market_normalize import exact_decimal_text
@@ -147,6 +156,7 @@ def enrich_market_meta_from_api(
                 market_meta["market_result"] = nr
             continue
         market_meta[k] = v
+    return True
 
 
 def volume_path_csv_bytes(

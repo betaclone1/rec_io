@@ -6,6 +6,24 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-26 — Release v3.12.21: Cycle packager newest-first + unsealable quarantine
+
+**Summary**
+- **Release: v3.12.21**
+- **Plans:** none (ops fix — backtesting cycle package collection was wedged).
+- **Cycle packager:** Seal due cycles **newest-first** so ancient deferred stubs cannot starve live capture. Empty-OB + Kalshi market-gone stubs older than `CYCLE_PACKAGE_UNSEALABLE_AGE_HOURS` (default 48h) write `{ticker}.unsealable.json` and drop the hot stub (no invented floor/result). Multi-pass retries skip non-retryable market-gone stubs; enrich uses one API attempt when settlement is already present or the cycle is aged. Transient 429 / late settlement still retry.
+- **DB:** None.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-26-packager`**. Code: `git revert` + restart `cycle_packager`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart cycle packager: `./venv/bin/supervisorctl -c backend/supervisord.conf restart cycle_packager`
+- [ ] Verify: `cycle_packager` RUNNING; log shows newest-first passes / quarantine of aged empty stubs (not stuck only on Sep/Oct maintenance windows); health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.21`
+
+---
+
 ## 2026-10-24 — Release v3.12.20: Maker Edge paper fills from exact-L tape
 
 **Summary**
@@ -16,12 +34,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-24-me-paper`**. Code: `git revert` + restart `maker_edge_agent_*`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart Maker Edge agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
+- [x] Restart Maker Edge agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart maker_edge_agent_0001`
   (restart `maker_edge_agent_0002` / other slots if present and RUNNING)
-- [ ] Verify: `maker_edge_agent_*` RUNNING; paper fill logs show tape-based fills (no ask-touch path); health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.20`
+- [x] Verify: `maker_edge_agent_*` RUNNING; paper fill logs show tape-based fills (no ask-touch path); health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.20`
 
 ---
 

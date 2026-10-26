@@ -3,9 +3,10 @@ Long-running worker: package closed cycle hot tables until every due cycle seals
 
 Supervisor program: ``cycle_packager``.
 
-Wakes on a short backlog interval (default 5 min) so transient Kalshi delays /
-429s / late settlement never leave cycles abandoned for an hour. Each wake runs
-``package_due_cycles`` with multi-pass retries. Hot tables stay until seal.
+Wakes on a short backlog interval (default 5 min). Each wake runs
+``package_due_cycles`` newest-first with multi-pass retries for transient
+failures. Empty-OB market-gone stubs past the age gate are quarantined so they
+cannot starve live capture.
 """
 
 from __future__ import annotations
