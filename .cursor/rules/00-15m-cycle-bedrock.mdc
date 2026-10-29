@@ -27,7 +27,7 @@ The interesting outcomes are **not** “price went to an extreme and stayed.” 
 
 ## Agent obligations
 
-- When explaining fills, Maker Edge, longshots, or backtests: reason from **floor strike at open → 15m higher/lower → path to extreme → possible reverse**.
+- When explaining fills, Lower Tail, longshots, or backtests: reason from **floor strike at open → 15m higher/lower → path to extreme → possible reverse**.
 - Do not claim both outer $0.01 rails are independently “raced” from mid as if the path could hit both extremes first in normal one-way repricing.
 - Do not hand-wave “BTC vs some strike” without this open-price floor-strike meaning.
 - If a backtest rule disagrees with this model, the model wins until the owner explicitly redefines the fill rule.

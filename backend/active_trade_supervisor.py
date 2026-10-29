@@ -3944,15 +3944,15 @@ def _ats_list_lane_monitor_rows() -> List[dict]:
         filter_out_cutout_rows,
         list_active_btc15m_exp_scalp_cutout_rows,
     )
-    from backend.core.aes_btc15m_maker_edge_cutout import filter_out_maker_edge_rows
+    from backend.core.aes_btc15m_lower_tail_cutout import filter_out_lower_tail_rows
 
     if ATS_BTC15M_EXP_SCALP:
         return list_active_btc15m_exp_scalp_cutout_rows()
     if ATS_UNIFIED_15M:
         from backend.core.unified_15m_monitors import list_active_15m_monitor_rows
 
-        # Taker Edge stays in this lane (floor stop + flip sell). Maker Edge does not.
-        return filter_out_maker_edge_rows(
+        # Upper Tail stays in this lane (floor stop + flip sell). Lower Tail does not.
+        return filter_out_lower_tail_rows(
             filter_out_cutout_rows(list_active_15m_monitor_rows())
         )
     if ATS_UNIFIED_HOURLY:
@@ -3962,7 +3962,7 @@ def _ats_list_lane_monitor_rows() -> List[dict]:
     if ATS_UNIFIED_ALL:
         from backend.core.unified_all_monitors import list_active_unified_monitor_rows
 
-        return filter_out_maker_edge_rows(
+        return filter_out_lower_tail_rows(
             filter_out_cutout_rows(list_active_unified_monitor_rows())
         )
     return []
@@ -5097,14 +5097,14 @@ def start_monitoring_loop():
                             check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verification_pending_trades)
                 
                         # === MOMENTUM SPIKE AUTO-STOPOUT LOGIC ===
-                        # Skip momentum spike for Momentum Scalp / Reversal / Maker Edge
-                        # / Taker Edge. Maker Edge holds to settlement. Taker Edge uses
+                        # Skip momentum spike for Momentum Scalp / Reversal / Lower Tail
+                        # / Upper Tail. Lower Tail holds to settlement. Upper Tail uses
                         # the Expiration Scalp floor stop only.
                         strategy = get_trade_strategy()
-                        from backend.core.aes_btc15m_maker_edge_cutout import (
+                        from backend.core.aes_btc15m_lower_tail_cutout import (
                             STRATEGY_NAME as _ME_STRAT,
                         )
-                        from backend.core.taker_edge import STRATEGY_NAME as _TE_STRAT
+                        from backend.core.upper_tail import STRATEGY_NAME as _TE_STRAT
                         if (
                             not is_reverse_monitor()
                             and strategy != "Momentum Scalp"
@@ -7003,10 +7003,10 @@ def trigger_auto_stop_close(
     if should_suppress_auto_close_past_kalshi_settlement(trade.get("ticker"), tid):
         return False
 
-    from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
+    from backend.core.aes_btc15m_lower_tail_cutout import STRATEGY_NAME as LOWER_TAIL_STRATEGY
 
     strat_row = str(trade.get("trade_strategy") or get_trade_strategy() or "").strip()
-    if strat_row == MAKER_EDGE_STRATEGY:
+    if strat_row == LOWER_TAIL_STRATEGY:
         log(
             f"[AUTO STOP] refused {strat_row} trade={tid} "
             f"(hold to settlement; trigger={trigger_reason})"
@@ -7986,20 +7986,20 @@ def check_auto_stop_conditions(active_trades, auto_stop_triggered_trades, verifi
 
     strategy = get_trade_strategy()
 
-    from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME as MAKER_EDGE_STRATEGY
-    from backend.core.taker_edge import STRATEGY_NAME as TAKER_EDGE_STRATEGY
+    from backend.core.aes_btc15m_lower_tail_cutout import STRATEGY_NAME as LOWER_TAIL_STRATEGY
+    from backend.core.upper_tail import STRATEGY_NAME as UPPER_TAIL_STRATEGY
     from backend.core.high_water_scalp import (
         is_expiration_scalp_entry_strategy,
         is_high_water_scalp,
         is_high_water_test_1,
     )
 
-    # Maker Edge holds the filled leg to settlement (market_result).
-    if str(strategy or "").strip() == MAKER_EDGE_STRATEGY:
-        log_debug("[AUTO STOP] skipped — Maker Edge holds to settlement")
+    # Lower Tail holds the filled leg to settlement (market_result).
+    if str(strategy or "").strip() == LOWER_TAIL_STRATEGY:
+        log_debug("[AUTO STOP] skipped — Lower Tail holds to settlement")
         return
 
-    if str(strategy or "").strip() == TAKER_EDGE_STRATEGY:
+    if str(strategy or "").strip() == UPPER_TAIL_STRATEGY:
         check_auto_stop_conditions_expiration_scalp(
             active_trades, auto_stop_triggered_trades, verification_pending_trades
         )

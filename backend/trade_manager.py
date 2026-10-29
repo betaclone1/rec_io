@@ -2489,19 +2489,19 @@ def estimate_kalshi_taker_fee(position, price: float) -> float:
     return math.ceil(raw * 100) / 100
 
 
-def _paper_open_fee_for_edge_strategy(
+def _paper_open_fee_for_tail_strategy(
     trade_strategy: str,
     position,
     buy_price: float,
 ) -> float:
     """
-    Paper open fee for Maker/Taker Edge booking.
+    Paper open fee for Maker/Upper Tail booking.
 
-    Maker Edge rests as maker → $0. Taker Edge would take liquidity live → same
+    Lower Tail rests as maker → $0. Upper Tail would take liquidity live → same
     Kalshi taker schedule as Expiration / HTC paper opens.
     """
     strat = str(trade_strategy or "").strip()
-    if strat == "Taker Edge":
+    if strat == "Upper Tail":
         return float(estimate_kalshi_taker_fee(position, buy_price))
     return 0.0
 
@@ -3396,7 +3396,7 @@ def _apply_high_water_partial_close(
             pass
 
 
-def _maker_edge_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional[float]:
+def _lower_tail_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional[float]:
     """Monitor bankroll_allotment_total (cents) for ret_pct; None if unavailable."""
     if not monitor_key or not _monitor_key_matches_worker(monitor_key):
         return None
@@ -3421,7 +3421,7 @@ def _maker_edge_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional
             return None
         return float(row[0])
     except Exception as e:
-        log(f"[MAKER EDGE] bankroll lookup failed monitor={monitor_key}: {e}")
+        log(f"[LOWER TAIL] bankroll lookup failed monitor={monitor_key}: {e}")
         return None
     finally:
         try:
@@ -3430,36 +3430,36 @@ def _maker_edge_bankroll_allotment_cents(monitor_key: Optional[str]) -> Optional
             pass
 
 
-def book_taker_edge_external_fill(data: dict) -> dict:
-    """Book a Taker Edge fill the same way as Maker Edge (no trade_executor)."""
-    return book_maker_edge_external_fill(
+def book_upper_tail_external_fill(data: dict) -> dict:
+    """Book a Upper Tail fill the same way as Lower Tail (no trade_executor)."""
+    return book_lower_tail_external_fill(
         data,
-        expected_strategy="Taker Edge",
-        log_tag="TAKER EDGE",
-        entry_default="taker_edge",
+        expected_strategy="Upper Tail",
+        log_tag="UPPER TAIL",
+        entry_default="upper_tail",
     )
 
 
-def book_maker_edge_external_fill(
+def book_lower_tail_external_fill(
     data: dict,
     *,
     expected_strategy: Optional[str] = None,
-    log_tag: str = "MAKER EDGE",
-    entry_default: str = "maker_edge",
+    log_tag: str = "LOWER TAIL",
+    entry_default: str = "lower_tail",
 ) -> dict:
     """
-    Book / update an open Maker Edge or Taker Edge trade from venue fill totals.
+    Book / update an open Lower Tail or Upper Tail trade from venue fill totals.
 
     Does not call trade_executor. Status is open; order_id_open stamped when provided.
     ``position`` must be the cumulative venue fill qty for the order (not a delta).
     Re-posts with the same ``ticket_id`` raise ``position`` monotonically to match the
     latest venue total so trade logs reflect actual live fills.
 
-    Paper Maker Edge open fees are 0.00 (maker). Paper Taker Edge open fees use
+    Paper Lower Tail open fees are 0.00 (maker). Paper Upper Tail open fees use
     ``estimate_kalshi_taker_fee`` (same schedule as Expiration / HTC). Live rows leave
     fees NULL until venue fee fields are known — never invented for live.
     """
-    from backend.core.aes_btc15m_maker_edge_cutout import STRATEGY_NAME
+    from backend.core.aes_btc15m_lower_tail_cutout import STRATEGY_NAME
 
     strat_expected = expected_strategy or STRATEGY_NAME
     strat = str(data.get("trade_strategy") or "").strip()
@@ -3516,7 +3516,7 @@ def book_maker_edge_external_fill(
     monitor_key = data.get("monitor")
     bankroll = data.get("bankroll_allotment_total")
     if bankroll is None:
-        bankroll = _maker_edge_bankroll_allotment_cents(
+        bankroll = _lower_tail_bankroll_allotment_cents(
             str(monitor_key).strip() if monitor_key else None
         )
     contract_label = derive_contract_label_from_kalshi_ticker(symbol, ticker)
@@ -3565,7 +3565,7 @@ def book_maker_edge_external_fill(
                         new_pos = position if position >= prev_pos - 1e-9 else prev_pos
                         pos_raised = new_pos > prev_pos + 1e-9
                         paper_open_fee = (
-                            _paper_open_fee_for_edge_strategy(
+                            _paper_open_fee_for_tail_strategy(
                                 strat_expected, new_pos, buy_price
                             )
                             if paper_trade
@@ -3665,9 +3665,9 @@ def book_maker_edge_external_fill(
             detail="insert_trade failed",
         )
 
-    # insert_trade leaves fees NULL. Paper: Maker Edge = $0; Taker Edge = taker schedule.
+    # insert_trade leaves fees NULL. Paper: Lower Tail = $0; Upper Tail = taker schedule.
     paper_open_fee = (
-        _paper_open_fee_for_edge_strategy(strat_expected, position, buy_price)
+        _paper_open_fee_for_tail_strategy(strat_expected, position, buy_price)
         if paper_trade
         else None
     )
@@ -4280,7 +4280,7 @@ def insert_trade(trade):
                     symbol, ticker, trade_market_for_db, venue_exchange
                 )
                 initial_price_for_db = trade.get('buy_price')
-                # Prefer explicit initial_count (Maker Edge resting size) over filled position.
+                # Prefer explicit initial_count (Lower Tail resting size) over filled position.
                 initial_count_for_db = (
                     trade.get("initial_count")
                     if trade.get("initial_count") is not None
@@ -7822,11 +7822,11 @@ async def add_trade(request: Request):
     if intent == "paper_hws_resting_fill":
         return apply_paper_high_water_resting_fill(data)
 
-    if intent == "maker_edge_fill":
-        return book_maker_edge_external_fill(data)
+    if intent == "lower_tail_fill":
+        return book_lower_tail_external_fill(data)
 
-    if intent == "taker_edge_fill":
-        return book_taker_edge_external_fill(data)
+    if intent == "upper_tail_fill":
+        return book_upper_tail_external_fill(data)
 
     if intent == "close":
         log(f"CLOSE TICKET RECEIVED")

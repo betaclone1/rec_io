@@ -243,7 +243,7 @@ These are the durable fixes; ops kill is temporary.
 ## Related docs / code
 
 - Cycle package product: `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, schema notes in `docs/MASTER_DB_SCHEMA_REFERENCE.md` (packaging section)  
-- Maker / backtest packaging pointers: `docs/MAKER_EDGE_STRATEGY.md`  
+- Maker / backtest packaging pointers: `docs/LOWER_TAIL_STRATEGY.md`  
 - Prod host: `docs/PRODUCTION_HOST.md`  
 - Entry: `backend/cycle_packager.py` → `backend/core/cycle_packager.py`  
 - Drop helper: `backend/core/cycle_hot_tables.py` → `drop_cycle_tables`  

@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-Recompute paper Taker Edge open/close fees and PnL (same Kalshi taker schedule as
-Expiration / HTC). Maker Edge paper stays $0 and is not touched.
+Recompute paper Upper Tail open/close fees and PnL (same Kalshi taker schedule as
+Expiration / HTC). Lower Tail paper stays $0 and is not touched.
 
 Usage:
-  PYTHONPATH=. .venv/bin/python scripts/db/backfill_paper_taker_edge_fees.py --user-no 0001 --dry-run
-  PYTHONPATH=. .venv/bin/python scripts/db/backfill_paper_taker_edge_fees.py --user-no 0001 --apply
+  PYTHONPATH=. .venv/bin/python scripts/db/backfill_paper_upper_tail_fees.py --user-no 0001 --dry-run
+  PYTHONPATH=. .venv/bin/python scripts/db/backfill_paper_upper_tail_fees.py --user-no 0001 --apply
 """
 
 from __future__ import annotations
@@ -75,7 +75,7 @@ def main() -> int:
                        bankroll, mtb_base_value, win_loss
                 FROM {table}
                 WHERE paper_trade IS TRUE
-                  AND trade_strategy = 'Taker Edge'
+                  AND trade_strategy = 'Upper Tail'
                 ORDER BY id
                 """
             )

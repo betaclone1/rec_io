@@ -35,15 +35,15 @@ Read-only check of `/opt/rec_io_server` and `system.version_control`. No restart
 | Snapshot named in that release | `rec-io-prod-pre-update-2026-10-21` |
 | Schema in v3.12.18 | none |
 
-`3.12.18` (changelog 2026-10-21): Taker Edge floor stop and flip sell. Unified ATS watches Taker Edge monitors. `stop_loss_price` above 0 closes on the same opposite-ask floor as Expiration Scalp, and floor flip sell follows when the monitor enables it. A stop price of 0 holds to settlement. Momentum spike and probability stops stay off. Desktop and mobile settings show Stop Loss Price and its Flip Sell control. Maker Edge stays outside ATS. `docs/TAKER_EDGE_STRATEGY.md` on `main` matches this.
+`3.12.18` (changelog 2026-10-21): Upper Tail floor stop and flip sell. Unified ATS watches Upper Tail monitors. `stop_loss_price` above 0 closes on the same opposite-ask floor as Expiration Scalp, and floor flip sell follows when the monitor enables it. A stop price of 0 holds to settlement. Momentum spike and probability stops stay off. Desktop and mobile settings show Stop Loss Price and its Flip Sell control. Lower Tail stays outside ATS. `docs/UPPER_TAIL_STRATEGY.md` on `main` matches this.
 
 Deployed after that checklist, with no new version row:
 
 | Commit | Subject |
 |--------|---------|
 | `83f9e13c` | Drive feed depth from `symbols_list.live_data_level`. Adds subaccount `category` and `base_value_factor` for later consumers |
-| `ee96b105` | Hide volume and win-prob controls on Taker Edge settings |
-| `78172615` | Taker Edge follows `live_data_level`. New market symbols leave DISABLED |
+| `ee96b105` | Hide volume and win-prob controls on Upper Tail settings |
+| `78172615` | Upper Tail follows `live_data_level`. New market symbols leave DISABLED |
 | `3279d767` | Block an Expiration Reversal flip when a paired monitor was already in that cycle |
 
 `live_data.symbols_list` on production now has `live_data_level`. Rows at the check:
@@ -69,7 +69,7 @@ strike_table_generator_ws.py --exchange kalshi --market hourly
 
 `REC_ENABLE_HOURLY_LIVE` is still `0`. `strike_table_generator_ws_hourly` was still `RUNNING`. Supervisor program list is otherwise the same 24 programs as the first pass, all `RUNNING`.
 
-Taker Edge entry is still `taker_edge_agent`, not AES. ATS now supervises the open leg for the floor stop and floor flip sell. Symbols are any 15m underlying whose level is `full` or `market`.
+Upper Tail entry is still `upper_tail_agent`, not AES. ATS now supervises the open leg for the floor stop and floor flip sell. Symbols are any 15m underlying whose level is `full` or `market`.
 
 ---
 
@@ -147,7 +147,7 @@ One machine runs SSH, nginx, PostgreSQL, Redis, and every Python supervisor prog
 | `0.0.0.0` / `[::]` | 5432 | PostgreSQL |
 | `127.0.0.1` / `[::1]` | 6379 | Redis |
 | `0.0.0.0` | 8001, 8012, 8041 | tenant trade_executor, monitor_manager, exp-scalp ATS (0001) |
-| `127.0.0.1` | 8033, 8039, 8050, 8052 | unified AES, exp-scalp AES, maker_edge, taker_edge |
+| `127.0.0.1` | 8033, 8039, 8050, 8052 | unified AES, exp-scalp AES, lower_tail, upper_tail |
 
 Postgres is reachable on the public interface. Redis is loopback only. Several app ports are public in addition to nginx. Nginx site `proxy_pass` lines were not captured (grep of `sites-enabled` / `conf.d` returned empty).
 
@@ -221,8 +221,8 @@ Per tenant **0001** only (no `*_0002` programs on the host):
 | `active_trade_supervisor_0001` | `active_trade_supervisor.py unified` |
 | `auto_entry_supervisor_0001_btc15m_exp_scalp` | `auto_entry_supervisor.py btc15m_exp_scalp` |
 | `active_trade_supervisor_0001_btc15m_exp_scalp` | `active_trade_supervisor.py btc15m_exp_scalp` |
-| `maker_edge_agent_0001` | `maker_edge_agent.py` |
-| `taker_edge_agent_0001` | `taker_edge_agent.py` |
+| `lower_tail_agent_0001` | `lower_tail_agent.py` |
+| `upper_tail_agent_0001` | `upper_tail_agent.py` |
 
 Generator still emits `*_0002` (and further slots) when that user is a trading user with monitors. Prod supervisor list did not include them.
 
@@ -426,8 +426,8 @@ system_of_record:
   exit_process: backend/active_trade_supervisor.py
   order_gateway: backend/trade_manager.py → backend/trade_executor.py
   exceptions_outside_aes:
-    - maker_edge_agent.py  # strategy "Maker Edge"
-    - taker_edge_agent.py  # strategy "Taker Edge"
+    - lower_tail_agent.py  # strategy "Lower Tail"
+    - upper_tail_agent.py  # strategy "Upper Tail"
 ```
 
 ### 5.1 Two different switches
@@ -550,7 +550,7 @@ Regime (separate from LP): `regime_monitor_enabled` (default false), `regime_win
 
 Prod `system.strategy_list_default.name` on 2026-10-21:
 
-`15m HTC`, `Expiration Reversal`, `Expiration Scalp`, `High Water Scalp`, `High Water Test 1`, `Hourly HTC`, `Maker Edge`, `Momentum Breakout`, `Momentum Contain`, `Rising Devil`, `Taker Edge`.
+`15m HTC`, `Expiration Reversal`, `Expiration Scalp`, `High Water Scalp`, `High Water Test 1`, `Hourly HTC`, `Lower Tail`, `Momentum Breakout`, `Momentum Contain`, `Rising Devil`, `Upper Tail`.
 
 AES code routes at least: `Momentum Scalp`, `Momentum Reversal`, `Reverse HTC`, `Momentum Breakout`, `Momentum Contain`, `Rising Devil`, and defaults unknown names to **Hourly HTC** (`auto_entry_supervisor.py` around the strategy dispatch and `_strategy` fallback). `Momentum Scalp`, `Momentum Reversal`, and `Reverse HTC` are in code and **not** in the prod default strategy table. `15m HTC` is in the table; confirm router before treating it as a live dispatch key.
 
@@ -563,10 +563,10 @@ AES code routes at least: `Momentum Scalp`, `Momentum Reversal`, `Reverse HTC`, 
 | High Water Test 1 | AES/ATS. IOC inside ask band; `limit_close_offset`, `stop_loss_offset` |
 | Rising Devil | AES. Differential gates plus `min_ask_range` |
 | Momentum Scalp / Reversal / Breakout / Contain, Reverse HTC | AES branches |
-| Maker Edge | `maker_edge_agent`. **Not** AES/ATS. Dual resting bids. Doc: `docs/MAKER_EDGE_STRATEGY.md`. Seed `20261017_1500_maker_edge_strategy`. Monitors: 15m, `min_ask=max_ask` default 0.01, `min_time`–`max_time`. Symbols in the doc: BTC, ETH, GOLD, SILVER, WTI |
-| Taker Edge | `taker_edge_agent` places the GTC. AES does not enter. As of v3.12.18, ATS applies the floor stop and floor flip sell (`docs/TAKER_EDGE_STRATEGY.md`). Stop price 0 holds to settlement. Seed `20261020_1645_taker_edge_strategy`. Default target 0.99. Eligible symbols: `live_data_level` `full` or `market` |
+| Lower Tail | `lower_tail_agent`. **Not** AES/ATS. Dual resting bids. Doc: `docs/LOWER_TAIL_STRATEGY.md`. Seed `20261017_1500_maker_edge_strategy`. Monitors: 15m, `min_ask=max_ask` default 0.01, `min_time`–`max_time`. Symbols in the doc: BTC, ETH, GOLD, SILVER, WTI |
+| Upper Tail | `upper_tail_agent` places the GTC. AES does not enter. As of v3.12.18, ATS applies the floor stop and floor flip sell (`docs/UPPER_TAIL_STRATEGY.md`). Stop price 0 holds to settlement. Seed `20261020_1645_taker_edge_strategy`. Default target 0.99. Eligible symbols: `live_data_level` `full` or `market` |
 
-Maker/Taker membership filters: `backend/core/maker_edge_kalshi.py`, `backend/core/taker_edge.py` (`STRATEGY_NAME`, exclude from unified AES/ATS).
+Maker/Taker membership filters: `backend/core/lower_tail_kalshi.py`, `backend/core/upper_tail.py` (`STRATEGY_NAME`, exclude from unified AES/ATS).
 
 ### 5.7 Open / confirm / settle sequence
 
@@ -731,7 +731,7 @@ Ordered by how easily an agent will cargo-cult the wrong generation.
 5. **CPU headroom is thin.** Load ~7–9 on 8 vCPU with ~12Gi RAM free. The box is CPU-bound, not RAM-bound. May 2026 audit already said this; the disk grew, the core count did not.
 6. **Tenant model is half-migrated.** Schemas `users`, `users_0001`, `users_0002`, `users_0003`. Only 0001 is an active Kalshi trader and the only supervised tenant. `REC_SINGLE_USER_MODE=1`. Hardcoded `0001` remains a named backlog item.
 7. **Strategy table ≠ AES router.** Three momentum/reverse names exist in code and not in `strategy_list_default`. Unknown strategy strings fall through to Hourly HTC.
-8. **Maker Edge and Taker Edge still place outside `trade_executor`.** Taker Edge exits for the floor stop go through unified ATS after v3.12.18. Maker Edge stays outside ATS.
+8. **Lower Tail and Upper Tail still place outside `trade_executor`.** Upper Tail exits for the floor stop go through unified ATS after v3.12.18. Lower Tail stays outside ATS.
 9. **`win_loss_confirmed` wording in the schema reference is unsafe.** Code + no-fallback rule win.
 10. **Schema how-to that tells operators to call `init_database()` for alters is unsafe.** Migrations only.
 11. **`docs/DIGITAL_OCEAN_DEPLOYMENT_GUIDE.md` describes a greenfield `deploy_digital_ocean.sh`**, not the current git-pull update path.
@@ -755,7 +755,7 @@ Ordered by how easily an agent will cargo-cult the wrong generation.
 | Shards | `docs/KALSHI_EXCHANGE_SHARDING.md` |
 | Portfolio | `docs/PORTFOLIO_ACCOUNT_SYNC.md` |
 | Trade lifecycle | `docs/TRADE_LIFECYCLE_AND_AUTO_STOP_CURRENT.md` |
-| Maker / Taker | `docs/MAKER_EDGE_STRATEGY.md`, `docs/TAKER_EDGE_STRATEGY.md` |
+| Lower / Upper Tail | `docs/LOWER_TAIL_STRATEGY.md`, `docs/UPPER_TAIL_STRATEGY.md` |
 | Monitors | `docs/MONITORS_LIST_INFRASTRUCTURE.md` |
 | Schema | `docs/MASTER_DB_SCHEMA_REFERENCE.md` |
 | Realtime | `docs/REALTIME_BACKBONE.md`, `docs/REDIS_ARCHITECTURE.md` |

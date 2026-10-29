@@ -783,8 +783,8 @@ class SupervisorConfigGenerator:
                         "autostart": True,
                     }
                 )
-                # Maker Edge: dual BID/ASK resting agent (outside TE).
-                me_name = f"maker_edge_agent_{user_no}"
+                # Lower Tail: dual BID/ASK resting agent (outside TE).
+                me_name = f"lower_tail_agent_{user_no}"
                 try:
                     me_port = int(ports.get(me_name) or (8050 if user_no == "0001" else 8051))
                 except (TypeError, ValueError):
@@ -792,13 +792,13 @@ class SupervisorConfigGenerator:
                 services.append(
                     {
                         "name": me_name,
-                        "script": "maker_edge_agent.py",
+                        "script": "lower_tail_agent.py",
                         "port": me_port,
                         "environment": env_u,
                         "autostart": True,
                     }
                 )
-                te_name = f"taker_edge_agent_{user_no}"
+                te_name = f"upper_tail_agent_{user_no}"
                 try:
                     te_port = int(ports.get(te_name) or (8052 if user_no == "0001" else 8053))
                 except (TypeError, ValueError):
@@ -806,7 +806,7 @@ class SupervisorConfigGenerator:
                 services.append(
                     {
                         "name": te_name,
-                        "script": "taker_edge_agent.py",
+                        "script": "upper_tail_agent.py",
                         "port": te_port,
                         "environment": env_u,
                         "autostart": True,

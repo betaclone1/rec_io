@@ -1,25 +1,25 @@
-"""Paper Taker Edge must use the Kalshi taker fee schedule (same as Expiration / HTC)."""
+"""Paper Upper Tail must use the Kalshi taker fee schedule (same as Expiration / HTC)."""
 
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
 
 from backend.trade_manager import (
-    _paper_open_fee_for_edge_strategy,
-    book_maker_edge_external_fill,
-    book_taker_edge_external_fill,
+    _paper_open_fee_for_tail_strategy,
+    book_lower_tail_external_fill,
+    book_upper_tail_external_fill,
     estimate_kalshi_taker_fee,
 )
 
 
-def test_paper_open_fee_taker_edge_matches_kalshi_schedule():
+def test_paper_open_fee_upper_tail_matches_kalshi_schedule():
     # 0.07 * 32 * 0.99 * 0.01 = 0.022176 → ceil cent = 0.03
     assert estimate_kalshi_taker_fee(32, 0.99) == 0.03
-    assert _paper_open_fee_for_edge_strategy("Taker Edge", 32, 0.99) == 0.03
-    assert _paper_open_fee_for_edge_strategy("Maker Edge", 32, 0.99) == 0.0
+    assert _paper_open_fee_for_tail_strategy("Upper Tail", 32, 0.99) == 0.03
+    assert _paper_open_fee_for_tail_strategy("Lower Tail", 32, 0.99) == 0.0
 
 
-def test_book_taker_edge_paper_stamps_taker_fees():
+def test_book_upper_tail_paper_stamps_taker_fees():
     captured = {}
 
     class Cur:
@@ -61,7 +61,7 @@ def test_book_taker_edge_paper_stamps_taker_fees():
         patch("backend.trade_manager.log"),
         patch("backend.trade_manager._paper_ledger_on_open") as ledger,
         patch(
-            "backend.trade_manager._maker_edge_bankroll_allotment_cents",
+            "backend.trade_manager._lower_tail_bankroll_allotment_cents",
             return_value=10000,
         ),
         patch(
@@ -69,9 +69,9 @@ def test_book_taker_edge_paper_stamps_taker_fees():
             return_value="ETH",
         ),
     ):
-        out = book_taker_edge_external_fill(
+        out = book_upper_tail_external_fill(
             {
-                "trade_strategy": "Taker Edge",
+                "trade_strategy": "Upper Tail",
                 "side": "yes",
                 "buy_price": 0.99,
                 "position": 32,
@@ -89,7 +89,7 @@ def test_book_taker_edge_paper_stamps_taker_fees():
     assert ledger.call_args[0][2] == 0.03
 
 
-def test_book_maker_edge_paper_keeps_zero_fees():
+def test_book_lower_tail_paper_keeps_zero_fees():
     captured = {}
 
     class Cur:
@@ -124,7 +124,7 @@ def test_book_maker_edge_paper_keeps_zero_fees():
         patch("backend.trade_manager.log"),
         patch("backend.trade_manager._paper_ledger_on_open") as ledger,
         patch(
-            "backend.trade_manager._maker_edge_bankroll_allotment_cents",
+            "backend.trade_manager._lower_tail_bankroll_allotment_cents",
             return_value=10000,
         ),
         patch(
@@ -132,13 +132,13 @@ def test_book_maker_edge_paper_keeps_zero_fees():
             return_value="BTC",
         ),
         patch(
-            "backend.core.aes_btc15m_maker_edge_cutout.STRATEGY_NAME",
-            "Maker Edge",
+            "backend.core.aes_btc15m_lower_tail_cutout.STRATEGY_NAME",
+            "Lower Tail",
         ),
     ):
-        book_maker_edge_external_fill(
+        book_lower_tail_external_fill(
             {
-                "trade_strategy": "Maker Edge",
+                "trade_strategy": "Lower Tail",
                 "side": "yes",
                 "buy_price": 0.99,
                 "position": 32,

@@ -35,7 +35,7 @@ v4 will explore breaking that into discrete production servers with separate res
 | Area | Owns (intent) | v3 home today |
 |------|----------------|---------------|
 | `live_data_collection_and_archiving` | Market and index ingest, strike/snapshot capture, cycle packages, Drive or other archive | `market_watchdog_ws_kalshi`, `cfbenchmarks_price_watchdog`, `pyth_price_watchdog`, `strike_table_generator_ws_*`, `strike_snapshot_publisher`, `cycle_packager`, historical disk, Drive cron |
-| `automated_trading` | Monitors, auto entry, active-trade stops, order placement, account sync, lifecycle | `auto_entry_supervisor_*`, `active_trade_supervisor_*`, `trade_manager_*`, `trade_executor_*`, `maker_edge_agent_*`, `taker_edge_agent_*`, `kalshi_account_sync_*`, `kalshi_lifecycle_consumer_*`, `monitor_manager_*`, `position_risk_engine` |
+| `automated_trading` | Monitors, auto entry, active-trade stops, order placement, account sync, lifecycle | `auto_entry_supervisor_*`, `active_trade_supervisor_*`, `trade_manager_*`, `trade_executor_*`, `lower_tail_agent_*`, `upper_tail_agent_*`, `kalshi_account_sync_*`, `kalshi_lifecycle_consumer_*`, `monitor_manager_*`, `position_risk_engine` |
 | `backtesting_and_analysis` | Historical replay, sweeps, research | Local scripts under `scripts/backtest/`, cycle packages, `analytics` schema. Not a production daemon tier today |
 | `etc` | Unassigned. UI, bookkeeping, auth, and Postgres may land here or on their own hosts. Not decided |
 
@@ -72,7 +72,7 @@ v3 symbol facts as of the 2026-10-22 production check (`AUDIT_V3_BASELINE.md` §
 - Strike generators take no `--symbols` list. Depth comes from that column.
 - `live_data_level` is deployed. It is the current feed switch, not a v4 decision about which new symbols to add.
 
-Maker Edge places outside the auto-entry supervisor. Taker Edge places in `taker_edge_agent` and, since v3.12.18, uses unified ATS for the floor stop and floor flip sell. Any 15m expansion has to say which execution path a new symbol uses and which `live_data_level` it gets.
+Lower Tail places outside the auto-entry supervisor. Upper Tail places in `upper_tail_agent` and, since v3.12.18, uses unified ATS for the floor stop and floor flip sell. Any 15m expansion has to say which execution path a new symbol uses and which `live_data_level` it gets.
 
 Kalshi collateral stays per shard. Crypto orders debit `(exchange_index=2, subaccount=1)` today. A new category may be a different shard (`docs/KALSHI_EXCHANGE_SHARDING.md`). Do not assume one cash pool covers every new series.
 

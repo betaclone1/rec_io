@@ -1,0 +1,17 @@
+---
+description: Lower Tail resting-order ops (queue position)
+globs:
+  - backend/lower_tail_agent.py
+  - backend/core/lower_tail_kalshi.py
+alwaysApply: false
+---
+
+# Lower Tail — resting order ops
+
+When duplicate dual rests exist at the same price (e.g. after a mistaken re-place):
+
+1. **Keep the older orders.** They have better queue position.
+2. **Cancel the newer ones.** Never cancel the older pair to “clean up.”
+3. **No mid-cycle live recovery place** in `lower_tail_agent` — restart during an open cycle skips that cycle.
+
+See `docs/LOWER_TAIL_STRATEGY.md` §5.3 (Queue position).

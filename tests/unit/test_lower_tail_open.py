@@ -1,11 +1,11 @@
-"""Maker Edge open_time targeting."""
+"""Lower Tail open_time targeting."""
 
 from __future__ import annotations
 
 import time
 
-from backend.core.maker_edge_open import (
-    maker_edge_series_tickers,
+from backend.core.lower_tail_open import (
+    lower_tail_series_tickers,
     select_next_open_target,
     select_targets_co_opening,
     symbol_from_market_ticker,
@@ -51,8 +51,8 @@ def test_symbol_from_market_ticker_multi():
     assert symbol_from_market_ticker("KXWTI15M-26OCT181200-00") == "WTI"
 
 
-def test_maker_edge_series_tickers():
-    assert maker_edge_series_tickers() == [
+def test_lower_tail_series_tickers():
+    assert lower_tail_series_tickers() == [
         "KXBTC15M",
         "KXETH15M",
         "KXGOLD15M",
@@ -126,7 +126,7 @@ def test_wait_until_open_ts_spin():
 
 
 def test_paper_fill_side_from_public_print_exact_cent():
-    from backend.maker_edge_agent import paper_fill_side_from_print
+    from backend.lower_tail_agent import paper_fill_side_from_print
 
     # Exact L only — sub-cent / cheaper than L is not a dual-rest fill.
     assert (
@@ -154,7 +154,7 @@ def test_paper_fill_side_from_public_print_exact_cent():
 def test_check_fills_paper_uses_tape_not_ask_touch():
     from unittest.mock import patch
 
-    import backend.maker_edge_agent as me
+    import backend.lower_tail_agent as me
 
     st = me.DualRestState(
         monitor_id="99027",
@@ -183,7 +183,7 @@ def test_check_fills_paper_uses_tape_not_ask_touch():
 
 
 def test_min_ttc_cancel_gate():
-    from backend.maker_edge_agent import should_cancel_unfilled_at_min_ttc
+    from backend.lower_tail_agent import should_cancel_unfilled_at_min_ttc
 
     assert should_cancel_unfilled_at_min_ttc(min_time=0, ttc=50) is False
     assert should_cancel_unfilled_at_min_ttc(min_time=100, ttc=None) is False
@@ -195,7 +195,7 @@ def test_min_ttc_cancel_gate():
 def test_check_fills_cancels_both_at_min_ttc():
     from unittest.mock import patch
 
-    import backend.maker_edge_agent as me
+    import backend.lower_tail_agent as me
 
     st = me.DualRestState(
         monitor_id="99027",
@@ -229,7 +229,7 @@ def test_check_fills_cancels_both_at_min_ttc():
 def test_check_fills_min_zero_does_not_cancel():
     from unittest.mock import patch
 
-    import backend.maker_edge_agent as me
+    import backend.lower_tail_agent as me
 
     st = me.DualRestState(
         monitor_id="99027",

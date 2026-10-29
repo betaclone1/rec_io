@@ -9127,7 +9127,7 @@
         <div id="m_highWaterScalpPriceTargetSection" style="display:none;">
         <label for="m_highWaterScalpPriceTargetSlider" id="m_highWaterScalpPriceTargetLabel" style="font-size:14px; color:#333; font-weight:500;">Active-Side Price Target:</label>
         <div class="value-bubble-container" style="position:relative; width:100%;">
-          <!-- value=1 until hydrate: never ship a fiction 0.90 that Maker Edge could Save -->
+          <!-- value=1 until hydrate: never ship a fiction 0.90 that Lower Tail could Save -->
           <input type="range" id="m_highWaterScalpPriceTargetSlider" min="1" max="99" step="1" value="1" style="width:100%; height:6px; z-index:1; position:relative; background:#e0e0e0; border-radius:3px; outline:none;" />
           <div id="m_highWaterScalpPriceTargetValueDisplay" style="position:absolute; top:-32px; left:0; font-size:12px; color:#222; background:white; padding:4px 8px; border-radius:4px; box-shadow:0 2px 8px rgba(0,0,0,0.15); pointer-events:none; z-index:2; transform:translateX(-50%); border:1px solid #e0e0e0;">0.9000</div>
         </div>
@@ -9775,11 +9775,11 @@
       function uatMobileIsHighWaterFamily(strategy) {
         return uatMobileIsHighWaterScalp(strategy) || uatMobileIsHighWaterTest1(strategy);
       }
-      function uatMobileIsMakerEdge(strategy) {
-        return String(strategy || '').toUpperCase().includes('MAKER EDGE');
+      function uatMobileIsLowerTail(strategy) {
+        return String(strategy || '').toUpperCase().includes('LOWER TAIL');
       }
-      function uatMobileIsTakerEdge(strategy) {
-        return String(strategy || '').toUpperCase().includes('TAKER EDGE');
+      function uatMobileIsUpperTail(strategy) {
+        return String(strategy || '').toUpperCase().includes('UPPER TAIL');
       }
       function uatMobileIsExpirationReversal(strategy) {
         return String(strategy || '').toUpperCase().includes('EXPIRATION REVERSAL');
@@ -9820,7 +9820,7 @@
         return String(market || '').trim().toLowerCase() === '15m';
       }
       function uatMobileTimeWindowMaxSeconds(strategy, market) {
-        if (uatMobileIsMakerEdge(strategy) || uatMobileIsTakerEdge(strategy) || uatMobileIsHighWaterFamily(strategy)) {
+        if (uatMobileIsLowerTail(strategy) || uatMobileIsUpperTail(strategy) || uatMobileIsHighWaterFamily(strategy)) {
           return uatMobileMonitorMarketIs15m(market) ? 900 : 3600;
         }
         // Expiration Scalp / Expiration Reversal: full 15m window 00:00–15:00.
@@ -9829,9 +9829,9 @@
         return 3600;
       }
 
-      function mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge, isTakerEdge) {
+      function mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isTailStrategy, isUpperTail) {
         const isHighWaterFamily = !!(isHighWaterScalp || isHighWaterTest1);
-        const makerEdge = !!isMakerEdge;
+        const tailStrategy = !!isTailStrategy;
         const disp = (on) => (on ? '' : 'none');
         const setForId = (id, visible) => {
           const el = document.getElementById(id);
@@ -9846,9 +9846,9 @@
         setForId('m_autoEntryMaxDiff', !isExpirationScalp);
         const minVolSection = document.getElementById('m_uatMinVolumeSection');
         if (minVolSection) minVolSection.style.display = isExpirationScalp ? 'none' : '';
-        // Expiration family: show HTC LP block (outside non-Expiration wrapper). Maker Edge hides it.
+        // Expiration family: show HTC LP block (outside non-Expiration wrapper). Lower Tail hides it.
         document.querySelectorAll('#m_htcStrategySection .uat-loss-prevention-block').forEach(function (el) {
-          el.style.display = disp(!makerEdge);
+          el.style.display = disp(!tailStrategy);
         });
         const spikeRow = document.getElementById('m_spikeEnabled');
         if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = disp(!isExpirationScalp);
@@ -9888,55 +9888,55 @@
         const esAsk = document.getElementById('m_expirationScalpAskWindowSection');
         if (esAsk) {
           esAsk.style.display = (
-            !makerEdge && ((isExpirationScalp && !isHighWaterFamily) || !!isHighWaterTest1)
+            !tailStrategy && ((isExpirationScalp && !isHighWaterFamily) || !!isHighWaterTest1)
           ) ? 'block' : 'none';
         }
         const esFill = document.getElementById('m_expirationScalpFillGatesSection');
-        if (esFill) esFill.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
+        if (esFill) esFill.style.display = (!tailStrategy && isExpirationScalp) ? 'block' : 'none';
         const hwsPt = document.getElementById('m_highWaterScalpPriceTargetSection');
-        if (hwsPt) hwsPt.style.display = (isHighWaterScalp || makerEdge) ? 'block' : 'none';
+        if (hwsPt) hwsPt.style.display = (isHighWaterScalp || tailStrategy) ? 'block' : 'none';
         const hwsPtLabel = document.getElementById('m_highWaterScalpPriceTargetLabel');
         if (hwsPtLabel) {
-          hwsPtLabel.textContent = isTakerEdge
+          hwsPtLabel.textContent = isUpperTail
             ? 'Target Price:'
-            : (makerEdge ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:');
+            : (tailStrategy ? 'Limit Price (BID & ASK):' : 'Active-Side Price Target:');
         }
         const esMov = document.getElementById('m_expirationScalpMovementWindowSection');
-        if (esMov) esMov.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
+        if (esMov) esMov.style.display = (!tailStrategy && isExpirationScalp) ? 'block' : 'none';
         const esNote = document.getElementById('m_expirationScalpProbMovementNote');
-        if (esNote) esNote.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
+        if (esNote) esNote.style.display = (!tailStrategy && isExpirationScalp) ? 'block' : 'none';
         const esVerify = document.getElementById('m_expirationScalpVerificationSection');
-        if (esVerify) esVerify.style.display = (!makerEdge && isExpirationScalp) ? 'block' : 'none';
+        if (esVerify) esVerify.style.display = (!tailStrategy && isExpirationScalp) ? 'block' : 'none';
         const hwsClose = document.getElementById('m_highWaterScalpLimitCloseSection');
-        if (hwsClose) hwsClose.style.display = (!makerEdge && isHighWaterScalp) ? 'block' : 'none';
+        if (hwsClose) hwsClose.style.display = (!tailStrategy && isHighWaterScalp) ? 'block' : 'none';
         const hwt1Close = document.getElementById('m_highWaterTest1LimitCloseOffsetSection');
-        if (hwt1Close) hwt1Close.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
+        if (hwt1Close) hwt1Close.style.display = (!tailStrategy && isHighWaterTest1) ? 'block' : 'none';
         const hwsStop = document.getElementById('m_highWaterScalpStopLossPriceSection');
-        if (hwsStop) hwsStop.style.display = ((makerEdge && !isTakerEdge) || isHighWaterTest1) ? 'none' : '';
+        if (hwsStop) hwsStop.style.display = ((tailStrategy && !isUpperTail) || isHighWaterTest1) ? 'none' : '';
         const hwt1Stop = document.getElementById('m_highWaterTest1StopLossOffsetSection');
-        if (hwt1Stop) hwt1Stop.style.display = (!makerEdge && isHighWaterTest1) ? 'block' : 'none';
+        if (hwt1Stop) hwt1Stop.style.display = (!tailStrategy && isHighWaterTest1) ? 'block' : 'none';
         const hwsPre = document.getElementById('m_highWaterPositionRiskSection');
-        if (hwsPre) hwsPre.style.display = (!makerEdge && isHighWaterFamily) ? 'block' : 'none';
+        if (hwsPre) hwsPre.style.display = (!tailStrategy && isHighWaterFamily) ? 'block' : 'none';
         const otEl = document.getElementById('m_uatKalshiOrderType');
         const tifEl = document.getElementById('m_uatKalshiTimeInForce');
         const otWrap = otEl && otEl.parentElement;
         const tifWrap = tifEl && tifEl.parentElement;
         if (otEl) {
-          otEl.disabled = !!makerEdge;
-          if (makerEdge) otEl.value = 'limit';
+          otEl.disabled = !!tailStrategy;
+          if (tailStrategy) otEl.value = 'limit';
         }
         if (tifEl) {
-          tifEl.disabled = !!makerEdge;
-          if (makerEdge) tifEl.value = 'good_till_canceled';
+          tifEl.disabled = !!tailStrategy;
+          if (tailStrategy) tifEl.value = 'good_till_canceled';
         }
-        if (otWrap) otWrap.style.display = makerEdge ? 'none' : '';
-        if (tifWrap) tifWrap.style.display = makerEdge ? 'none' : '';
-        const nonScalpShow = !isExpirationScalp && !makerEdge;
+        if (otWrap) otWrap.style.display = tailStrategy ? 'none' : '';
+        if (tifWrap) tifWrap.style.display = tailStrategy ? 'none' : '';
+        const nonScalpShow = !isExpirationScalp && !tailStrategy;
         ['m_uatNonExpirationScalpAutoEntry', 'm_uatNonExpirationScalpAutoEntryTail'].forEach(function (id) {
           const el = document.getElementById(id);
           if (el) el.style.display = disp(nonScalpShow);
         });
-        if (makerEdge) {
+        if (tailStrategy) {
           setForId('m_autoEntryMinVolume', false);
           setForId('m_autoEntryDiff', false);
           setForId('m_autoEntryMaxDiff', false);
@@ -9948,7 +9948,7 @@
           if (probWrap) probWrap.style.display = 'none';
           else if (probContainer) probContainer.style.display = 'none';
         }
-        if (makerEdge && !isTakerEdge) {
+        if (tailStrategy && !isUpperTail) {
           if (spikeRow && spikeRow.parentElement) spikeRow.parentElement.style.display = 'none';
           if (spikeGroup) spikeGroup.style.display = 'none';
           const cooldownSecMaker = document.getElementById('m_uatCooldownWindowSection');
@@ -9960,7 +9960,7 @@
           if (stopVerifyControls) stopVerifyControls.style.display = 'none';
           if (autoStopSection) autoStopSection.style.display = 'none';
         }
-        if (isTakerEdge) {
+        if (isUpperTail) {
           if (autoStopSection) autoStopSection.style.display = '';
           if (probabilityAutoStopControls) probabilityAutoStopControls.style.display = 'none';
           if (nonFloorAutoStopControls) nonFloorAutoStopControls.style.display = 'none';
@@ -11324,8 +11324,8 @@
         const isHighWaterScalp = uatMobileIsHighWaterScalp(currentStrategy);
         const isHighWaterTest1 = uatMobileIsHighWaterTest1(currentStrategy);
         const isHighWaterFamily = uatMobileIsHighWaterFamily(currentStrategy);
-        const isTakerEdge = uatMobileIsTakerEdge(currentStrategy);
-        const isMakerEdge = uatMobileIsMakerEdge(currentStrategy) || isTakerEdge;
+        const isUpperTail = uatMobileIsUpperTail(currentStrategy);
+        const isTailStrategy = uatMobileIsLowerTail(currentStrategy) || isUpperTail;
         const isExpirationScalp = uatMobileIsExpirationScalpEntry(currentStrategy);
         window.dashboardMobileTimeWindowMaxSeconds = uatMobileTimeWindowMaxSeconds(currentStrategy, monitor && monitor.market);
         
@@ -11366,7 +11366,7 @@
         const probLabel = document.querySelector('label[for="m_probabilityWindowSlider"]');
         const mProbContainer = document.getElementById('m_probabilityWindowSliderContainer');
         const mProbWrap = mProbContainer && mProbContainer.closest('.value-bubble-container');
-        if (isMakerEdge) {
+        if (isTailStrategy) {
           if (probLabel) probLabel.style.setProperty('display', 'none', 'important');
           if (mProbWrap) mProbWrap.style.display = 'none';
           else if (mProbContainer) mProbContainer.style.display = 'none';
@@ -11410,13 +11410,13 @@
           const showGenericSlip = !isRisingDevil && !isExpirationScalp;
           if (genSec) genSec.style.display = showGenericSlip ? '' : 'none';
         }
-        mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isMakerEdge, isTakerEdge);
+        mobileDashApplyExpirationScalpLayout(isExpirationScalp, isHighWaterScalp, isHighWaterTest1, isTailStrategy, isUpperTail);
 
         const data = await mobileFetchSettings(apiId);
         const meAskA = data ? Number(data.min_ask) : NaN;
         const meAskB = data ? Number(data.max_ask) : NaN;
         const meAskLim = Number.isFinite(meAskA) ? meAskA : meAskB;
-        const meAskOk = !isMakerEdge || (Number.isFinite(meAskLim) && meAskLim > 0 && meAskLim < 1);
+        const meAskOk = !isTailStrategy || (Number.isFinite(meAskLim) && meAskLim > 0 && meAskLim < 1);
         if (!data || !Number.isFinite(Number(data.min_time)) || !Number.isFinite(Number(data.max_time)) || !meAskOk) {
           modal.dataset.uatSettingsHydrated = '0';
           if (saveBtnEarly) {
@@ -11578,7 +11578,7 @@
           const esMaxAsk = uatMobileFiniteOrNull(data.max_ask);
           if (esMinAsk != null) dashboardMobileExpirationScalpMinAsk = esMinAsk;
           if (esMaxAsk != null) dashboardMobileExpirationScalpMaxAsk = esMaxAsk;
-          // Maker Edge limit populate is outside this branch (not Expiration Scalp entry).
+          // Lower Tail limit populate is outside this branch (not Expiration Scalp entry).
           if (isHighWaterScalp && esMinAsk != null) {
             uatMobileApplyLimitPriceSliderFromMonitorAsk(esMinAsk);
           }
@@ -11694,8 +11694,8 @@
           }
         }
 
-        // Maker Edge: shared HWS Limit Price slider HTML defaults to 0.90 — load monitor ask here.
-        if (isMakerEdge) {
+        // Lower Tail: shared HWS Limit Price slider HTML defaults to 0.90 — load monitor ask here.
+        if (isTailStrategy) {
           const meAsk = uatMobileFiniteOrNull(data.min_ask) != null
             ? uatMobileFiniteOrNull(data.min_ask)
             : uatMobileFiniteOrNull(data.max_ask);
@@ -11985,7 +11985,7 @@
             payload.test_filter = mTfEl ? mTfEl.checked : false;
             const mRevEl = document.getElementById('m_uatMonitorReverse');
             payload.reverse = mRevEl ? mRevEl.checked : false;
-            if (uatMobileIsMakerEdge(currentStrategy) || uatMobileIsTakerEdge(currentStrategy)) {
+            if (uatMobileIsLowerTail(currentStrategy) || uatMobileIsUpperTail(currentStrategy)) {
               payload.order_type = 'limit';
               payload.time_in_force = 'good_till_canceled';
             } else {
@@ -12032,7 +12032,7 @@
             const saveIsHWS = uatMobileIsHighWaterScalp(currentStrategy);
             const saveIsHWT1 = uatMobileIsHighWaterTest1(currentStrategy);
             const saveIsHWSFamily = uatMobileIsHighWaterFamily(currentStrategy);
-            const saveIsME = uatMobileIsMakerEdge(currentStrategy) || uatMobileIsTakerEdge(currentStrategy);
+            const saveIsME = uatMobileIsLowerTail(currentStrategy) || uatMobileIsUpperTail(currentStrategy);
 
             if (saveIsME) {
               const ptEl = document.getElementById('m_highWaterScalpPriceTargetSlider');

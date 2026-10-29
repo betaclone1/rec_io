@@ -1,11 +1,11 @@
 """
-Maker Edge membership — exclude from unified AES/ATS.
+Lower Tail membership — exclude from unified AES/ATS.
 
 Config rule (not hard-coded monitor ids):
-  market=15m, strategy=Maker Edge, symbol in MAKER_EDGE_SYMBOLS
+  market=15m, strategy=Lower Tail, symbol in LOWER_TAIL_SYMBOLS
   (BTC, ETH, GOLD, SILVER, WTI)
 
-Entry place/cancel runs in maker_edge_agent, not AES→TM→TE.
+Entry place/cancel runs in lower_tail_agent, not AES→TM→TE.
 """
 
 from __future__ import annotations
@@ -14,58 +14,58 @@ import threading
 import time
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-STRATEGY_NAME = "Maker Edge"
+STRATEGY_NAME = "Lower Tail"
 CUTOUT_MARKET = "15m"
 # v1 was BTC-only; expanded to crypto + commodity 15m underlyings in symbols_list.
-MAKER_EDGE_SYMBOLS: frozenset[str] = frozenset(
+LOWER_TAIL_SYMBOLS: frozenset[str] = frozenset(
     {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
 )
 # Back-compat alias (older call sites / docs).
 CUTOUT_SYMBOL = "BTC"
 
 
-def is_maker_edge_symbol(symbol: Any) -> bool:
-    return str(symbol or "").strip().upper() in MAKER_EDGE_SYMBOLS
+def is_lower_tail_symbol(symbol: Any) -> bool:
+    return str(symbol or "").strip().upper() in LOWER_TAIL_SYMBOLS
 
 
-def is_maker_edge_row(row: Dict[str, Any]) -> bool:
+def is_lower_tail_row(row: Dict[str, Any]) -> bool:
     sym = str(row.get("symbol") or "").strip().upper()
     mkt = str(row.get("market") or "").strip().lower()
     strat = str(row.get("strategy") or "").strip()
     return (
-        sym in MAKER_EDGE_SYMBOLS
+        sym in LOWER_TAIL_SYMBOLS
         and mkt == CUTOUT_MARKET
         and strat == STRATEGY_NAME
     )
 
 
-def row_matches_maker_edge_fields(
+def row_matches_lower_tail_fields(
     *,
     symbol: Any,
     market: Any,
     strategy: Any,
 ) -> bool:
-    return is_maker_edge_row(
+    return is_lower_tail_row(
         {"symbol": symbol, "market": market, "strategy": strategy}
     )
 
 
-def filter_out_maker_edge_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [r for r in rows if not is_maker_edge_row(r)]
+def filter_out_lower_tail_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [r for r in rows if not is_lower_tail_row(r)]
 
 
-def filter_maker_edge_rows_only(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [r for r in rows if is_maker_edge_row(r)]
+def filter_lower_tail_rows_only(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [r for r in rows if is_lower_tail_row(r)]
 
 
 def _sql_symbol_in_clause() -> Tuple[str, Tuple[str, ...]]:
-    syms = tuple(sorted(MAKER_EDGE_SYMBOLS))
+    syms = tuple(sorted(LOWER_TAIL_SYMBOLS))
     placeholders = ", ".join(["%s"] * len(syms))
     return placeholders, syms
 
 
-def list_active_maker_edge_monitor_rows() -> List[Dict[str, Any]]:
-    """Active 15m Maker Edge monitors (allowed symbols) with settings needed by the agent."""
+def list_active_lower_tail_monitor_rows() -> List[Dict[str, Any]]:
+    """Active 15m Lower Tail monitors (allowed symbols) with settings needed by the agent."""
     from backend.core.config.database import get_postgresql_connection
     from backend.core.port_config import default_pool_user_number
     from backend.core.tenant_legacy_sql import legacy_users_monitor_list
@@ -141,14 +141,14 @@ _id_cache_lock = threading.Lock()
 _id_cache: Dict[str, Any] = {"ts": 0.0, "ids": set()}
 
 
-def active_maker_edge_monitor_ids(*, max_age_sec: float = 5.0) -> Set[str]:
+def active_lower_tail_monitor_ids(*, max_age_sec: float = 5.0) -> Set[str]:
     now = time.monotonic()
     with _id_cache_lock:
         if now - float(_id_cache["ts"]) <= max_age_sec:
             return set(_id_cache["ids"])
     ids = {
         str(r["monitor_id"])
-        for r in list_active_maker_edge_monitor_rows()
+        for r in list_active_lower_tail_monitor_rows()
         if r.get("auto_trade")
     }
     with _id_cache_lock:

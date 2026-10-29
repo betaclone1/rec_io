@@ -1828,7 +1828,7 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
                 },
             )
 
-    # Public trades for lean commodity markets (taker-edge tape).
+    # Public trades for lean commodity markets (upper-tail tape).
     if master.trade_sid is None and want_trade:
         await _ws_json(
             master,

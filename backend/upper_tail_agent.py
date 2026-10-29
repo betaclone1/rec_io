@@ -1,5 +1,5 @@
 """
-Taker Edge agent — one GTC limit when a public print reaches the target.
+Upper Tail agent — one GTC limit when a public print reaches the target.
 
 Outside trade_executor. Watches the live public tape during the monitor time
 window. A print at or above the target on one side places a single GTC at that
@@ -20,26 +20,26 @@ import requests
 import uvicorn
 from fastapi import FastAPI
 
-from backend.core.aes_btc15m_maker_edge_cutout import resolve_monitor_limit_dollars
+from backend.core.aes_btc15m_lower_tail_cutout import resolve_monitor_limit_dollars
 from backend.core.kalshi_event_market_fetch import fetch_market_payload
 from backend.core.kalshi_public_trade_redis import load_public_trade_prints
-from backend.core.maker_edge_kalshi import (
+from backend.core.lower_tail_kalshi import (
     cancel_order,
     extract_order_id,
     place_limit_gtc,
     v2_price_for_limit_side,
 )
-from backend.core.maker_edge_open import (
+from backend.core.lower_tail_open import (
     fetch_series_15m_markets,
     select_live_targets_by_symbol,
 )
 from backend.core.port_config import default_pool_user_number, get_port
-from backend.core.taker_edge import (
+from backend.core.upper_tail import (
     STRATEGY_NAME,
     floor_strike_from_market,
-    list_active_taker_edge_monitor_rows,
-    taker_edge_series_tickers,
-    taker_edge_side_from_print,
+    list_active_upper_tail_monitor_rows,
+    upper_tail_series_tickers,
+    upper_tail_side_from_print,
     ttc_in_entry_window,
 )
 from backend.core.time_eastern import now_est
@@ -47,13 +47,13 @@ from backend.trading_mode import effective_paper_trade
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] taker_edge_agent: %(message)s",
+    format="%(asctime)s [%(levelname)s] upper_tail_agent: %(message)s",
 )
-log = logging.getLogger("taker_edge_agent")
+log = logging.getLogger("upper_tail_agent")
 
-POLL_SEC = float(os.getenv("TAKER_EDGE_POLL_SEC", "0.25"))
+POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "0.25"))
 
-app = FastAPI(title="Taker Edge Agent")
+app = FastAPI(title="Upper Tail Agent")
 _wake = threading.Event()
 _lock = threading.Lock()
 _started_at = time.time()
@@ -229,7 +229,7 @@ def _maybe_fetch_floor(cy: _Cycle) -> None:
 
 def _fill_prob_diff(ticker: str, side: str) -> tuple:
     """Side-aware strike-ladder prob (%) and diff. (None, None) when the symbol has no ladder row."""
-    from backend.maker_edge_agent import ladder_prob_diff_at_fill
+    from backend.lower_tail_agent import ladder_prob_diff_at_fill
 
     return ladder_prob_diff_at_fill(ticker, side)
 
@@ -243,10 +243,10 @@ def _book(cy: _Cycle, *, side: str, fill_qty: float) -> Optional[int]:
     port = get_port("trade_manager")
     est = now_est()
     un = _user_no()
-    ticket_id = f"te_{un}_{cy.monitor_id}_{cy.ticker}_{side}"
+    ticket_id = f"ut_{un}_{cy.monitor_id}_{cy.ticker}_{side}"
     prob, diff = _fill_prob_diff(cy.ticker, side)
     payload = {
-        "intent": "taker_edge_fill",
+        "intent": "upper_tail_fill",
         "ticket_id": ticket_id,
         "symbol": cy.symbol,
         "market": "15m",
@@ -262,7 +262,7 @@ def _book(cy: _Cycle, *, side: str, fill_qty: float) -> Optional[int]:
         "monitor": f"mon_{un}_{cy.monitor_id}",
         "subaccount": int(cy.subaccount),
         "paper_trade": bool(cy.paper),
-        "entry_method": "taker_edge",
+        "entry_method": "upper_tail",
         "order_id_open": cy.order_id or "",
         "time_in_force": "good_till_canceled",
         "order_type": "limit",
@@ -341,7 +341,7 @@ def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
             ttc=print_ttc, min_time=cy.min_time, max_time=cy.max_time
         ):
             continue
-        side = taker_edge_side_from_print(
+        side = upper_tail_side_from_print(
             yes_price=_parse_px(rec.get("yes_price_dollars")),
             no_price=_parse_px(rec.get("no_price_dollars")),
             limit_px=cy.limit_px,
@@ -375,13 +375,13 @@ def _on_fill(cy: _Cycle, *, side: str, qty: float) -> None:
 
 def _live_markets() -> list:
     out: list = []
-    for series in taker_edge_series_tickers():
+    for series in upper_tail_series_tickers():
         out.extend(fetch_series_15m_markets(series))
     return out
 
 
 def _tick() -> None:
-    monitors = list_active_taker_edge_monitor_rows()
+    monitors = list_active_upper_tail_monitor_rows()
     _sync_statuses(monitors)
     live = select_live_targets_by_symbol(_live_markets())
     now = time.time()
@@ -517,7 +517,7 @@ def _start_listeners() -> None:
                 except Exception:
                     time.sleep(0.5)
 
-        threading.Thread(target=_tape_worker, name="taker_edge_tape", daemon=True).start()
+        threading.Thread(target=_tape_worker, name="upper_tail_tape", daemon=True).start()
     except Exception as exc:
         _log(f"public trade listener not started: {exc}")
 
@@ -528,7 +528,7 @@ def health() -> Dict[str, Any]:
         n = len(_cycles)
     return {
         "status": "ok",
-        "service": "taker_edge_agent",
+        "service": "upper_tail_agent",
         "user_no": _user_no(),
         "cycles": n,
         "uptime_sec": round(time.time() - _started_at, 1),
@@ -538,9 +538,9 @@ def health() -> Dict[str, Any]:
 def main() -> None:
     un = _user_no()
     _start_listeners()
-    threading.Thread(target=_loop, name="taker_edge_main", daemon=True).start()
+    threading.Thread(target=_loop, name="upper_tail_main", daemon=True).start()
     try:
-        port = get_port(f"taker_edge_agent_{un}")
+        port = get_port(f"upper_tail_agent_{un}")
     except Exception:
         port = 8052 if un == "0001" else 8053
     _log(f"health on port {port}")

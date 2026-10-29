@@ -1,11 +1,11 @@
 """
-Taker Edge membership — exclude from unified AES.
+Upper Tail membership — exclude from unified AES.
 
 Config rule:
-  market=15m, strategy=Taker Edge, symbol has a 15m series and
+  market=15m, strategy=Upper Tail, symbol has a 15m series and
   live_data_level full or market (public tape exists)
 
-Entry is a live public-trade trigger in taker_edge_agent, not AES→TM→TE.
+Entry is a live public-trade trigger in upper_tail_agent, not AES→TM→TE.
 One GTC limit on the side whose print is at or above the monitor target.
 ATS supervises the open leg with the Expiration Scalp floor stop and flip sell.
 """
@@ -14,15 +14,15 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-STRATEGY_NAME = "Taker Edge"
+STRATEGY_NAME = "Upper Tail"
 CUTOUT_MARKET = "15m"
 
 
-def taker_edge_symbols() -> frozenset[str]:
+def upper_tail_symbols() -> frozenset[str]:
     """15m underlyings whose live feed includes the public tape.
 
     ``full`` and ``market`` both carry public trades. ``price_only`` and
-    ``none`` do not, so a Taker Edge monitor on those symbols stays outside
+    ``none`` do not, so an Upper Tail monitor on those symbols stays outside
     this agent (and outside the AES cutout) until the level changes.
     """
     from backend.core.live_data_level import market_feed_symbols
@@ -31,34 +31,34 @@ def taker_edge_symbols() -> frozenset[str]:
     return frozenset(s for s in market_feed_symbols() if s in SERIES_15M_BY_SYMBOL)
 
 
-def taker_edge_series_tickers() -> list[str]:
-    from backend.core.maker_edge_open import series_15m_for_symbol
+def upper_tail_series_tickers() -> list[str]:
+    from backend.core.lower_tail_open import series_15m_for_symbol
 
     out: list[str] = []
-    for sym in sorted(taker_edge_symbols()):
+    for sym in sorted(upper_tail_symbols()):
         ser = series_15m_for_symbol(sym)
         if ser:
             out.append(ser)
     return out
 
 
-def is_taker_edge_symbol(symbol: Any) -> bool:
-    return str(symbol or "").strip().upper() in taker_edge_symbols()
+def is_upper_tail_symbol(symbol: Any) -> bool:
+    return str(symbol or "").strip().upper() in upper_tail_symbols()
 
 
-def is_taker_edge_row(row: Dict[str, Any]) -> bool:
+def is_upper_tail_row(row: Dict[str, Any]) -> bool:
     sym = str(row.get("symbol") or "").strip().upper()
     mkt = str(row.get("market") or "").strip().lower()
     strat = str(row.get("strategy") or "").strip()
     return (
         mkt == CUTOUT_MARKET
         and strat == STRATEGY_NAME
-        and sym in taker_edge_symbols()
+        and sym in upper_tail_symbols()
     )
 
 
-def filter_out_taker_edge_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    return [r for r in rows if not is_taker_edge_row(r)]
+def filter_out_upper_tail_rows(rows: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    return [r for r in rows if not is_upper_tail_row(r)]
 
 
 def floor_strike_from_market(market: Any) -> Optional[float]:
@@ -76,7 +76,7 @@ def floor_strike_from_market(market: Any) -> Optional[float]:
     return None
 
 
-def taker_edge_side_from_print(
+def upper_tail_side_from_print(
     *,
     yes_price: Optional[float],
     no_price: Optional[float],
@@ -109,15 +109,15 @@ def ttc_in_entry_window(*, ttc: Optional[float], min_time: int, max_time: int) -
 
 
 def _sql_symbol_in_clause() -> Optional[Tuple[str, Tuple[str, ...]]]:
-    syms = tuple(sorted(taker_edge_symbols()))
+    syms = tuple(sorted(upper_tail_symbols()))
     if not syms:
         return None
     placeholders = ", ".join(["%s"] * len(syms))
     return placeholders, syms
 
 
-def list_active_taker_edge_monitor_rows() -> List[Dict[str, Any]]:
-    """Active 15m Taker Edge monitors with the settings the agent places from."""
+def list_active_upper_tail_monitor_rows() -> List[Dict[str, Any]]:
+    """Active 15m Upper Tail monitors with the settings the agent places from."""
     from backend.core.config.database import get_postgresql_connection
     from backend.core.port_config import default_pool_user_number
     from backend.core.tenant_legacy_sql import legacy_users_monitor_list

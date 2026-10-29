@@ -1,8 +1,8 @@
-# Maker Edge — strategy handoff (15m dual-rest)
+# Lower Tail — strategy handoff (15m dual-rest)
 
-**Product name:** Maker Edge  
+**Product name:** Lower Tail  
 **Audience:** operators + implementers.  
-**Status:** live wiring via `maker_edge_agent` (outside TE); research backtests remain valid for edge thesis.  
+**Status:** live wiring via `lower_tail_agent` (outside TE); research backtests remain valid for edge thesis.  
 **Series:** Kalshi 15m binaries for `BTC` / `ETH` / `GOLD` / `SILVER` / `WTI` (`KXBTC15M`, `KXETH15M`, `KXGOLD15M`, `KXSILVER15M`, `KXWTI15M`). Commodities use lean market capture (ticker + public trades + lifecycle; no OB/strike ladder).  
 **Session context:** agent transcript [KXBTC15M longshot sweeps](50be246f-d7ea-4e39-80ed-56ada09254d0).
 
@@ -19,7 +19,7 @@ This note consolidates thesis, fill models, architecture, measured results, and 
 3. That is why every open is ~**50/50** and opening quotes reflect it.
 4. Path + theta drive quotes toward **one extreme**; the anomalies we care about are when it **hits an extreme then reverses** and settles the **opposite** side.
 
-Do not design or interpret Maker Edge / backtests without this frame.
+Do not design or interpret Lower Tail / backtests without this frame.
 
 ---
 
@@ -129,20 +129,20 @@ Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Detail: `KXBTC15M_exact_cent_cum25
 
 ---
 
-## 5. Product / live architecture (Maker Edge)
+## 5. Product / live architecture (Lower Tail)
 
 ### 5.1 Strategy identity
 
-**Name:** Maker Edge. New `strategy_list` row (migration `20261017_1500_maker_edge_strategy`). Do not overload High Water Scalp or Expiration Scalp.
+**Name:** Lower Tail. New `strategy_list` row (migration `20261017_1500_maker_edge_strategy`). Do not overload High Water Scalp or Expiration Scalp.
 
 | Concern | Implementation |
 |---------|----------------|
-| Process | Dedicated `maker_edge_agent` per tenant (outside TE); AES/ATS exclude Maker Edge monitors |
-| Symbols | `MAKER_EDGE_SYMBOLS`: BTC, ETH, GOLD, SILVER, WTI (`15m`). Co-opening windows place in one fire. |
+| Process | Dedicated `lower_tail_agent` per tenant (outside TE); AES/ATS exclude Lower Tail monitors |
+| Symbols | `LOWER_TAIL_SYMBOLS`: BTC, ETH, GOLD, SILVER, WTI (`15m`). Co-opening windows place in one fire. |
 | Entry | At Kalshi ``open_time``: place **two** post-only GTC at monitor limit `L` — **BID @ L** and **ASK @ L** (yes/no constructs). Arming is open_time-driven, not TTC. |
 | Size | Standard bankroll pct/contracts from `monitor_list.subaccount` (v3.12.12) |
 | TTC | `min_time` used only to cancel **unfilled** rests near expiry; not a place gate |
-| One-fill rule | First fill → cancel sibling; book into TM `intent=maker_edge_fill` |
+| One-fill rule | First fill → cancel sibling; book into TM `intent=lower_tail_fill` |
 | Paper fill | First chronological **exact-L** public tape print hits that side’s virtual bid (not ask-touch ≤ L). Live uses venue fill counts on resting order ids. |
 | Hold | TM monitors like any other trade; settlement via `market_result` only |
 | Subaccount | Same routing as all strats on every place/cancel/book |
@@ -213,7 +213,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 | `cancel_other_on_first_fill` | true | Mandatory |
 | `ttc_min_entry` | **none** | Research: TTC filter hurts |
 | `cum_vol_gate` | optional offline; live use book+partial fills | Live: allow partial; cap N by depth |
-| `max_concurrent_markets` | ≥5 (one per symbol) | `MAKER_EDGE_MAX_CONCURRENT` |
+| `max_concurrent_markets` | ≥5 (one per symbol) | `LOWER_TAIL_MAX_CONCURRENT` |
 | `max_outlay_usd` | `contracts * 0.01` | Hard cap |
 | `order_type` | maker / post-only GTC | Prefer maker fee path |
 
@@ -339,4 +339,4 @@ YTD cum2500 (done):
 |------|------|
 | 2026-10-17 | Initial handoff from exact-cent / maker / package-v4 research session. YTD cum2500 still in flight. |
 | 2026-10-19 | Live place path: open_time arm + prefetch/rewarm + parallel dual post; log fire/send/ack lags. |
-| 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout `MAKER_EDGE_SYMBOLS`. |
+| 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout `LOWER_TAIL_SYMBOLS`. |

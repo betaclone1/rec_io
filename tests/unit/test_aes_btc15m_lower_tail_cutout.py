@@ -1,64 +1,64 @@
-"""Maker Edge membership + limit resolution."""
+"""Lower Tail membership + limit resolution."""
 
 from __future__ import annotations
 
-from backend.core.aes_btc15m_maker_edge_cutout import (
-    MAKER_EDGE_SYMBOLS,
+from backend.core.aes_btc15m_lower_tail_cutout import (
+    LOWER_TAIL_SYMBOLS,
     STRATEGY_NAME,
-    filter_maker_edge_rows_only,
-    filter_out_maker_edge_rows,
-    is_maker_edge_row,
-    is_maker_edge_symbol,
+    filter_lower_tail_rows_only,
+    filter_out_lower_tail_rows,
+    is_lower_tail_row,
+    is_lower_tail_symbol,
     resolve_monitor_limit_dollars,
-    row_matches_maker_edge_fields,
+    row_matches_lower_tail_fields,
 )
-from backend.core.maker_edge_kalshi import v2_price_for_limit_side
+from backend.core.lower_tail_kalshi import v2_price_for_limit_side
 
 
 def test_membership_exact():
-    assert is_maker_edge_row(
-        {"symbol": "BTC", "market": "15m", "strategy": "Maker Edge"}
+    assert is_lower_tail_row(
+        {"symbol": "BTC", "market": "15m", "strategy": "Lower Tail"}
     )
-    assert row_matches_maker_edge_fields(
-        symbol="btc", market="15M", strategy="Maker Edge"
+    assert row_matches_lower_tail_fields(
+        symbol="btc", market="15M", strategy="Lower Tail"
     )
-    assert STRATEGY_NAME == "Maker Edge"
+    assert STRATEGY_NAME == "Lower Tail"
 
 
 def test_membership_multi_symbol():
     for sym in ("BTC", "ETH", "GOLD", "SILVER", "WTI"):
-        assert is_maker_edge_symbol(sym)
-        assert is_maker_edge_row(
-            {"symbol": sym, "market": "15m", "strategy": "Maker Edge"}
+        assert is_lower_tail_symbol(sym)
+        assert is_lower_tail_row(
+            {"symbol": sym, "market": "15m", "strategy": "Lower Tail"}
         )
-    assert MAKER_EDGE_SYMBOLS == frozenset(
+    assert LOWER_TAIL_SYMBOLS == frozenset(
         {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
     )
-    assert not is_maker_edge_symbol("SOL")
+    assert not is_lower_tail_symbol("SOL")
 
 
 def test_membership_rejects_near_misses():
-    assert not is_maker_edge_row(
-        {"symbol": "SOL", "market": "15m", "strategy": "Maker Edge"}
+    assert not is_lower_tail_row(
+        {"symbol": "SOL", "market": "15m", "strategy": "Lower Tail"}
     )
-    assert not is_maker_edge_row(
-        {"symbol": "BTC", "market": "hourly", "strategy": "Maker Edge"}
+    assert not is_lower_tail_row(
+        {"symbol": "BTC", "market": "hourly", "strategy": "Lower Tail"}
     )
-    assert not is_maker_edge_row(
+    assert not is_lower_tail_row(
         {"symbol": "BTC", "market": "15m", "strategy": "High Water Scalp"}
     )
 
 
 def test_filters_partition():
     rows = [
-        {"monitor_id": "1", "symbol": "BTC", "market": "15m", "strategy": "Maker Edge"},
+        {"monitor_id": "1", "symbol": "BTC", "market": "15m", "strategy": "Lower Tail"},
         {"monitor_id": "2", "symbol": "BTC", "market": "15m", "strategy": "Rising Devil"},
         {"monitor_id": "3", "symbol": "BTC", "market": "15m", "strategy": "Expiration Scalp"},
-        {"monitor_id": "4", "symbol": "ETH", "market": "15m", "strategy": "Maker Edge"},
-        {"monitor_id": "5", "symbol": "GOLD", "market": "15m", "strategy": "Maker Edge"},
+        {"monitor_id": "4", "symbol": "ETH", "market": "15m", "strategy": "Lower Tail"},
+        {"monitor_id": "5", "symbol": "GOLD", "market": "15m", "strategy": "Lower Tail"},
     ]
-    only = filter_maker_edge_rows_only(rows)
-    rest = filter_out_maker_edge_rows(rows)
+    only = filter_lower_tail_rows_only(rows)
+    rest = filter_out_lower_tail_rows(rows)
     assert [r["monitor_id"] for r in only] == ["1", "4", "5"]
     assert [r["monitor_id"] for r in rest] == ["2", "3"]
 
@@ -75,7 +75,7 @@ def test_v2_price_bid_ask_same_limit():
 
 
 def test_cancel_order_requires_market_ticker_and_routes(monkeypatch):
-    from backend.core import maker_edge_kalshi as mek
+    from backend.core import lower_tail_kalshi as mek
 
     assert mek.cancel_order("oid1", subaccount=3) is False
 
@@ -108,7 +108,7 @@ def test_cancel_order_requires_market_ticker_and_routes(monkeypatch):
 
 def test_place_post_only_gtc_sends_count_as_string(monkeypatch):
     """Kalshi rejects numeric count; must match trade_executor count_fp strings."""
-    from backend.core import maker_edge_kalshi as mek
+    from backend.core import lower_tail_kalshi as mek
 
     captured: dict = {}
 
@@ -173,7 +173,7 @@ def test_place_post_only_gtc_sends_count_as_string(monkeypatch):
 
 
 def test_select_oldest_me_dual_rests_cancels_newer():
-    from backend.core.maker_edge_kalshi import select_oldest_me_dual_rests
+    from backend.core.lower_tail_kalshi import select_oldest_me_dual_rests
 
     ticker = "KXBTC15M-TEST"
     orders = [
@@ -216,11 +216,11 @@ def test_select_oldest_me_dual_rests_cancels_newer():
     assert set(cancel_ids) == {"bid_new", "ask_new"}
 
 
-def test_maker_edge_auto_trade_status():
-    from backend.maker_edge_agent import determine_maker_edge_auto_trade_status
+def test_lower_tail_auto_trade_status():
+    from backend.lower_tail_agent import determine_lower_tail_auto_trade_status
 
     assert (
-        determine_maker_edge_auto_trade_status(
+        determine_lower_tail_auto_trade_status(
             auto_trade=False,
             limit_px=0.01,
             contracts=2500,
@@ -231,7 +231,7 @@ def test_maker_edge_auto_trade_status():
         == "DISABLED"
     )
     assert (
-        determine_maker_edge_auto_trade_status(
+        determine_lower_tail_auto_trade_status(
             auto_trade=True,
             limit_px=None,
             contracts=2500,
@@ -242,7 +242,7 @@ def test_maker_edge_auto_trade_status():
         == "DISABLED"
     )
     assert (
-        determine_maker_edge_auto_trade_status(
+        determine_lower_tail_auto_trade_status(
             auto_trade=True,
             limit_px=0.01,
             contracts=2500,
@@ -251,7 +251,7 @@ def test_maker_edge_auto_trade_status():
     )
     # open_time placement: TTC is not a gate — still ACTIVE when configured
     assert (
-        determine_maker_edge_auto_trade_status(
+        determine_lower_tail_auto_trade_status(
             auto_trade=True,
             limit_px=0.01,
             contracts=2500,
@@ -262,7 +262,7 @@ def test_maker_edge_auto_trade_status():
         == "ACTIVE"
     )
     assert (
-        determine_maker_edge_auto_trade_status(
+        determine_lower_tail_auto_trade_status(
             auto_trade=True,
             limit_px=0.01,
             contracts=2500,

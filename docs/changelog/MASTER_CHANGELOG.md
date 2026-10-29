@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-29 — Release v3.12.23: Rename Maker/Taker Edge → Lower/Upper Tail
+
+**Summary**
+- **Release: v3.12.23**
+- **Plans:** `lower-tail-strategy` (product rename); pin `docs/VER4_DEVELOPMENT/PIN_UPPER_LOWER_TAIL.md`.
+- **Product rename:** Maker Edge → **Lower Tail** (dual resting longshot bids); Taker Edge → **Upper Tail** (tape-triggered expensive GTC). Agents, modules, supervisor programs, ports keys, UI detectors, intents/`entry_method`, docs, and ops rules updated. Historical changelog entries and seed migration ids (`20261017_1500_maker_edge_strategy`, `20261020_1645_taker_edge_strategy`) stay as-is.
+- **DB:** Migration `20261029_1330_rename_maker_taker_edge_to_lower_upper_tail` renames `strategy_list` names, `monitor_list.strategy`, and `trades.trade_strategy` / `entry_method` across `system` + every tenant schema.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29-tail-rename`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`; migrate `down 20261029_1330_rename_maker_taker_edge_to_lower_upper_tail` only if intentionally rolling back labels.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261029_1330_rename_maker_taker_edge_to_lower_upper_tail`
+- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `lower_tail_agent_*` and `upper_tail_agent_*` RUNNING (no `maker_edge_agent_*` / `taker_edge_agent_*`); strategy list / monitors show Lower Tail and Upper Tail; agents still see active monitors
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.23`
+
+---
+
 ## 2026-10-29 — Release v3.12.22: Packager lock fix + VER4 subaccount MTB shape
 
 **Summary**
@@ -18,14 +37,14 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`; migrate `down` only if intentionally rolling back schema.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261026_1340_monitor_list_dynamic_bankroll`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261027_0630_subaccount_mtb_shape`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261027_0700_subaccount_mtb_cash_out`
-- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `cycle_packager` RUNNING with no multi-hour idle-in-txn / waiting `DROP …_snapshot`; Account Manager Subaccounts shows MTB fields; no `/tmp/quarantine_unsealable_stubs.py` process
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.22`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261026_1340_monitor_list_dynamic_bankroll`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261027_0630_subaccount_mtb_shape`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261027_0700_subaccount_mtb_cash_out`
+- [x] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; `cycle_packager` RUNNING with no multi-hour idle-in-txn / waiting `DROP …_snapshot`; Account Manager Subaccounts shows MTB fields; no `/tmp/quarantine_unsealable_stubs.py` process
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.22`
 
 ---
 

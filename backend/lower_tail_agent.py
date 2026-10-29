@@ -1,5 +1,5 @@
 """
-Maker Edge agent — dual BID/ASK post-only GTC at Kalshi market open_time.
+Lower Tail agent — dual BID/ASK post-only GTC at Kalshi market open_time.
 
 Outside trade_executor: places/cancels rests, books first fill into trade_manager.
 Per-tenant supervisord worker (REC_USER_SCHEMA / REC_POOL_USER_NUMBER).
@@ -23,13 +23,13 @@ import requests
 import uvicorn
 from fastapi import FastAPI
 
-from backend.core.aes_btc15m_maker_edge_cutout import (
-    MAKER_EDGE_SYMBOLS,
+from backend.core.aes_btc15m_lower_tail_cutout import (
+    LOWER_TAIL_SYMBOLS,
     STRATEGY_NAME,
-    list_active_maker_edge_monitor_rows,
+    list_active_lower_tail_monitor_rows,
     resolve_monitor_limit_dollars,
 )
-from backend.core.maker_edge_kalshi import (
+from backend.core.lower_tail_kalshi import (
     PlaceResult,
     build_place_body,
     cancel_order,
@@ -39,10 +39,10 @@ from backend.core.maker_edge_kalshi import (
     warm_kalshi_http,
     v2_price_for_limit_side,
 )
-from backend.core.maker_edge_open import (
+from backend.core.lower_tail_open import (
     LATE_PLACE_GRACE_SEC,
     OpenTarget,
-    fetch_maker_edge_markets,
+    fetch_lower_tail_markets,
     select_next_open_target,
     select_targets_co_opening,
     symbol_from_market_ticker,
@@ -54,23 +54,23 @@ from backend.trading_mode import effective_paper_trade
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] maker_edge_agent: %(message)s",
+    format="%(asctime)s [%(levelname)s] lower_tail_agent: %(message)s",
 )
-log = logging.getLogger("maker_edge_agent")
+log = logging.getLogger("lower_tail_agent")
 
-FAILSAFE_POLL_SEC = float(os.getenv("MAKER_EDGE_FAILSAFE_POLL_SEC", "1.0"))
-# Default allows one dual-rest per Maker Edge symbol (BTC/ETH/GOLD/SILVER/WTI).
+FAILSAFE_POLL_SEC = float(os.getenv("LOWER_TAIL_FAILSAFE_POLL_SEC", "1.0"))
+# Default allows one dual-rest per Lower Tail symbol (BTC/ETH/GOLD/SILVER/WTI).
 MAX_CONCURRENT_MARKETS = int(
-    os.getenv("MAKER_EDGE_MAX_CONCURRENT", str(max(5, len(MAKER_EDGE_SYMBOLS))))
+    os.getenv("LOWER_TAIL_MAX_CONCURRENT", str(max(5, len(LOWER_TAIL_SYMBOLS))))
 )
 # Re-warm TLS/signing ~1s before open so a long arm sleep does not leave a cold pool.
-_REWARM_BEFORE_OPEN_SEC = float(os.getenv("MAKER_EDGE_REWARM_BEFORE_OPEN_SEC", "1.0"))
+_REWARM_BEFORE_OPEN_SEC = float(os.getenv("LOWER_TAIL_REWARM_BEFORE_OPEN_SEC", "1.0"))
 # Persistent pool — avoid ThreadPoolExecutor construct/teardown on every open.
-_PLACE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="me_place")
+_PLACE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lt_place")
 # How often to refresh the next open_time target while waiting.
-OPEN_DISCOVER_POLL_SEC = float(os.getenv("MAKER_EDGE_OPEN_DISCOVER_POLL_SEC", "5.0"))
+OPEN_DISCOVER_POLL_SEC = float(os.getenv("LOWER_TAIL_OPEN_DISCOVER_POLL_SEC", "5.0"))
 
-app = FastAPI(title="Maker Edge Agent")
+app = FastAPI(title="Lower Tail Agent")
 _wake = threading.Event()
 _lock = threading.Lock()
 
@@ -150,7 +150,7 @@ def _log(msg: str) -> None:
     log.info("[%s] %s", _user_no(), msg)
 
 
-def determine_maker_edge_auto_trade_status(
+def determine_lower_tail_auto_trade_status(
     *,
     auto_trade: bool,
     limit_px: Optional[float],
@@ -231,7 +231,7 @@ def _sync_monitor_statuses(monitors: list) -> None:
             contracts = int(round(float(mon.get("total_position") or 0)))
         except (TypeError, ValueError):
             contracts = 0
-        status = determine_maker_edge_auto_trade_status(
+        status = determine_lower_tail_auto_trade_status(
             auto_trade=bool(mon.get("auto_trade")),
             limit_px=limit_px,
             contracts=contracts,
@@ -245,7 +245,7 @@ def health() -> Dict[str, Any]:
         n = len(_active)
     return {
         "status": "ok",
-        "service": "maker_edge_agent",
+        "service": "lower_tail_agent",
         "user_no": _user_no(),
         "active_dual_rests": n,
         "uptime_sec": round(time.time() - _started_at, 1),
@@ -405,7 +405,7 @@ def paper_fill_side_from_print(
 ) -> Optional[str]:
     """Side filled by one public print at the exact dual-rest limit L.
 
-    Matches live Maker Edge rests: a YES print at exact ``L`` hits the YES bid;
+    Matches live Lower Tail rests: a YES print at exact ``L`` hits the YES bid;
     a NO print at exact ``L`` hits the NO bid. ``<= L`` ask-touch is not a fill.
     Both sides at L on one print is not a binary trade — return None.
     """
@@ -517,7 +517,7 @@ def ladder_prob_diff_at_fill(
 
 
 def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Optional[int]:
-    """Hand filled leg to trade_manager (intent=maker_edge_fill)."""
+    """Hand filled leg to trade_manager (intent=lower_tail_fill)."""
     if st.floor_strike is None:
         st.floor_strike = _resolve_floor_strike(st.ticker)
     if st.floor_strike is None:
@@ -527,11 +527,11 @@ def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Option
     est = now_est()
     un = _user_no()
     # Stable per monitor/ticker/side so retries are idempotent in TM.
-    ticket_id = f"me_{un}_{st.monitor_id}_{st.ticker}_{side}"
+    ticket_id = f"lt_{un}_{st.monitor_id}_{st.ticker}_{side}"
     monitor_key = f"mon_{un}_{st.monitor_id}"
     sym = str(st.symbol or symbol_from_market_ticker(st.ticker) or "BTC").strip().upper()
     payload = {
-        "intent": "maker_edge_fill",
+        "intent": "lower_tail_fill",
         "ticket_id": ticket_id,
         "symbol": sym,
         "market": "15m",
@@ -549,7 +549,7 @@ def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Option
         "monitor": monitor_key,
         "subaccount": int(st.subaccount),
         "paper_trade": bool(st.paper),
-        "entry_method": "maker_edge",
+        "entry_method": "lower_tail",
         "order_id_open": st.bid_order_id if side == "yes" else st.ask_order_id,
         "time_in_force": "good_till_canceled",
         "order_type": "limit",
@@ -911,7 +911,7 @@ def _place_at_open(target: OpenTarget) -> None:
     )
 
     # --- Prefetch (before open): all work we control that is not the send ---
-    markets = fetch_maker_edge_markets()
+    markets = fetch_lower_tail_markets()
     co_targets = select_targets_co_opening(markets, primary=target)
     by_symbol: Dict[str, OpenTarget] = {}
     for tgt in co_targets:
@@ -924,7 +924,7 @@ def _place_at_open(target: OpenTarget) -> None:
     if primary_sym and primary_sym not in by_symbol:
         by_symbol[primary_sym] = target
 
-    monitors = [m for m in list_active_maker_edge_monitor_rows() if m.get("auto_trade")]
+    monitors = [m for m in list_active_lower_tail_monitor_rows() if m.get("auto_trade")]
     plans: list[_PreparedPlace] = []
     for mon in monitors:
         mon_sym = str(mon.get("symbol") or "").strip().upper()
@@ -1060,7 +1060,7 @@ def _ensure_armed_for_next_open() -> None:
         exclude = set(_placed_events) | set(_completed_events)
         exclude.update(s.event_ticker for s in _active.values())
     _last_discover_mono = now_m
-    markets = fetch_maker_edge_markets()
+    markets = fetch_lower_tail_markets()
     target = select_next_open_target(markets, exclude_events=exclude)
     if target is None:
         return
@@ -1075,7 +1075,7 @@ def _ensure_armed_for_next_open() -> None:
         th = threading.Thread(
             target=_place_at_open,
             args=(target,),
-            name=f"me_open_{target.event_ticker}",
+            name=f"lt_open_{target.event_ticker}",
             daemon=True,
         )
         _arm_thread = th
@@ -1083,7 +1083,7 @@ def _ensure_armed_for_next_open() -> None:
 
 
 def _tick() -> None:
-    all_me = list_active_maker_edge_monitor_rows()
+    all_me = list_active_lower_tail_monitor_rows()
     _sync_monitor_statuses(all_me)
     _ensure_armed_for_next_open()
 
@@ -1115,7 +1115,7 @@ def _start_listeners() -> None:
 
         def _me_sym_mkt(symbol: str, market: str) -> bool:
             return (
-                str(symbol).upper() in MAKER_EDGE_SYMBOLS
+                str(symbol).upper() in LOWER_TAIL_SYMBOLS
                 and str(market).lower() == "15m"
             )
 
@@ -1125,7 +1125,7 @@ def _start_listeners() -> None:
 
         start_tradeflow_live_state_listener(
             on_ladder_update=_on_ladder,
-            service="maker_edge_agent",
+            service="lower_tail_agent",
             symbol_market_filter=_me_sym_mkt,
         )
     except Exception as exc:
@@ -1155,7 +1155,7 @@ def _start_listeners() -> None:
                     time.sleep(0.5)
 
         threading.Thread(
-            target=_positions_worker, name="me_positions_wake", daemon=True
+            target=_positions_worker, name="lt_positions_wake", daemon=True
         ).start()
     except Exception as exc:
         _log(f"positions_updated listener not started: {exc}")
@@ -1164,9 +1164,9 @@ def _start_listeners() -> None:
 def main() -> None:
     un = _user_no()
     _start_listeners()
-    threading.Thread(target=_loop, name="me_main", daemon=True).start()
+    threading.Thread(target=_loop, name="lt_main", daemon=True).start()
     try:
-        port = get_port(f"maker_edge_agent_{un}")
+        port = get_port(f"lower_tail_agent_{un}")
     except Exception:
         port = 8050 if un == "0001" else 8051
     _log(f"health on port {port}")

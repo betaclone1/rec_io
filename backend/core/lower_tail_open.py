@@ -1,8 +1,8 @@
 """
-Maker Edge open-time targeting: Kalshi ``open_time`` is the place trigger.
+Lower Tail open-time targeting: Kalshi ``open_time`` is the place trigger.
 
 No TTC / ladder gates. Market identity comes from Kalshi ``/markets`` only
-(no clock-invented tickers). Discovers across all Maker Edge 15m series
+(no clock-invented tickers). Discovers across all Lower Tail 15m series
 (BTC / ETH / GOLD / SILVER / WTI).
 """
 
@@ -16,18 +16,18 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import requests
 
-from backend.core.aes_btc15m_maker_edge_cutout import MAKER_EDGE_SYMBOLS
+from backend.core.aes_btc15m_lower_tail_cutout import LOWER_TAIL_SYMBOLS
 from backend.core.kalshi_event_market_fetch import kalshi_trade_api_base
 from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
 
-log = logging.getLogger("maker_edge_open")
+log = logging.getLogger("lower_tail_open")
 
 SERIES_BTC_15M = "KXBTC15M"
 # If we overshoot open_time by more than this, skip the cycle (do not late-place).
-LATE_PLACE_GRACE_SEC = float(__import__("os").getenv("MAKER_EDGE_LATE_PLACE_GRACE_SEC", "0.25"))
+LATE_PLACE_GRACE_SEC = float(__import__("os").getenv("LOWER_TAIL_LATE_PLACE_GRACE_SEC", "0.25"))
 # Busy-spin window immediately before open for tighter wake.
-SPIN_BEFORE_OPEN_SEC = float(__import__("os").getenv("MAKER_EDGE_SPIN_BEFORE_OPEN_SEC", "0.05"))
-_HEADERS = {"Accept": "application/json", "User-Agent": "rec_io_maker_edge/1.0"}
+SPIN_BEFORE_OPEN_SEC = float(__import__("os").getenv("LOWER_TAIL_SPIN_BEFORE_OPEN_SEC", "0.05"))
+_HEADERS = {"Accept": "application/json", "User-Agent": "rec_io_lower_tail/1.0"}
 
 
 @dataclass(frozen=True)
@@ -60,17 +60,17 @@ def symbol_from_market_ticker(ticker: str) -> Optional[str]:
     return symbol_from_series_ticker(head)
 
 
-def maker_edge_series_tickers(
+def lower_tail_series_tickers(
     symbols: Optional[Iterable[str]] = None,
 ) -> List[str]:
     want = (
         {str(s).strip().upper() for s in symbols}
         if symbols is not None
-        else set(MAKER_EDGE_SYMBOLS)
+        else set(LOWER_TAIL_SYMBOLS)
     )
     out: list[str] = []
     for sym in sorted(want):
-        if sym not in MAKER_EDGE_SYMBOLS:
+        if sym not in LOWER_TAIL_SYMBOLS:
             continue
         ser = series_15m_for_symbol(sym)
         if ser:
@@ -251,7 +251,7 @@ def select_live_market(
 
 # series_ticker → (monotonic_ts, markets)
 _markets_cache: Dict[str, tuple[float, list[dict[str, Any]]]] = {}
-_MARKETS_CACHE_SEC = float(__import__("os").getenv("MAKER_EDGE_MARKETS_CACHE_SEC", "30"))
+_MARKETS_CACHE_SEC = float(__import__("os").getenv("LOWER_TAIL_MARKETS_CACHE_SEC", "30"))
 
 
 def fetch_series_15m_markets(
@@ -316,14 +316,14 @@ def fetch_series_15m_markets(
     return list(out)
 
 
-def fetch_maker_edge_markets(
+def fetch_lower_tail_markets(
     *,
     symbols: Optional[Sequence[str]] = None,
     force: bool = False,
 ) -> List[dict[str, Any]]:
-    """Union of public markets for all configured Maker Edge 15m series."""
+    """Union of public markets for all configured Lower Tail 15m series."""
     out: list[dict[str, Any]] = []
-    for series in maker_edge_series_tickers(symbols):
+    for series in lower_tail_series_tickers(symbols):
         out.extend(fetch_series_15m_markets(series, force=force))
     return out
 
@@ -338,12 +338,12 @@ def fetch_kxbtc15m_markets(
 
 
 def fetch_next_open_target(*, now: Optional[float] = None) -> Optional[OpenTarget]:
-    markets = fetch_maker_edge_markets()
+    markets = fetch_lower_tail_markets()
     return select_next_open_target(markets, now=now)
 
 
 def fetch_live_market(*, now: Optional[float] = None) -> Optional[OpenTarget]:
-    markets = fetch_maker_edge_markets()
+    markets = fetch_lower_tail_markets()
     return select_live_market(markets, now=now)
 
 

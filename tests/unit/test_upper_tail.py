@@ -1,12 +1,12 @@
-"""Taker Edge trigger and entry window."""
+"""Upper Tail trigger and entry window."""
 
 from __future__ import annotations
 
-from backend.core.taker_edge import (
+from backend.core.upper_tail import (
     STRATEGY_NAME,
     floor_strike_from_market,
-    is_taker_edge_row,
-    taker_edge_side_from_print,
+    is_upper_tail_row,
+    upper_tail_side_from_print,
     ttc_in_entry_window,
 )
 
@@ -16,22 +16,22 @@ def test_membership(monkeypatch):
         "backend.core.live_data_level.market_feed_symbols",
         lambda: ("ETH", "SOL", "XRP"),
     )
-    assert is_taker_edge_row(
-        {"symbol": "ETH", "market": "15m", "strategy": "Taker Edge"}
+    assert is_upper_tail_row(
+        {"symbol": "ETH", "market": "15m", "strategy": "Upper Tail"}
     )
-    assert is_taker_edge_row(
-        {"symbol": "SOL", "market": "15m", "strategy": "Taker Edge"}
+    assert is_upper_tail_row(
+        {"symbol": "SOL", "market": "15m", "strategy": "Upper Tail"}
     )
-    assert is_taker_edge_row(
-        {"symbol": "XRP", "market": "15m", "strategy": "Taker Edge"}
+    assert is_upper_tail_row(
+        {"symbol": "XRP", "market": "15m", "strategy": "Upper Tail"}
     )
-    assert not is_taker_edge_row(
-        {"symbol": "DOGE", "market": "15m", "strategy": "Taker Edge"}
+    assert not is_upper_tail_row(
+        {"symbol": "DOGE", "market": "15m", "strategy": "Upper Tail"}
     )
-    assert not is_taker_edge_row(
-        {"symbol": "ETH", "market": "15m", "strategy": "Maker Edge"}
+    assert not is_upper_tail_row(
+        {"symbol": "ETH", "market": "15m", "strategy": "Lower Tail"}
     )
-    assert STRATEGY_NAME == "Taker Edge"
+    assert STRATEGY_NAME == "Upper Tail"
 
 
 def test_floor_strike_from_market_requires_api_field():
@@ -42,19 +42,19 @@ def test_floor_strike_from_market_requires_api_field():
 
 def test_side_from_print_high_end():
     assert (
-        taker_edge_side_from_print(yes_price=0.99, no_price=0.01, limit_px=0.99)
+        upper_tail_side_from_print(yes_price=0.99, no_price=0.01, limit_px=0.99)
         == "yes"
     )
     assert (
-        taker_edge_side_from_print(yes_price=0.01, no_price=0.995, limit_px=0.99)
+        upper_tail_side_from_print(yes_price=0.01, no_price=0.995, limit_px=0.99)
         == "no"
     )
     assert (
-        taker_edge_side_from_print(yes_price=0.50, no_price=0.50, limit_px=0.99)
+        upper_tail_side_from_print(yes_price=0.50, no_price=0.50, limit_px=0.99)
         is None
     )
     assert (
-        taker_edge_side_from_print(yes_price=0.99, no_price=0.99, limit_px=0.99)
+        upper_tail_side_from_print(yes_price=0.99, no_price=0.99, limit_px=0.99)
         is None
     )
 
@@ -62,7 +62,7 @@ def test_side_from_print_high_end():
 def test_book_stamps_ladder_prob_diff_when_present():
     from unittest.mock import patch
 
-    import backend.taker_edge_agent as te
+    import backend.upper_tail_agent as te
 
     cy = te._Cycle(
         monitor_id="99029",
@@ -106,7 +106,7 @@ def test_book_stamps_ladder_prob_diff_when_present():
 def test_book_omits_prob_diff_when_ladder_missing():
     from unittest.mock import patch
 
-    import backend.taker_edge_agent as te
+    import backend.upper_tail_agent as te
 
     cy = te._Cycle(
         monitor_id="99030",

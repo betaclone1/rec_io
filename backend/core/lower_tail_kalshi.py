@@ -1,5 +1,5 @@
 """
-Kalshi place/cancel for Maker Edge dual rests (outside trade_executor).
+Kalshi place/cancel for Lower Tail dual rests (outside trade_executor).
 
 BID @ L = buy yes at L; ASK @ L = buy no at L.
 V2 YES-book price encoding matches trade_executor._v2_price_from_internal_side_and_limit.
@@ -24,7 +24,7 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from dotenv import dotenv_values
 
-log = logging.getLogger("maker_edge_kalshi")
+log = logging.getLogger("lower_tail_kalshi")
 
 KALSHI_BASE_URL = "https://external-api.kalshi.com/trade-api/v2"
 MIN_SUBMIT = Decimal("0.0001")
@@ -101,7 +101,7 @@ def _get_signing_material() -> Tuple[str, Any]:
             return _cached_key_id, _cached_private_key
         key_id, key_path = _load_credentials()
         if not key_id or not key_path or not Path(key_path).exists():
-            raise RuntimeError("maker_edge_kalshi: missing Kalshi credentials")
+            raise RuntimeError("lower_tail_kalshi: missing Kalshi credentials")
         with open(key_path, "rb") as key_file:
             private_key = serialization.load_pem_private_key(
                 key_file.read(),
@@ -165,7 +165,7 @@ def warm_kalshi_http() -> None:
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     lanes = (*_PLACE_LANES, "misc")
-    with ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="me_warm") as pool:
+    with ThreadPoolExecutor(max_workers=len(lanes), thread_name_prefix="lt_warm") as pool:
         futs = [pool.submit(_warm_lane, lane) for lane in lanes]
         for fut in as_completed(futs):
             fut.result()
@@ -191,7 +191,7 @@ def build_place_body(
     post_only: bool = True,
     self_trade_prevention_type: str = "maker",
 ) -> Dict[str, Any]:
-    """Build a Kalshi V2 GTC body. Maker Edge stays post-only; Taker Edge crosses."""
+    """Build a Kalshi V2 GTC body. Lower Tail stays post-only; Upper Tail crosses."""
     count_fp = f"{float(int(count)):.2f}"
     return {
         "ticker": str(ticker).strip(),
@@ -249,7 +249,7 @@ def place_limit_gtc(
 ) -> PlaceResult:
     """Place one GTC. side is 'bid' (yes @ L) or 'ask' (no @ L).
 
-    ``post_only=False`` lets the order cross (Taker Edge). Maker Edge passes True.
+    ``post_only=False`` lets the order cross (Upper Tail). Lower Tail passes True.
 
     Prefetch path: pass ``prebuilt_body_bytes`` (and optionally ``prebuilt_price``)
     so the hot path only signs + POSTs. ``t_send`` is stamped immediately before
@@ -326,7 +326,7 @@ def place_post_only_gtc(
     prebuilt_price: Optional[str] = None,
     prebuilt_body_bytes: Optional[bytes] = None,
 ) -> PlaceResult:
-    """Maker Edge dual rest: post-only GTC."""
+    """Lower Tail dual rest: post-only GTC."""
     return place_limit_gtc(
         ticker=ticker,
         side=side,
@@ -375,7 +375,7 @@ def _order_created_key(order: Dict[str, Any]) -> str:
 
 
 def _order_limit_dollars(order: Dict[str, Any]) -> Optional[float]:
-    """Internal limit L for a Maker Edge style rest (yes@L bid or no@L ask)."""
+    """Internal limit L for a Lower Tail style rest (yes@L bid or no@L ask)."""
     book = str(order.get("book_side") or "").strip().lower()
     try:
         if book == "bid":

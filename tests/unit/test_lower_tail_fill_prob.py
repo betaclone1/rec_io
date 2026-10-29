@@ -1,10 +1,10 @@
-"""Maker Edge stamps fill-time ladder prob/diff after sibling cancel."""
+"""Lower Tail stamps fill-time ladder prob/diff after sibling cancel."""
 
 from __future__ import annotations
 
 from unittest.mock import patch
 
-import backend.maker_edge_agent as me
+import backend.lower_tail_agent as me
 
 
 def test_paper_ask_prefers_orderbook_touch():
@@ -118,7 +118,7 @@ def test_book_fill_payload_includes_fill_snapshot():
     assert tid == 7
     assert captured["prob"] == 4.25
     assert captured["diff"] == -1.0
-    assert captured["intent"] == "maker_edge_fill"
+    assert captured["intent"] == "lower_tail_fill"
     assert captured["initial_count"] == 2500.0
 
 
