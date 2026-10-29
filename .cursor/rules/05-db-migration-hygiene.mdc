@@ -33,6 +33,10 @@ When you are implementing a **plan**, task todos, or any multi-step spec that in
 
 8. **No local-only schema drift:** If you change the database on your machine (manual `ALTER` in a GUI, ad-hoc SQL, or relying only on `init_database()` without a migration pair), you must **immediately** fold that change into `scripts/migrations/*.up.sql` / `*.down.sql`, run `python3 scripts/db/run_migration.py up <migration_id>` locally so `system.schema_migrations` matches the repo, and treat **that migration** as what production will run on deploy. **Definition of done:** local DB state is explained by applied migrations in the tree, not by uncommitted one-off DDL.
 
+## Deploy (files vs enactment)
+
+9. **Shipping is not applying.** When migration pairs are part of a commit that will land on production, prepare-update / changelog **must** list each id with `run_migration.py up <migration_id>`, and apply-update **must** run those commands on prod after pull and before restart. See `.cursor/rules/10-deploy-migrations-gate.mdc`. Do not treat “migration file is in git on prod” as done.
+
 ## Summary
 
-Prefer **fewer, larger, coherent migrations** over many tiny timestamped files. Remove **unapplied** mistakes; never silently remove **applied** history. Plan implementations that require migrations are not complete until **local `run_migration.py up`** has been run or explicitly skipped with reason.
+Prefer **fewer, larger, coherent migrations** over many tiny timestamped files. Remove **unapplied** mistakes; never silently remove **applied** history. Plan implementations that require migrations are not complete until **local `run_migration.py up`** has been run or explicitly skipped with reason. Production is not complete until the same ids are applied on the prod DB.

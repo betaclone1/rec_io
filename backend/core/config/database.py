@@ -79,6 +79,9 @@ def _apply_system_search_path(conn) -> None:
     cur = conn.cursor()
     try:
         cur.execute(f"SET search_path TO {_SYSTEM_SEARCH_PATH}")
+        # SET opens a txn when autocommit is off; leave the session clean so
+        # callers can set autocommit / session GUCs without "inside a transaction".
+        conn.commit()
     finally:
         cur.close()
 
@@ -1197,6 +1200,8 @@ def init_database():
                     CHECK (drawdown_reset_threshold_pct > 0 AND drawdown_reset_threshold_pct < 100),
                 trading_halt_active BOOLEAN NOT NULL DEFAULT FALSE,
                 drawdown_halt_monitor_snapshot JSONB,
+                mtb_base_value_cents INTEGER NULL
+                    CHECK (mtb_base_value_cents IS NULL OR mtb_base_value_cents >= 0),
                 updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
             );
         """))
@@ -1243,6 +1248,15 @@ def init_database():
                     ALTER TABLE users.system_settings_0001
                         ADD COLUMN stop_loss_count_threshold INTEGER;
                 END IF;
+                IF NOT EXISTS (
+                    SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'users' AND table_name = 'system_settings_0001'
+                      AND column_name = 'mtb_base_value_cents'
+                ) THEN
+                    ALTER TABLE users.system_settings_0001
+                        ADD COLUMN mtb_base_value_cents INTEGER NULL
+                            CHECK (mtb_base_value_cents IS NULL OR mtb_base_value_cents >= 0);
+                END IF;
             END $$;
         """))
         cursor.execute(_us("""
@@ -1276,6 +1290,7 @@ def init_database():
                 pnl DECIMAL(10,2) DEFAULT 0.00,
                 bankroll_allotment DECIMAL(5,1) DEFAULT 0.0,
                 subaccount INTEGER NOT NULL DEFAULT 1,
+                dynamic_bankroll BOOLEAN NOT NULL DEFAULT FALSE,
                 status VARCHAR(20) DEFAULT 'active',
                 dashboard_order INTEGER DEFAULT 0,
                 win_streak INTEGER DEFAULT 0,

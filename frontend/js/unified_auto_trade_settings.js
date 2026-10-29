@@ -312,6 +312,7 @@
             return normalizeMonitorIdForApi(um.getAttribute('data-tile-id'));
           }
         });
+        window.UatUnifiedModalPositionSize.bindDynamicBankroll(um);
       }
       uatWireFlipSellOnModal(um);
       uatWireSymbolWideOnModal(um);
@@ -373,7 +374,10 @@
           if (j.monitor.total_position != null) {
             modal._uatLastTotalPosition = j.monitor.total_position;
           }
-          window.UatUnifiedModalPositionSize.setModalBankrollAllotmentCents(modal, j.monitor.bankroll_allotment_total);
+          window.UatUnifiedModalPositionSize.applyDynamicBankrollToModal(modal, {
+            dynamic_bankroll: j.monitor.dynamic_bankroll,
+            bankroll_allotment_total: j.monitor.bankroll_allotment_total
+          });
           window.UatUnifiedModalPositionSize.applyMonitorToEls(els, j.monitor);
           if (j.monitor.total_position != null) {
             window.UatUnifiedModalPositionSize.refreshAllPositionDisplays(j.monitor.total_position);
@@ -2340,6 +2344,19 @@
             const saRaw = data.subaccount != null ? data.subaccount : (monitor && monitor.subaccount);
             await uatPopulateSubaccountSelect(saEl, saRaw != null ? saRaw : 1);
           }
+          {
+            const modal = document.getElementById('unifiedAutoTradeModal');
+            if (modal && window.UatUnifiedModalPositionSize) {
+              window.UatUnifiedModalPositionSize.applyDynamicBankrollToModal(modal, {
+                dynamic_bankroll: data.dynamic_bankroll != null
+                  ? !!data.dynamic_bankroll
+                  : !!(monitor && monitor.dynamic_bankroll),
+                bankroll_allotment_total: data.bankroll_allotment_total != null
+                  ? data.bankroll_allotment_total
+                  : (monitor && monitor.bankroll_allotment_total)
+              });
+            }
+          }
           void uatLoadDupePairingMonitors(apiId, data.monitor_dupe_pairing);
 
           const regimeCb = document.getElementById('regimeMonitorEnabled');
@@ -3139,6 +3156,16 @@
           const saEl = document.getElementById('uatMonitorSubaccount');
           const sa = saEl && parseInt(saEl.value, 10);
           payload.subaccount = Number.isFinite(sa) ? sa : 1;
+        }
+        {
+          const modal = document.getElementById('unifiedAutoTradeModal');
+          if (modal && window.UatUnifiedModalPositionSize) {
+            const br = window.UatUnifiedModalPositionSize.readDynamicBankrollFromModal(modal);
+            payload.dynamic_bankroll = br.dynamic_bankroll;
+            if (!br.dynamic_bankroll) {
+              payload.bankroll_allotment_total = br.bankroll_allotment_total;
+            }
+          }
         }
         payload.monitor_dupe_pairing = uatSelectedDupePairingIds();
         

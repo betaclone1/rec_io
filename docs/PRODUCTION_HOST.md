@@ -139,5 +139,6 @@ Same Linux user as the bookkeeper cron (often **`root`**). Production OS is UTC;
 
 - Prefer these variables in docs and automation instead of scattering the raw IP. When copy-paste clarity matters, this file is the single place that records the **current** production IPv4.
 - **`DO_PROD_DROPLET_ID`** overrides the snapshot script default; the default in repo tracks **562337636** with this IPv4.
+- **Schema:** `git pull` on this host does not apply DB migrations. After a release that adds `scripts/migrations/*.up.sql`, run `run_migration.py up <id>` on **this** Postgres (usually via `/apply-update-from-local` changelog). See [TENANT_INIT_AND_MIGRATIONS.md](TENANT_INIT_AND_MIGRATIONS.md) and `.cursor/rules/10-deploy-migrations-gate.mdc`.
 
 See also: [ARCHITECTURE.md](ARCHITECTURE.md) (production targeting), [PRODUCTION_SYNC_CHECKLIST.md](PRODUCTION_SYNC_CHECKLIST.md), [REC_ALERTS_SMTP_SECRETS.md](REC_ALERTS_SMTP_SECRETS.md) (Gmail app password file for registration email).

@@ -6,6 +6,15 @@
 
 Run when the user wants to **only** pull the latest commit on production—no snapshot, no restart, no migrations. For small pushes (e.g. frontend-only) that don't require the full backup/restart process.
 
+## Migration gate (mandatory — before any pull)
+
+Git pull does **not** apply schema. Per `.cursor/rules/10-deploy-migrations-gate.mdc`:
+
+1. Resolve what prod would gain: SSH for prod `git rev-parse HEAD`, compare to the commit about to be pulled (usually `origin/main` after fetch), e.g.  
+   `git diff --name-only <prod_sha>..<deploy_sha> -- 'scripts/migrations/*.up.sql'`
+2. If **any** `scripts/migrations/*.up.sql` appears in that range: **ABORT.** Do not pull. Report that this path cannot enact migrations; use `/prepare-update` + `/apply-update-from-local` (or `/push-commits-and-update-production`).
+3. Only if the range has **no** new `.up.sql` files, proceed with the pull below.
+
 ## What to do
 
 1. **Pull on prod via SSH** — From the **repo root**, run (uses `REC_PROD_SSH_HOST` or defaults to the IPv4 in `docs/PRODUCTION_HOST.md`):
@@ -26,8 +35,8 @@ Run when the user wants to **only** pull the latest commit on production—no sn
 ## What this does not do
 
 - No snapshot or backup
-- No migrations
+- No migrations (and **must refuse** if the pull range contains migration files)
 - No MASTER_RESTART or supervisorctl
 - No changelog checklist or verification steps
 
-Existing processes keep running. Updated static files (HTML, JS, CSS, images) are served from the new tree on the next request. For changes that need a restart (e.g. backend Python), use `/apply-update-from-local` or the full prepare/apply flow instead.
+Existing processes keep running. Updated static files (HTML, JS, CSS, images) are served from the new tree on the next request. For changes that need a restart (e.g. backend Python) or DB migrations, use `/apply-update-from-local` or the full prepare/apply flow instead.

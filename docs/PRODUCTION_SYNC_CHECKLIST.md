@@ -42,9 +42,11 @@ git push -u origin features/strategy-health-score
 
 ---
 
-## 2. Production: pull and restart
+## 2. Production: pull, migrate (if needed), restart
 
 On the **production server** (SSH: see [PRODUCTION_HOST.md](PRODUCTION_HOST.md); canonical IPv4 **`165.22.13.146`**, project root **`/opt/rec_io_server`**):
+
+**Prefer** `/apply-update-from-local` (or `/apply-update` on the server) when `MASTER_CHANGELOG` has open checklist items — that path runs migrations explicitly. Manual sync:
 
 ```bash
 cd /opt/rec_io_server
@@ -61,16 +63,23 @@ git checkout main
 git fetch origin
 git pull origin main
 
-# Restart services so they run the new code
+# If this release added scripts/migrations/*.up.sql — enact on THIS database
+# (pull alone does not change schema). Use ids from MASTER_CHANGELOG:
+#   PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up <migration_id>
+# Confirm: PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py list
+
+# Restart services so they run the new code (after migrations)
 ./scripts/MASTER_RESTART.sh
 ```
 
-If you use the existing update script (it also pulls `origin/main` and restarts):
+If you use the existing update script (it also pulls `origin/main` and restarts — **it does not replace migration checklist steps**):
 
 ```bash
 cd /opt/rec_io_server
 ./scripts/install_deploy/git_update_system.sh update
 ```
+
+See [TENANT_INIT_AND_MIGRATIONS.md](TENANT_INIT_AND_MIGRATIONS.md) and `.cursor/rules/10-deploy-migrations-gate.mdc`.
 
 **Nightly bookkeeper cron (first deploy only):** After the release that adds `scripts/cron/bookkeeper_kalshi_reconcile.sh`, install the production crontab entry once so Kalshi vs QuickBooks reconcile runs daily at 12:30 AM Eastern. Full steps: [PRODUCTION_HOST.md — Cron: bookkeeper Kalshi reconcile](PRODUCTION_HOST.md#cron-bookkeeper-kalshi-reconcile).
 
@@ -93,4 +102,4 @@ cd /opt/rec_io_server
 ## 4. One-line summary
 
 **Local:** Merge your work into `main`, then `git push origin main`.  
-**Production:** `git checkout main && git pull origin main && ./scripts/MASTER_RESTART.sh`.
+**Production:** `git checkout main && git pull origin main` → apply any new `run_migration.py up <id>` for that release → `./scripts/MASTER_RESTART.sh`.

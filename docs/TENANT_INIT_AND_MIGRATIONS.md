@@ -16,6 +16,16 @@
 - **Platform DDL** (extensions, `system.*`, `live_data.*`): one migration, run once.
 - **Tenant-shaped DDL** (`users_NNNN.*`): document in the migration header whether operators must **re-apply per user** (loop `users_0001`, `users_0002`, …) or whether a single rename/template migration covers all existing tenants. New tenants created after the migration still need that DDL applied during provisioning.
 
+## Deploy / production (files vs enactment)
+
+- Migration **files** travel with git (`scripts/migrations/`). They do **not** alter Postgres by themselves.
+- Each environment enacts with:
+  `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up <migration_id>`
+  Applied ids live in **`system.schema_migrations`** on that database.
+- **Production update order:** pull code (so `.up.sql` exists on disk) → run every required `up` on the **prod** DB → restart services that need the new catalog.
+- **Changelog:** every release that adds a migration must list each id as an unchecked production-checklist item with the exact `run_migration.py up` command. `/prepare-update` treats missing checklist lines as blocking. `/simple-pull` and `/remote-deploy` must refuse commit ranges that introduce `.up.sql` files.
+- Agent law: [`.cursor/rules/10-deploy-migrations-gate.mdc`](../.cursor/rules/10-deploy-migrations-gate.mdc). Apply path: [`docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`](changelog/CHANGELOG_AGENT_INSTRUCTIONS.md).
+
 ## Related
 
 - Full process/service inventory: [TENANT_TOUCH_REGISTRY.md](TENANT_TOUCH_REGISTRY.md)

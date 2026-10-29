@@ -71,7 +71,8 @@ async def get_auto_entry_settings(monitor_id: str = None):
                          min_slippage, min_movement, max_movement, limit_close_price, limit_close_offset,
                          stop_loss_offset, min_buffer_pct, adverse_delta_15s_pct, stop_verification_period_enabled,
                          stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing,
-                         COALESCE(subaccount, 1)
+                         COALESCE(subaccount, 1), COALESCE(dynamic_bankroll, FALSE),
+                         COALESCE(bankroll_allotment_total, 0)
             """
                 + (sel_pr if has_pr else "")
                 + f"""
@@ -195,7 +196,14 @@ async def get_auto_entry_settings(monitor_id: str = None):
                     row["subaccount"] = int(result[_sw_i + 17]) if result[_sw_i + 17] is not None else 1
                 except (TypeError, ValueError):
                     row["subaccount"] = 1
-                pr_base = _sw_i + 18
+                row["dynamic_bankroll"] = bool(result[_sw_i + 18]) if result[_sw_i + 18] is not None else False
+                try:
+                    row["bankroll_allotment_total"] = (
+                        int(result[_sw_i + 19]) if result[_sw_i + 19] is not None else 0
+                    )
+                except (TypeError, ValueError):
+                    row["bankroll_allotment_total"] = 0
+                pr_base = _sw_i + 20
                 if has_pr and len(result) > pr_base + 2:
                     row["position_risk_mode"] = _s(result[pr_base]) or "legacy"
                     row["position_risk_policy"] = _s(result[pr_base + 1]) or "hws_lvw_v1"

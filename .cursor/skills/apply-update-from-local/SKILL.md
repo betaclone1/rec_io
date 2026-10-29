@@ -8,11 +8,15 @@
 
 ## CRITICAL — DB migrations. Do not attempt any update on another server unless we are 100% certain we can update the DB.
 
+Git files ≠ catalog. Pulling `scripts/migrations/*.up.sql` does not change Postgres. See `.cursor/rules/10-deploy-migrations-gate.mdc`.
+
 If an open changelog entry’s checklist includes **Apply migrations** (or running specific migration slugs):
 
 - **Pre-flight (mandatory, before any SSH or pull):** Verify that **every** migration file referenced in that entry (e.g. `scripts/migrations/YYYYMMDD_HHMM_slug.up.sql` and `.down.sql`) exists in the commit you are deploying (e.g. `git show --name-only HEAD`). If any required migration file is **not** in that commit: **do not attempt the update.** Do not SSH to prod for update, do not pull, do not restart. Abort immediately. Report **🔴 Critical — update aborted.** The update must not be run on any other server until migration files are in the commit and pushed; only then can we be 100% certain we can update the DB.
 - **When pre-flight passes:** On the target server: pull → apply all required migrations → then restart. Migrations must complete successfully before restart.
 - **If a migration task was required and was not successfully completed:** VERIFY STATUS is **🔴 Critical**. Do not report "All good".
+
+**Orphan / changelog-gap scan (mandatory):** After prod pull (or when comparing deploy SHA to prod), list `scripts/migrations/*.up.sql` introduced in the range and/or present on disk. Compare to prod `PYTHONPATH=. venv/bin/python scripts/db/run_migration.py list` (applied ids in `system.schema_migrations`). Any `.up.sql` id **not** applied on prod is required work: run `up` (and reflect it in the changelog if it was missing from the checklist). Never report ✅ All good while prod has pending migration files the release shipped.
 
 ## What to do
 
@@ -29,15 +33,17 @@ If an open changelog entry’s checklist includes **Apply migrations** (or runni
    - After completing a task, set that item to `- [x]` in MASTER_CHANGELOG.md locally.
    - If a task cannot be completed, report why and do not mark it done.
 
-5. **Verify production (via SSH)** — Health (3000, 8001), supervisor status, tail key logs. Only current errors (after process start) count. End with VERIFY STATUS block (✅ All good / ⚠️ Investigate / 🔴 Critical). If required migrations were not run, status is **🔴 Critical**.
+5. **Orphan migration pass** — After checklist migrations: confirm prod `run_migration.py list` includes every migration id shipped in this deploy. Apply any stragglers before restart/verify success.
+
+6. **Verify production (via SSH)** — Health (3000, 8001), supervisor status, tail key logs. Only current errors (after process start) count. End with VERIFY STATUS block (✅ All good / ⚠️ Investigate / 🔴 Critical). If required migrations were not run, status is **🔴 Critical**.
 
    After a successful deploy, when verify is **✅ All good** or **⚠️ Investigate** (not **🔴 Critical**), complete the checklist item **Record release in DB** when present: run **`record_system_version.py --version NEXT`** with the exact **NEXT** from that changelog entry (Summary line `Release: vNEXT` and/or the checklist command). Do not use no-arg `record_system_version.py` when the entry pins a version — it must match git/changelog. Legacy entries without a pinned version: no-arg patch bump is acceptable once.
 
-6. **Fidelity check** — Local vs prod: `git rev-parse HEAD` and `run_migration.py list`. Report same commit and migrations or mismatches.
+7. **Fidelity check** — Local vs prod: `git rev-parse HEAD` and `run_migration.py list`. Report same commit and migrations or mismatches. Migration list mismatch ⇒ not a successful schema deploy.
 
-7. **Stage the changelog** — After the changelog has been updated (checkboxes set to `- [x]`), stage it to confirm the operation: `git add docs/changelog/MASTER_CHANGELOG.md`.
+8. **Stage the changelog** — After the changelog has been updated (checkboxes set to `- [x]`), stage it to confirm the operation: `git add docs/changelog/MASTER_CHANGELOG.md`.
 
-8. **Report outcome** — What was completed, what remains open, VERIFY STATUS, fidelity result.
+9. **Report outcome** — What was completed, what remains open, VERIFY STATUS, fidelity result.
 
 ## Reference
 
@@ -45,3 +51,5 @@ If an open changelog entry’s checklist includes **Apply migrations** (or runni
 - `.cursor/commands/apply-update-from-local.md`
 - `docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`
 - `.cursor/commands/verify-local.md`
+- `.cursor/rules/10-deploy-migrations-gate.mdc`
+- `docs/TENANT_INIT_AND_MIGRATIONS.md`

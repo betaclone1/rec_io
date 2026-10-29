@@ -30,6 +30,39 @@ def loss_prevention_value_for_streak(
     return "win_streak_one_contract"
 
 
+def _bool_payload(v: Any) -> bool:
+    if isinstance(v, str):
+        return v.lower() in ("true", "1", "yes")
+    return bool(v)
+
+
+def _recompute_total_position(
+    allot_total_cents: int,
+    pos_size: Any,
+    pos_type: Any,
+    mult: Any,
+    max_pct_exp: Any,
+) -> int:
+    multiplier_value = float(mult or 0)
+    max_pct_cap = None
+    try:
+        if max_pct_exp is not None:
+            max_pct_cap = float(max_pct_exp)
+    except (TypeError, ValueError):
+        max_pct_cap = None
+    if multiplier_value == 0:
+        return 1
+    if pos_type == "percent":
+        allotment_dollars = allot_total_cents / 100.0
+        base_pct = (pos_size or 0) / 100.0
+        effective_pct = base_pct * multiplier_value
+        if max_pct_cap is not None and max_pct_cap > 0:
+            effective_pct = min(effective_pct, max_pct_cap)
+        new_total = int(round(allotment_dollars * effective_pct))
+        return new_total if new_total >= 1 else 1
+    return max(1, int((pos_size or 0) * multiplier_value))
+
+
 def trigger_regime_reconcile_after_auto_entry_save(
     monitor_id: str,
     *,
@@ -621,6 +654,20 @@ def apply_auto_entry_settings(
         update_values.append(sa)
         subaccount_changed = True
 
+    dynamic_bankroll_in_payload = "dynamic_bankroll" in data
+    if dynamic_bankroll_in_payload:
+        update_fields.append("dynamic_bankroll = %s")
+        update_values.append(_bool_payload(data["dynamic_bankroll"]))
+
+    static_bankroll_cents = None
+    if "bankroll_allotment_total" in data:
+        try:
+            static_bankroll_cents = int(data["bankroll_allotment_total"])
+        except (TypeError, ValueError):
+            return {"status": "error", "message": "invalid_bankroll_allotment_total"}
+        if static_bankroll_cents < 0:
+            return {"status": "error", "message": "invalid_bankroll_allotment_total"}
+
     if "monitor_dupe_pairing" in data:
         from backend.core.monitor_dupe_pairing import normalize_monitor_dupe_pairing
 
@@ -696,27 +743,40 @@ def apply_auto_entry_settings(
     # loss_prevention is derived in sync_simulated_trade_after_monitor_settings_save via
     # recompute_monitor_loss_prevention (simulated-trade window overrides win-streak LP).
 
-    if not update_fields:
+    if not update_fields and static_bankroll_cents is None:
         return {"status": "error", "message": "No valid fields to update"}
 
-    query = f"UPDATE {ml} SET {', '.join(update_fields)} WHERE id = %s"
-    update_values.append(monitor_id)
-    cursor.execute(query, update_values)
+    if update_fields:
+        query = f"UPDATE {ml} SET {', '.join(update_fields)} WHERE id = %s"
+        update_values.append(monitor_id)
+        cursor.execute(query, update_values)
 
-    if subaccount_changed:
-        from backend.core.monitor_bankroll import latest_bankroll_cents_for_subaccount
+    cursor.execute(
+        f"""
+        SELECT bankroll_allotment_pct, position_size, position_type, multiplier,
+               current_max_pct_exposure, COALESCE(subaccount, 1),
+               COALESCE(dynamic_bankroll, FALSE), COALESCE(bankroll_allotment_total, 0)
+        FROM {ml} WHERE id = %s
+        """,
+        (monitor_id,),
+    )
+    allot_row = cursor.fetchone()
+    if allot_row:
+        (
+            allot_pct,
+            pos_size,
+            pos_type,
+            mult,
+            max_pct_exp,
+            sa_id,
+            is_dynamic,
+            current_allot_total,
+        ) = allot_row
+        is_dynamic = bool(is_dynamic)
 
-        cursor.execute(
-            f"""
-            SELECT bankroll_allotment_pct, position_size, position_type, multiplier,
-                   current_max_pct_exposure, COALESCE(subaccount, 1)
-            FROM {ml} WHERE id = %s
-            """,
-            (monitor_id,),
-        )
-        allot_row = cursor.fetchone()
-        if allot_row:
-            allot_pct, pos_size, pos_type, mult, max_pct_exp, sa_id = allot_row
+        if is_dynamic and (subaccount_changed or dynamic_bankroll_in_payload):
+            from backend.core.monitor_bankroll import latest_bankroll_cents_for_subaccount
+
             br = latest_bankroll_cents_for_subaccount(
                 cursor, str(ctx.user_no), int(sa_id or 1)
             )
@@ -725,26 +785,9 @@ def apply_auto_entry_settings(
             except (TypeError, ValueError):
                 pct = 0.0
             allot_total = int(pct * br)
-            multiplier_value = float(mult or 0)
-            max_pct_cap = None
-            try:
-                if max_pct_exp is not None:
-                    max_pct_cap = float(max_pct_exp)
-            except (TypeError, ValueError):
-                max_pct_cap = None
-            if multiplier_value == 0:
-                new_total = 1
-            elif pos_type == "percent":
-                allotment_dollars = allot_total / 100.0
-                base_pct = (pos_size or 0) / 100.0
-                effective_pct = base_pct * multiplier_value
-                if max_pct_cap is not None and max_pct_cap > 0:
-                    effective_pct = min(effective_pct, max_pct_cap)
-                new_total = int(round(allotment_dollars * effective_pct))
-                if new_total < 1:
-                    new_total = 1
-            else:
-                new_total = int((pos_size or 0) * multiplier_value)
+            new_total = _recompute_total_position(
+                allot_total, pos_size, pos_type, mult, max_pct_exp
+            )
             cursor.execute(
                 f"""
                 UPDATE {ml}
@@ -752,6 +795,34 @@ def apply_auto_entry_settings(
                 WHERE id = %s
                 """,
                 (allot_total, new_total, monitor_id),
+            )
+        elif (not is_dynamic) and static_bankroll_cents is not None:
+            allot_total = int(static_bankroll_cents)
+            new_total = _recompute_total_position(
+                allot_total, pos_size, pos_type, mult, max_pct_exp
+            )
+            cursor.execute(
+                f"""
+                UPDATE {ml}
+                SET bankroll_allotment_total = %s, total_position = %s
+                WHERE id = %s
+                """,
+                (allot_total, new_total, monitor_id),
+            )
+        elif (not is_dynamic) and subaccount_changed:
+            # Static monitors keep their preset allotment when subaccount changes;
+            # still refresh total_position from the existing allotment.
+            allot_total = int(current_allot_total or 0)
+            new_total = _recompute_total_position(
+                allot_total, pos_size, pos_type, mult, max_pct_exp
+            )
+            cursor.execute(
+                f"""
+                UPDATE {ml}
+                SET total_position = %s
+                WHERE id = %s
+                """,
+                (new_total, monitor_id),
             )
 
     trades_tbl = ctx.qualify_raw_table(f"trades_{ctx.user_no}")
@@ -778,7 +849,8 @@ def apply_auto_entry_settings(
                time_in_force, order_type, symbol_wide_loss_prevention,
                limit_close_price, limit_close_offset, stop_loss_offset, stop_verification_period_enabled,
                stop_verification_period_seconds, weekend_adjustment, monitor_dupe_pairing,
-               COALESCE(subaccount, 1)
+               COALESCE(subaccount, 1), COALESCE(dynamic_bankroll, FALSE),
+               COALESCE(bankroll_allotment_total, 0)
     """
     sel_flip = """
                , flip_sell_prob, flip_sell_prob_mult, flip_sell_floor, flip_sell_floor_mult
@@ -838,8 +910,10 @@ def apply_auto_entry_settings(
         "weekend_adjustment": str(updated_result[32]) if updated_result[32] is not None else "none",
         "monitor_dupe_pairing": list(updated_result[33]) if updated_result[33] else [],
         "subaccount": int(updated_result[34]) if updated_result[34] is not None else 1,
+        "dynamic_bankroll": bool(updated_result[35]) if updated_result[35] is not None else False,
+        "bankroll_allotment_total": int(updated_result[36]) if updated_result[36] is not None else 0,
     }
-    idx = 35
+    idx = 37
     if has_flip_cols:
         out["flip_sell_prob"] = bool(updated_result[idx]) if updated_result[idx] is not None else False
         out["flip_sell_prob_mult"] = str(updated_result[idx + 1]) if updated_result[idx + 1] is not None else None

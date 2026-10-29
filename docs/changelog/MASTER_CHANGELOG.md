@@ -6,6 +6,29 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-29 — Release v3.12.22: Packager lock fix + VER4 subaccount MTB shape
+
+**Summary**
+- **Release: v3.12.22**
+- **Plans:** `ver4-subaccount-shape` (capital shape slice); investigation `docs/investigations/2026-10-29-cycle-packager-pg-lock-deadlock.md`.
+- **Cycle packager (prod incident):** Stop self-deadlock where an open hot-table `COPY`/`SELECT` txn held `ACCESS SHARE` while quarantine `DROP TABLE` ran on a second connection (blocked nightly `pg_dump`, spiked load, hung `main_app`). Read path uses autocommit + close before API/quarantine/DROP; system `search_path` setup commits cleanly; regression test covers close-before-drop. Ops: kill any leftover `/tmp/quarantine_unsealable_stubs.py` (that orphan recreated the lock storm).
+- **VER4 subaccounts:** `in_mtb` / `mtb_weight_pct` on tenant `subaccounts_*`; portfolio `mtb_base_value_cents` on `system_settings_*`; CASH/PRIMARY out of MTB; Account Manager + mobile Subaccounts panel; APIs for PATCH weight/membership and MTB Base. Monitor `dynamic_bankroll` column (static vs sticky allotment).
+- **Deploy hygiene:** Migrations gate in skills/rules/`AGENTS.md` (pull ≠ migrate); stop tracking ephemeral backtest result markdowns / `.cursor/artifacts/`.
+- **DB:** Migrations `20261026_1340_monitor_list_dynamic_bankroll`, `20261027_0630_subaccount_mtb_shape`, `20261027_0700_subaccount_mtb_cash_out`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`; migrate `down` only if intentionally rolling back schema.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261026_1340_monitor_list_dynamic_bankroll`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261027_0630_subaccount_mtb_shape`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261027_0700_subaccount_mtb_cash_out`
+- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: health 3000/8001; `cycle_packager` RUNNING with no multi-hour idle-in-txn / waiting `DROP …_snapshot`; Account Manager Subaccounts shows MTB fields; no `/tmp/quarantine_unsealable_stubs.py` process
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.22`
+
+---
+
 ## 2026-10-26 — Release v3.12.21: Cycle packager newest-first + unsealable quarantine
 
 **Summary**
@@ -16,11 +39,11 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-26-packager`**. Code: `git revert` + restart `cycle_packager`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart cycle packager: `./venv/bin/supervisorctl -c backend/supervisord.conf restart cycle_packager`
-- [ ] Verify: `cycle_packager` RUNNING; log shows newest-first passes / quarantine of aged empty stubs (not stuck only on Sep/Oct maintenance windows); health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.21`
+- [x] Restart cycle packager: `./venv/bin/supervisorctl -c backend/supervisord.conf restart cycle_packager`
+- [x] Verify: `cycle_packager` RUNNING; log shows newest-first passes / quarantine of aged empty stubs (not stuck only on Sep/Oct maintenance windows); health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.21`
 
 ---
 

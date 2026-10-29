@@ -8196,7 +8196,10 @@
           if (!j || j.status !== 'ok' || !j.monitor) return;
           var modal = document.getElementById('mobileUnifiedAutoTradeModal');
           var els = window.UatUnifiedModalPositionSize.getElsFromModal(modal);
-          window.UatUnifiedModalPositionSize.setModalBankrollAllotmentCents(modal, j.monitor.bankroll_allotment_total);
+          window.UatUnifiedModalPositionSize.applyDynamicBankrollToModal(modal, {
+            dynamic_bankroll: j.monitor.dynamic_bankroll,
+            bankroll_allotment_total: j.monitor.bankroll_allotment_total
+          });
           window.UatUnifiedModalPositionSize.applyMonitorToEls(els, j.monitor);
           if (j.monitor.total_position != null) {
             modal._uatLastTotalPosition = j.monitor.total_position;
@@ -8218,6 +8221,7 @@
             return mobileNormalizeMonitorId(mm.getAttribute('data-uat-tile-id'));
           }
         });
+        window.UatUnifiedModalPositionSize.bindDynamicBankroll(mm);
       }
     });
 
@@ -8955,6 +8959,19 @@
         </div>
       </div>
       <div class="uat-modal-body">
+      <div class="uat-bankroll-block" style="margin-bottom:14px; display:flex; flex-direction:column; align-items:flex-start; gap:10px;">
+        <label for="m_uatDynamicBankroll" style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:#e2e8f0; font-weight:600; cursor:pointer; user-select:none;">
+          <input type="checkbox" id="m_uatDynamicBankroll" class="uat-dynamic-bankroll-cb" />
+          Dynamic bankroll
+        </label>
+        <label style="display:flex; align-items:center; gap:8px; font-size:0.9rem; color:#e2e8f0; font-weight:600;">
+          Bankroll
+          <span style="display:inline-flex; align-items:center; gap:4px; font-weight:normal; color:#9ca3af;">
+            $
+            <input type="number" id="m_uatBankrollDollars" class="uat-bankroll-dollars-input" min="0" step="0.01" value="0" style="width:110px; padding:4px 6px; text-align:right; font-size:1rem; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; height:28px; box-sizing:border-box;" />
+          </span>
+        </label>
+      </div>
       <div class="uat-position-size-block" style="margin-bottom:16px;">
         <div style="font-weight:bold; margin-bottom:6px; font-size:0.9rem; color:#e2e8f0;">Position Size: <span class="uat-pos-display" style="margin-left:10px; font-weight:normal; color:#9ca3af;">100 contracts</span></div>
         <div class="uat-position-size-row" style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">
@@ -11469,6 +11486,19 @@
           const saRaw = data.subaccount != null ? data.subaccount : (monitor && monitor.subaccount);
           await mobilePopulateSubaccountSelect(saEl, saRaw != null ? saRaw : 1);
         }
+        {
+          const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+          if (modal && window.UatUnifiedModalPositionSize) {
+            window.UatUnifiedModalPositionSize.applyDynamicBankrollToModal(modal, {
+              dynamic_bankroll: data.dynamic_bankroll != null
+                ? !!data.dynamic_bankroll
+                : !!(monitor && monitor.dynamic_bankroll),
+              bankroll_allotment_total: data.bankroll_allotment_total != null
+                ? data.bankroll_allotment_total
+                : (monitor && monitor.bankroll_allotment_total)
+            });
+          }
+        }
         void mobileLoadDupePairingMonitors(apiId, data.monitor_dupe_pairing);
 
 
@@ -11979,6 +12009,16 @@
               const saEl = document.getElementById('m_uatMonitorSubaccount');
               const sa = saEl && parseInt(saEl.value, 10);
               payload.subaccount = Number.isFinite(sa) ? sa : 1;
+            }
+            {
+              const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+              if (modal && window.UatUnifiedModalPositionSize) {
+                const br = window.UatUnifiedModalPositionSize.readDynamicBankrollFromModal(modal);
+                payload.dynamic_bankroll = br.dynamic_bankroll;
+                if (!br.dynamic_bankroll) {
+                  payload.bankroll_allotment_total = br.bankroll_allotment_total;
+                }
+              }
             }
             payload.monitor_dupe_pairing = mobileSelectedDupePairingIds();
             

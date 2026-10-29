@@ -125,7 +125,7 @@ See §3.3. Nearly every market with a package got a fill; win count matches cum-
 
 ### 4.6 YTD 2026 exact-cent cum2500
 
-Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Monthly table: `docs/BACKTEST_KXBTC15M_YTD_2026_EXACT_CENT_CUM2500.md`.
+Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Detail: `KXBTC15M_exact_cent_cum2500_limit0.01_2026-01-01_2026-10-17_et*.csv` under public-trades / artifacts (not committed).
 
 ---
 
@@ -277,7 +277,7 @@ Under `backend/data/historical_data/kalshi_public_trades/`:
 - Cache: `.cache_market_result_by_ticker.json`
 
 YTD cum2500 (done):  
-`KXBTC15M_exact_cent_cum2500_limit0.01_2026-01-01_2026-10-17_et*.csv` — monthly table in `docs/BACKTEST_KXBTC15M_YTD_2026_EXACT_CENT_CUM2500.md`.
+`KXBTC15M_exact_cent_cum2500_limit0.01_2026-01-01_2026-10-17_et*.csv` (local / artifacts; not committed).
 
 ### Packages
 

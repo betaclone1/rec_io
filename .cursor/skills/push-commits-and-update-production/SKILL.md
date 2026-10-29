@@ -14,7 +14,8 @@ Run when the user wants a **single command** to prepare an update, commit and pu
      - Verify local system (health, supervisor, logs; status block).
      - Server-agnostic audit (hardcoded hosts, absolute paths, env).
      - Plans → changelog and DB docs (MASTER_CHANGELOG entry, schema ref, related docs).
-     - Flag other issues (migrations, untracked, TODOs).
+     - **Migration scan (blocking):** every `scripts/migrations/*.up.sql` in the change set must have a checklist `run_migration.py up <id>` line (`.cursor/rules/10-deploy-migrations-gate.mdc`).
+     - Flag other issues (migration/checklist gaps, untracked, TODOs).
      - Produce suggested commit message and report **ready for publishing** or **blocking issues**.
    - **If prepare-update reports blocking issues:** Stop. Do not run steps 2 or 3. Report the blocking issues and that the flow was aborted before commit/push.
 
@@ -34,7 +35,7 @@ Run when the user wants a **single command** to prepare an update, commit and pu
      - Verify production (health, supervisor, logs; VERIFY STATUS block).
      - Fidelity check (local vs prod commit and migrations).
      - Report outcome, remaining open items, VERIFY STATUS, fidelity.
-   - Respect all apply-update-from-local rules (e.g. migration pre-flight; never mark DB tasks done or report "All good" if migrations were required and not successfully run).
+   - Respect all apply-update-from-local rules (migration pre-flight; orphan migration scan vs `run_migration.py list`; never mark DB tasks done or report "All good" if migrations were required and not successfully run on prod).
 
 4. **`system.version_control` on prod must match the release you committed**
    - **prepare-update** already chose **NEXT**, put **`Release: vNEXT`** in `MASTER_CHANGELOG.md`, and added a checklist line `record_system_version.py --version NEXT` (same string as in the summary, without the `v` prefix).

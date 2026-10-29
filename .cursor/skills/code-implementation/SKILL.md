@@ -10,9 +10,9 @@ Run when implementing from an existing plan. You act as **Builder**: execute pla
 ## Steps
 
 1. **Load plan:** Read goal, steps, completion criteria. Resolve any blockers noted in the plan before coding.
-2. **Execute steps in order.** For each step: make the minimal code/doc edits required. Follow `.cursor/rules/02-code-change-safety.mdc` and, for schema work, `.cursor/rules/05-db-migration-hygiene.mdc` (batch DDL, one id per logical change, remove unapplied superseded pairs).
+2. **Execute steps in order.** For each step: make the minimal code/doc edits required. Follow `.cursor/rules/02-code-change-safety.mdc` and, for schema work, `.cursor/rules/05-db-migration-hygiene.mdc` (batch DDL, one id per logical change, remove unapplied superseded pairs). When adding migrations: run local `run_migration.py up`, update schema ref, and remember production still needs the same `up` via the deploy changelog path (`.cursor/rules/10-deploy-migrations-gate.mdc`).
 3. **Track progress:** Update the plan only to mark steps done or add brief notes if needed; do not turn the plan into a log.
-4. **Output:** Report steps_done[], steps_remaining[], files_changed[], restart_required? (if any). When all steps and criteria are met, optionally hand off to Reviewer via `/review-change`.
+4. **Output:** Report steps_done[], steps_remaining[], files_changed[], restart_required?, migrations_added? (ids). When all steps and criteria are met, optionally hand off to Reviewer via `/review-change`.
 
 ## Constraints
 

@@ -649,19 +649,25 @@ EOF
     print_warning "Killing all Python backend processes..."
     ps aux 2>/dev/null | grep python | grep -E "(main\.py|trade_manager|trade_executor|active_trade_supervisor|auto_entry_supervisor|symbol_price_watchdog|cfbenchmarks_price_watchdog|strike_table_generator|kalshi_account_sync|kalshi_live|market_watchdog_ws|market_watchdog|cascading_failure_detector|system_monitor)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
-    # Kill any remaining project processes, but preserve analytics tooling
+    # Kill any remaining project processes, but preserve analytics tooling and
+    # Cursor agent workers (path often contains rec_io_*; killing them aborts this script mid-run).
     print_warning "Killing processes with project path..."
-    ps aux 2>/dev/null | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(cursor-agent|agent-cli|Cursor/User/globalStorage/anysphere)" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
-    # Kill any processes using our ports - BULLETPROOF
-    print_warning "Killing processes using our ports..."
+    # Kill listeners on our ports only (avoid killing arbitrary clients / this shell).
+    print_warning "Killing listeners on our ports..."
     for port in "${PORTS[@]}"; do
-        lsof -ti :$port 2>/dev/null | xargs -r kill 2>/dev/null || true
+        # Prefer LISTEN PIDs only; fall back to -ti if lsof -s unsupported.
+        pids=$(lsof -nP -iTCP:"$port" -sTCP:LISTEN -t 2>/dev/null || lsof -tiTCP:"$port" -sTCP:LISTEN 2>/dev/null || true)
+        if [ -n "${pids:-}" ]; then
+            # shellcheck disable=SC2086
+            kill $pids 2>/dev/null || true
+        fi
     done
     
     # Kill supervisor process if still running - BULLETPROOF
     print_warning "Killing any remaining supervisor processes..."
-    ps aux 2>/dev/null | grep supervisord | grep -v grep | awk '{print $2}' | xargs -r kill 2>/dev/null || true
+    ps aux 2>/dev/null | grep supervisord | grep -v grep | grep -Ev "(cursor-agent|agent-cli)" | awk '{print $2}' | xargs -r kill 2>/dev/null || true
     
     # Wait for processes to fully terminate (Postgres frees sessions from dead backends).
     /bin/sleep 5
@@ -788,9 +794,9 @@ emergency_restart() {
     pkill -f "python.*market_watchdog_ws.py" || true
     pkill -f "python.*kalshi_live" || true
     
-    # Kill any remaining project processes, excluding analytics tooling
+    # Kill any remaining project processes, excluding analytics tooling and Cursor agent workers
     print_warning "Killing processes with project path..."
-    ps aux | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill -9 2>/dev/null || true
+    ps aux | grep -E "(rec_io|rec_io_20)" | grep -v grep | grep -v "MASTER_RESTART" | grep -Ev "(cursor-agent|agent-cli|Cursor/User/globalStorage/anysphere)" | grep -Ev "(analytics_gui\.py|analytics_updater\.py|daily_update\.py|daily_update_lightweight\.py|symbol_data_fetch_pg\.py|momentum_generator_pg\.py|movement_generator_pg\.py|volatility_generator_pg\.py|fingerprint_generator_postgresql\.py|probability_lookup_generator\.py|symbol_profiler\.py)" | awk '{print $2}' | xargs -r kill -9 2>/dev/null || true
     
     # Kill any processes using our ports
     print_warning "Killing processes using our ports..."

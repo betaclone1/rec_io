@@ -1031,7 +1031,8 @@ environment={env_vars}
                 cursor.execute(
                     sql.SQL(
                         """
-                        SELECT id, name, bankroll_allotment_pct, COALESCE(subaccount, 1)
+                        SELECT id, name, bankroll_allotment_pct, COALESCE(subaccount, 1),
+                               COALESCE(dynamic_bankroll, FALSE)
                         FROM {}
                         WHERE status = 'active'
                         """
@@ -1049,8 +1050,11 @@ environment={env_vars}
 
             updated_count = 0
             bankroll_cents = 0
-            for monitor_id, monitor_name, allotment_pct, subaccount in monitors:
+            for monitor_id, monitor_name, allotment_pct, subaccount, dynamic_bankroll in monitors:
                 if allotment_pct is None:
+                    continue
+                if not bool(dynamic_bankroll):
+                    # Static preset bankroll — do not overwrite from subaccount HWM.
                     continue
                 with conn.cursor() as cursor:
                     bankroll_cents = _latest_bankroll_cents(

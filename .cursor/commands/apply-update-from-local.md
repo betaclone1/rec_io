@@ -12,10 +12,11 @@ description: "Production (from local): run open MASTER_CHANGELOG checklists on p
 
 **Execute the full workflow** (do not just describe it).
 
-**CRITICAL — DB: never confirm an update unless DB updates are 100% confirmed. We never ever skip this step.**
+**CRITICAL — DB: never confirm an update unless DB updates are 100% confirmed. We never ever skip this step.** Git migration files do not alter Postgres; enact with `run_migration.py up` on the target DB (`.cursor/rules/10-deploy-migrations-gate.mdc`).
 
 - **Pre-flight (mandatory, before any SSH or pull):** If an open changelog entry’s checklist includes **Apply migrations** (or running specific migration slugs), verify that **every** migration file referenced in that entry (e.g. `scripts/migrations/YYYYMMDD_HHMM_slug.up.sql` and `.down.sql`) exists in the commit you are deploying (e.g. `git show --name-only HEAD` or the branch prod will pull). If any required migration file is **not** in that commit: **do not attempt the update.** If migration files are not in the commit: verify schema on prod (e.g. information_schema); if already present, mark entry complete with a note; otherwise do not mark complete and do not report "All good." The update must not be run on any other server until migration files are in the commit and pushed; only then can we be 100% certain we can update the DB. Deploying code without applying required migrations can crash the system or corrupt data.
 - **When pre-flight passes:** On the target server, run in this order: pull (so migration files are present) → apply all required migrations → then restart. Migrations must complete successfully before restart so the schema exists before the new code runs.
+- **Orphan scan:** After pull, any `scripts/migrations/*.up.sql` on prod not listed in prod `run_migration.py list` must be applied (or VERIFY **🔴 Critical**). Do not rely only on the changelog wording.
 - **No update is ever confirmed** unless every DB-related checklist item is verified on the target server (run the step and verify, or query schema on prod). Do not mark DB items done or report "All good" if any DB step was skipped or left unverified.
 - **If any DB task was required and was not successfully completed or verified:** VERIFY STATUS is **🔴 Critical**. Do not report "All good".
 

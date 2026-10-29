@@ -8,7 +8,16 @@ source: chat 2026-10-21, after AUDIT_V3_BASELINE
 baseline: AUDIT_V3_BASELINE.md
 postgres_working_assumption: self-managed on its own lean droplet (PG_AND_HOST_OPTIONS.md)
 postgres_upgrade_gate: backbone system; updates and deprecations tested thoroughly before cutover (PG_AND_HOST_OPTIONS.md)
-next: detail pass on that droplet (size, private networking, restore drill, PG 17 test plan). UI spec still undesigned
+big_ticket_priorities:
+  - host_split
+  - postgres_lean_droplet_and_pg17_gate
+  - subaccount_architecture   # see SUBACCOUNT_ARCHITECTURE.md
+  - 15m_market_expansion
+  - upper_lower_tail_meter
+  - ui_overhaul               # Subaccounts panel lives under Subaccount Architecture
+pillars:
+  - SUBACCOUNT_ARCHITECTURE.md
+next: Subaccount Architecture first move = sub/monitor shape (REBALANCE back burner); host split / PG options still open
 ```
 
 Agents treat the items below as constraints on later plans. Do not invent host counts, service maps, or a frontend information architecture until those discussions land in a new file in this folder.
@@ -69,21 +78,34 @@ Kalshi collateral stays per shard. Crypto orders debit `(exchange_index=2, subac
 
 ---
 
-## 3. Other top-line priority
+## 3. Subaccount Architecture (pillar)
 
-A substantial UI frontend overhaul is a top-line v4 priority. Scope, surfaces (desktop, mobile, or both), and what stays are not specified yet.
+Named v4.0 pillar: **[SUBACCOUNT_ARCHITECTURE.md](SUBACCOUNT_ARCHITECTURE.md)**.
 
-v3 UI lives in `frontend/`, served by `main_app` (port 3000), with aggregate reads on `read_api` (port 3050) and realtime on `redis_switchboard` (port 3010). Parity rule in `AGENTS.md`: a frontend change should say whether the other surface needs the same behavior.
+Owns the capital model end-to-end: trading vs non-trading roles, MTB / MTB Base Value, per-SA % weights, bankroll pinned to SA base (HWM demoted), later REBALANCE rules, and the dashboard **Subaccounts** panel (replaces Allocation). Do not duplicate philosophy here — read and extend that file.
+
+One-line summary: siloed Kalshi SAs for monitors/groups; MTB = sum of trading-tagged balances; policy targets = `% ×` user MTB Base; bankroll pinned to SA base. **First implement the sub/monitor shape;** REBALANCE is direction on the back burner. Primary UI: Subaccounts panel.
+
+---
+
+## 4. Other top-line priority — UI
+
+A substantial UI frontend overhaul is a top-line v4 priority. Full scope (tech stack, which surfaces rewrite first) is still open.
+
+The capital-control slice of that overhaul — Allocation → **Subaccounts** panel — lives under **Subaccount Architecture** (`SUBACCOUNT_ARCHITECTURE.md` §5), not as a separate orphan IA note.
+
+v3 UI lives in `frontend/`, served by `main_app` (port 3000), with aggregate reads on `read_api` (port 3050) and realtime on `redis_switchboard` (port 3010).
 
 Bookkeeping (QuickBooks nightly journal) and Drive archives were audited and are not named as v4 themes in this note.
 
 ---
 
-## 4. What a later design doc must answer
+## 5. What a later design doc must answer
 
-When the split and the UI are discussed, write a new file. Do not edit `AUDIT_V3_BASELINE.md` into a proposal. The design pass should at least record:
+When the split, Subaccount Architecture, and the broader UI are discussed, write a new file (or deepen `SUBACCOUNT_ARCHITECTURE.md` / a child design). Do not edit `AUDIT_V3_BASELINE.md` into a proposal. The design pass should at least record:
 
 1. Process-to-host map for the areas in §1, including Postgres, Redis, nginx, cron (QuickBooks, droplet snapshot, DB dump).
 2. Which 15m symbols are in the first trading set, and the feed depth each needs.
 3. Which v3 processes are unused once hourly is ignored.
-4. What the frontend overhaul is allowed to change (information architecture, tech stack, or both) and which API edges it still calls.
+4. Subaccount Architecture design answers listed in `SUBACCOUNT_ARCHITECTURE.md` §7 (schema, bankroll binding, panel chrome; REBALANCE later).
+5. Broader frontend overhaul bounds (tech stack vs IA) and API edges outside the Subaccounts panel.

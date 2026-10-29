@@ -12,15 +12,15 @@ Use for lighter, high-confidence updates when you want a one-stop shop. For larg
 
 **Execute the full workflow** (do not just describe it):
 
-1. **Run prepare-update** — Execute the prepare-update workflow (see `.cursor/skills/prepare-update/SKILL.md`): prod snapshot (blocking), verify local system, server-agnostic audit, plans → changelog and DB docs, flag issues, then produce the **suggested commit message** and report readiness. If prepare-update reports **blocking issues**, stop here; do not commit or push. Report the blocking issues and that the flow was aborted.
+1. **Run prepare-update** — Execute the prepare-update workflow (see `.cursor/skills/prepare-update/SKILL.md`): prod snapshot (blocking), verify local system, server-agnostic audit, plans → changelog and DB docs (**including migration-file scan → checklist `run_migration.py up` lines**), flag issues, then produce the **suggested commit message** and report readiness. If prepare-update reports **blocking issues**, stop here; do not commit or push. Report the blocking issues and that the flow was aborted.
 
 2. **Commit and push** — If prepare-update reported **ready for publishing** and produced a suggested commit message:
-   - Stage all changes: `git add -A` (or the set of files that are part of this update).
+   - Stage all changes: `git add -A` (or the set of files that are part of this update). Include every migration `.up.sql`/`.down.sql` pair listed in the checklist.
    - Commit using the **exact suggested commit message** produced in step 1 (use the title + bullets as the commit message body).
    - Push to the current branch (typically `main`): `git push origin <branch>`.
    - If there is nothing to commit (e.g. already committed), run `git push` if the branch is ahead of origin.
 
-3. **Run apply-update-from-local** — Execute the apply-update-from-local workflow (see `.cursor/skills/apply-update-from-local/SKILL.md`): confirm code is pushed, read changelog agent instructions, find open MASTER_CHANGELOG entries, execute each checklist task on prod via SSH, verify production, fidelity check, report outcome.
+3. **Run apply-update-from-local** — Execute the apply-update-from-local workflow (see `.cursor/skills/apply-update-from-local/SKILL.md`): confirm code is pushed, read changelog agent instructions, find open MASTER_CHANGELOG entries, execute each checklist task on prod via SSH (**pull → migrations → restart**), orphan-scan pending migrations, verify production, fidelity check (`git` + `run_migration.py list`), report outcome.
 
 4. **Record deploy version** — The changelog entry from **prepare-update** already pins **NEXT** (`Release: vNEXT` + checklist `record_system_version.py --version NEXT`). **apply-update-from-local** runs that checklist line on prod. Do not use no-arg `record_system_version.py` when the entry pins **NEXT**. See `.cursor/skills/push-commits-and-update-production/SKILL.md`.
 

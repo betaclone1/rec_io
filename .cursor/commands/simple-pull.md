@@ -1,5 +1,5 @@
 ---
-description: "Production: pull latest commit on prod only. No snapshot, no restart, no migrations. For small pushes (e.g. frontend-only) that don't need the full backup/restart process."
+description: "Production: pull latest commit on prod only. No snapshot, no restart, no migrations. Aborts if the pull range includes scripts/migrations/*.up.sql."
 ---
 
 # Simple pull (production)
@@ -9,6 +9,8 @@ description: "Production: pull latest commit on prod only. No snapshot, no resta
 **Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
 
 Pull the latest commit on the **production** server and do nothing else. No snapshot, no MASTER_RESTART, no migrations, no changelog checklist.
+
+**Migration gate:** Before pulling, diff prod HEAD vs the commit to pull for `scripts/migrations/*.up.sql`. If any appear, **abort** and use `/apply-update-from-local` (pull does not enact schema). See `.cursor/rules/10-deploy-migrations-gate.mdc`.
 
 Use for small pushes (e.g. frontend-only or config tweaks) where you've already pushed from local and just need prod to have the new code. Existing processes keep running; static assets and HTML are served from the updated tree on next request.
 

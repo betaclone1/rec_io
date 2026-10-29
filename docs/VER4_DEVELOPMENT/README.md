@@ -6,7 +6,9 @@ Machine-oriented notes for the v3 → v4 initiative. Written for agents. Not a u
 |------|------|
 | [AUDIT_V3_BASELINE.md](AUDIT_V3_BASELINE.md) | As-built v3 snapshot. §0 is the 2026-10-22 deploy refresh. |
 | [V4_DIRECTION.md](V4_DIRECTION.md) | Owner constraints for v4. Not a design. Read after the audit. |
+| [SUBACCOUNT_ARCHITECTURE.md](SUBACCOUNT_ARCHITECTURE.md) | **Subaccount Architecture** pillar. First move: sub/monitor shape. REBALANCE back burner. |
 | [PG_AND_HOST_OPTIONS.md](PG_AND_HOST_OPTIONS.md) | Working assumption: self-managed Postgres on its own lean droplet. Managed DO/AWS prices kept as the alternative. Not executed. |
+| [PIN_UPPER_LOWER_TAIL.md](PIN_UPPER_LOWER_TAIL.md) | Pinned concept: one 99¢ win-rate meter → Upper/Lower Tail. Details TBD after more backtests. |
 
 ## Rules for this folder
 

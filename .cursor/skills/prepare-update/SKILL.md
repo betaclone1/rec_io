@@ -35,18 +35,21 @@ Run when the user is ready to push a commit to the git repository. Orchestrates 
    - Treat **`.cursor/plans/*.md`** as the canonical record of what work was done:
      - List plan files (exclude `README.md`), read their `**Status:**` lines, and identify plans with `Status: done` that correspond to the changes in this update.
      - For these completed plans, summarize the user‑visible and DB‑relevant behavior changes in plain language.
+   - **Migration scan (blocking):** Enumerate every `scripts/migrations/*.up.sql` that is new, modified, staged, or untracked in this update (`git status`, `git diff --name-only HEAD -- 'scripts/migrations/'`, `git diff --cached --name-only -- 'scripts/migrations/'`). Per `.cursor/rules/10-deploy-migrations-gate.mdc`, each migration **id** (filename stem without `.up.sql`) **must** appear in the new changelog Production checklist as an unchecked item with the exact command:  
+     `- [ ] Apply migration: PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up <migration_id>`  
+     Both `.up.sql` and `.down.sql` must be part of the commit. If migration files exist in the change set but are missing from the checklist (or untracked and not staged), this is a **blocking issue** — do **not** report ready for publishing.
    - **You must always ensure that today’s work is represented by a fresh, open changelog entry:**
      - If there is no existing `docs/changelog/MASTER_CHANGELOG.md` entry for this batch of completed plans, **add a new entry at the top** with today’s date, a clear title, a Summary, and a **Production checklist where all new tasks start as `- [ ]` (unchecked)**.
      - **Release metadata (required):** In the **Summary**, include a line **`Release: vNEXT`** (use the **NEXT** value from step 4 exactly, e.g. `Release: v3.0.2`). In the **Production checklist**, add an unchecked item that records that same version on the server after deploy (after migrations/restart/verify as appropriate for this entry):  
        `- [ ] Record release in DB: PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version NEXT`  
        (substitute **NEXT** with the same string as in `Release: vNEXT`, **without** the `v` prefix in the command argument, e.g. `--version 3.0.2`).
-     - At a minimum, the checklist must include a “Confirm codebase changes (pull latest on production)” item, plus any DB schema / migration / restart / verification steps implied by the plans and code changes.
+     - At a minimum, the checklist must include a “Confirm codebase changes (pull latest on production)” item, plus any DB schema / migration / restart / verification steps implied by the plans and code changes. Checklist order for schema releases: pull → apply each migration → restart → verify → record version.
    - Follow the steps in `.cursor/rules/updater.mdc` "Command: prepare update":
      - Add/update a `docs/changelog/MASTER_CHANGELOG.md` entry (date, title, Summary, Production checklist) that **explicitly references the relevant plan files** (e.g. “Plans: `mtb-account-dashboard`, `account-history-strategy-filters`”) so future readers can trace work back to its plans.
-     - Update related docs, and align `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `backend/core/config/database.py` when DB changes occurred. Ensure any DB/schema changes mentioned in plans are fully captured in the schema ref **and** in the changelog checklist (same standard as @db alignment).
+     - Update related docs, and align `docs/MASTER_DB_SCHEMA_REFERENCE.md` and `backend/core/config/database.py` when DB changes occurred. Ensure any DB/schema changes mentioned in plans are fully captured in the schema ref **and** in the changelog checklist (same standard as @db alignment). Prefer versioned migrations over `init_database()` for existing catalogs.
 
 6. **Flag other issues**
-   - Note: missing migrations, untracked files that might need committing, TODOs in changed code, or anything that should be reviewed before push.
+   - Note: migration files without checklist lines (blocking), untracked migration pairs, untracked files that might need committing, TODOs in changed code, or anything that should be reviewed before push.
 
 7. **Commit message and readiness**
    - **From staged changes (and associated plans):** Run `git diff --cached --name-status` and identify every substantive change. Use the associated plan titles (from `.cursor/plans/*.md`) and the new changelog entry to shape the message: short title + bullet list (like Generate Commit Message); 3–7 bullets, each naming one change area in plain language; mention every substantive change; no file counts; concise.

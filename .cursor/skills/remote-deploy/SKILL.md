@@ -19,6 +19,17 @@ Quick deploy workflow for changes that don't require migrations or the full chan
 - Changes requiring pre-deploy snapshots → use `/push-commits-and-update-production`
 - First-time deploys or major version bumps → use full changelog flow
 
+## Migration gate (mandatory — before commit/push/pull)
+
+Per `.cursor/rules/10-deploy-migrations-gate.mdc`: scanning for migration files is **blocking** on this path.
+
+1. Before staging/commit (and again before prod pull):  
+   `git diff --name-only HEAD -- 'scripts/migrations/*.up.sql'`  
+   `git diff --cached --name-only -- 'scripts/migrations/*.up.sql'`  
+   and any untracked `scripts/migrations/*.up.sql`.
+2. If **any** migration `.up.sql` is in the change set (or would be pulled onto prod): **ABORT this skill.** Do not commit/push/pull for remote-deploy. Tell the user to use `/prepare-update` then `/apply-update-from-local` (or `/push-commits-and-update-production`) so migrations are checklisted and enacted on the prod DB.
+3. Pulling migration files without `run_migration.py up` on prod is a failed deploy.
+
 ## Steps (execute in order)
 
 ### 1. Stage and commit changes
@@ -57,6 +68,7 @@ Production pulls from `main`, so changes must be merged there.
 
 ### 4. Pull on prod via SSH
 
+- **Re-check migration gate** against prod HEAD → deploy SHA for `scripts/migrations/*.up.sql`. If any, abort (do not pull).
 - From the **repo root**, run:
   ```bash
   ./scripts/prod/simple_git_pull_on_prod.sh

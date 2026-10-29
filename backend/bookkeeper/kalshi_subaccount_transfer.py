@@ -304,3 +304,65 @@ def transfer_kalshi_address(
         "to_subaccount": to_sub,
         "amount_cents": int(amount_cents),
     }
+
+
+# Exchange indexes covered by exchange_0..3_balance columns / Account Manager.
+ACTIVE_EXCHANGE_INDEXES: tuple[int, ...] = (0, 1, 2, 3)
+
+
+def create_kalshi_subaccount_on_shards(
+    user_no: str,
+    *,
+    exchange_indexes: tuple[int, ...] | list[int] | None = None,
+) -> dict[str, Any]:
+    """
+    ``POST /portfolio/subaccounts`` once per exchange shard.
+
+    Kalshi returns the next ``subaccount_number`` for that shard. Callers expect
+    every successful shard create to return the **same** number (sequences in sync).
+
+    Returns ``{subaccount_number, shards_created, shards_failed}``.
+    Raises ``RuntimeError`` if no shard succeeds or numbers disagree.
+    """
+    shards = tuple(
+        int(x) for x in (exchange_indexes if exchange_indexes is not None else ACTIVE_EXCHANGE_INDEXES)
+    )
+    created: dict[int, int] = {}
+    failed: dict[int, str] = {}
+    for ex in shards:
+        try:
+            resp = kalshi_prod_request(
+                user_no,
+                "POST",
+                "/portfolio/subaccounts",
+                json_body={"exchange_index": int(ex)},
+            )
+            if resp.status_code not in (200, 201):
+                failed[int(ex)] = f"HTTP {resp.status_code}: {(resp.text or '')[:240]}"
+                continue
+            data = resp.json() if resp.content else {}
+            num = data.get("subaccount_number")
+            if num is None:
+                failed[int(ex)] = f"missing subaccount_number in response: {data!r}"
+                continue
+            created[int(ex)] = int(num)
+        except Exception as exc:
+            failed[int(ex)] = str(exc)
+            logger.warning(
+                "Kalshi create subaccount failed user=%s exchange_index=%s: %s",
+                user_no,
+                ex,
+                exc,
+            )
+    if not created:
+        raise RuntimeError(f"Kalshi create failed on all shards: {failed}")
+    numbers = set(created.values())
+    if len(numbers) != 1:
+        raise RuntimeError(
+            f"Shard create returned mismatched subaccount numbers: {created}; failures={failed}"
+        )
+    return {
+        "subaccount_number": int(next(iter(numbers))),
+        "shards_created": sorted(created.keys()),
+        "shards_failed": {str(k): v for k, v in failed.items()},
+    }

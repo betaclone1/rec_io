@@ -208,7 +208,8 @@ async def update_monitors_allocation(request: dict):
 
                 cursor.execute(
                     f"""
-                    SELECT COALESCE(subaccount, 1)
+                    SELECT COALESCE(subaccount, 1), COALESCE(dynamic_bankroll, FALSE),
+                           COALESCE(bankroll_allotment_total, 0)
                     FROM users.monitor_list_{user_number}
                     WHERE id = %s AND status = 'active'
                     """,
@@ -217,24 +218,36 @@ async def update_monitors_allocation(request: dict):
                 sa_row = cursor.fetchone()
                 if not sa_row:
                     continue
-                total_bankroll_cents = latest_bankroll_cents_for_subaccount(
-                    cursor,
-                    user_number,
-                    int(sa_row[0] or 1),
-                    client_trading_mode=tm,
-                )
-                new_dollar_amount_cents = int(total_bankroll_cents * new_decimal)
-
-                cursor.execute(
-                    f"""
-                    UPDATE users.monitor_list_{user_number}
-                    SET 
-                        bankroll_allotment_pct = %s,
-                        bankroll_allotment_total = %s
-                    WHERE id = %s AND status = 'active'
-                """,
-                    (new_decimal, new_dollar_amount_cents, monitor_id),
-                )
+                is_dynamic = bool(sa_row[1])
+                if is_dynamic:
+                    total_bankroll_cents = latest_bankroll_cents_for_subaccount(
+                        cursor,
+                        user_number,
+                        int(sa_row[0] or 1),
+                        client_trading_mode=tm,
+                    )
+                    new_dollar_amount_cents = int(total_bankroll_cents * new_decimal)
+                    cursor.execute(
+                        f"""
+                        UPDATE users.monitor_list_{user_number}
+                        SET
+                            bankroll_allotment_pct = %s,
+                            bankroll_allotment_total = %s
+                        WHERE id = %s AND status = 'active'
+                    """,
+                        (new_decimal, new_dollar_amount_cents, monitor_id),
+                    )
+                else:
+                    # Static bankroll: update weight only; keep preset allotment total.
+                    new_dollar_amount_cents = int(sa_row[2] or 0)
+                    cursor.execute(
+                        f"""
+                        UPDATE users.monitor_list_{user_number}
+                        SET bankroll_allotment_pct = %s
+                        WHERE id = %s AND status = 'active'
+                    """,
+                        (new_decimal, monitor_id),
+                    )
 
                 cursor.execute(
                     f"""

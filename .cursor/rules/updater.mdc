@@ -28,15 +28,17 @@ When the user says **@updater prepare update**, you are preparing for a push of 
    - Add a **new timestamped entry** at the top (newest-first). Use today’s date (YYYY-MM-DD) and a clear title (e.g. `## 2026-03-07 — Short description`).
    - In the Summary and/or a short “Plans” line, explicitly reference the relevant plan files (e.g. ``Plans: mtb-account-dashboard, account-history-strategy-filters``) so changes can be traced back to their plans.
    - Write a **Summary** that describes the change in plain language, informed by the completed plans.
+   - **Migration scan (blocking):** List every `scripts/migrations/*.up.sql` in the change set (staged, unstaged, or untracked). Each id **must** get an unchecked checklist line:  
+     `- [ ] Apply migration: PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up <migration_id>`  
+     Missing lines or uncommitted migration pairs ⇒ not ready to publish. Law: `.cursor/rules/10-deploy-migrations-gate.mdc`.
    - In the **Production checklist**:
      - Always include a “Confirm codebase changes (pull latest on production)” item.
-     - Add any required DB schema / migration / DDL steps, restart instructions, and verification checks implied by the plans.
+     - Add **Apply migration** lines for every new migration id (after pull, before restart).
+     - Add restart instructions and verification checks implied by the plans.
    - Add a **Production checklist** with checkboxes (`- [ ]`) for every task to run when applying the update (from local via /apply-update-from-local or on prod via /apply-update):
      - Confirm codebase changes (pull latest `main`).
-     - Update local database: for simple one-off DB changes, put the exact command or SQL in the checklist (no new migration file). Use migration files only for versioned, reversible schema. If schema or data changed and using init_database, include (from project root):  
-       `PYTHONPATH=$(pwd) venv/bin/python -c "from backend.core.config.database import init_database; init_database()"`  
-       Use one-time scripts only when necessary; prefer inline command in checklist over new script file.
-     - Restart application services (list services or reference `scripts/MASTER_RESTART.sh`).
+     - **Schema:** Prefer versioned migrations (`run_migration.py up <id>`). Do **not** tell agents to use `init_database()` as the production schema path for existing catalogs. One-time data scripts only when necessary; prefer inline command in checklist over a new script file.
+     - Restart application services (list services or reference `scripts/MASTER_RESTART.sh`) **after** migrations.
      - Verification steps (what to check in DB, logs, or UI).
    - See existing entries in `MASTER_CHANGELOG.md` and `docs/changelog/README.md` for format.
 
@@ -45,8 +47,8 @@ When the user says **@updater prepare update**, you are preparing for a push of 
 
 4. **DB schema and init alignment**
    - Open **`docs/MASTER_DB_SCHEMA_REFERENCE.md`**. Ensure every new or changed table, column, or constraint is documented. If this release adds or alters schema, add or edit the relevant sections so server agents know what the DB should look like.
-   - Open **`backend/core/config/database.py`**. Ensure `init_database()` (or equivalent) creates or alters all objects described in the schema ref (tables, columns, sequences, etc.). If something is in the schema ref but missing from `database.py`, add it; if something is in `database.py` that affects production, ensure the schema ref and changelog checklist tell agents to run init/scripts as needed.
-   - Confirm the new changelog entry’s checklist includes clear instructions for “Update local database” (and any one-time scripts) so other server agents can update their local DBs without ambiguity.
+   - Open **`backend/core/config/database.py`**. Align greenfield **CREATE** templates only if needed; **do not** add new repair/`ALTER` DDL there — migrations are the source of truth for existing DBs (`docs/TENANT_INIT_AND_MIGRATIONS.md`).
+   - Confirm the new changelog entry’s checklist includes clear **`run_migration.py up`** lines (and any one-time scripts) so other environments can update without ambiguity.
 
 5. **Summarize**
    - List what you added or changed: changelog entry, doc edits, schema ref, and database.py. Remind the user this is the pre-push step; after they push, production agents can use **@updater new update** (or the changelog instructions) to run the checklist.
@@ -59,7 +61,7 @@ When the user says **@updater new update** (or equivalent: run the changelog / e
 
 1. **Check the changelog** — Read **`docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`** and **`docs/changelog/MASTER_CHANGELOG.md`**.
 2. **Find all open entries** — Any entry with at least one unchecked checklist item (`- [ ]`). Process **newest-first** (by date in the heading).
-3. **Execute every outstanding task** — For each open entry: confirm codebase, run `init_database()` if the checklist says so, run any one-time scripts exactly as written, restart services if required, run verification steps. After each task, update `MASTER_CHANGELOG.md` by changing that item to `- [x]`.
+3. **Execute every outstanding task** — For each open entry: confirm codebase (pull), run every `run_migration.py up <id>` in the checklist on the target DB, run any one-time scripts exactly as written, restart services if required, run verification steps, orphan-scan pending migrations vs `run_migration.py list`. After each task, update `MASTER_CHANGELOG.md` by changing that item to `- [x]`. Only run `init_database()` if the checklist explicitly requires it (legacy).
 4. **Environment** — All commands from **project root**. Python: `PYTHONPATH=$(pwd) venv/bin/python` (see `docs/changelog/README.md`).
 
 When done, report what was completed.

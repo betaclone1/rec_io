@@ -51,6 +51,7 @@ Minimal index for current system. Historical and one-off docs were moved to `arc
 | [PROJECT_HOUSEKEEPING_AUDIT_PLAN.md](PROJECT_HOUSEKEEPING_AUDIT_PLAN.md) | Housekeeping and archive plan |
 | [LONG_TERM_INITIATIVES.md](LONG_TERM_INITIATIVES.md) | Cross-cutting backlog (e.g. multi-user / hardcoded `0001` sweep; historical cycle data product) |
 | [HISTORICAL_CYCLE_DATA_PRODUCT.md](HISTORICAL_CYCLE_DATA_PRODUCT.md) | Cycle package warehouse → possible commercial product (collection / compression / storage) |
+| [investigations/2026-10-29-cycle-packager-pg-lock-deadlock.md](investigations/2026-10-29-cycle-packager-pg-lock-deadlock.md) | Prod UI hang: `cycle_packager` open-txn + second-conn `DROP` self-deadlock; ops clear + packaging fix handoff |
 
 ## Standards and changelog
 

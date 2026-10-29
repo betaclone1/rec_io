@@ -83,6 +83,89 @@
     modalEl._uatBankrollAllotmentCents = Number.isNaN(n) ? 0 : n;
   }
 
+  function bankrollCentsToDollarsInput(cents) {
+    var n = typeof cents === 'number' ? cents : parseInt(cents, 10);
+    if (Number.isNaN(n)) n = 0;
+    return (n / 100).toFixed(2);
+  }
+
+  function bankrollDollarsInputToCents(raw) {
+    var d = parseFloat(raw);
+    if (!Number.isFinite(d) || d < 0) return 0;
+    return Math.round(d * 100);
+  }
+
+  function getDynamicBankrollEls(modalEl) {
+    if (!modalEl) return null;
+    return {
+      cb: modalEl.querySelector('.uat-dynamic-bankroll-cb'),
+      input: modalEl.querySelector('.uat-bankroll-dollars-input')
+    };
+  }
+
+  function syncDynamicBankrollEditable(modalEl) {
+    var els = getDynamicBankrollEls(modalEl);
+    if (!els || !els.input) return;
+    var dynamic = !!(els.cb && els.cb.checked);
+    els.input.readOnly = dynamic;
+    els.input.style.opacity = dynamic ? '0.65' : '1';
+    els.input.style.cursor = dynamic ? 'default' : 'text';
+  }
+
+  function applyDynamicBankrollToModal(modalEl, opts) {
+    if (!modalEl) return;
+    opts = opts || {};
+    var els = getDynamicBankrollEls(modalEl);
+    if (!els) return;
+    var dynamic = !!opts.dynamic_bankroll;
+    if (els.cb) els.cb.checked = dynamic;
+    var cents = opts.bankroll_allotment_total;
+    if (cents !== undefined && cents !== null && cents !== '') {
+      setModalBankrollAllotmentCents(modalEl, cents);
+      if (els.input) els.input.value = bankrollCentsToDollarsInput(cents);
+    }
+    syncDynamicBankrollEditable(modalEl);
+  }
+
+  function readDynamicBankrollFromModal(modalEl) {
+    var els = getDynamicBankrollEls(modalEl);
+    if (!els) {
+      return { dynamic_bankroll: false, bankroll_allotment_total: 0 };
+    }
+    var dynamic = !!(els.cb && els.cb.checked);
+    var cents = modalEl && modalEl._uatBankrollAllotmentCents != null
+      ? modalEl._uatBankrollAllotmentCents
+      : bankrollDollarsInputToCents(els.input && els.input.value);
+    if (!dynamic && els.input) {
+      cents = bankrollDollarsInputToCents(els.input.value);
+    }
+    return {
+      dynamic_bankroll: dynamic,
+      bankroll_allotment_total: Number.isFinite(cents) ? Math.max(0, Math.trunc(cents)) : 0
+    };
+  }
+
+  function bindDynamicBankroll(modalEl) {
+    if (!modalEl || modalEl._uatBankrollBound) return;
+    var els = getDynamicBankrollEls(modalEl);
+    if (!els || !els.cb) return;
+    modalEl._uatBankrollBound = true;
+    els.cb.addEventListener('change', function () {
+      syncDynamicBankrollEditable(modalEl);
+      if (!els.cb.checked && els.input) {
+        setModalBankrollAllotmentCents(modalEl, bankrollDollarsInputToCents(els.input.value));
+        syncModalPositionPreview(modalEl);
+      }
+    });
+    if (els.input) {
+      els.input.addEventListener('input', function () {
+        if (els.cb && els.cb.checked) return;
+        setModalBankrollAllotmentCents(modalEl, bankrollDollarsInputToCents(els.input.value));
+        syncModalPositionPreview(modalEl);
+      });
+    }
+  }
+
   function refreshModalPositionPreviewOnly(modalEl, totalContracts) {
     if (!modalEl || totalContracts == null || totalContracts === '') return;
     var n = typeof totalContracts === 'number' ? totalContracts : parseInt(totalContracts, 10);
@@ -414,6 +497,10 @@
     refreshAllPositionDisplays: refreshAllPositionDisplays,
     captureOpenSnapshot: captureOpenSnapshot,
     restoreOpenSnapshot: restoreOpenSnapshot,
-    persistModalPosition: persistModalPosition
+    persistModalPosition: persistModalPosition,
+    bindDynamicBankroll: bindDynamicBankroll,
+    applyDynamicBankrollToModal: applyDynamicBankrollToModal,
+    readDynamicBankrollFromModal: readDynamicBankrollFromModal,
+    syncDynamicBankrollEditable: syncDynamicBankrollEditable
   };
 })(typeof window !== 'undefined' ? window : this);

@@ -1,6 +1,7 @@
 """Subaccount PATCH/POST mutations on main_app (PostgreSQL + db_change fanout)."""
 
 import logging
+import re
 import uuid
 
 from fastapi import APIRouter, Request
@@ -12,7 +13,9 @@ from backend.core.time_eastern import now_est
 from backend.trading_mode import (
     account_balance_table_for_user,
     is_paper_trading,
+    paper_subaccounts_fqn,
     sql_ident_qualified_table,
+    subaccount_balance_table_fqn,
     subaccounts_table_for_user,
     transfers_table_for_user,
 )
@@ -24,6 +27,68 @@ subaccount_router = APIRouter()
 
 _CASH_NAMES = frozenset({"CASH", "PRIMARY"})
 _MTB_NAME = "Master Trading Bankroll"
+_RESERVED_LABELS = frozenset({"CASH", "PRIMARY", "Master Trading Bankroll"})
+_LABEL_RE = re.compile(r"^[\w][\w \-./()]{0,62}$", re.UNICODE)
+
+
+def _normalize_subaccount_label(raw: object) -> str | None:
+    if raw is None:
+        return None
+    name = str(raw).strip()
+    if not name:
+        return None
+    if not _LABEL_RE.match(name):
+        return None
+    return name
+
+
+def _label_taken(cursor, sa_ident, name: str, *, exclude_id: int | None = None) -> bool:
+    if exclude_id is None:
+        cursor.execute(
+            sql.SQL("SELECT 1 FROM {} WHERE subaccount = %s LIMIT 1").format(sa_ident),
+            (name,),
+        )
+    else:
+        cursor.execute(
+            sql.SQL(
+                "SELECT 1 FROM {} WHERE subaccount = %s AND id <> %s LIMIT 1"
+            ).format(sa_ident),
+            (name, int(exclude_id)),
+        )
+    return cursor.fetchone() is not None
+
+
+def _upsert_subaccount_row(
+    cursor,
+    sa_ident,
+    *,
+    table_fqn: str,
+    sa_id: int,
+    label: str,
+    in_mtb: bool = True,
+) -> None:
+    cursor.execute(
+        sql.SQL(
+            """
+            INSERT INTO {} (
+                id, subaccount, balance,
+                exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance,
+                automatic_transfers, in_mtb
+            ) VALUES (%s, %s, 0, 0, 0, 0, 0, FALSE, %s)
+            ON CONFLICT (id) DO UPDATE SET subaccount = EXCLUDED.subaccount
+            """
+        ).format(sa_ident),
+        (int(sa_id), label, bool(in_mtb) and int(sa_id) != 0),
+    )
+    cursor.execute(
+        sql.SQL(
+            "SELECT setval("
+            "pg_get_serial_sequence(%s, 'id'), "
+            "GREATEST((SELECT MAX(id) FROM {}), 1), "
+            "true)"
+        ).format(sa_ident),
+        (table_fqn,),
+    )
 
 
 def _latest_account_cash_cents(cursor, account_balance_table: str) -> int | None:
@@ -345,6 +410,395 @@ async def update_subaccount_base_value(request: Request):
         return {"ok": True}
     except Exception as e:
         _log.warning("Error updating subaccount base_value: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@subaccount_router.patch("/api/subaccounts/mtb-membership")
+async def update_subaccount_mtb_membership(request: Request):
+    """
+    Set whether a subaccount counts toward live MTB.
+
+    Body: ``{ "subaccount_id": 4, "in_mtb": true }``.
+    CASH (#0) cannot be in MTB.
+    """
+    try:
+        payload = await request.json()
+        try:
+            sa_id = int(payload.get("subaccount_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "subaccount_id required"}
+        if sa_id == 0:
+            return {"ok": False, "error": "CASH (subaccount 0) cannot be in MTB"}
+        if "in_mtb" not in payload:
+            return {"ok": False, "error": "in_mtb required"}
+        in_mtb = bool(payload.get("in_mtb"))
+        user_no = resolved_tenant_user_no_for_app()
+        conn = get_postgresql_connection()
+        try:
+            with conn.cursor() as cursor:
+                sa_ident = sql_ident_qualified_table(
+                    subaccounts_table_for_user(user_no)
+                )
+                cursor.execute(
+                    sql.SQL("UPDATE {} SET in_mtb = %s WHERE id = %s").format(sa_ident),
+                    (in_mtb, sa_id),
+                )
+                if cursor.rowcount == 0:
+                    return {"ok": False, "error": "subaccount not found"}
+                conn.commit()
+            try:
+                broadcast_db_change("subaccounts")
+            except Exception:
+                pass
+            return {"ok": True, "subaccount_id": sa_id, "in_mtb": in_mtb}
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("Error updating subaccount in_mtb: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@subaccount_router.patch("/api/subaccounts/mtb-weight")
+async def update_subaccount_mtb_weight(request: Request):
+    """
+    Set percent-of-MTB-Base weight for a trading subaccount.
+
+    Body: ``{ "subaccount_id": 4, "mtb_weight_pct": 20 }`` or ``null`` to clear.
+    """
+    try:
+        payload = await request.json()
+        try:
+            sa_id = int(payload.get("subaccount_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "subaccount_id required"}
+        if "mtb_weight_pct" not in payload:
+            return {"ok": False, "error": "mtb_weight_pct required (number or null)"}
+        raw = payload.get("mtb_weight_pct")
+        weight: float | None
+        if raw is None or raw == "":
+            weight = None
+        else:
+            try:
+                weight = float(raw)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "mtb_weight_pct must be a number or null"}
+            if not (0 <= weight <= 100):
+                return {"ok": False, "error": "mtb_weight_pct must be between 0 and 100"}
+        user_no = resolved_tenant_user_no_for_app()
+        conn = get_postgresql_connection()
+        try:
+            with conn.cursor() as cursor:
+                sa_ident = sql_ident_qualified_table(
+                    subaccounts_table_for_user(user_no)
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "UPDATE {} SET mtb_weight_pct = %s WHERE id = %s"
+                    ).format(sa_ident),
+                    (weight, sa_id),
+                )
+                if cursor.rowcount == 0:
+                    return {"ok": False, "error": "subaccount not found"}
+                conn.commit()
+            try:
+                broadcast_db_change("subaccounts")
+            except Exception:
+                pass
+            return {"ok": True, "subaccount_id": sa_id, "mtb_weight_pct": weight}
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("Error updating subaccount mtb_weight_pct: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@subaccount_router.get("/api/portfolio/mtb-base")
+async def get_portfolio_mtb_base():
+    """Return portfolio MTB Base Value in cents from system_settings."""
+    try:
+        user_no = str(resolved_tenant_user_no_for_app()).zfill(4)
+        conn = get_postgresql_connection()
+        try:
+            with conn.cursor() as cursor:
+                ss_ident = sql_ident_qualified_table(
+                    f"users_{user_no}.system_settings_{user_no}"
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "SELECT mtb_base_value_cents FROM {} WHERE id = 1"
+                    ).format(ss_ident)
+                )
+                row = cursor.fetchone()
+            cents = int(row[0]) if row and row[0] is not None else None
+            return {"ok": True, "mtb_base_value_cents": cents}
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("Error reading mtb_base_value_cents: %s", e)
+        return {"ok": False, "error": str(e), "mtb_base_value_cents": None}
+
+
+@subaccount_router.patch("/api/portfolio/mtb-base")
+async def update_portfolio_mtb_base(request: Request):
+    """
+    Set portfolio MTB Base Value.
+
+    Body: ``{ "mtb_base_value_cents": 1000000 }`` or ``null`` to clear.
+    """
+    try:
+        payload = await request.json()
+        if "mtb_base_value_cents" not in payload:
+            return {"ok": False, "error": "mtb_base_value_cents required (integer or null)"}
+        raw = payload.get("mtb_base_value_cents")
+        cents: int | None
+        if raw is None or raw == "":
+            cents = None
+        else:
+            try:
+                cents = int(raw)
+            except (TypeError, ValueError):
+                return {"ok": False, "error": "mtb_base_value_cents must be an integer or null"}
+            if cents < 0:
+                return {"ok": False, "error": "mtb_base_value_cents must be non-negative"}
+        user_no = str(resolved_tenant_user_no_for_app()).zfill(4)
+        conn = get_postgresql_connection()
+        try:
+            with conn.cursor() as cursor:
+                ss_ident = sql_ident_qualified_table(
+                    f"users_{user_no}.system_settings_{user_no}"
+                )
+                cursor.execute(
+                    sql.SQL(
+                        "UPDATE {} SET mtb_base_value_cents = %s, updated_at = NOW() WHERE id = 1"
+                    ).format(ss_ident),
+                    (cents,),
+                )
+                if cursor.rowcount == 0:
+                    return {"ok": False, "error": "system_settings row missing"}
+                conn.commit()
+            try:
+                broadcast_db_change("subaccounts")
+            except Exception:
+                pass
+            return {"ok": True, "mtb_base_value_cents": cents}
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("Error updating mtb_base_value_cents: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@subaccount_router.patch("/api/subaccounts/rename")
+async def rename_subaccount(request: Request):
+    """
+    Rename internal display label on ``subaccounts_*`` (and paper twin when live).
+
+    Body: ``{ "subaccount_id": 4, "name": "BTC Tail" }``.
+    Kalshi number (``id``) is unchanged. CASH (#0) cannot be renamed.
+    """
+    try:
+        payload = await request.json()
+        try:
+            sa_id = int(payload.get("subaccount_id"))
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "subaccount_id required"}
+        if sa_id == 0:
+            return {"ok": False, "error": "CASH (subaccount 0) label cannot be renamed"}
+        new_name = _normalize_subaccount_label(payload.get("name"))
+        if not new_name:
+            return {"ok": False, "error": "invalid name"}
+        if new_name in _RESERVED_LABELS:
+            return {"ok": False, "error": f"reserved name: {new_name}"}
+
+        user_no = resolved_tenant_user_no_for_app()
+        paper = is_paper_trading()
+        live_fqn = subaccounts_table_for_user(user_no, force_live=True)
+        paper_fqn = paper_subaccounts_fqn(user_no)
+        active_fqn = paper_fqn if paper else live_fqn
+
+        conn = get_postgresql_connection()
+        try:
+            with conn.cursor() as cursor:
+                active_ident = sql_ident_qualified_table(active_fqn)
+                cursor.execute(
+                    sql.SQL("SELECT subaccount FROM {} WHERE id = %s").format(active_ident),
+                    (sa_id,),
+                )
+                row = cursor.fetchone()
+                if not row:
+                    return {"ok": False, "error": "subaccount not found"}
+                old_name = str(row[0])
+                if old_name == new_name:
+                    return {"ok": True, "subaccount_id": sa_id, "name": new_name, "unchanged": True}
+                if _label_taken(cursor, active_ident, new_name, exclude_id=sa_id):
+                    return {"ok": False, "error": f"name already in use: {new_name}"}
+                cursor.execute(
+                    sql.SQL("UPDATE {} SET subaccount = %s WHERE id = %s").format(active_ident),
+                    (new_name, sa_id),
+                )
+                if not paper:
+                    paper_ident = sql_ident_qualified_table(paper_fqn)
+                    cursor.execute(
+                        """
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = %s AND table_name = %s
+                        """,
+                        (paper_fqn.split(".", 1)[0], paper_fqn.split(".", 1)[1]),
+                    )
+                    if cursor.fetchone():
+                        if not _label_taken(cursor, paper_ident, new_name, exclude_id=sa_id):
+                            cursor.execute(
+                                sql.SQL(
+                                    "UPDATE {} SET subaccount = %s WHERE id = %s"
+                                ).format(paper_ident),
+                                (new_name, sa_id),
+                            )
+                conn.commit()
+            try:
+                broadcast_db_change("subaccounts")
+            except Exception:
+                pass
+            return {
+                "ok": True,
+                "subaccount_id": sa_id,
+                "name": new_name,
+                "previous_name": old_name,
+            }
+        finally:
+            conn.close()
+    except Exception as e:
+        _log.warning("Error renaming subaccount: %s", e)
+        return {"ok": False, "error": str(e)}
+
+
+@subaccount_router.post("/api/subaccounts/create")
+async def create_subaccount(request: Request):
+    """
+    Create a new Kalshi subaccount on exchange indexes 0–3 and insert DB rows.
+
+    Body: ``{ "name": "BTC Tail" }``.
+    Live: ``POST /portfolio/subaccounts`` per shard, then live + paper twin rows.
+    Paper: allocate next id locally on paper (and live twin for id parity) only.
+    """
+    try:
+        payload = await request.json()
+        name = _normalize_subaccount_label(payload.get("name"))
+        if not name:
+            return {"ok": False, "error": "invalid name"}
+        if name in _RESERVED_LABELS:
+            return {"ok": False, "error": f"reserved name: {name}"}
+
+        user_no = resolved_tenant_user_no_for_app()
+        paper = is_paper_trading()
+        live_fqn = subaccounts_table_for_user(user_no, force_live=True)
+        paper_fqn = paper_subaccounts_fqn(user_no)
+
+        shards_created: list[int] = []
+        shards_failed: dict = {}
+        sa_id: int | None = None
+
+        if paper:
+            conn = get_postgresql_connection()
+            try:
+                with conn.cursor() as cursor:
+                    paper_ident = sql_ident_qualified_table(paper_fqn)
+                    live_ident = sql_ident_qualified_table(live_fqn)
+                    if _label_taken(cursor, paper_ident, name) or _label_taken(
+                        cursor, live_ident, name
+                    ):
+                        return {"ok": False, "error": f"name already in use: {name}"}
+                    cursor.execute(
+                        sql.SQL("SELECT COALESCE(MAX(id), 0) FROM {}").format(paper_ident)
+                    )
+                    max_paper = int(cursor.fetchone()[0] or 0)
+                    cursor.execute(
+                        sql.SQL("SELECT COALESCE(MAX(id), 0) FROM {}").format(live_ident)
+                    )
+                    max_live = int(cursor.fetchone()[0] or 0)
+                    sa_id = max(max_paper, max_live) + 1
+                    if sa_id < 1:
+                        sa_id = 1
+                    _upsert_subaccount_row(
+                        cursor, paper_ident, table_fqn=paper_fqn, sa_id=sa_id, label=name
+                    )
+                    _upsert_subaccount_row(
+                        cursor, live_ident, table_fqn=live_fqn, sa_id=sa_id, label=name
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+        else:
+            from backend.bookkeeper.kalshi_subaccount_transfer import (
+                create_kalshi_subaccount_on_shards,
+            )
+
+            try:
+                created = create_kalshi_subaccount_on_shards(str(user_no).zfill(4))
+            except Exception as exc:
+                _log.warning("Kalshi create subaccount failed: %s", exc)
+                return {"ok": False, "error": str(exc)}
+            sa_id = int(created["subaccount_number"])
+            shards_created = list(created.get("shards_created") or [])
+            shards_failed = dict(created.get("shards_failed") or {})
+
+            conn = get_postgresql_connection()
+            try:
+                with conn.cursor() as cursor:
+                    live_ident = sql_ident_qualified_table(live_fqn)
+                    paper_ident = sql_ident_qualified_table(paper_fqn)
+                    if _label_taken(cursor, live_ident, name, exclude_id=sa_id):
+                        return {
+                            "ok": False,
+                            "error": (
+                                f"Kalshi created subaccount {sa_id}, but name "
+                                f"{name!r} is already used locally"
+                            ),
+                            "subaccount_id": sa_id,
+                            "shards_created": shards_created,
+                            "shards_failed": shards_failed,
+                        }
+                    _upsert_subaccount_row(
+                        cursor, live_ident, table_fqn=live_fqn, sa_id=sa_id, label=name
+                    )
+                    cursor.execute(
+                        """
+                        SELECT 1 FROM information_schema.tables
+                        WHERE table_schema = %s AND table_name = %s
+                        """,
+                        (paper_fqn.split(".", 1)[0], paper_fqn.split(".", 1)[1]),
+                    )
+                    if cursor.fetchone():
+                        if not _label_taken(cursor, paper_ident, name, exclude_id=sa_id):
+                            _upsert_subaccount_row(
+                                cursor,
+                                paper_ident,
+                                table_fqn=paper_fqn,
+                                sa_id=sa_id,
+                                label=name,
+                            )
+                    from backend.balance_snapshot import ensure_subaccount_balance_table
+
+                    ensure_subaccount_balance_table(
+                        cursor, subaccount_balance_table_fqn(user_no, sa_id)
+                    )
+                    conn.commit()
+            finally:
+                conn.close()
+
+        try:
+            broadcast_db_change("subaccounts")
+        except Exception:
+            pass
+        return {
+            "ok": True,
+            "subaccount_id": sa_id,
+            "name": name,
+            "paper": paper,
+            "shards_created": shards_created,
+            "shards_failed": shards_failed,
+        }
+    except Exception as e:
+        _log.warning("Error creating subaccount: %s", e)
         return {"ok": False, "error": str(e)}
 
 

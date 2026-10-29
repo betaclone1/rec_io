@@ -608,15 +608,55 @@ async def get_subaccounts(
                            exchange_0_balance, exchange_1_balance, exchange_2_balance, exchange_3_balance,
                            COALESCE(drawdown_trading_halt, true) AS drawdown_trading_halt,
                            COALESCE(drawdown_reset_threshold_pct, 50.00) AS drawdown_reset_threshold_pct,
-                           COALESCE(trading_halt_active, false) AS trading_halt_active
+                           COALESCE(trading_halt_active, false) AS trading_halt_active,
+                           COALESCE(in_mtb, false) AS in_mtb,
+                           mtb_weight_pct,
+                           category, base_value_format, base_value_factor
                     FROM {}
                     ORDER BY id
                     """
                     ).format(sa_ident)
                 )
                 rows = cursor.fetchall()
+                mtb_base_cents = None
+                try:
+                    ss_tbl = f"users_{str(slot).zfill(4)}.system_settings_{str(slot).zfill(4)}"
+                    ss_ident = sql_ident_qualified_table(ss_tbl)
+                    cursor.execute(
+                        sql.SQL(
+                            "SELECT mtb_base_value_cents FROM {} WHERE id = 1"
+                        ).format(ss_ident)
+                    )
+                    ss_row = cursor.fetchone()
+                    if ss_row and ss_row.get("mtb_base_value_cents") is not None:
+                        mtb_base_cents = int(ss_row["mtb_base_value_cents"])
+                except Exception:
+                    _read_logger.debug(
+                        "subaccounts read: mtb_base_value_cents unavailable for user %s",
+                        slot,
+                        exc_info=True,
+                    )
+                    conn.rollback()
+                out_rows = []
+                for r in rows:
+                    d = dict(r)
+                    w = d.get("mtb_weight_pct")
+                    if (
+                        mtb_base_cents is not None
+                        and w is not None
+                        and d.get("in_mtb")
+                    ):
+                        d["mtb_target_cents"] = int(
+                            round(mtb_base_cents * float(w) / 100.0)
+                        )
+                    else:
+                        d["mtb_target_cents"] = None
+                    out_rows.append(d)
             conn.commit()
-            return {"subaccounts": [dict(r) for r in rows]}
+            return {
+                "subaccounts": out_rows,
+                "mtb_base_value_cents": mtb_base_cents,
+            }
         finally:
             conn.close()
     except Exception:
@@ -1508,7 +1548,9 @@ async def get_monitor_details(monitor_id: int, user_id: Optional[str] = None) ->
         cursor = conn.cursor()
         cursor.execute(
             f"""
-            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, test_filter, market
+            SELECT id, name, symbol, strategy, position_size, multiplier, total_position, position_type,
+                   bankroll_allotment_total, auto_trade, paper_trade, test_filter, market,
+                   COALESCE(dynamic_bankroll, FALSE)
             FROM users.monitor_list_{user_number}
             WHERE id = %s AND status = 'active'
             """,
@@ -1517,7 +1559,22 @@ async def get_monitor_details(monitor_id: int, user_id: Optional[str] = None) ->
         result = cursor.fetchone()
         conn.close()
         if result:
-            monitor_id, name, symbol, strategy, position_size, multiplier, total_position, position_type, bankroll_allotment_total, auto_trade, paper_trade, test_filter, market = result
+            (
+                monitor_id,
+                name,
+                symbol,
+                strategy,
+                position_size,
+                multiplier,
+                total_position,
+                position_type,
+                bankroll_allotment_total,
+                auto_trade,
+                paper_trade,
+                test_filter,
+                market,
+                dynamic_bankroll,
+            ) = result
             mkt = (market or "").strip().lower()
             if mkt not in ("hourly", "15m"):
                 mkt = None
@@ -1533,6 +1590,7 @@ async def get_monitor_details(monitor_id: int, user_id: Optional[str] = None) ->
                     "total_position": total_position,
                     "position_type": position_type,
                     "bankroll_allotment_total": bankroll_allotment_total,
+                    "dynamic_bankroll": bool(dynamic_bankroll),
                     "auto_trade": auto_trade,
                     "paper_trade": bool((paper_trade or False) or (test_filter or False)),
                     "test_filter": bool(test_filter) if test_filter is not None else False,

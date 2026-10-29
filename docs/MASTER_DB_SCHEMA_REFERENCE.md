@@ -9904,6 +9904,8 @@ Paper subaccounts mirror (PRIMARY, Master Trading Bankroll, Cash Transfer). **`a
 | `category` | `text` | NO | `'crypto'` | `crypto` or `commodity`. Migration `20261020_1200_subaccount_category_base_value_factor`. |
 | `base_value_format` | `text` | NO | `'percent'` | `percent` (factor is percent of balance) or `amount` (factor is dollars). |
 | `base_value_factor` | `double precision` | NO | 100 | Factor for `base_value_format`. Default 100 with `percent` = 100% of balance. Existing `base_value` (cents) is unchanged until consumers are wired. |
+| `in_mtb` | `boolean` | NO | false | Paper parity with live MTB membership. Migration `20261027_0630_subaccount_mtb_shape`. |
+| `mtb_weight_pct` | `double precision` | YES | - | Paper parity with live `% of MTB Base`. |
 
 #### Indexes
 
@@ -10415,6 +10417,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `market_wide_loss_prevention` | `boolean` | NO | true | Master toggle for global hero loss-count gate affecting monitors with `symbol_wide_loss_prevention`. |
 | `hero_monitor_id` | `integer` | YES | null | `monitor_list` numeric id of the global volatility hero; NULL disables the gate. |
 | `stop_loss_count_threshold` | `integer` | YES | null | When set (>= 1), hero `loss_prevention_cooldown_loss_count` must reach this to apply `live_loss_market_wide_1c` to symbol-wide LP monitors. |
+| `mtb_base_value_cents` | `integer` | YES | null | Portfolio MTB Base Value in cents. Policy SA targets = `mtb_weight_pct` % of this. Distinct from per-SA `base_value` (rake HWM). Migration `20261027_0630_subaccount_mtb_shape`. |
 | `updated_at` | `timestamp with time zone` | NO | now() | Last update. |
 
 #### Constraints
@@ -10422,6 +10425,7 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 - **Primary Key:** `system_settings_0001_pkey` on `id`
 - **Check:** `id = 1`
 - **Check:** `drawdown_reset_threshold_pct` between 0 and 100 (exclusive)
+- **Check:** `mtb_base_value_cents` IS NULL OR >= 0
 
 ---
 
@@ -10449,10 +10453,11 @@ Singleton global/system settings for user `0001` (one row `id = 1`). Migrations 
 | `pnl` | `numeric(10,2)` | YES | 0.00 | |
 | `bankroll_allotment` | `numeric(5,1)` | YES | 0.0 | |
 | `bankroll_allotment_pct` | `real(24)` | YES | 0.00 | |
-| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (`users_*.subaccounts_*.id`). Monitor bankroll allotment uses that subaccount's `bankroll_current`. Default 1 = Master Trading Bankroll. Migration `20261017_1200_monitor_list_subaccount`. |
+| `subaccount` | `integer(32)` | NO | 1 | Kalshi subaccount number (`users_*.subaccounts_*.id`). Monitor bankroll allotment uses that subaccount's `bankroll_current` when `dynamic_bankroll` is true. Default 1 = Master Trading Bankroll. Migration `20261017_1200_monitor_list_subaccount`. |
+| `dynamic_bankroll` | `boolean` | NO | false | When TRUE, `bankroll_allotment_total` tracks subaccount sticky `bankroll_current` via allotment sync. When FALSE, allotment is a static user preset (not overwritten by HWM sync). Migration `20261026_1340_monitor_list_dynamic_bankroll`. |
 | `status` | `character varying(20)` | YES | 'active'::character varying | Script lifecycle: 'active' = AES/ATS run, 'inactive' = torn down. |
 | `created` | `timestamp without time zone` | YES | CURRENT_TIMESTAMP | |
-| `bankroll_allotment_total` | `integer(32)` | YES | 0 | |
+| `bankroll_allotment_total` | `integer(32)` | YES | 0 | Working bankroll in cents used for position sizing. Dynamic when `dynamic_bankroll`; otherwise a static preset. |
 | `position_size` | `integer(32)` | YES | 1 | |
 | `multiplier` | `numeric(3,2)` | YES | 1.00 | |
 | `total_position` | `integer(32)` | YES | 1 | |
@@ -10823,10 +10828,13 @@ Live Kalshi subaccount balances (poll-native). **PRIMARY** = total portfolio (ca
 | `category` | `text` | NO | `'crypto'` | `crypto` or `commodity`. Migration `20261020_1200_subaccount_category_base_value_factor`. |
 | `base_value_format` | `text` | NO | `'percent'` | `percent` (factor is percent of this subaccount’s balance) or `amount` (factor is a hard dollar amount). |
 | `base_value_factor` | `double precision` | NO | 100 | Factor for `base_value_format`. Default 100 with `percent` = 100% of balance. Existing `base_value` (integer cents) stays the operational rake base until format/factor are wired. |
+| `in_mtb` | `boolean` | NO | false | TRUE = counts toward live MTB (trading-set capital). CASH / PRIMARY are FALSE. Migration `20261027_0630_subaccount_mtb_shape` (+ `20261027_0700_subaccount_mtb_cash_out`). |
+| `mtb_weight_pct` | `double precision` | YES | - | Percent of portfolio MTB Base Value (0–100). NULL = unweighted / residual Unallocated inside MTB. |
 
 #### Constraints
 
 - **Primary Key:** `subaccounts_0001_pkey` on `id`
+- **Check:** `mtb_weight_pct` IS NULL OR between 0 and 100 inclusive
 
 #### Indexes
 

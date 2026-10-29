@@ -1,0 +1,58 @@
+---
+description: "Git migration files are not DB changes — every prepare/deploy/pull path must detect and enact them on the target database."
+alwaysApply: true
+---
+
+# Deploy migrations gate (non-negotiable)
+
+**Committing or pulling migration files does not change any database.** Schema changes take effect only when `scripts/db/run_migration.py up <migration_id>` succeeds on the **target** Postgres (`system.schema_migrations`). Code that needs new catalog on production is not safely deployed until those `up`s have run on **prod**.
+
+## Dual nature (never conflate)
+
+| Layer | What it does |
+|-------|----------------|
+| Git (`scripts/migrations/*.up.sql` / `*.down.sql`) | Ships the DDL recipe with the code |
+| Enactment (`run_migration.py up …` on a host’s DB) | Actually alters that environment’s catalog |
+
+Local apply ≠ production apply. Restart ≠ migration.
+
+## Mandatory scan (every git→prod path)
+
+Before **prepare-update**, **push-commits-and-update-production**, **apply-update-from-local**, **apply-update**, **remote-deploy**, or **simple-pull**, agents must answer:
+
+1. Do the commits / staged changes / range about to land on the target include any `scripts/migrations/*.up.sql` (or new pairs)?
+2. Are those migration ids listed in the open `MASTER_CHANGELOG` production checklist with exact `run_migration.py up <id>` commands?
+3. After code sync on the target, have those ids been applied on **that** DB (compare `run_migration.py list` / `system.schema_migrations` to files in the tree)?
+
+## Path-specific gates
+
+- **`/prepare-update` / @updater prepare:** Scanning `scripts/migrations/` in the change set is **blocking**. Every new/changed `.up.sql` id **must** appear as an unchecked checklist item with the exact `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up <migration_id>` command (and pair must be committed with the code). Missing checklist lines ⇒ not “ready for publishing.”
+- **`/apply-update-from-local` / `/apply-update`:** Pre-flight: every checklist migration file exists in the commit being deployed. Order on target: **pull → apply all required migrations → restart**. Also detect **orphan** migration files in the deployed tree that are not in `system.schema_migrations` on that DB — treat as required work (apply or **🔴 Critical**); do not report “All good” with pending migrations the new code needs. Fidelity: local vs prod `git rev-parse HEAD` **and** `run_migration.py list`.
+- **`/remote-deploy` / `/simple-pull`:** These paths **must not** ship or pull commits that add `scripts/migrations/*.up.sql`. **Abort** and redirect to `/prepare-update` + `/apply-update-from-local` (or `/push-commits-and-update-production`). Pulling migration files without enacting them is a failed deploy, not a shortcut.
+- **`/push-commits-and-update-production`:** Inherits prepare + apply gates above; never skip migration checklist or fidelity.
+
+## How to detect migration files in a range
+
+```bash
+# Staged / working tree vs HEAD
+git diff --name-only HEAD -- 'scripts/migrations/*.up.sql'
+git diff --cached --name-only -- 'scripts/migrations/*.up.sql'
+
+# Commits about to land on prod (example: local main vs prod HEAD after fetch)
+git diff --name-only <prod_sha>..<deploy_sha> -- 'scripts/migrations/*.up.sql'
+```
+
+Migration id = filename stem without `.up.sql` / `.down.sql` (e.g. `20261026_1340_monitor_list_dynamic_bankroll`).
+
+## Forbidden
+
+- Claiming production is updated after `git pull` alone when the range included migration files
+- Marking changelog DB/migration tasks `[x]` without a successful `up` on the target DB
+- Using `init_database()` as a substitute for versioned migrations on existing catalogs
+- SCP/copy of migration SQL outside git as the deploy mechanism
+
+## References
+
+- Authoring / local apply: `.cursor/rules/05-db-migration-hygiene.mdc`, `AGENTS.md`, `docs/TENANT_INIT_AND_MIGRATIONS.md`
+- Changelog apply: `docs/changelog/CHANGELOG_AGENT_INSTRUCTIONS.md`
+- Skills: `prepare-update`, `apply-update-from-local`, `push-commits-and-update-production`, `remote-deploy`, `simple-pull`

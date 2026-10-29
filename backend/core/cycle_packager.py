@@ -253,12 +253,19 @@ def quarantine_unsealable_cycle(
     row_counts: Optional[Dict[str, int]] = None,
     market_meta: Optional[Dict[str, Any]] = None,
     drop: bool = True,
+    conn=None,
 ) -> Optional[Path]:
     """
     Record a permanent empty-OB stub that can never seal (venue market gone).
 
     Writes ``{ticker}.unsealable.json`` next to the would-be package path and
     drops hot tables when ``drop``. Does **not** invent settlement/floor.
+
+    When ``drop`` and a packaging ``conn`` is still open with uncommitted
+    ``COPY``/``SELECT`` locks, pass that same ``conn`` (after callers have
+    finished reads) — never open a second connection for DROP while share
+    locks remain. Prefer releasing the read txn first (see
+    ``package_ticker_attempt``).
     """
     mt = str(market_ticker).strip()
     out = _unsealable_receipt_path(mt)
@@ -292,14 +299,57 @@ def quarantine_unsealable_cycle(
     tmp.replace(out)
     logger.warning("quarantined unsealable cycle %s -> %s (%s)", mt, out, reason)
     if drop:
-        drop_cycle_tables(mt)
+        drop_cycle_tables(mt, conn)
     return out
 
 
 def _system_conn():
+    """Packaging read connection: autocommit so COPY/SELECT cannot pin locks."""
     from backend.core.config.database import get_system_postgresql_connection
 
-    return get_system_postgresql_connection()
+    conn = get_system_postgresql_connection()
+    if conn is None:
+        return None
+    try:
+        # Clear any leftover txn (search_path / schema check) before session GUCs.
+        conn.rollback()
+    except Exception:
+        pass
+    try:
+        conn.autocommit = True
+        with conn.cursor() as cur:
+            # Belt-and-suspenders if a future caller disables autocommit.
+            cur.execute("SET idle_in_transaction_session_timeout = '300000'")  # 5 min
+    except Exception as e:
+        logger.warning("packager conn session setup failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        try:
+            conn.autocommit = True
+        except Exception:
+            pass
+    return conn
+
+
+def _close_packager_read_conn(conn) -> None:
+    """Close the read connection before Redis/API/tar/quarantine DROP."""
+    if conn is None:
+        return
+    try:
+        if not getattr(conn, "autocommit", False):
+            conn.commit()
+    except Exception as e:
+        logger.warning("packager read-txn commit failed: %s", e)
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+    try:
+        conn.close()
+    except Exception:
+        pass
 
 
 def _copy_table_csv(cur, table: str) -> bytes:
@@ -627,6 +677,7 @@ def package_ticker_attempt(
     if conn is None:
         logger.error("no PG connection for package %s", mt)
         return PackageAttempt(reason="no_pg", retryable=True)
+    read_conn_open = True
 
     end_est = parse_cycle_ticker_end_est(mt)
     win = cycle_window_utc(mt)
@@ -679,6 +730,13 @@ def package_ticker_attempt(
                     "market_result": None,
                     "updated_at": None,
                 }
+
+        # CRITICAL: commit+close before Redis/API/tar/quarantine DROP.
+        # Leaving COPY ACCESS SHARE open while DROP runs on another connection
+        # self-deadlocks (docs/investigations/2026-10-29-cycle-packager-pg-lock-deadlock.md).
+        _close_packager_read_conn(conn)
+        read_conn_open = False
+        conn = None
 
         _enrich_market_result_from_redis(market_meta)
         # When hot meta already has floor+result, one API attempt is enough.
@@ -877,16 +935,18 @@ def package_ticker_attempt(
         )
 
         if drop_after:
-            drop_cycle_tables(mt, conn)
+            # Fresh connection — read conn already closed above.
+            drop_cycle_tables(mt)
         return PackageAttempt(path=out)
     except Exception as e:
         logger.exception("package failed %s: %s", mt, e)
         return PackageAttempt(reason=f"exception:{type(e).__name__}", retryable=True)
     finally:
-        try:
-            conn.close()
-        except Exception:
-            pass
+        if read_conn_open and conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def package_due_cycles(

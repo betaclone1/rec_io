@@ -366,6 +366,98 @@ def test_volume_path_cumulates_by_second():
     assert "15" in text  # 10+5
 
 
+def test_package_ticker_commits_before_quarantine_drop(tmp_path: Path):
+    """Regression: open COPY txn + second-conn DROP must not self-deadlock.
+
+    After hot-table reads, the packager must commit before quarantine DROP
+    (see docs/investigations/2026-10-29-cycle-packager-pg-lock-deadlock.md).
+    """
+    from backend.core.cycle_packager import package_ticker_attempt
+
+    events: list[str] = []
+
+    class _Cur:
+        def copy_expert(self, *_a, **_k):
+            events.append("copy")
+            return None
+
+        def execute(self, sql, *_a, **_k):
+            events.append(f"execute:{str(sql)[:40]}")
+            return None
+
+        def fetchone(self):
+            return (0,)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_a):
+            return False
+
+    class _Conn:
+        def cursor(self):
+            return _Cur()
+
+        def commit(self):
+            events.append("commit")
+
+        def rollback(self):
+            events.append("rollback")
+
+        def close(self):
+            events.append("close")
+
+    conn = _Conn()
+    conn.autocommit = True
+    mt = "KXBTC15M-26OCT010315-15"
+
+    def _fake_drop(ticker, drop_conn=None):
+        events.append("drop")
+
+    with (
+        patch(
+            "backend.core.cycle_packager.package_path_for_ticker",
+            return_value=tmp_path / f"{mt}.tar.xz",
+        ),
+        patch("backend.core.cycle_packager.is_cycle_ready_to_package", return_value=True),
+        patch("backend.core.cycle_packager._system_conn", return_value=conn),
+        patch(
+            "backend.core.cycle_packager._read_market_meta_row",
+            return_value={
+                "market_ticker": mt,
+                "floor_strike": None,
+                "volume_fp": None,
+                "market_result": None,
+                "updated_at": None,
+            },
+        ),
+        patch("backend.core.cycle_packager._enrich_market_result_from_redis"),
+        patch(
+            "backend.core.cycle_packager.enrich_market_meta_from_api",
+            return_value=False,
+        ),
+        patch(
+            "backend.core.cycle_packager._cycle_age_hours",
+            return_value=72.0,
+        ),
+        patch(
+            "backend.core.cycle_packager._unsealable_age_hours",
+            return_value=24.0,
+        ),
+        patch(
+            "backend.core.cycle_packager.drop_cycle_tables",
+            side_effect=_fake_drop,
+        ),
+    ):
+        attempt = package_ticker_attempt(mt, drop_after=True, force=False)
+
+    assert attempt.quarantined is True
+    assert attempt.retryable is False
+    assert "close" in events
+    assert "drop" in events
+    assert events.index("close") < events.index("drop")
+
+
 def test_export_external_strips_proprietary(tmp_path: Path):
     src = tmp_path / "KXBTC15M-demo.tar.xz"
     members = {
