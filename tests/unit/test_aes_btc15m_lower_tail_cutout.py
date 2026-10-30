@@ -3,19 +3,34 @@
 from __future__ import annotations
 
 from backend.core.aes_btc15m_lower_tail_cutout import (
-    LOWER_TAIL_SYMBOLS,
     STRATEGY_NAME,
     filter_lower_tail_rows_only,
     filter_out_lower_tail_rows,
     is_lower_tail_row,
     is_lower_tail_symbol,
+    lower_tail_symbols,
     resolve_monitor_limit_dollars,
     row_matches_lower_tail_fields,
 )
 from backend.core.lower_tail_kalshi import v2_price_for_limit_side
 
+_TRACKED_15M = (
+    "BTC",
+    "ETH",
+    "SOL",
+    "XRP",
+    "DOGE",
+    "GOLD",
+    "SILVER",
+    "WTI",
+)
 
-def test_membership_exact():
+
+def test_membership_exact(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: _TRACKED_15M,
+    )
     assert is_lower_tail_row(
         {"symbol": "BTC", "market": "15m", "strategy": "Lower Tail"}
     )
@@ -25,21 +40,25 @@ def test_membership_exact():
     assert STRATEGY_NAME == "Lower Tail"
 
 
-def test_membership_multi_symbol():
-    for sym in ("BTC", "ETH", "GOLD", "SILVER", "WTI"):
+def test_membership_multi_symbol(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: _TRACKED_15M,
+    )
+    for sym in _TRACKED_15M:
         assert is_lower_tail_symbol(sym)
         assert is_lower_tail_row(
             {"symbol": sym, "market": "15m", "strategy": "Lower Tail"}
         )
-    assert LOWER_TAIL_SYMBOLS == frozenset(
-        {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
-    )
-    assert not is_lower_tail_symbol("SOL")
+    assert lower_tail_symbols() == frozenset(_TRACKED_15M)
+    assert is_lower_tail_symbol("SOL")
+    assert is_lower_tail_symbol("XRP")
 
 
-def test_membership_rejects_near_misses():
-    assert not is_lower_tail_row(
-        {"symbol": "SOL", "market": "15m", "strategy": "Lower Tail"}
+def test_membership_rejects_near_misses(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: _TRACKED_15M,
     )
     assert not is_lower_tail_row(
         {"symbol": "BTC", "market": "hourly", "strategy": "Lower Tail"}
@@ -47,19 +66,30 @@ def test_membership_rejects_near_misses():
     assert not is_lower_tail_row(
         {"symbol": "BTC", "market": "15m", "strategy": "High Water Scalp"}
     )
+    # Tracked but not in SERIES_15M — not Lower Tail.
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: ("BTC", "FAKE"),
+    )
+    assert not is_lower_tail_symbol("FAKE")
 
 
-def test_filters_partition():
+def test_filters_partition(monkeypatch):
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: _TRACKED_15M,
+    )
     rows = [
         {"monitor_id": "1", "symbol": "BTC", "market": "15m", "strategy": "Lower Tail"},
         {"monitor_id": "2", "symbol": "BTC", "market": "15m", "strategy": "Rising Devil"},
         {"monitor_id": "3", "symbol": "BTC", "market": "15m", "strategy": "Expiration Scalp"},
         {"monitor_id": "4", "symbol": "ETH", "market": "15m", "strategy": "Lower Tail"},
         {"monitor_id": "5", "symbol": "GOLD", "market": "15m", "strategy": "Lower Tail"},
+        {"monitor_id": "6", "symbol": "SOL", "market": "15m", "strategy": "Lower Tail"},
     ]
     only = filter_lower_tail_rows_only(rows)
     rest = filter_out_lower_tail_rows(rows)
-    assert [r["monitor_id"] for r in only] == ["1", "4", "5"]
+    assert [r["monitor_id"] for r in only] == ["1", "4", "5", "6"]
     assert [r["monitor_id"] for r in rest] == ["2", "3"]
 
 

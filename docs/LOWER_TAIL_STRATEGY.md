@@ -3,7 +3,7 @@
 **Product name:** Lower Tail  
 **Audience:** operators + implementers.  
 **Status:** live wiring via `lower_tail_agent` (outside TE); research backtests remain valid for edge thesis.  
-**Series:** Kalshi 15m binaries for `BTC` / `ETH` / `GOLD` / `SILVER` / `WTI` (`KXBTC15M`, `KXETH15M`, `KXGOLD15M`, `KXSILVER15M`, `KXWTI15M`). Commodities use lean market capture (ticker + public trades + lifecycle; no OB/strike ladder).  
+**Series:** Kalshi 15m binaries for every tracked asset with a 15m series (`lower_tail_symbols()` = `market_feed_symbols` ∩ `SERIES_15M_BY_SYMBOL` — currently BTC/ETH/SOL/XRP/DOGE/GOLD/SILVER/WTI). Lean commodities use ticker + public trades + lifecycle (no OB/strike ladder).  
 **Session context:** agent transcript [KXBTC15M longshot sweeps](50be246f-d7ea-4e39-80ed-56ada09254d0).
 
 This note consolidates thesis, fill models, architecture, measured results, and data plumbing. Prefer numbers from the CSV paths below over re-deriving from chat.
@@ -138,7 +138,7 @@ Landed: Jan 1–Oct 17, +$213,550 / 1.35% WR. Detail: `KXBTC15M_exact_cent_cum25
 | Concern | Implementation |
 |---------|----------------|
 | Process | Dedicated `lower_tail_agent` per tenant (outside TE); AES/ATS exclude Lower Tail monitors |
-| Symbols | `LOWER_TAIL_SYMBOLS`: BTC, ETH, GOLD, SILVER, WTI (`15m`). Co-opening windows place in one fire. |
+| Symbols | `lower_tail_symbols()`: all tracked 15m underlyings (same universe as Upper Tail). Co-opening windows place in one fire. |
 | Entry | At Kalshi ``open_time``: place **two** post-only GTC at monitor limit `L` — **BID @ L** and **ASK @ L** (yes/no constructs). Arming is open_time-driven, not TTC. |
 | Size | Standard bankroll pct/contracts from `monitor_list.subaccount` (v3.12.12) |
 | TTC | `min_time` used only to cancel **unfilled** rests near expiry; not a place gate |
@@ -339,4 +339,5 @@ YTD cum2500 (done):
 |------|------|
 | 2026-10-17 | Initial handoff from exact-cent / maker / package-v4 research session. YTD cum2500 still in flight. |
 | 2026-10-19 | Live place path: open_time arm + prefetch/rewarm + parallel dual post; log fire/send/ack lags. |
-| 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout `LOWER_TAIL_SYMBOLS`. |
+| 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout symbols. |
+| 2026-10-29 | Membership = all tracked 15m feeds (`lower_tail_symbols()`, same as Upper Tail) — includes SOL/XRP/DOGE when `live_data_level` is full/market. |

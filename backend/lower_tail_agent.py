@@ -24,11 +24,12 @@ import uvicorn
 from fastapi import FastAPI
 
 from backend.core.aes_btc15m_lower_tail_cutout import (
-    LOWER_TAIL_SYMBOLS,
     STRATEGY_NAME,
     list_active_lower_tail_monitor_rows,
+    lower_tail_symbols,
     resolve_monitor_limit_dollars,
 )
+from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
 from backend.core.lower_tail_kalshi import (
     PlaceResult,
     build_place_body,
@@ -61,9 +62,12 @@ logging.basicConfig(
 log = logging.getLogger("lower_tail_agent")
 
 FAILSAFE_POLL_SEC = float(os.getenv("LOWER_TAIL_FAILSAFE_POLL_SEC", "1.0"))
-# Default allows one dual-rest per Lower Tail symbol (BTC/ETH/GOLD/SILVER/WTI).
+# Default: one dual-rest per tracked 15m series (BTC/ETH/SOL/XRP/DOGE/GOLD/SILVER/WTI).
 MAX_CONCURRENT_MARKETS = int(
-    os.getenv("LOWER_TAIL_MAX_CONCURRENT", str(max(5, len(LOWER_TAIL_SYMBOLS))))
+    os.getenv(
+        "LOWER_TAIL_MAX_CONCURRENT",
+        str(max(8, len(SERIES_15M_BY_SYMBOL))),
+    )
 )
 # Re-warm TLS/signing ~1s before open so a long arm sleep does not leave a cold pool.
 _REWARM_BEFORE_OPEN_SEC = float(os.getenv("LOWER_TAIL_REWARM_BEFORE_OPEN_SEC", "1.0"))
@@ -1156,7 +1160,7 @@ def _start_listeners() -> None:
 
         def _me_sym_mkt(symbol: str, market: str) -> bool:
             return (
-                str(symbol).upper() in LOWER_TAIL_SYMBOLS
+                str(symbol).upper() in lower_tail_symbols()
                 and str(market).lower() == "15m"
             )
 

@@ -51,13 +51,21 @@ def test_symbol_from_market_ticker_multi():
     assert symbol_from_market_ticker("KXWTI15M-26OCT181200-00") == "WTI"
 
 
-def test_lower_tail_series_tickers():
+def test_lower_tail_series_tickers(monkeypatch):
+    tracked = ("BTC", "ETH", "SOL", "XRP", "DOGE", "GOLD", "SILVER", "WTI")
+    monkeypatch.setattr(
+        "backend.core.live_data_level.market_feed_symbols",
+        lambda: tracked,
+    )
     assert lower_tail_series_tickers() == [
         "KXBTC15M",
+        "KXDOGE15M",
         "KXETH15M",
         "KXGOLD15M",
         "KXSILVER15M",
+        "KXSOL15M",
         "KXWTI15M",
+        "KXXRP15M",
     ]
 
 

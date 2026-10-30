@@ -2,8 +2,8 @@
 Lower Tail membership — exclude from unified AES/ATS.
 
 Config rule (not hard-coded monitor ids):
-  market=15m, strategy=Lower Tail, symbol in LOWER_TAIL_SYMBOLS
-  (BTC, ETH, GOLD, SILVER, WTI)
+  market=15m, strategy=Lower Tail, symbol in lower_tail_symbols()
+  (every tracked asset with a Kalshi 15m series — same universe as Upper Tail)
 
 Entry place/cancel runs in lower_tail_agent, not AES→TM→TE.
 """
@@ -16,16 +16,24 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 
 STRATEGY_NAME = "Lower Tail"
 CUTOUT_MARKET = "15m"
-# v1 was BTC-only; expanded to crypto + commodity 15m underlyings in symbols_list.
-LOWER_TAIL_SYMBOLS: frozenset[str] = frozenset(
-    {"BTC", "ETH", "GOLD", "SILVER", "WTI"}
-)
 # Back-compat alias (older call sites / docs).
 CUTOUT_SYMBOL = "BTC"
 
 
+def lower_tail_symbols() -> frozenset[str]:
+    """Tracked underlyings with a Kalshi 15m series (full or market live feed).
+
+    Same membership rule as Upper Tail: ``symbols_list`` feed level is
+    ``full`` or ``market``, and the symbol is in ``SERIES_15M_BY_SYMBOL``.
+    """
+    from backend.core.live_data_level import market_feed_symbols
+    from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+
+    return frozenset(s for s in market_feed_symbols() if s in SERIES_15M_BY_SYMBOL)
+
+
 def is_lower_tail_symbol(symbol: Any) -> bool:
-    return str(symbol or "").strip().upper() in LOWER_TAIL_SYMBOLS
+    return str(symbol or "").strip().upper() in lower_tail_symbols()
 
 
 def is_lower_tail_row(row: Dict[str, Any]) -> bool:
@@ -33,7 +41,7 @@ def is_lower_tail_row(row: Dict[str, Any]) -> bool:
     mkt = str(row.get("market") or "").strip().lower()
     strat = str(row.get("strategy") or "").strip()
     return (
-        sym in LOWER_TAIL_SYMBOLS
+        sym in lower_tail_symbols()
         and mkt == CUTOUT_MARKET
         and strat == STRATEGY_NAME
     )
@@ -58,14 +66,16 @@ def filter_lower_tail_rows_only(rows: List[Dict[str, Any]]) -> List[Dict[str, An
     return [r for r in rows if is_lower_tail_row(r)]
 
 
-def _sql_symbol_in_clause() -> Tuple[str, Tuple[str, ...]]:
-    syms = tuple(sorted(LOWER_TAIL_SYMBOLS))
+def _sql_symbol_in_clause() -> Optional[Tuple[str, Tuple[str, ...]]]:
+    syms = tuple(sorted(lower_tail_symbols()))
+    if not syms:
+        return None
     placeholders = ", ".join(["%s"] * len(syms))
     return placeholders, syms
 
 
 def list_active_lower_tail_monitor_rows() -> List[Dict[str, Any]]:
-    """Active 15m Lower Tail monitors (allowed symbols) with settings needed by the agent."""
+    """Active 15m Lower Tail monitors (tracked 15m symbols) with settings needed by the agent."""
     from backend.core.config.database import get_postgresql_connection
     from backend.core.port_config import default_pool_user_number
     from backend.core.tenant_legacy_sql import legacy_users_monitor_list
@@ -77,7 +87,10 @@ def list_active_lower_tail_monitor_rows() -> List[Dict[str, Any]]:
     out: List[Dict[str, Any]] = []
     try:
         ml = legacy_users_monitor_list(un)
-        sym_ph, syms = _sql_symbol_in_clause()
+        clause = _sql_symbol_in_clause()
+        if clause is None:
+            return []
+        sym_ph, syms = clause
         with conn.cursor() as cur:
             cur.execute(
                 f"""

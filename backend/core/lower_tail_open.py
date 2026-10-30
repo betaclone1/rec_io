@@ -2,8 +2,8 @@
 Lower Tail open-time targeting: Kalshi ``open_time`` is the place trigger.
 
 No TTC / ladder gates. Market identity comes from Kalshi ``/markets`` only
-(no clock-invented tickers). Discovers across all Lower Tail 15m series
-(BTC / ETH / GOLD / SILVER / WTI).
+(no clock-invented tickers). Discovers across all tracked Lower Tail 15m series
+(``lower_tail_symbols()`` ∩ Kalshi ``SERIES_15M_BY_SYMBOL``).
 """
 
 from __future__ import annotations
@@ -16,7 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import requests
 
-from backend.core.aes_btc15m_lower_tail_cutout import LOWER_TAIL_SYMBOLS
+from backend.core.aes_btc15m_lower_tail_cutout import lower_tail_symbols
 from backend.core.kalshi_event_market_fetch import kalshi_trade_api_base
 from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
 
@@ -63,14 +63,15 @@ def symbol_from_market_ticker(ticker: str) -> Optional[str]:
 def lower_tail_series_tickers(
     symbols: Optional[Iterable[str]] = None,
 ) -> List[str]:
+    allowed = lower_tail_symbols()
     want = (
         {str(s).strip().upper() for s in symbols}
         if symbols is not None
-        else set(LOWER_TAIL_SYMBOLS)
+        else set(allowed)
     )
     out: list[str] = []
     for sym in sorted(want):
-        if sym not in LOWER_TAIL_SYMBOLS:
+        if sym not in allowed:
             continue
         ser = series_15m_for_symbol(sym)
         if ser:

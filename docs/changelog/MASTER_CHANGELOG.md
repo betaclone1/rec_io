@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-29 — Release v3.12.25: Lower Tail all tracked 15m symbols
+
+**Summary**
+- **Release: v3.12.25**
+- **Plans:** none (product rule — every tracked asset may use Lower Tail).
+- **Change:** Replace hard-coded `LOWER_TAIL_SYMBOLS` `{BTC,ETH,GOLD,SILVER,WTI}` with `lower_tail_symbols()` — same universe as Upper Tail (`market_feed_symbols` ∩ `SERIES_15M_BY_SYMBOL`). SOL/XRP (and DOGE when feed level is full/market) now arm/place at open_time with the co-open race. Default max concurrent dual rests raised to cover the full 15m series map.
+- **DB:** None.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29-lt-symbols`**. Code: `git revert` + restart `lower_tail_agent_*`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart Lower Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart lower_tail_agent_0001`
+  (restart other `lower_tail_agent_*` slots if present and RUNNING)
+- [ ] Verify: `lower_tail_agent_*` RUNNING; co-open / arm logs include SOL and XRP series when those monitors are auto_trade; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.25`
+
+---
+
 ## 2026-10-29 — Release v3.12.24: Lower Tail lean-symbol floor fetch for TM book
 
 **Summary**
@@ -17,12 +36,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29-lt-floor`**. Code: `git revert` + restart `lower_tail_agent_*`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart Lower Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart lower_tail_agent_0001`
+- [x] Restart Lower Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart lower_tail_agent_0001`
   (restart other `lower_tail_agent_*` slots if present and RUNNING)
-- [ ] Verify: `lower_tail_agent_*` RUNNING; after next open, GOLD/SILVER/WTI fills log `floor monitor=… floor_strike=` then TM book (no `TM book skipped … missing floor_strike` spam); health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.24`
+- [x] Verify: `lower_tail_agent_*` RUNNING; after next open, GOLD/SILVER/WTI fills log `floor monitor=… floor_strike=` then TM book (no `TM book skipped … missing floor_strike` spam); health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.24`
 
 ---
 
