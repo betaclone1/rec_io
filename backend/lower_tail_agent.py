@@ -39,6 +39,7 @@ from backend.core.lower_tail_kalshi import (
     warm_kalshi_http,
     v2_price_for_limit_side,
 )
+from backend.core.kalshi_event_market_fetch import fetch_market_payload
 from backend.core.lower_tail_open import (
     LATE_PLACE_GRACE_SEC,
     OpenTarget,
@@ -50,6 +51,7 @@ from backend.core.lower_tail_open import (
 )
 from backend.core.port_config import default_pool_user_number, get_port
 from backend.core.time_eastern import now_est
+from backend.core.upper_tail import floor_strike_from_market
 from backend.trading_mode import effective_paper_trade
 
 logging.basicConfig(
@@ -69,6 +71,8 @@ _REWARM_BEFORE_OPEN_SEC = float(os.getenv("LOWER_TAIL_REWARM_BEFORE_OPEN_SEC", "
 _PLACE_POOL = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lt_place")
 # How often to refresh the next open_time target while waiting.
 OPEN_DISCOVER_POLL_SEC = float(os.getenv("LOWER_TAIL_OPEN_DISCOVER_POLL_SEC", "5.0"))
+# Lean symbols have no strike ladder; floor is published on the Kalshi market at open.
+_FLOOR_FETCH_COOLDOWN_SEC = float(os.getenv("LOWER_TAIL_FLOOR_FETCH_COOLDOWN_SEC", "5.0"))
 
 app = FastAPI(title="Lower Tail Agent")
 _wake = threading.Event()
@@ -106,6 +110,9 @@ class DualRestState:
     done: bool = False
     # Live: keep pushing venue cumulative fill_count to TM until order residual is 0.
     fill_sync_done: bool = False
+    # GET /markets/{ticker} floor refresh (lean symbols; pre-open list omits floor).
+    floor_fetch_mono: float = 0.0
+    floor_miss_logged: bool = False
 
 
 # monitor_id -> active dual rest for current cycle
@@ -253,7 +260,7 @@ def health() -> Dict[str, Any]:
 
 
 def _resolve_floor_strike(ticker: str, hint: Optional[float] = None) -> Optional[float]:
-    """Authoritative floor from live ladder when available; else hint from market payload."""
+    """Floor from place-time hint or live strike ladder (crypto continuum)."""
     if hint is not None:
         try:
             return float(hint)
@@ -271,6 +278,36 @@ def _resolve_floor_strike(ticker: str, hint: Optional[float] = None) -> Optional
         except (TypeError, ValueError):
             continue
     return None
+
+
+def _maybe_fetch_floor(st: DualRestState) -> None:
+    """Fill ``floor_strike`` from GET /markets/{ticker} when ladder/hint missed.
+
+    Pre-open series polls omit floor (status=initialized, Target TBD). Lean
+    commodities never get a strike ladder, so Upper Tail already does this; Lower
+    Tail must too or TM booking stays skipped after live fills.
+    """
+    if st.floor_strike is not None:
+        return
+    now = time.monotonic()
+    if now - st.floor_fetch_mono < _FLOOR_FETCH_COOLDOWN_SEC:
+        return
+    st.floor_fetch_mono = now
+    market = fetch_market_payload(st.ticker, timeout_sec=4.0)
+    floor = floor_strike_from_market(market)
+    if floor is None:
+        if not st.floor_miss_logged:
+            _log(
+                f"floor pending monitor={st.monitor_id} ticker={st.ticker}: "
+                "GET /markets omitted floor_strike"
+            )
+            st.floor_miss_logged = True
+        return
+    st.floor_strike = floor
+    st.floor_miss_logged = False
+    _log(
+        f"floor monitor={st.monitor_id} ticker={st.ticker} floor_strike={floor}"
+    )
 
 
 def _ttc_seconds_for_state(st: DualRestState) -> Optional[int]:
@@ -521,7 +558,11 @@ def _book_fill_to_tm(st: DualRestState, *, side: str, fill_qty: float) -> Option
     if st.floor_strike is None:
         st.floor_strike = _resolve_floor_strike(st.ticker)
     if st.floor_strike is None:
-        _log(f"TM book skipped monitor={st.monitor_id}: missing floor_strike")
+        _maybe_fetch_floor(st)
+    if st.floor_strike is None:
+        if not st.floor_miss_logged:
+            _log(f"TM book skipped monitor={st.monitor_id}: missing floor_strike")
+            st.floor_miss_logged = True
         return None
     port = get_port("trade_manager")
     est = now_est()

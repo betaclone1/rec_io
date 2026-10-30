@@ -6,6 +6,26 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-29 — Release v3.12.24: Lower Tail lean-symbol floor fetch for TM book
+
+**Summary**
+- **Release: v3.12.24**
+- **Plans:** none (prod incident — commodity Lower Tail fills not booking).
+- **Bug:** Pre-open Kalshi market lists omit `floor_strike` (`initialized` / Target TBD). Lower Tail armed ~15m early with `floor=None`. BTC/ETH recovered floor from the strike ladder at fill time; lean GOLD/SILVER/WTI have no ladder, so live dual-rest fills logged `TM book skipped … missing floor_strike` and never wrote `trades_*`. Upper Tail already fetched floor via `GET /markets/{ticker}`.
+- **Fix:** Lower Tail `_maybe_fetch_floor` (same pattern as Upper Tail) before TM book; cooldown + one-shot miss log. Unit tests in `tests/unit/test_lower_tail_floor_fetch.py`.
+- **DB:** None.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29-lt-floor`**. Code: `git revert` + restart `lower_tail_agent_*`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart Lower Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart lower_tail_agent_0001`
+  (restart other `lower_tail_agent_*` slots if present and RUNNING)
+- [ ] Verify: `lower_tail_agent_*` RUNNING; after next open, GOLD/SILVER/WTI fills log `floor monitor=… floor_strike=` then TM book (no `TM book skipped … missing floor_strike` spam); health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.24`
+
+---
+
 ## 2026-10-29 — Release v3.12.23: Rename Maker/Taker Edge → Lower/Upper Tail
 
 **Summary**
@@ -16,12 +36,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29-tail-rename`**. Code: `git revert` + `scripts/MASTER_RESTART.sh`; migrate `down 20261029_1330_rename_maker_taker_edge_to_lower_upper_tail` only if intentionally rolling back labels.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261029_1330_rename_maker_taker_edge_to_lower_upper_tail`
-- [ ] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: health 3000/8001; `lower_tail_agent_*` and `upper_tail_agent_*` RUNNING (no `maker_edge_agent_*` / `taker_edge_agent_*`); strategy list / monitors show Lower Tail and Upper Tail; agents still see active monitors
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.23`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261029_1330_rename_maker_taker_edge_to_lower_upper_tail`
+- [x] Full restart: `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: health 3000/8001; `lower_tail_agent_*` and `upper_tail_agent_*` RUNNING (no `maker_edge_agent_*` / `taker_edge_agent_*`); strategy list / monitors show Lower Tail and Upper Tail; agents still see active monitors
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.23`
 
 ---
 
