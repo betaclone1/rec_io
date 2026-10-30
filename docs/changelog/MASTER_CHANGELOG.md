@@ -6,6 +6,25 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-30 — Release v3.12.26: Upper Tail trigger on ticker BBO rail
+
+**Summary**
+- **Release: v3.12.26**
+- **Plans:** none (Upper Tail latency — fire before the 0.99 print).
+- **Change:** `upper_tail_agent` entry trigger is live best ask from market_watchdog ticker Redis (`yes_ask_dollars` / `no_ask_dollars` ≥ limit), not a public tape print. Same Redis `…:settled:updated` wake (already carries `kind: ticker`). No AES / full orderbook. Docs + unit tests updated.
+- **DB:** None.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-30-ut-bbo`**. Code: `git revert` + restart `upper_tail_agent_*`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Restart Upper Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart upper_tail_agent_0001`
+  (restart other `upper_tail_agent_*` slots if present and RUNNING)
+- [ ] Verify: `upper_tail_agent_*` RUNNING; log shows `subscribed … (ticker BBO + tape)`; GTC still places when ask hits limit; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.26`
+
+---
+
 ## 2026-10-29 — Release v3.12.25: Lower Tail all tracked 15m symbols
 
 **Summary**
@@ -16,12 +35,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-29-lt-symbols`**. Code: `git revert` + restart `lower_tail_agent_*`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart Lower Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart lower_tail_agent_0001`
+- [x] Restart Lower Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart lower_tail_agent_0001`
   (restart other `lower_tail_agent_*` slots if present and RUNNING)
-- [ ] Verify: `lower_tail_agent_*` RUNNING; co-open / arm logs include SOL and XRP series when those monitors are auto_trade; health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.25`
+- [x] Verify: `lower_tail_agent_*` RUNNING; co-open / arm logs include SOL and XRP series when those monitors are auto_trade; health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.25`
 
 ---
 

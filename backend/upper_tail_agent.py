@@ -1,10 +1,11 @@
 """
-Upper Tail agent — one GTC limit when a public print reaches the target.
+Upper Tail agent — one GTC limit when best ask reaches the target rail.
 
-Outside trade_executor. Watches the live public tape during the monitor time
-window. A print at or above the target on one side places a single GTC at that
-price on that side. Venue fill confirmation books into trade_manager.
-Paper monitors book from the qualifying print (no venue order).
+Outside trade_executor. Watches Kalshi ticker BBO (Redis from market_watchdog)
+during the monitor time window. When best YES or NO ask is at or above the
+target (e.g. $0.99), places a single GTC at that price on that side
+(``post_only`` off). Venue fill confirmation books into trade_manager.
+Paper monitors book when BBO qualifies (no venue order).
 """
 
 from __future__ import annotations
@@ -22,7 +23,7 @@ from fastapi import FastAPI
 
 from backend.core.aes_btc15m_lower_tail_cutout import resolve_monitor_limit_dollars
 from backend.core.kalshi_event_market_fetch import fetch_market_payload
-from backend.core.kalshi_public_trade_redis import load_public_trade_prints
+from backend.core.kalshi_public_trade_redis import load_ticker_bbo
 from backend.core.lower_tail_kalshi import (
     cancel_order,
     extract_order_id,
@@ -39,7 +40,7 @@ from backend.core.upper_tail import (
     floor_strike_from_market,
     list_active_upper_tail_monitor_rows,
     upper_tail_series_tickers,
-    upper_tail_side_from_print,
+    upper_tail_side_from_bbo,
     ttc_in_entry_window,
 )
 from backend.core.time_eastern import now_est
@@ -329,26 +330,18 @@ def _place_live(cy: _Cycle, side: str) -> bool:
 
 
 def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
+    """Fire when live best ask has reached the monitor limit (ticker BBO)."""
     now_ttc = cy.close_ts - now
     if not ttc_in_entry_window(ttc=now_ttc, min_time=cy.min_time, max_time=cy.max_time):
         return None
-    for rec in load_public_trade_prints(cy.ticker):
-        ts = _parse_px(rec.get("ts"))
-        if ts is None:
-            continue
-        print_ttc = cy.close_ts - ts
-        if not ttc_in_entry_window(
-            ttc=print_ttc, min_time=cy.min_time, max_time=cy.max_time
-        ):
-            continue
-        side = upper_tail_side_from_print(
-            yes_price=_parse_px(rec.get("yes_price_dollars")),
-            no_price=_parse_px(rec.get("no_price_dollars")),
-            limit_px=cy.limit_px,
-        )
-        if side:
-            return side
-    return None
+    bbo = load_ticker_bbo(cy.ticker)
+    if not bbo:
+        return None
+    return upper_tail_side_from_bbo(
+        yes_ask=_parse_px(bbo.get("yes_ask_dollars")),
+        no_ask=_parse_px(bbo.get("no_ask_dollars")),
+        limit_px=cy.limit_px,
+    )
 
 
 def _drop_cycle(mid: str, cy: _Cycle, *, reason: str) -> None:
@@ -502,13 +495,13 @@ def _start_listeners() -> None:
         cfg = load_config(exchange="kalshi", market_interval="15m")
         channel = str(cfg.settled_redis_key).rsplit(":", 1)[0] + ":updated"
 
-        def _tape_worker() -> None:
+        def _bbo_worker() -> None:
             r = redis_client_optional()
             if not r:
                 return
             pubsub = r.pubsub()
             pubsub.subscribe(channel)
-            _log(f"subscribed {channel}")
+            _log(f"subscribed {channel} (ticker BBO + tape)")
             while True:
                 try:
                     msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
@@ -517,9 +510,9 @@ def _start_listeners() -> None:
                 except Exception:
                     time.sleep(0.5)
 
-        threading.Thread(target=_tape_worker, name="upper_tail_tape", daemon=True).start()
+        threading.Thread(target=_bbo_worker, name="upper_tail_bbo", daemon=True).start()
     except Exception as exc:
-        _log(f"public trade listener not started: {exc}")
+        _log(f"ticker BBO listener not started: {exc}")
 
 
 @app.get("/health")

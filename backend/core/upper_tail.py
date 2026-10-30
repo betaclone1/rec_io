@@ -85,6 +85,7 @@ def upper_tail_side_from_print(
     """Side whose public print is at or above the target.
 
     Both sides at/above the target on one print is not a binary trade.
+    Prefer ``upper_tail_side_from_bbo`` for live entry (earlier than tape).
     """
     yes_hit = yes_price is not None and float(yes_price) + 1e-9 >= float(limit_px)
     no_hit = no_price is not None and float(no_price) + 1e-9 >= float(limit_px)
@@ -95,6 +96,22 @@ def upper_tail_side_from_print(
     if no_hit:
         return "no"
     return None
+
+
+def upper_tail_side_from_bbo(
+    *,
+    yes_ask: Optional[float],
+    no_ask: Optional[float],
+    limit_px: float,
+) -> Optional[str]:
+    """Side whose best ask has reached the target rail (e.g. YES ask = $0.99).
+
+    Same comparison as a print at ``limit_px``: first time the offer is at/above
+    ``L`` on exactly one side. Mid-book asks (0.50) do not qualify.
+    """
+    return upper_tail_side_from_print(
+        yes_price=yes_ask, no_price=no_ask, limit_px=limit_px
+    )
 
 
 def ttc_in_entry_window(*, ttc: Optional[float], min_time: int, max_time: int) -> bool:
