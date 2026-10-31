@@ -7,6 +7,7 @@ from backend.core.upper_tail import (
     floor_strike_from_market,
     is_upper_tail_row,
     upper_tail_side_from_bbo,
+    upper_tail_side_from_orderbook,
     upper_tail_side_from_print,
     ttc_in_entry_window,
 )
@@ -60,22 +61,39 @@ def test_side_from_print_high_end():
     )
 
 
-def test_side_from_bbo_rail():
+def test_side_from_orderbook_rail():
     # Mid book — do not fire.
     assert (
-        upper_tail_side_from_bbo(yes_ask=0.51, no_ask=0.50, limit_px=0.99) is None
+        upper_tail_side_from_orderbook(yes_ask=0.51, no_ask=0.50, limit_px=0.99)
+        is None
     )
-    # YES rail.
+    # YES ask rail.
     assert (
-        upper_tail_side_from_bbo(yes_ask=0.99, no_ask=0.01, limit_px=0.99) == "yes"
+        upper_tail_side_from_orderbook(yes_ask=0.99, no_ask=0.01, limit_px=0.99)
+        == "yes"
+    )
+    # YES bid rail (ask still short of limit) — still fire.
+    assert (
+        upper_tail_side_from_orderbook(
+            yes_ask=0.98, no_ask=0.02, yes_bid=0.99, no_bid=0.01, limit_px=0.99
+        )
+        == "yes"
     )
     # NO rail.
     assert (
-        upper_tail_side_from_bbo(yes_ask=0.01, no_ask=0.99, limit_px=0.99) == "no"
+        upper_tail_side_from_orderbook(yes_ask=0.01, no_ask=0.99, limit_px=0.99)
+        == "no"
     )
-    # Ask still climbing (0.98) — not yet.
+    # Ask still climbing (0.98), bids also below — not yet.
     assert (
-        upper_tail_side_from_bbo(yes_ask=0.98, no_ask=0.02, limit_px=0.99) is None
+        upper_tail_side_from_orderbook(
+            yes_ask=0.98, no_ask=0.02, yes_bid=0.97, no_bid=0.01, limit_px=0.99
+        )
+        is None
+    )
+    # Ask-only alias still works.
+    assert (
+        upper_tail_side_from_bbo(yes_ask=0.99, no_ask=0.01, limit_px=0.99) == "yes"
     )
 
 

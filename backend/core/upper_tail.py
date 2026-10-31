@@ -5,8 +5,8 @@ Config rule:
   market=15m, strategy=Upper Tail, symbol has a 15m series and
   live_data_level full or market (public tape exists)
 
-Entry is a live public-trade trigger in upper_tail_agent, not AES→TM→TE.
-One GTC limit on the side whose print is at or above the monitor target.
+Entry is an orderbook-touch trigger in upper_tail_agent, not AES→TM→TE.
+One GTC limit on the side whose best bid or ask is at or above the monitor target.
 ATS supervises the open leg with the Expiration Scalp floor stop and flip sell.
 """
 
@@ -76,6 +76,10 @@ def floor_strike_from_market(market: Any) -> Optional[float]:
     return None
 
 
+def _px_ge_limit(px: Optional[float], limit_px: float) -> bool:
+    return px is not None and float(px) + 1e-9 >= float(limit_px)
+
+
 def upper_tail_side_from_print(
     *,
     yes_price: Optional[float],
@@ -85,10 +89,35 @@ def upper_tail_side_from_print(
     """Side whose public print is at or above the target.
 
     Both sides at/above the target on one print is not a binary trade.
-    Prefer ``upper_tail_side_from_bbo`` for live entry (earlier than tape).
+    Prefer ``upper_tail_side_from_orderbook`` for live entry.
     """
-    yes_hit = yes_price is not None and float(yes_price) + 1e-9 >= float(limit_px)
-    no_hit = no_price is not None and float(no_price) + 1e-9 >= float(limit_px)
+    yes_hit = _px_ge_limit(yes_price, limit_px)
+    no_hit = _px_ge_limit(no_price, limit_px)
+    if yes_hit and no_hit:
+        return None
+    if yes_hit:
+        return "yes"
+    if no_hit:
+        return "no"
+    return None
+
+
+def upper_tail_side_from_orderbook(
+    *,
+    yes_ask: Optional[float],
+    no_ask: Optional[float],
+    yes_bid: Optional[float] = None,
+    no_bid: Optional[float] = None,
+    limit_px: float,
+) -> Optional[str]:
+    """Side whose orderbook best bid or ask has reached the target rail.
+
+    Fires when either touch on exactly one side is at/above ``limit_px``
+    (e.g. YES bid/ask = $0.99). Mid-book (0.50) does not qualify. Both sides
+    at the rail is not a binary trade.
+    """
+    yes_hit = _px_ge_limit(yes_ask, limit_px) or _px_ge_limit(yes_bid, limit_px)
+    no_hit = _px_ge_limit(no_ask, limit_px) or _px_ge_limit(no_bid, limit_px)
     if yes_hit and no_hit:
         return None
     if yes_hit:
@@ -104,13 +133,9 @@ def upper_tail_side_from_bbo(
     no_ask: Optional[float],
     limit_px: float,
 ) -> Optional[str]:
-    """Side whose best ask has reached the target rail (e.g. YES ask = $0.99).
-
-    Same comparison as a print at ``limit_px``: first time the offer is at/above
-    ``L`` on exactly one side. Mid-book asks (0.50) do not qualify.
-    """
-    return upper_tail_side_from_print(
-        yes_price=yes_ask, no_price=no_ask, limit_px=limit_px
+    """Deprecated alias: ask-only. Prefer ``upper_tail_side_from_orderbook``."""
+    return upper_tail_side_from_orderbook(
+        yes_ask=yes_ask, no_ask=no_ask, limit_px=limit_px
     )
 
 

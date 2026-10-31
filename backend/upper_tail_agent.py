@@ -1,11 +1,11 @@
 """
-Upper Tail agent — one GTC limit when best ask reaches the target rail.
+Upper Tail agent — one GTC limit when orderbook touch reaches the target rail.
 
-Outside trade_executor. Watches Kalshi ticker BBO (Redis from market_watchdog)
-during the monitor time window. When best YES or NO ask is at or above the
-target (e.g. $0.99), places a single GTC at that price on that side
+Outside trade_executor. Watches Kalshi orderbook Redis (market_watchdog OB
+channel) during the monitor time window. When best YES or NO bid/ask is at or
+above the target (e.g. $0.99), places a single GTC at that price on that side
 (``post_only`` off). Venue fill confirmation books into trade_manager.
-Paper monitors book when BBO qualifies (no venue order).
+Paper monitors book when orderbook touch qualifies (no venue order).
 """
 
 from __future__ import annotations
@@ -23,7 +23,6 @@ from fastapi import FastAPI
 
 from backend.core.aes_btc15m_lower_tail_cutout import resolve_monitor_limit_dollars
 from backend.core.kalshi_event_market_fetch import fetch_market_payload
-from backend.core.kalshi_public_trade_redis import load_ticker_bbo
 from backend.core.lower_tail_kalshi import (
     cancel_order,
     extract_order_id,
@@ -34,13 +33,14 @@ from backend.core.lower_tail_open import (
     fetch_series_15m_markets,
     select_live_targets_by_symbol,
 )
+from backend.core.orderbook_strike_prices import touch_dollars_for_ticker
 from backend.core.port_config import default_pool_user_number, get_port
 from backend.core.upper_tail import (
     STRATEGY_NAME,
     floor_strike_from_market,
     list_active_upper_tail_monitor_rows,
     upper_tail_series_tickers,
-    upper_tail_side_from_bbo,
+    upper_tail_side_from_orderbook,
     ttc_in_entry_window,
 )
 from backend.core.time_eastern import now_est
@@ -330,16 +330,18 @@ def _place_live(cy: _Cycle, side: str) -> bool:
 
 
 def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
-    """Fire when live best ask has reached the monitor limit (ticker BBO)."""
+    """Fire when orderbook best bid or ask has reached the monitor limit."""
     now_ttc = cy.close_ts - now
     if not ttc_in_entry_window(ttc=now_ttc, min_time=cy.min_time, max_time=cy.max_time):
         return None
-    bbo = load_ticker_bbo(cy.ticker)
-    if not bbo:
+    touch = touch_dollars_for_ticker(cy.ticker)
+    if not touch:
         return None
-    return upper_tail_side_from_bbo(
-        yes_ask=_parse_px(bbo.get("yes_ask_dollars")),
-        no_ask=_parse_px(bbo.get("no_ask_dollars")),
+    return upper_tail_side_from_orderbook(
+        yes_ask=_parse_px(touch.get("yes_ask_dollars")),
+        no_ask=_parse_px(touch.get("no_ask_dollars")),
+        yes_bid=_parse_px(touch.get("yes_bid_dollars")),
+        no_bid=_parse_px(touch.get("no_bid_dollars")),
         limit_px=cy.limit_px,
     )
 
@@ -489,30 +491,21 @@ def _loop() -> None:
 
 def _start_listeners() -> None:
     try:
-        from backend.core.live_state_cache import redis_client_optional
-        from backend.core.market_watchdog.config import load_config
+        from backend.core.orderbook_hot_subscriber import start_orderbook_hot_subscriber
 
-        cfg = load_config(exchange="kalshi", market_interval="15m")
-        channel = str(cfg.settled_redis_key).rsplit(":", 1)[0] + ":updated"
+        def _on_ob(_snap: Any) -> None:
+            _wake.set()
 
-        def _bbo_worker() -> None:
-            r = redis_client_optional()
-            if not r:
-                return
-            pubsub = r.pubsub()
-            pubsub.subscribe(channel)
-            _log(f"subscribed {channel} (ticker BBO + tape)")
-            while True:
-                try:
-                    msg = pubsub.get_message(ignore_subscribe_messages=True, timeout=1.0)
-                    if msg and msg.get("type") == "message":
-                        _wake.set()
-                except Exception:
-                    time.sleep(0.5)
-
-        threading.Thread(target=_bbo_worker, name="upper_tail_bbo", daemon=True).start()
+        ok = start_orderbook_hot_subscriber(
+            _on_ob,
+            thread_name="upper_tail_ob",
+        )
+        if ok:
+            _log("subscribed rec_io:live_state:updated (orderbook touch)")
+        else:
+            _log("orderbook listener not started: redis unavailable")
     except Exception as exc:
-        _log(f"ticker BBO listener not started: {exc}")
+        _log(f"orderbook listener not started: {exc}")
 
 
 @app.get("/health")
