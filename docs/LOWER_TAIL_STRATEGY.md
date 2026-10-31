@@ -4,6 +4,7 @@
 **Audience:** operators + implementers.  
 **Status:** live wiring via `lower_tail_agent` (outside TE); research backtests remain valid for edge thesis.  
 **Series:** Kalshi 15m binaries for every tracked asset with a 15m series (`lower_tail_symbols()` = `market_feed_symbols` ∩ `SERIES_15M_BY_SYMBOL` — currently BTC/ETH/SOL/XRP/DOGE/GOLD/SILVER/WTI). Lean commodities use ticker + public trades + lifecycle (no OB/strike ladder).  
+**Sessions:** Crypto is 24/7. Commodity weekend dark hours are hardcoded by cohort in `backend/core/market_watchdog/venues/kalshi/schedule.py` (metals vs energy). Treat the recent-month Kalshi calendar as current; recheck periodically. Any new non-crypto tracked asset needs a close_time gap back-check before assignment to a cohort.  
 **Session context:** agent transcript [KXBTC15M longshot sweeps](50be246f-d7ea-4e39-80ed-56ada09254d0).
 
 This note consolidates thesis, fill models, architecture, measured results, and data plumbing. Prefer numbers from the CSV paths below over re-deriving from chat.

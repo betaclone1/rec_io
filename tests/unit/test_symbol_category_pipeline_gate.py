@@ -99,7 +99,8 @@ def test_crypto_market_level_uses_lean_package():
     assert any("commodity_pipeline_health" in s for s in sqls)
 
 
-def test_commodity_full_level_uses_strike_table():
+def test_commodity_full_level_keeps_lean_health_package():
+    """full commodities get orderbook from WS but keep commodity_pipeline_health gates."""
     row = (True, "ok", 1.0, 2.0)
     conn, cur = _mock_conn(
         category_row=("commodity",), level_row=("full",), health_fetchone=row
@@ -110,8 +111,8 @@ def test_commodity_full_level_uses_strike_table():
         )
     assert ok is True
     sqls = [c.args[0] for c in cur.execute.call_args_list]
-    assert any("strike_pipeline_health" in s for s in sqls)
-    assert not any("commodity_pipeline_health" in s for s in sqls)
+    assert any("commodity_pipeline_health" in s for s in sqls)
+    assert not any("FROM live_data.strike_pipeline_health" in s for s in sqls)
 
 
 def test_none_level_fails_closed():

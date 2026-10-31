@@ -6,17 +6,66 @@ from datetime import datetime, timedelta, timezone
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+# 15m series map. Crypto (BTC/ETH/SOL/XRP/DOGE) is assumed 24/7 — never gate REST
+# on weekend dark hours. Commodities need an explicit cohort in COMMODITY_15M_*.
 SERIES_15M_BY_SYMBOL: dict[str, str] = {
     "BTC": "KXBTC15M",
     "ETH": "KXETH15M",
     "SOL": "KXSOL15M",
     "XRP": "KXXRP15M",
     "DOGE": "KXDOGE15M",
-    # Lean commodity package: ticker + public trades + lifecycle (no orderbook / strike).
+    # Commodities: 15m series (orderbook when live_data_level=full; lean skips OB).
     "GOLD": "KXGOLD15M",
     "SILVER": "KXSILVER15M",
     "WTI": "KXWTI15M",
 }
+
+# ---------------------------------------------------------------------------
+# Commodity 15m REST session gates (weekend dark hours)
+#
+# Crypto symbols are 24/7. Do not put crypto series in these sets;
+# commodity_15m_rest_session_open() returns True for anything not listed.
+#
+# Operating assumption (as of 2026-10-31): the **most recent ~1 month** of
+# Kalshi GET /markets close_time edges is the ongoing calendar. Recheck
+# periodically (e.g. after a holiday week or when adding a series) by
+# listing close_time gaps >=12h over several weekends.
+#
+# Evidence:
+#   Metals (Oct 2026, 4 weekends): Fri 17:00 ET last close → Sun 18:30 first
+#     close (dark ~49.5h). Sep 2026 GOLD/SILVER/COPPER used energy-style
+#     Sat 00:00→Sun 18:15 instead — schedule can change; do not treat this
+#     as eternal.
+#   Energy (Sep–Oct 2026, 8 weekends): Sat 00:00 ET last close → Sun 18:15
+#     first close (dark ~42.25h). Stable across the full lookback.
+#   Neither cohort stays dark until Mon 09:00 — Sunday evening already lists.
+#
+# NEW TRACKED ASSETS: before enabling a non-crypto 15m series, back-check
+# its weekend close_time edges and assign it to metals, energy, or a new
+# cohort here. Do not assume metals/energy hours. Crypto → leave out of
+# these sets (24/7).
+# ---------------------------------------------------------------------------
+COMMODITY_15M_METALS_SERIES = frozenset(
+    {
+        "KXGOLD15M",
+        "KXSILVER15M",
+        "KXPLATINUM15M",
+        "KXPALLADIUM15M",
+        "KXCOPPER15M",
+    }
+)
+COMMODITY_15M_ENERGY_SERIES = frozenset(
+    {"KXWTI15M", "KXNATGAS15M", "KXBRENT15M"}
+)
+COMMODITY_15M_SERIES = COMMODITY_15M_METALS_SERIES | COMMODITY_15M_ENERGY_SERIES
+_COMMODITY_SESSION_RESUME_DOW = 6  # Sunday
+_METALS_SESSION_END_DOW = 4  # Friday
+_METALS_SESSION_END_HOUR = 17
+# First Sunday metal close is :30 → open :15; energy first close :15 → open :00.
+_METALS_SUN_RESUME_HOUR = 18
+_METALS_SUN_RESUME_MINUTE = 15
+_ENERGY_SUN_RESUME_HOUR = 18
+_ENERGY_SUN_RESUME_MINUTE = 0
 SERIES_HOURLY_BY_SYMBOL: dict[str, str] = {
     "BTC": "KXBTCD",
     "ETH": "KXETHD",
@@ -42,6 +91,51 @@ MON_SHORT = (
     "JAN", "FEB", "MAR", "APR", "MAY", "JUN",
     "JUL", "AUG", "SEP", "OCT", "NOV", "DEC",
 )
+
+
+def is_commodity_15m_series(series_ticker: str) -> bool:
+    return str(series_ticker or "").strip().upper() in COMMODITY_15M_SERIES
+
+
+def commodity_15m_rest_session_open(
+    series_ticker: str,
+    now: Optional[datetime] = None,
+) -> bool:
+    """True when this commodity 15m series is expected to list live windows.
+
+    Crypto / unknown series (not in ``COMMODITY_15M_SERIES``) are treated as
+    24/7 and always return True. Outside a commodity session, callers should
+    not hammer ``GET /markets`` — empty is normal, not a fetch failure.
+
+    Metals and energy cohorts differ on Friday close. See module comments for
+    evidence, recheck cadence, and the rule for new tracked assets.
+    """
+    series = str(series_ticker or "").strip().upper()
+    if series not in COMMODITY_15M_SERIES:
+        # Crypto and any series not yet classified: assume 24/7 (no dark gate).
+        return True
+    if now is None:
+        now = datetime.now(timezone.utc)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=timezone.utc)
+    et = now.astimezone(EST)
+    dow, hour, minute = et.weekday(), et.hour, et.minute
+    energy = series in COMMODITY_15M_ENERGY_SERIES
+    # Saturday always dark (energy's last Fri window closes Sat 00:00).
+    if dow == 5:
+        return False
+    # Sunday resume (ET).
+    if dow == _COMMODITY_SESSION_RESUME_DOW:
+        if energy:
+            if (hour, minute) < (_ENERGY_SUN_RESUME_HOUR, _ENERGY_SUN_RESUME_MINUTE):
+                return False
+        elif (hour, minute) < (_METALS_SUN_RESUME_HOUR, _METALS_SUN_RESUME_MINUTE):
+            return False
+    # Metals stop at Friday 17:00 ET close; energy runs through Friday night.
+    if not energy:
+        if dow == _METALS_SESSION_END_DOW and hour >= _METALS_SESSION_END_HOUR:
+            return False
+    return True
 
 
 def series_15m(symbol: str) -> str:

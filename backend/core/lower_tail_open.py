@@ -18,7 +18,11 @@ import requests
 
 from backend.core.aes_btc15m_lower_tail_cutout import lower_tail_symbols
 from backend.core.kalshi_event_market_fetch import kalshi_trade_api_base
-from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
+from backend.core.market_watchdog.venues.kalshi.schedule import (
+    SERIES_15M_BY_SYMBOL,
+    commodity_15m_rest_session_open,
+    is_commodity_15m_series,
+)
 
 log = logging.getLogger("lower_tail_open")
 
@@ -253,6 +257,12 @@ def select_live_market(
 # series_ticker → (monotonic_ts, markets)
 _markets_cache: Dict[str, tuple[float, list[dict[str, Any]]]] = {}
 _MARKETS_CACHE_SEC = float(__import__("os").getenv("LOWER_TAIL_MARKETS_CACHE_SEC", "30"))
+# Empty successful polls and hard failures must be cached too — otherwise weekend
+# commodity dark hours (no listed windows) hammer Kalshi every agent tick.
+_MARKETS_EMPTY_CACHE_SEC = float(
+    __import__("os").getenv("LOWER_TAIL_MARKETS_EMPTY_CACHE_SEC", "120")
+)
+_session_skip_logged: set[str] = set()
 
 
 def fetch_series_15m_markets(
@@ -268,13 +278,24 @@ def fetch_series_15m_markets(
         return []
     now_m = time.monotonic()
     cached = _markets_cache.get(series)
-    if (
-        not force
-        and cached
-        and (now_m - cached[0]) < _MARKETS_CACHE_SEC
-        and cached[1]
-    ):
-        return list(cached[1])
+    if not force and cached is not None:
+        age = now_m - cached[0]
+        ttl = _MARKETS_CACHE_SEC if cached[1] else _MARKETS_EMPTY_CACHE_SEC
+        if age < ttl:
+            return list(cached[1])
+
+    # Commodity 15m series go dark on the weekend; empty is expected — do not REST.
+    if is_commodity_15m_series(series) and not commodity_15m_rest_session_open(series):
+        if series not in _session_skip_logged:
+            _session_skip_logged.add(series)
+            log.info(
+                "%s markets skipped: commodity 15m session dark (empty is normal)",
+                series,
+            )
+        _markets_cache[series] = (now_m, [])
+        return []
+    if is_commodity_15m_series(series):
+        _session_skip_logged.discard(series)
 
     now = datetime.now(timezone.utc)
     min_close = int((now - timedelta(hours=1)).timestamp())
@@ -282,6 +303,7 @@ def fetch_series_15m_markets(
     out: list[dict[str, Any]] = []
     cursor: Optional[str] = None
     base = kalshi_trade_api_base()
+    fetch_failed = False
     while True:
         params: dict[str, Any] = {
             "series_ticker": series,
@@ -302,8 +324,9 @@ def fetch_series_15m_markets(
             data = r.json()
         except Exception as e:
             log.warning("%s markets fetch failed: %s", series, e)
-            # Keep stale cache on 429 / transient errors.
-            if cached and cached[1]:
+            fetch_failed = True
+            # Keep stale cache on 429 / transient errors (including prior empty).
+            if cached is not None:
                 return list(cached[1])
             break
         if not isinstance(data, dict):
@@ -312,7 +335,9 @@ def fetch_series_15m_markets(
         cursor = data.get("cursor")
         if not cursor:
             break
-    if out:
+    # Cache successes and failures (including empty). Empty weekend commodity
+    # lists must not bypass the cache or every agent tick re-hits Kalshi.
+    if not fetch_failed or cached is None:
         _markets_cache[series] = (now_m, out)
     return list(out)
 

@@ -9045,7 +9045,7 @@ Per-symbol pipeline health for **Kalshi 15m and hourly** WS strike publishers, t
 
 ### Table: `live_data.commodity_pipeline_health`
 
-Lean commodity live-data package health (market meta + public trades WS). Trading gates and monitor power lights use this table when `live_data.symbols_list.live_data_level = 'market'`; spot freshness is checked at gate time on the same path as `full`. Keyed by **`(exchange, market, symbol)`**.
+Lean commodity live-data package health (market meta + public trades WS). Trading gates and monitor power lights use this table when `live_data.symbols_list.live_data_level = 'market'`, and when level is `full` for **commodity** symbols (orderbook without crypto strike ladder). Spot freshness is checked at gate time on the same path as crypto `full`. Keyed by **`(exchange, market, symbol)`**.
 
 **Migration:** `20261020_1130_symbols_list_category`.
 
@@ -9098,7 +9098,7 @@ Lean commodity live-data package health (market meta + public trades WS). Tradin
   CREATE UNIQUE INDEX symbols_list_pkey ON live_data.symbols_list USING btree (id)
   ```
 
-**Migrations:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`). `20261021_1322_symbols_list_live_data_level` (adds `live_data_level`). Seeded levels: BTC and ETH `full`; GOLD, SILVER, and WTI `market`; SOL, XRP, and DOGE `none`.
+**Migrations:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`). `20261021_1322_symbols_list_live_data_level` (adds `live_data_level`). `20261031_1223_symbols_list_full_tracked_assets` (SOL, XRP, GOLD, SILVER, WTI → `full`). `20261031_1255_symbols_list_commodity_market_level` (GOLD, SILVER, WTI → `market` again; crypto stays `full` for OB). Seeded/current levels: BTC, ETH, SOL, XRP `full`; GOLD, SILVER, WTI `market`; DOGE `none`. Commodity `market` uses `commodity_pipeline_health`; crypto `full` uses `strike_pipeline_health`.
 
 ---
 

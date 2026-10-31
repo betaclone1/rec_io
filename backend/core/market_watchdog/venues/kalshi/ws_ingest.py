@@ -40,9 +40,11 @@ from backend.core.market_watchdog.venues.kalshi.schedule import (
     SERIES_HOURLY_BY_SYMBOL,
     clock_current_15m_ticker as _clock_current_15m_ticker,
     clock_previous_15m_ticker as _clock_previous_15m_ticker,
+    commodity_15m_rest_session_open,
     est_15m_period_end as _est_15m_period_end,
     hour_boundary_key as _hour_boundary_key,
     hourly_event_ticker_for_clock as _hourly_event_ticker_for_clock,
+    is_commodity_15m_series,
     is_lean_market_symbol,
     lean_market_symbols,
     on_15m_rollover_boundary as _on_15m_rollover_boundary,
@@ -846,7 +848,7 @@ def _lifecycle_sets(
 
     Returns ``(ticker_sub, ob_sub, trade_sub, new_ob)``.
     Every live and outgoing 15m market gets the public ``trade`` channel.
-    Lean commodity symbols still skip orderbook.
+    Lean (``live_data_level=market``) symbols still skip orderbook.
     """
     ticker_sub: set[str] = set()
     ob_sub: set[str] = set()
@@ -2072,8 +2074,17 @@ def _refresh_all_schedules_sync(master: KalshiMarketWsMaster) -> None:
         bucket = master.schedule_by_symbol.setdefault(sym, {})
         if cfg.includes_15m:
             s15 = _series_15m(sym)
-            bucket["15m"] = _schedule_from_markets_poll(sym, "15m", s15, now, master=master)
-            log.info("%s 15m markets=%s", sym, len(bucket["15m"]))
+            if is_commodity_15m_series(s15) and not commodity_15m_rest_session_open(
+                s15, now
+            ):
+                # Weekend / after-hours dark: empty is normal — do not REST-hammer.
+                bucket["15m"] = []
+                log.info("%s 15m markets=0 (commodity session dark)", sym)
+            else:
+                bucket["15m"] = _schedule_from_markets_poll(
+                    sym, "15m", s15, now, master=master
+                )
+                log.info("%s 15m markets=%s", sym, len(bucket["15m"]))
         if cfg.includes_hourly:
             hourly = _series_hourly(sym)
             if hourly:

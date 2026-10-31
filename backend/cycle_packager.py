@@ -20,7 +20,16 @@ from datetime import datetime, timezone
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s %(levelname)s [cycle_packager] %(message)s",
+    force=True,
 )
+# Supervisor pipes stderr; disable block buffering so seals show up live.
+for _h in logging.root.handlers:
+    try:
+        _h.setLevel(logging.INFO)
+        if hasattr(_h, "stream") and hasattr(_h.stream, "reconfigure"):
+            _h.stream.reconfigure(line_buffering=True)
+    except Exception:
+        pass
 log = logging.getLogger("cycle_packager")
 
 

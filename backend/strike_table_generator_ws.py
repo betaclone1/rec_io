@@ -617,23 +617,56 @@ def _refresh_symbol(
         )
 
 
+_SKIPPED_FULL_STRIKE_LOGGED: set[str] = set()
+
+
 def _full_symbols_for_market(market_kind: str, cap: tuple[str, ...] | None) -> list[str]:
-    """Kalshi symbols currently at live_data_level=full. ``cap`` limits a one-off CLI run."""
+    """Kalshi crypto symbols at live_data_level=full with a 1s price log.
+
+    Commodities may be ``full`` for orderbook ingest, but they have no strike ladder
+    here — skip them so they stay on the lean commodity health package.
+    ``cap`` limits a one-off CLI run.
+    """
     from backend.core.live_data_level import full_package_symbols
     from backend.core.market_watchdog.venues.kalshi.schedule import (
         SERIES_15M_BY_SYMBOL,
         SERIES_HOURLY_BY_SYMBOL,
     )
+    from backend.core.strike_pipeline_health import (
+        CATEGORY_COMMODITY,
+        get_symbol_category_conn,
+    )
+    from backend.core.config.database import get_system_postgresql_connection
 
     universe = SERIES_HOURLY_BY_SYMBOL if market_kind == "hourly" else SERIES_15M_BY_SYMBOL
     cap_set = {s.strip().upper() for s in cap} if cap else None
     out: list[str] = []
-    for sym in full_package_symbols():
-        if sym not in universe:
-            continue
-        if cap_set is not None and sym not in cap_set:
-            continue
-        out.append(sym)
+    conn = get_system_postgresql_connection()
+    try:
+        for sym in full_package_symbols():
+            if sym not in universe:
+                continue
+            if cap_set is not None and sym not in cap_set:
+                continue
+            skip_reason: str | None = None
+            if _symbol_price_log_table(sym) is None:
+                skip_reason = "no 1s price log"
+            else:
+                cat, _rsn = get_symbol_category_conn(conn, sym)
+                if cat == CATEGORY_COMMODITY:
+                    skip_reason = "commodity (orderbook only; lean health)"
+            if skip_reason is not None:
+                if sym not in _SKIPPED_FULL_STRIKE_LOGGED:
+                    _SKIPPED_FULL_STRIKE_LOGGED.add(sym)
+                    logger.info(
+                        "[%s] live_data_level full; strike tracking skipped (%s)",
+                        sym,
+                        skip_reason,
+                    )
+                continue
+            out.append(sym)
+    finally:
+        conn.close()
     return out
 
 

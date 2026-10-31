@@ -1,11 +1,12 @@
 """
-Upper Tail agent — one GTC limit when orderbook touch reaches the target rail.
+Upper Tail agent — one GTC limit when the target rail is reached.
 
-Outside trade_executor. Watches Kalshi orderbook Redis (market_watchdog OB
-channel) during the monitor time window. When best YES or NO bid/ask is at or
-above the target (e.g. $0.99), places a single GTC at that price on that side
-(``post_only`` off). Venue fill confirmation books into trade_manager.
-Paper monitors book when orderbook touch qualifies (no venue order).
+Outside trade_executor. During the monitor time window:
+  - crypto (``full``) — Kalshi orderbook Redis touch (best bid/ask ≥ target)
+  - commodity / lean ``market`` — public trades tape print ≥ target
+Places a single GTC at the target on that side (``post_only`` off). Venue fill
+confirmation books into trade_manager. Paper monitors book when the trigger
+qualifies (no venue order).
 """
 
 from __future__ import annotations
@@ -33,14 +34,19 @@ from backend.core.lower_tail_open import (
     fetch_series_15m_markets,
     select_live_targets_by_symbol,
 )
+from backend.core.kalshi_public_trade_redis import load_public_trade_prints
 from backend.core.orderbook_strike_prices import touch_dollars_for_ticker
 from backend.core.port_config import default_pool_user_number, get_port
 from backend.core.upper_tail import (
     STRATEGY_NAME,
+    TRIGGER_ORDERBOOK,
+    TRIGGER_TAPE,
     floor_strike_from_market,
     list_active_upper_tail_monitor_rows,
     upper_tail_series_tickers,
     upper_tail_side_from_orderbook,
+    upper_tail_side_from_print,
+    upper_tail_trigger_mode,
     ttc_in_entry_window,
 )
 from backend.core.time_eastern import now_est
@@ -329,11 +335,20 @@ def _place_live(cy: _Cycle, side: str) -> bool:
     return True
 
 
-def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
-    """Fire when orderbook best bid or ask has reached the monitor limit."""
-    now_ttc = cy.close_ts - now
-    if not ttc_in_entry_window(ttc=now_ttc, min_time=cy.min_time, max_time=cy.max_time):
-        return None
+def _qualifying_side_from_tape(cy: _Cycle) -> Optional[str]:
+    """Newest-first public prints until one side hits the rail."""
+    for rec in load_public_trade_prints(cy.ticker):
+        side = upper_tail_side_from_print(
+            yes_price=_parse_px(rec.get("yes_price_dollars")),
+            no_price=_parse_px(rec.get("no_price_dollars")),
+            limit_px=cy.limit_px,
+        )
+        if side:
+            return side
+    return None
+
+
+def _qualifying_side_from_orderbook(cy: _Cycle) -> Optional[str]:
     touch = touch_dollars_for_ticker(cy.ticker)
     if not touch:
         return None
@@ -344,6 +359,19 @@ def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
         no_bid=_parse_px(touch.get("no_bid_dollars")),
         limit_px=cy.limit_px,
     )
+
+
+def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
+    """Fire on orderbook touch (crypto) or public tape print (commodity/lean)."""
+    now_ttc = cy.close_ts - now
+    if not ttc_in_entry_window(ttc=now_ttc, min_time=cy.min_time, max_time=cy.max_time):
+        return None
+    mode = upper_tail_trigger_mode(cy.symbol)
+    if mode == TRIGGER_TAPE:
+        return _qualifying_side_from_tape(cy)
+    if mode == TRIGGER_ORDERBOOK:
+        return _qualifying_side_from_orderbook(cy)
+    return None
 
 
 def _drop_cycle(mid: str, cy: _Cycle, *, reason: str) -> None:
@@ -490,6 +518,7 @@ def _loop() -> None:
 
 
 def _start_listeners() -> None:
+    # Crypto: orderbook hints on live_state:updated.
     try:
         from backend.core.orderbook_hot_subscriber import start_orderbook_hot_subscriber
 
@@ -506,6 +535,37 @@ def _start_listeners() -> None:
             _log("orderbook listener not started: redis unavailable")
     except Exception as exc:
         _log(f"orderbook listener not started: {exc}")
+
+    # Commodity / lean: public_trade (+ ticker) on market_watchdog :updated.
+    try:
+        from backend.core.live_state_cache import redis_client_optional
+        from backend.core.market_watchdog.config import load_config
+
+        cfg = load_config(exchange="kalshi", market_interval="15m")
+        channel = str(cfg.settled_redis_key).rsplit(":", 1)[0] + ":updated"
+
+        def _tape_worker() -> None:
+            r = redis_client_optional()
+            if not r:
+                return
+            pubsub = r.pubsub()
+            pubsub.subscribe(channel)
+            _log(f"subscribed {channel} (public tape)")
+            while True:
+                try:
+                    msg = pubsub.get_message(
+                        ignore_subscribe_messages=True, timeout=1.0
+                    )
+                    if msg and msg.get("type") == "message":
+                        _wake.set()
+                except Exception:
+                    time.sleep(0.5)
+
+        threading.Thread(
+            target=_tape_worker, name="upper_tail_tape", daemon=True
+        ).start()
+    except Exception as exc:
+        _log(f"public tape listener not started: {exc}")
 
 
 @app.get("/health")

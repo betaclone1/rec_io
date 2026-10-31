@@ -5,17 +5,27 @@ Config rule:
   market=15m, strategy=Upper Tail, symbol has a 15m series and
   live_data_level full or market (public tape exists)
 
-Entry is an orderbook-touch trigger in upper_tail_agent, not AES→TM→TE.
-One GTC limit on the side whose best bid or ask is at or above the monitor target.
+Entry is in upper_tail_agent (not AES→TM→TE):
+  - crypto at ``full`` — orderbook touch (best bid/ask ≥ target)
+  - commodity (and any ``market`` lean feed) — public trades tape print ≥ target
 ATS supervises the open leg with the Expiration Scalp floor stop and flip sell.
 """
 
 from __future__ import annotations
 
+import threading
+import time
 from typing import Any, Dict, List, Optional, Tuple
 
 STRATEGY_NAME = "Upper Tail"
 CUTOUT_MARKET = "15m"
+TRIGGER_ORDERBOOK = "orderbook"
+TRIGGER_TAPE = "tape"
+
+_TRIGGER_CACHE_TTL_SEC = 5.0
+_trigger_lock = threading.Lock()
+_trigger_by_symbol: dict[str, str] = {}
+_trigger_loaded_mono = 0.0
 
 
 def upper_tail_symbols() -> frozenset[str]:
@@ -44,6 +54,56 @@ def upper_tail_series_tickers() -> list[str]:
 
 def is_upper_tail_symbol(symbol: Any) -> bool:
     return str(symbol or "").strip().upper() in upper_tail_symbols()
+
+
+def upper_tail_trigger_mode(symbol: Any) -> str:
+    """How ``upper_tail_agent`` qualifies entry for this underlying.
+
+    Commodities stay on the public trades tape (lean Kalshi book is empty or
+    unreliable). Crypto at ``full`` uses Redis orderbook touch. Anything still
+    at ``market`` also uses the tape.
+    """
+    global _trigger_by_symbol, _trigger_loaded_mono
+
+    from backend.core.live_data_level import LEVEL_FULL, level_of
+    from backend.core.strike_pipeline_health import (
+        CATEGORY_COMMODITY,
+        get_symbol_category_conn,
+    )
+    from backend.core.config.database import get_system_postgresql_connection
+
+    sym = str(symbol or "").strip().upper()
+    if not sym:
+        return TRIGGER_TAPE
+    now = time.monotonic()
+    with _trigger_lock:
+        if (
+            _trigger_by_symbol
+            and (now - _trigger_loaded_mono) < _TRIGGER_CACHE_TTL_SEC
+            and sym in _trigger_by_symbol
+        ):
+            return _trigger_by_symbol[sym]
+
+    if level_of(sym) != LEVEL_FULL:
+        mode = TRIGGER_TAPE
+    else:
+        mode = TRIGGER_ORDERBOOK
+        conn = get_system_postgresql_connection()
+        if conn is not None:
+            try:
+                cat, _rsn = get_symbol_category_conn(conn, sym)
+                if cat == CATEGORY_COMMODITY:
+                    mode = TRIGGER_TAPE
+            finally:
+                conn.close()
+
+    with _trigger_lock:
+        # Refresh whole membership snapshot cheaply on TTL expiry.
+        if (now - _trigger_loaded_mono) >= _TRIGGER_CACHE_TTL_SEC:
+            _trigger_by_symbol = {}
+            _trigger_loaded_mono = time.monotonic()
+        _trigger_by_symbol[sym] = mode
+    return mode
 
 
 def is_upper_tail_row(row: Dict[str, Any]) -> bool:
@@ -89,7 +149,7 @@ def upper_tail_side_from_print(
     """Side whose public print is at or above the target.
 
     Both sides at/above the target on one print is not a binary trade.
-    Prefer ``upper_tail_side_from_orderbook`` for live entry.
+    Used for commodity / lean-feed Upper Tail entry.
     """
     yes_hit = _px_ge_limit(yes_price, limit_px)
     no_hit = _px_ge_limit(no_price, limit_px)

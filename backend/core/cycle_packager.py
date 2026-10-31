@@ -470,7 +470,7 @@ def fetch_public_trades_csv_for_package(
     market_ticker: str,
     *,
     force_refresh: bool = True,
-    attempts: int = 8,
+    attempts: int = 3,
 ) -> Tuple[Optional[bytes], int, Optional[str], List[Dict[str, Any]]]:
     """
     Fetch Kalshi public tape for ``market_ticker``.
@@ -491,6 +491,7 @@ def fetch_public_trades_csv_for_package(
                 market_ticker,
                 force_refresh=force_refresh,
                 offline=False,
+                timeout_s=20.0,
             )
         except Exception as e:
             last_err = f"public_trades fetch error: {e}"
@@ -501,7 +502,7 @@ def fetch_public_trades_csv_for_package(
                 market_ticker,
                 e,
             )
-            time.sleep(min(60.0, 2.0 * (2 ** min(i, 4))))
+            time.sleep(min(15.0, 2.0 * (2 ** min(i, 3))))
             continue
         if not res.complete:
             last_err = "public_trades fetch incomplete"
@@ -511,7 +512,7 @@ def fetch_public_trades_csv_for_package(
                 attempts,
                 market_ticker,
             )
-            time.sleep(min(60.0, 2.0 * (2 ** min(i, 4))))
+            time.sleep(min(15.0, 2.0 * (2 ** min(i, 3))))
             continue
         trades = list(res.trades or [])
         raw = public_trades_to_csv_bytes(trades)
@@ -632,6 +633,7 @@ def package_ticker_attempt(
     (receipt + drop) and marked ``retryable=False``.
     """
     mt = str(market_ticker).strip()
+    logger.info("package attempt %s", mt)
     out = package_path_for_ticker(mt)
     if out is None:
         logger.warning("cannot resolve package path for %s", mt)
@@ -982,6 +984,7 @@ def package_due_cycles(
             break
         still: List[str] = []
         sealed_this_pass = 0
+        rate_limited = False
         for mt in pending:
             attempt = package_ticker_attempt(mt, drop_after=drop_after, force=force)
             if attempt.path is not None:
@@ -994,6 +997,15 @@ def package_due_cycles(
                 quarantined += 1
             elif attempt.retryable:
                 still.append(mt)
+                reason_l = (attempt.reason or "").lower()
+                if "429" in reason_l or "too many" in reason_l:
+                    rate_limited = True
+                    # Cool the Kalshi trades bucket before hammering the next ticker.
+                    logger.warning(
+                        "public_trades rate-limited on %s — cooling 45s before next ticker",
+                        mt,
+                    )
+                    time.sleep(45.0)
             else:
                 # Non-retryable this wake (e.g. young market-gone empty stub) —
                 # leave hot tables; newest-first will prefer live cycles next wake.
@@ -1012,12 +1024,14 @@ def package_due_cycles(
         )
         pending = still
         if pending and pass_i + 1 < passes and pause > 0:
+            wait = max(pause, 90.0) if rate_limited else pause
             logger.info(
-                "deferring %s cycle(s) — sleeping %.0fs before retry pass",
+                "deferring %s cycle(s) — sleeping %.0fs before retry pass%s",
                 len(pending),
-                pause,
+                wait,
+                " (rate-limit cool-down)" if rate_limited else "",
             )
-            time.sleep(pause)
+            time.sleep(wait)
 
     if pending:
         logger.warning(

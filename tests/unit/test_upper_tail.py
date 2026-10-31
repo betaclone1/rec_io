@@ -61,6 +61,45 @@ def test_side_from_print_high_end():
     )
 
 
+def test_trigger_mode_tape_vs_orderbook(monkeypatch):
+    from unittest.mock import MagicMock
+
+    from backend.core import upper_tail as ut
+
+    monkeypatch.setattr(ut, "_trigger_by_symbol", {})
+    monkeypatch.setattr(ut, "_trigger_loaded_mono", 0.0)
+
+    monkeypatch.setattr(
+        "backend.core.live_data_level.level_of",
+        lambda s: {
+            "BTC": "full",
+            "SOL": "full",
+            "GOLD": "market",
+            "SILVER": "full",
+        }.get(s, "none"),
+    )
+
+    def _cat(conn, sym):
+        if sym in ("GOLD", "SILVER"):
+            return "commodity", "ok"
+        return "crypto", "ok"
+
+    monkeypatch.setattr(
+        "backend.core.strike_pipeline_health.get_symbol_category_conn",
+        _cat,
+    )
+    monkeypatch.setattr(
+        "backend.core.config.database.get_system_postgresql_connection",
+        lambda: MagicMock(),
+    )
+
+    assert ut.upper_tail_trigger_mode("BTC") == ut.TRIGGER_ORDERBOOK
+    assert ut.upper_tail_trigger_mode("SOL") == ut.TRIGGER_ORDERBOOK
+    assert ut.upper_tail_trigger_mode("GOLD") == ut.TRIGGER_TAPE
+    # Commodity still on tape even if mistakenly left at full.
+    assert ut.upper_tail_trigger_mode("SILVER") == ut.TRIGGER_TAPE
+
+
 def test_side_from_orderbook_rail():
     # Mid book — do not fire.
     assert (

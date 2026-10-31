@@ -898,7 +898,10 @@ def drop_cycle_tables(market_ticker: str, conn=None) -> None:
         with c.cursor() as cur:
             for n in names:
                 cur.execute(f"DROP TABLE IF EXISTS {_qualified(n)}")
-        c.commit()
+        # Autocommit sessions (packager read/quarantine paths) already applied
+        # each DROP; commit() would raise ProgrammingError.
+        if not getattr(c, "autocommit", False):
+            c.commit()
         key = _ticker_key(market_ticker)
         with _ddl_lock:
             _ensured_tables.discard(key)
@@ -907,7 +910,8 @@ def drop_cycle_tables(market_ticker: str, conn=None) -> None:
         unregister_hot_ticker(market_ticker)
     except Exception as e:
         try:
-            c.rollback()
+            if not getattr(c, "autocommit", False):
+                c.rollback()
         except Exception:
             pass
         logger.warning("drop cycle tables failed %s: %s", market_ticker, e)

@@ -234,7 +234,14 @@ def fetch_public_trades(
     trades: List[Dict[str, Any]] = []
     cursor: Optional[str] = None
     pages = 0
+    # Whole-ticker budget: packager must move on rather than stall the archive.
+    fetch_deadline = time.monotonic() + max(30.0, float(timeout_s) * 6.0)
     while True:
+        if time.monotonic() >= fetch_deadline:
+            raise TimeoutError(
+                f"public_trades pagination exceeded wall budget for {ticker} "
+                f"after {pages} page(s)"
+            )
         params: Dict[str, Any] = {"ticker": ticker, "limit": min(int(limit), 1000)}
         if cursor:
             params["cursor"] = cursor
@@ -243,7 +250,10 @@ def fetch_public_trades(
         if max_ts is not None:
             params["max_ts"] = int(max_ts)
         url = f"{KALSHI_BASE}{MARKETS_TRADES_PATH}?{urlencode(params)}"
-        resp = _request_with_retry(url, timeout_s=timeout_s)
+        page_budget = max(15.0, min(60.0, fetch_deadline - time.monotonic()))
+        resp = _request_with_retry(
+            url, timeout_s=timeout_s, max_elapsed_s=page_budget
+        )
         pages += 1
         body = resp.json()
         batch = body.get("trades") or []
@@ -315,28 +325,44 @@ def _request_with_retry(
     url: str,
     *,
     timeout_s: float,
-    attempts: int = 25,
+    attempts: int = 8,
+    max_elapsed_s: float = 120.0,
 ) -> requests.Response:
-    """Retry Kalshi GETs until success. Never treat 429/5xx as permanent."""
+    """Retry Kalshi GETs with a hard wall-clock budget.
+
+    Packager seals many tickers in series; unbounded 429/backoff (old default
+    25×~90s) left the process looking alive while archive stalled for hours.
+    """
     last: Optional[Exception] = None
+    deadline = time.monotonic() + max(1.0, float(max_elapsed_s))
     for i in range(max(1, int(attempts))):
+        if time.monotonic() >= deadline:
+            break
         try:
-            resp = requests.get(url, timeout=timeout_s)
+            # (connect, read) so a half-closed TLS socket cannot sit forever.
+            resp = requests.get(url, timeout=(min(10.0, timeout_s), timeout_s))
             if resp.status_code == 429 or resp.status_code >= 500:
                 retry_after = resp.headers.get("Retry-After")
                 if retry_after:
                     try:
-                        delay = min(90.0, float(retry_after))
+                        delay = min(30.0, float(retry_after))
                     except (TypeError, ValueError):
-                        delay = min(90.0, 1.0 * (2**min(i, 6)))
+                        delay = min(30.0, 1.0 * (2**min(i, 5)))
                 else:
-                    delay = min(90.0, 1.0 * (2**min(i, 6)))
-                time.sleep(delay)
+                    delay = min(30.0, 1.0 * (2**min(i, 5)))
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    last = RuntimeError(f"HTTP {resp.status_code}")
+                    break
+                time.sleep(min(delay, remaining))
                 last = RuntimeError(f"HTTP {resp.status_code}")
                 continue
             resp.raise_for_status()
             return resp
         except Exception as e:
             last = e
-            time.sleep(min(90.0, 1.0 * (2**min(i, 6))))
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            time.sleep(min(30.0, 1.0 * (2**min(i, 5)), remaining))
     raise RuntimeError(f"Kalshi trades fetch failed for {url}: {last}")

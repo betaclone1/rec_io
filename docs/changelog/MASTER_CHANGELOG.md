@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-10-31 — Release v3.12.28: Crypto OB + commodity tape UT + weekend dark gate
+
+**Summary**
+- **Release: v3.12.28**
+- **Plans:** none (UT commodity OB empty; weekend commodity REST hammering).
+- **Change:**
+  - SOL/XRP `live_data_level=full` for orderbook Upper Tail; GOLD/SILVER/WTI stay `market` (tape trigger).
+  - `upper_tail_agent`: crypto `full` → orderbook touch; commodity / lean → public trades tape.
+  - Commodity 15m REST session dark hours (metals Fri 17:00 ET→Sun 18:15; energy Sat→Sun 18:00) in `schedule.py`; watchdog + Lower Tail skip `GET /markets` when dark. Crypto assumed 24/7. Recheck calendar periodically; new non-crypto assets need a close_time back-check before cohort assignment.
+  - Strike generator skips commodities even if briefly marked `full`.
+- **DB:** Migrations `20261031_1223_symbols_list_full_tracked_assets` then `20261031_1255_symbols_list_commodity_market_level` (may already be applied on prod from earlier enact).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-31`**. Code: `git revert` + restart watchdog / UT / LT / strike. Migrations: `down` in reverse order only if intentionally rolling levels.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261031_1223_symbols_list_full_tracked_assets`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261031_1255_symbols_list_commodity_market_level`
+- [ ] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart market_watchdog_ws_kalshi strike_table_generator_ws_15m upper_tail_agent_0001 lower_tail_agent_0001`
+- [ ] Verify: UT log shows orderbook + public tape subscriptions; commodity session-dark log when weekend; levels GOLD/SILVER/WTI=`market`, BTC/ETH/SOL/XRP=`full`; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.28`
+
+---
+
 ## 2026-10-31 — Release v3.12.27: Upper Tail trigger on orderbook touch
 
 **Summary**

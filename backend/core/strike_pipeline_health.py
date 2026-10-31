@@ -1,9 +1,12 @@
 """Keys and upserts for live_data.strike_pipeline_health (exchange + market + symbol).
 
 Feed depth (``live_data.symbols_list.live_data_level``) selects the required package.
-``category`` is the asset class and does not choose the package.
+``category`` is the asset class. Commodity symbols keep the lean health package even at
+``full`` (orderbook is added by market WS; they have no crypto strike ladder).
 
-- ``full`` — strike/market WS + spot (this table + spot gate)
+- ``full`` + crypto — strike/market WS + spot (this table + spot gate)
+- ``full`` + commodity — lean market meta + public trades + spot
+  (``live_data.commodity_pipeline_health`` + spot gate); orderbook still subscribed
 - ``market`` — lean market meta + public trades + spot
   (``live_data.commodity_pipeline_health`` + spot gate)
 - ``price_only`` — spot gate only
@@ -660,6 +663,13 @@ def evaluate_commodity_pipeline_gate_conn(
     )
 
 
+def _uses_lean_health_package(*, level: str, category: str) -> bool:
+    """Lean health table: ``market`` depth, or ``full`` commodities (OB without strike ladder)."""
+    if level == "market":
+        return True
+    return level == "full" and category == CATEGORY_COMMODITY
+
+
 def evaluate_pipeline_gate_conn(
     conn,
     *,
@@ -668,7 +678,8 @@ def evaluate_pipeline_gate_conn(
     symbol: str,
 ) -> tuple[bool, str]:
     """
-    Trade / auto-stop gate. Package selected by ``symbols_list.live_data_level``.
+    Trade / auto-stop gate. Package selected by ``symbols_list.live_data_level``
+    (commodity ``full`` keeps the lean health package).
 
     When STRIKE_PIPELINE_HEALTH_STRICT_MODE is off, returns (True, 'ok') without querying.
     """
@@ -685,7 +696,7 @@ def evaluate_pipeline_gate_conn(
         return False, "live_data_level_none"
     if level == "price_only":
         return _spot_series_passes_gate(conn, sym)
-    if level == "market":
+    if _uses_lean_health_package(level=level, category=cat):
         return evaluate_commodity_pipeline_gate_conn(
             conn, exchange=exchange, market=market, symbol=sym
         )
@@ -704,7 +715,7 @@ def evaluate_symbol_pipeline_gate_conn(
     Symbol-level gate for monitor health: if a symbol's spot feed is degraded, every monitor
     using that symbol (hourly and 15m) must be degraded.
 
-    Package table follows ``symbols_list.live_data_level``.
+    Package table follows ``symbols_list.live_data_level`` (commodity ``full`` → lean table).
     """
     if not strike_pipeline_health_strict_mode_enabled():
         return True, "ok"
@@ -719,10 +730,11 @@ def evaluate_symbol_pipeline_gate_conn(
         return False, "live_data_level_none"
     if level == "price_only":
         return _spot_series_passes_gate(conn, sym)
-    table = COMMODITY_TABLE if level == "market" else TABLE
+    lean = _uses_lean_health_package(level=level, category=cat)
+    table = COMMODITY_TABLE if lean else TABLE
     missing = (
         "commodity_pipeline_health_missing_symbol"
-        if level == "market"
+        if lean
         else "pipeline_health_missing_symbol"
     )
     return _evaluate_package_gate_conn(
