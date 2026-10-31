@@ -16,12 +16,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-31-ut-ob`**. Code: `git revert` + restart `upper_tail_agent_*`.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Restart Upper Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart upper_tail_agent_0001`
+- [x] Restart Upper Tail agents: `./venv/bin/supervisorctl -c backend/supervisord.conf restart upper_tail_agent_0001`
   (restart other `upper_tail_agent_*` slots if present and RUNNING)
-- [ ] Verify: `upper_tail_agent_*` RUNNING; log shows `subscribed … (orderbook touch)`; GTC places when OB bid/ask hits limit; health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.27`
+- [x] Verify: `upper_tail_agent_*` RUNNING; log shows `subscribed … (orderbook touch)`; GTC places when OB bid/ask hits limit; health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.27`
 
 ---
 
