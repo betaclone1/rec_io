@@ -6,7 +6,9 @@ description: "One-shot: prepare-update, commit and push with suggested message, 
 
 Single command that runs the full pre-push and deploy flow: **prepare-update** (snapshot, verify, changelog, suggested commit message), then **commit and push** all changes with that message, then **apply-update-from-local** (run production checklist on prod via SSH, verify, fidelity).
 
-Use for lighter, high-confidence updates when you want a one-stop shop. For larger or riskier changes, run `/prepare-update` and `/apply-update-from-local` separately so you can review the commit and changelog before pushing.
+**Do not treat plain “deploy to prod” as this command** — that is `/remote-deploy` (no snapshot). Invoke this only via `/push-commits-and-update-production` or an explicit request for the full prepare/snapshot/changelog/apply path (typically when migrations are involved).
+
+Use when you want a one-stop shop for a release that may include schema work. For larger or riskier changes, run `/prepare-update` and `/apply-update-from-local` separately so you can review the commit and changelog before pushing.
 
 **Production host:** IPv4 **`165.22.13.146`** — set `REC_PROD_SSH_HOST` before SSH steps (`docs/PRODUCTION_HOST.md`).
 

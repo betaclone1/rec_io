@@ -84,7 +84,7 @@ BOOKKEEPER_FORCE=1 REC_USER_NO=0001 /opt/rec_io_server/scripts/cron/bookkeeper_k
 
 **What it does:** Once per day at **1:00 AM Eastern**:
 
-1. **Droplet snapshot** — creates `auto_backup_YYYY-MM-DD_HHMM` for prod droplet **562337636** (`DO_PROD_DROPLET_ID`), waits for completion, prunes oldest `auto_backup_*` until **5** remain. Deploy / other named snapshots are never pruned (`scripts/do/auto_backup_snapshot.py`).
+1. **Droplet snapshot** — creates `auto_backup_YYYY-MM-DD_HHMM` for prod droplet **562337636** (`DO_PROD_DROPLET_ID`), waits for completion, prunes oldest `auto_backup_*` until **5** remain, then deletes `rec-io-prod-pre-update-*` snapshots older than **7** days (`PRE_UPDATE_SNAPSHOT_KEEP_DAYS`, `scripts/do/auto_backup_snapshot.py`).
 2. **Postgres dump → Drive** — full compressed dump (`scripts/backup/create_compressed_db_backup.sh`, same idea as System UI → Backup Database), uploads to Google Drive **`DATA/DB_BACKUPS`** (`scripts/gdrive/upload-db-backup.js`, folder id `1yvZm4itVZGmDXlIu7qBeIFKbCTiITO3o`), then deletes the oldest `rec_io_db_backup_*` Drive files until **14** remain. Local dump is removed after a successful upload unless `DB_BACKUP_KEEP_LOCAL=1`.
 
 Schedule with **cron** only (not Supervisor). Wrapper: `scripts/cron/do_auto_backup_snapshot.sh`.

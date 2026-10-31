@@ -1,6 +1,6 @@
 # Prepare update (pre-push)
 
-Run when the user is ready to push a commit to the git repository. Orchestrates verification, server-agnostic audit, **plan → changelog handoff**, and reports when the update is ready for publishing with a suggested commit message.
+Run when the user explicitly invokes `/prepare-update` or the full push/apply release path. **Not** for plain **“deploy to prod”** (that is remote-deploy; no snapshot). Orchestrates verification, server-agnostic audit, **plan → changelog handoff**, and reports when the update is ready for publishing with a suggested commit message. The blocking DO pre-update snapshot exists mainly because this path may include DB migrations.
 
 ## Workflow (execute in order)
 

@@ -10,7 +10,7 @@ description: "Production: commit, push, pull on prod, and restart only the speci
 
 Quick deploy workflow: commit local changes, push to origin, pull on prod, and restart **only the specific supervisor programs affected** by the changes.
 
-Use for straightforward changes that don't need migrations, snapshots, or the full changelog process. For changes requiring DB migrations, use `/push-commits-and-update-production` or `/apply-update-from-local` instead.
+**This is the default for plain “deploy to prod” / “deploy” / “ship it”** (no slash command). No DigitalOcean pre-update snapshot, no changelog release ritual. Assumes **no DB migrations**. For migration-bearing releases, use `/prepare-update` + `/apply-update-from-local` or `/push-commits-and-update-production` instead.
 
 **Migration gate:** If the change set or pull range includes `scripts/migrations/*.up.sql`, **abort** and use the full prepare/apply flow (git files ≠ DB applied). See `.cursor/rules/10-deploy-migrations-gate.mdc` and `.cursor/skills/remote-deploy/SKILL.md`.
 

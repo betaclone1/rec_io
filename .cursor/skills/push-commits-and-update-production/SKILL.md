@@ -4,7 +4,9 @@
 
 **Current production:** IPv4 **`165.22.13.146`**. Example: `export REC_PROD_SSH_HOST=165.22.13.146`. Canonical: `docs/PRODUCTION_HOST.md`.
 
-Run when the user wants a **single command** to prepare an update, commit and push with the suggested message, and then apply that update to production. Intended for lighter, high-confidence commits.
+**Only when explicitly invoked** as `/push-commits-and-update-production` (or the user clearly names this full prepare→snapshot→changelog→apply flow). Do **not** run this for plain **“deploy to prod”** / **“deploy”** — that is **remote-deploy** (no snapshot). Snapshots and changelog releases exist mainly because this path can include DB migrations.
+
+Run when the user wants a **single slash command** to prepare an update, commit and push with the suggested message, and then apply that update to production.
 
 ## Workflow (execute in order)
 

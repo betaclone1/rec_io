@@ -28,8 +28,8 @@ Before **prepare-update**, **push-commits-and-update-production**, **apply-updat
 
 - **`/prepare-update` / @updater prepare:** Scanning `scripts/migrations/` in the change set is **blocking**. Every new/changed `.up.sql` id **must** appear as an unchecked checklist item with the exact `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up <migration_id>` command (and pair must be committed with the code). Missing checklist lines ⇒ not “ready for publishing.”
 - **`/apply-update-from-local` / `/apply-update`:** Pre-flight: every checklist migration file exists in the commit being deployed. Order on target: **pull → apply all required migrations → restart**. Also detect **orphan** migration files in the deployed tree that are not in `system.schema_migrations` on that DB — treat as required work (apply or **🔴 Critical**); do not report “All good” with pending migrations the new code needs. Fidelity: local vs prod `git rev-parse HEAD` **and** `run_migration.py list`.
-- **`/remote-deploy` / `/simple-pull`:** These paths **must not** ship or pull commits that add `scripts/migrations/*.up.sql`. **Abort** and redirect to `/prepare-update` + `/apply-update-from-local` (or `/push-commits-and-update-production`). Pulling migration files without enacting them is a failed deploy, not a shortcut.
-- **`/push-commits-and-update-production`:** Inherits prepare + apply gates above; never skip migration checklist or fidelity.
+- **`/remote-deploy` / plain “deploy to prod” / `/simple-pull`:** These paths **must not** ship or pull commits that add `scripts/migrations/*.up.sql`. **Abort** and redirect to `/prepare-update` + `/apply-update-from-local` (or `/push-commits-and-update-production`). Pulling migration files without enacting them is a failed deploy, not a shortcut. Plain “deploy to prod” is **remote-deploy** (no DO snapshot); snapshots belong to the full prepare/push/apply path that can enact migrations.
+- **`/push-commits-and-update-production`:** Inherits prepare + apply gates above; never skip migration checklist or fidelity. Only when explicitly slash-invoked (not plain “deploy”).
 
 ## How to detect migration files in a range
 

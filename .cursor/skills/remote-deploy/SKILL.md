@@ -6,8 +6,13 @@
 
 Quick deploy workflow for changes that don't require migrations or the full changelog process.
 
+## Default for plain “deploy to prod”
+
+When the user says **“deploy to prod”**, **“deploy”**, **“ship it”**, or **“push to prod”** (no slash command), **use this skill**. That phrasing is **not** `/push-commits-and-update-production`: do **not** run a DigitalOcean pre-update snapshot, prepare-update, changelog version bump, or `record_system_version.py`. Simple deploy assumes **no DB migrations** (migration gate below). “Deploy to prod” is explicit permission for the git commit/push/merge and prod pull/restart steps in this skill.
+
 ## When to use
 
+- Plain-language deploy requests (see above)
 - Frontend-only changes (HTML, CSS, JS, images)
 - Backend Python changes to specific modules
 - Config or script tweaks
@@ -15,9 +20,9 @@ Quick deploy workflow for changes that don't require migrations or the full chan
 
 ## When NOT to use
 
-- Changes requiring DB migrations → use `/apply-update-from-local`
-- Changes requiring pre-deploy snapshots → use `/push-commits-and-update-production`
-- First-time deploys or major version bumps → use full changelog flow
+- Changes requiring DB migrations → abort; use `/prepare-update` then `/apply-update-from-local` (or `/push-commits-and-update-production`). Snapshots exist mainly to cover migration risk on that full path.
+- Explicit slash full-push / prepare / apply commands → use those skills instead
+- First-time deploys or major version bumps that need a changelog release → full changelog flow
 
 ## Migration gate (mandatory — before commit/push/pull)
 

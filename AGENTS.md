@@ -16,6 +16,8 @@
 
 **Deploy migrations gate (non-negotiable):** Git commits that add `scripts/migrations/*.up.sql` only **ship** DDL; they do **not** alter any database. Every prepare/push/apply/remote-deploy/simple-pull path must **detect** migration files in the change set or commit range and **enact** them with `run_migration.py up <id>` on the **target** DB before claiming that environment is updated. `/simple-pull` and `/remote-deploy` must **abort** if the range includes new `.up.sql` files — use the full changelog apply flow instead. Full law: `.cursor/rules/10-deploy-migrations-gate.mdc`.
 
+**Deploy phrasing:** Plain **“deploy to prod”** / **“deploy”** → **remote-deploy** (commit/push/pull/restart affected programs; **no** DO pre-update snapshot, **no** changelog release). Assumes **no migrations**. Full snapshot + changelog path only for explicit `/push-commits-and-update-production`, `/prepare-update`, `/apply-update-from-local`. See `.cursor/rules/01-core-operating-law.mdc`.
+
 **Tenant schema DDL parity (non-negotiable):** Any structural change to per-tenant tables (patterns under `users` and `users_NNNN`, e.g. `monitor_list_*`, `trades_*`) must be applied to **every** relevant tenant schema in migrations and matching bootstrap code, not a single hardcoded slot. See `.cursor/rules/06-tenant-users-schema-parity.mdc`.
 
 **Git command boundary (non-negotiable):** Agents must **never** run `git push`, `git pull`, or create git commits unless the user gives an explicit instruction for that specific action in the current chat. If not explicit, stop and ask first. Do not infer permission from deployment workflows or prior tasks.
@@ -82,4 +84,4 @@ When touching redis_switchboard, stream_registry, or adding real-time streams/co
   - If yes, either implement the corresponding change on the other surface in the same task/PR, or explicitly note why parity is not needed.
   - When in doubt, favor keeping **core flows and key views** (e.g. dashboards, account history, trade details) reasonably in sync between desktop and mobile.
 
-**Commands (see .cursor/commands/ and .cursor/):** /verify-local, /verify-production, /system-restart-local, /system-restart-production, /prepare-update, /push-commits-and-update-production, /apply-update, /apply-update-from-local, /simple-pull, /confirm-update, /daily-briefing. Workflow: /start-task, /inspect-surface, /implement-plan, /review-change, /promote-knowledge.
+**Commands (see .cursor/commands/ and .cursor/):** /verify-local, /verify-production, /system-restart-local, /system-restart-production, /remote-deploy (also plain “deploy to prod”), /prepare-update, /push-commits-and-update-production, /apply-update, /apply-update-from-local, /simple-pull, /confirm-update, /daily-briefing. Workflow: /start-task, /inspect-surface, /implement-plan, /review-change, /promote-knowledge.

@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Nightly redundant backups:
-#   1) DigitalOcean droplet auto_backup_* snapshot (rolling keep=5)
+#   1) DigitalOcean droplet auto_backup_* snapshot (rolling keep=5), then
+#      prune rec-io-prod-pre-update-* older than 7 days
 #   2) Compressed full Postgres dump → Google Drive DATA/DB_BACKUPS (rolling keep=14)
 #
 # Prereqs:
@@ -15,6 +16,7 @@
 #   AUTO_BACKUP_SKIP_DO=1      skip droplet snapshot
 #   AUTO_BACKUP_SKIP_DB=1      skip DB dump / Drive upload
 #   AUTO_BACKUP_DRY_RUN=1      DO dry-run + Drive dry-run (no create/delete/upload)
+#   PRE_UPDATE_SNAPSHOT_KEEP_DAYS  default 7 (0 disables pre-update prune)
 #   DB_BACKUP_KEEP             default 14
 #   DB_BACKUP_KEEP_LOCAL=1     keep local .sql.gz after successful upload (default: delete)
 #
