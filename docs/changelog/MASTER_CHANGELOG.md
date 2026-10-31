@@ -20,13 +20,13 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-10-31`**. Code: `git revert` + restart watchdog / UT / LT / strike. Migrations: `down` in reverse order only if intentionally rolling levels.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261031_1223_symbols_list_full_tracked_assets`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261031_1255_symbols_list_commodity_market_level`
-- [ ] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart market_watchdog_ws_kalshi strike_table_generator_ws_15m upper_tail_agent_0001 lower_tail_agent_0001`
-- [ ] Verify: UT log shows orderbook + public tape subscriptions; commodity session-dark log when weekend; levels GOLD/SILVER/WTI=`market`, BTC/ETH/SOL/XRP=`full`; health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.28`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261031_1223_symbols_list_full_tracked_assets`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261031_1255_symbols_list_commodity_market_level`
+- [x] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart market_watchdog_ws_kalshi strike_table_generator_ws_15m upper_tail_agent_0001 lower_tail_agent_0001`
+- [x] Verify: UT log shows orderbook + public tape subscriptions; commodity session-dark log when weekend; levels GOLD/SILVER/WTI=`market`, BTC/ETH/SOL/XRP=`full`; health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.28`
 
 ---
 
