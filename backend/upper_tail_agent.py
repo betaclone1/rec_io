@@ -35,7 +35,7 @@ from backend.core.lower_tail_open import (
     select_live_targets_by_symbol,
 )
 from backend.core.kalshi_public_trade_redis import load_public_trade_prints
-from backend.core.orderbook_strike_prices import touch_dollars_for_ticker
+from backend.core.orderbook_strike_prices import resolve_orderbook_touch_with_meta
 from backend.core.port_config import default_pool_user_number, get_port
 from backend.core.upper_tail import (
     STRATEGY_NAME,
@@ -117,6 +117,66 @@ def _parse_px(raw: Any) -> Optional[float]:
         return float(raw)
     except (TypeError, ValueError):
         return None
+
+
+@dataclass(frozen=True)
+class _TriggerHit:
+    """First local observation that the rail qualifies (not venue first-touch)."""
+
+    side: str
+    mode: str
+    t_detect: float
+    source_age_ms: Optional[float] = None
+    source_ts_ms: Optional[float] = None
+    detail: str = ""
+
+
+def _ms(v: Optional[float], nd: int = 1) -> str:
+    if v is None:
+        return "na"
+    return f"{float(v):.{nd}f}"
+
+
+def _event_ts_to_unix_ms(raw: Any) -> Optional[float]:
+    """Parse tape ``ts`` / ``received_at`` into unix milliseconds."""
+    if raw is None:
+        return None
+    if isinstance(raw, (int, float)):
+        v = float(raw)
+        if v <= 0:
+            return None
+        # Heuristic: seconds vs milliseconds.
+        return v * 1000.0 if v < 1e12 else v
+    s = str(raw).strip()
+    if not s:
+        return None
+    try:
+        v = float(s)
+        if v <= 0:
+            return None
+        return v * 1000.0 if v < 1e12 else v
+    except (TypeError, ValueError):
+        pass
+    try:
+        from datetime import datetime, timezone
+
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp() * 1000.0
+    except (TypeError, ValueError):
+        return None
+
+
+def _log_trigger(cy: _Cycle, hit: _TriggerHit, *, ttc: float) -> None:
+    _log(
+        f"TRIGGER monitor={cy.monitor_id} mode={hit.mode} side={hit.side} "
+        f"ticker={cy.ticker} source_age_ms={_ms(hit.source_age_ms)} "
+        f"source_ts_ms={_ms(hit.source_ts_ms, 0)} ttc={ttc:.1f}"
+        + (f" {hit.detail}" if hit.detail else "")
+    )
 
 
 def _set_auto_trade_status(monitor_id: str, status: str) -> None:
@@ -305,7 +365,8 @@ def _book(cy: _Cycle, *, side: str, fill_qty: float) -> Optional[int]:
         return None
 
 
-def _place_live(cy: _Cycle, side: str) -> bool:
+def _place_live(cy: _Cycle, hit: _TriggerHit) -> bool:
+    side = hit.side
     book_side = "bid" if side == "yes" else "ask"
     try:
         v2_price_for_limit_side(side=book_side, limit_dollars=cy.limit_px)
@@ -323,19 +384,45 @@ def _place_live(cy: _Cycle, side: str) -> bool:
     )
     oid = extract_order_id(res.api_json if res else None)
     if not oid:
-        _log(f"place failed monitor={cy.monitor_id} side={side} ticker={cy.ticker}")
+        detect_to_fail_ms = (
+            (time.time() - hit.t_detect) * 1000.0 if hit.t_detect else None
+        )
+        _log(
+            f"place failed monitor={cy.monitor_id} side={side} ticker={cy.ticker} "
+            f"mode={hit.mode} detect_to_fail_ms={_ms(detect_to_fail_ms)} "
+            f"source_age_ms={_ms(hit.source_age_ms)}"
+        )
         return False
     cy.side = side
     cy.order_id = oid
     cy.placed = True
+    body = res.api_json if isinstance(res.api_json, dict) else {}
+    try:
+        fill_on_ack = float(body.get("fill_count") or 0)
+    except (TypeError, ValueError):
+        fill_on_ack = 0.0
+    try:
+        kalshi_ts_ms = (
+            float(body["ts_ms"]) if body.get("ts_ms") is not None else None
+        )
+    except (TypeError, ValueError):
+        kalshi_ts_ms = None
+    detect_to_send_ms = (res.t_send - hit.t_detect) * 1000.0
+    detect_to_ack_ms = (res.t_ack - hit.t_detect) * 1000.0
+    # PLACE already logs send_lag_prep_ms (sign→POST). detect_to_send covers
+    # everything from first local qualify observation through HTTP send.
     _log(
         f"GTC monitor={cy.monitor_id} ticker={cy.ticker} side={side} "
-        f"oid={oid} @{cy.limit_px:.4f} ct={cy.contracts} sa={cy.subaccount}"
+        f"oid={oid} @{cy.limit_px:.4f} ct={cy.contracts} sa={cy.subaccount} "
+        f"mode={hit.mode} source_age_ms={_ms(hit.source_age_ms)} "
+        f"detect_to_send_ms={_ms(detect_to_send_ms)} "
+        f"rtt_ms={_ms(res.rtt_ms)} detect_to_ack_ms={_ms(detect_to_ack_ms)} "
+        f"fill_on_ack={fill_on_ack:.2f} kalshi_ts_ms={_ms(kalshi_ts_ms, 0)}"
     )
     return True
 
 
-def _qualifying_side_from_tape(cy: _Cycle) -> Optional[str]:
+def _qualifying_side_from_tape(cy: _Cycle) -> Optional[_TriggerHit]:
     """Newest-first public prints until one side hits the rail."""
     for rec in load_public_trade_prints(cy.ticker):
         side = upper_tail_side_from_print(
@@ -343,25 +430,58 @@ def _qualifying_side_from_tape(cy: _Cycle) -> Optional[str]:
             no_price=_parse_px(rec.get("no_price_dollars")),
             limit_px=cy.limit_px,
         )
-        if side:
-            return side
+        if not side:
+            continue
+        t_detect = time.time()
+        src_ms = _event_ts_to_unix_ms(rec.get("ts"))
+        if src_ms is None:
+            src_ms = _event_ts_to_unix_ms(rec.get("received_at"))
+        age_ms = (t_detect * 1000.0 - src_ms) if src_ms is not None else None
+        if age_ms is not None and age_ms < 0:
+            age_ms = 0.0
+        yp = rec.get("yes_price_dollars")
+        np_ = rec.get("no_price_dollars")
+        return _TriggerHit(
+            side=side,
+            mode=TRIGGER_TAPE,
+            t_detect=t_detect,
+            source_age_ms=age_ms,
+            source_ts_ms=src_ms,
+            detail=f"print_yes={yp} print_no={np_}",
+        )
     return None
 
 
-def _qualifying_side_from_orderbook(cy: _Cycle) -> Optional[str]:
-    touch = touch_dollars_for_ticker(cy.ticker)
-    if not touch:
+def _qualifying_side_from_orderbook(cy: _Cycle) -> Optional[_TriggerHit]:
+    touch, reason, meta = resolve_orderbook_touch_with_meta(cy.ticker)
+    if not touch or reason != "ok":
         return None
-    return upper_tail_side_from_orderbook(
+    side = upper_tail_side_from_orderbook(
         yes_ask=_parse_px(touch.get("yes_ask_dollars")),
         no_ask=_parse_px(touch.get("no_ask_dollars")),
         yes_bid=_parse_px(touch.get("yes_bid_dollars")),
         no_bid=_parse_px(touch.get("no_bid_dollars")),
         limit_px=cy.limit_px,
     )
+    if not side:
+        return None
+    t_detect = time.time()
+    age_ms = meta.age_sec * 1000.0 if meta.age_sec is not None else None
+    src_ms = meta.redis_written_ms if meta.redis_written_ms is not None else meta.ts_ms
+    return _TriggerHit(
+        side=side,
+        mode=TRIGGER_ORDERBOOK,
+        t_detect=t_detect,
+        source_age_ms=age_ms,
+        source_ts_ms=src_ms,
+        detail=(
+            f"yb={touch.get('yes_bid_dollars')} ya={touch.get('yes_ask_dollars')} "
+            f"nb={touch.get('no_bid_dollars')} na={touch.get('no_ask_dollars')}"
+        ),
+    )
 
 
-def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[str]:
+def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[_TriggerHit]:
     """Fire on orderbook touch (crypto) or public tape print (commodity/lean)."""
     now_ttc = cy.close_ts - now
     if not ttc_in_entry_window(ttc=now_ttc, min_time=cy.min_time, max_time=cy.max_time):
@@ -488,18 +608,19 @@ def _tick() -> None:
             continue
         if cy.done or cy.placed or not in_window:
             continue
-        side = _qualifying_side(cy, now=now)
-        if not side:
+        hit = _qualifying_side(cy, now=now)
+        if not hit:
             continue
+        _log_trigger(cy, hit, ttc=now_ttc)
         if cy.paper:
-            cy.side = side
-            cy.order_id = f"paper_{side}_{mid}"
-            _on_fill(cy, side=side, qty=float(cy.contracts))
+            cy.side = hit.side
+            cy.order_id = f"paper_{hit.side}_{mid}"
+            _on_fill(cy, side=hit.side, qty=float(cy.contracts))
             if cy.done:
                 cy.placed = True
                 cy.fill_sync_done = True
             continue
-        _place_live(cy, side)
+        _place_live(cy, hit)
 
     for mid, cy in list(_cycles.items()):
         if mid not in active_ids:

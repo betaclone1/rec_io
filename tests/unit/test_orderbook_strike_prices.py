@@ -13,15 +13,25 @@ def test_resolve_orderbook_touch_dollars_ok():
     snap = {
         "valid": True,
         "redis_written_ms": now_ms,
+        "ts_ms": now_ms - 5,
         "yes": {"0.46": "100", "0.45": "50"},
         "no": {"0.52": "80", "0.51": "40"},
     }
     with patch.object(obp, "load_orderbook_snapshot_from_redis", return_value=snap):
         touch, reason = obp.resolve_orderbook_touch_dollars("TICKER-1", max_age_sec=30.0)
+        touch2, reason2, meta = obp.resolve_orderbook_touch_with_meta(
+            "TICKER-1", max_age_sec=30.0
+        )
     assert reason == "ok"
     assert touch is not None
     assert touch["yes_ask_dollars"] == "0.4800"
     assert touch["no_ask_dollars"] == "0.5400"
+    assert reason2 == "ok"
+    assert touch2 == touch
+    assert meta.redis_written_ms == float(now_ms)
+    assert meta.ts_ms == float(now_ms - 5)
+    assert meta.age_sec is not None
+    assert meta.age_sec < 1.0
 
 
 def test_resolve_orderbook_touch_dollars_stale():

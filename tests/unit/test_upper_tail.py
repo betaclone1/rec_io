@@ -227,3 +227,159 @@ def test_entry_window():
     assert ttc_in_entry_window(ttc=120, min_time=60, max_time=180) is True
     assert ttc_in_entry_window(ttc=30, min_time=60, max_time=180) is False
     assert ttc_in_entry_window(ttc=None, min_time=0, max_time=900) is False
+
+
+def test_event_ts_to_unix_ms_seconds_and_iso():
+    import backend.upper_tail_agent as te
+
+    assert te._event_ts_to_unix_ms(1_700_000_000) == 1_700_000_000_000.0
+    assert te._event_ts_to_unix_ms(1_700_000_000_000) == 1_700_000_000_000.0
+    iso_ms = te._event_ts_to_unix_ms("2023-11-14T22:13:20+00:00")
+    assert iso_ms is not None
+    assert abs(iso_ms - 1_700_000_000_000.0) < 1000.0
+
+
+def test_qualifying_orderbook_returns_trigger_hit(monkeypatch):
+    import time
+
+    import backend.upper_tail_agent as te
+    from backend.core.orderbook_strike_prices import OrderbookTouchMeta
+    from backend.core.upper_tail import TRIGGER_ORDERBOOK
+
+    cy = te._Cycle(
+        monitor_id="10073",
+        symbol="BTC",
+        ticker="KXBTC15M-X",
+        event_ticker="KXBTC15M-X",
+        limit_px=0.99,
+        contracts=1,
+        subaccount=6,
+        paper=False,
+        floor_strike=1.0,
+        close_ts=time.time() + 600,
+        min_time=0,
+        max_time=900,
+        bankroll_cents=None,
+    )
+
+    def _resolve(_ticker, max_age_sec=None):
+        touch = {
+            "yes_bid_dollars": "0.9900",
+            "yes_ask_dollars": "0.9910",
+            "no_bid_dollars": "0.0090",
+            "no_ask_dollars": "0.0100",
+        }
+        meta = OrderbookTouchMeta(
+            age_sec=0.012, ts_ms=1_700_000_000_100.0, redis_written_ms=1_700_000_000_120.0
+        )
+        return touch, "ok", meta
+
+    monkeypatch.setattr(te, "resolve_orderbook_touch_with_meta", _resolve)
+    hit = te._qualifying_side_from_orderbook(cy)
+    assert hit is not None
+    assert hit.side == "yes"
+    assert hit.mode == TRIGGER_ORDERBOOK
+    assert hit.source_age_ms is not None
+    assert abs(hit.source_age_ms - 12.0) < 0.1
+    assert hit.source_ts_ms == 1_700_000_000_120.0
+
+
+def test_qualifying_tape_returns_trigger_hit(monkeypatch):
+    import time
+
+    import backend.upper_tail_agent as te
+    from backend.core.upper_tail import TRIGGER_TAPE
+
+    cy = te._Cycle(
+        monitor_id="10080",
+        symbol="GOLD",
+        ticker="KXGOLD15M-X",
+        event_ticker="KXGOLD15M-X",
+        limit_px=0.99,
+        contracts=1,
+        subaccount=1,
+        paper=False,
+        floor_strike=1.0,
+        close_ts=time.time() + 600,
+        min_time=0,
+        max_time=900,
+        bankroll_cents=None,
+    )
+    t_print = time.time() - 0.05
+    monkeypatch.setattr(
+        te,
+        "load_public_trade_prints",
+        lambda _t: [
+            {
+                "yes_price_dollars": "0.99",
+                "no_price_dollars": "0.01",
+                "ts": t_print,
+            }
+        ],
+    )
+    hit = te._qualifying_side_from_tape(cy)
+    assert hit is not None
+    assert hit.side == "yes"
+    assert hit.mode == TRIGGER_TAPE
+    assert hit.source_age_ms is not None
+    assert hit.source_age_ms >= 40.0
+
+
+def test_place_live_logs_detect_to_ack(monkeypatch):
+    import time
+
+    import backend.upper_tail_agent as te
+    from backend.core.lower_tail_kalshi import PlaceResult
+    from backend.core.upper_tail import TRIGGER_ORDERBOOK
+
+    cy = te._Cycle(
+        monitor_id="10073",
+        symbol="BTC",
+        ticker="KXBTC15M-X",
+        event_ticker="KXBTC15M-X",
+        limit_px=0.99,
+        contracts=1,
+        subaccount=6,
+        paper=False,
+        floor_strike=1.0,
+        close_ts=time.time() + 600,
+        min_time=0,
+        max_time=900,
+        bankroll_cents=None,
+    )
+    t0 = time.time()
+    hit = te._TriggerHit(
+        side="yes",
+        mode=TRIGGER_ORDERBOOK,
+        t_detect=t0,
+        source_age_ms=8.0,
+        source_ts_ms=t0 * 1000.0,
+    )
+    logged = []
+
+    def _capture(msg):
+        logged.append(msg)
+
+    monkeypatch.setattr(te, "_log", _capture)
+    monkeypatch.setattr(te, "v2_price_for_limit_side", lambda **kwargs: "0.9900")
+    monkeypatch.setattr(
+        te,
+        "place_limit_gtc",
+        lambda **kwargs: PlaceResult(
+            api_json={
+                "order_id": "oid-1",
+                "fill_count": "1.00",
+                "ts_ms": int((t0 + 0.03) * 1000),
+            },
+            t_send=t0 + 0.002,
+            t_ack=t0 + 0.028,
+        ),
+    )
+    assert te._place_live(cy, hit) is True
+    gtc = next(m for m in logged if m.startswith("GTC "))
+    assert "detect_to_send_ms=" in gtc
+    assert "detect_to_ack_ms=" in gtc
+    assert "rtt_ms=" in gtc
+    assert "source_age_ms=8.0" in gtc
+    assert "mode=orderbook" in gtc
+    assert cy.order_id == "oid-1"

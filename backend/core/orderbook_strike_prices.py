@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import os
 import time
+from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Dict, Optional
 
@@ -16,6 +17,15 @@ from backend.core.trade_monitor_live_orderbook_payload import (
     _transform_complement_levels,
     load_orderbook_snapshot_from_redis,
 )
+
+
+@dataclass(frozen=True)
+class OrderbookTouchMeta:
+    """Age / write stamps for the Redis OB snapshot used to derive touch."""
+
+    age_sec: Optional[float] = None
+    ts_ms: Optional[float] = None
+    redis_written_ms: Optional[float] = None
 
 _REQUIRED_TOUCH_KEYS = (
     "yes_ask_dollars",
@@ -127,27 +137,53 @@ def resolve_orderbook_touch_dollars(
 
     Returns (touch_dict, reason). touch_dict has yes/no bid+ask dollar strings when ok.
     """
+    touch, reason, _meta = resolve_orderbook_touch_with_meta(
+        market_ticker, max_age_sec=max_age_sec
+    )
+    return touch, reason
+
+
+def resolve_orderbook_touch_with_meta(
+    market_ticker: str,
+    *,
+    max_age_sec: Optional[float] = None,
+) -> tuple[Optional[dict[str, str]], str, OrderbookTouchMeta]:
+    """Like ``resolve_orderbook_touch_dollars`` plus snapshot age / write stamps."""
     mt = str(market_ticker or "").strip()
+    empty = OrderbookTouchMeta()
     if not mt:
-        return None, "missing_ticker"
+        return None, "missing_ticker", empty
     snap = load_orderbook_snapshot_from_redis(mt)
     if not snap:
-        return None, "orderbook_miss"
+        return None, "orderbook_miss", empty
     if snap.get("valid") is False:
-        return None, "orderbook_invalid"
+        return None, "orderbook_invalid", empty
     age_limit = float(max_age_sec if max_age_sec is not None else orderbook_max_age_sec())
     age_sec = _snapshot_age_sec(snap)
+    try:
+        ts_ms = float(snap["ts_ms"]) if snap.get("ts_ms") is not None else None
+    except (TypeError, ValueError):
+        ts_ms = None
+    try:
+        rw_ms = (
+            float(snap["redis_written_ms"])
+            if snap.get("redis_written_ms") is not None
+            else None
+        )
+    except (TypeError, ValueError):
+        rw_ms = None
+    meta = OrderbookTouchMeta(age_sec=age_sec, ts_ms=ts_ms, redis_written_ms=rw_ms)
     if age_sec is None:
-        return None, "orderbook_no_timestamp"
+        return None, "orderbook_no_timestamp", meta
     if age_sec > age_limit:
-        return None, f"orderbook_stale:{age_sec:.1f}s>{age_limit:.1f}s"
+        return None, f"orderbook_stale:{age_sec:.1f}s>{age_limit:.1f}s", meta
     touch = touch_dollars_from_orderbook_snapshot(snap)
     if not touch:
-        return None, "orderbook_empty"
+        return None, "orderbook_empty", meta
     for key in _REQUIRED_TOUCH_KEYS:
         if not touch.get(key):
-            return None, f"orderbook_incomplete:{key}"
-    return touch, "ok"
+            return None, f"orderbook_incomplete:{key}", meta
+    return touch, "ok", meta
 
 
 def _normalize_side(side_val: object) -> Optional[str]:
