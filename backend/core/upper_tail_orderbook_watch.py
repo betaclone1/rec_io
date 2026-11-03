@@ -36,13 +36,19 @@ def set_upper_tail_orderbook_watch(tickers: Iterable[str]) -> None:
         global _local
         _local = set(cleaned)
     r = _redis()
-    if not r:
-        return
+    if r:
+        try:
+            if cleaned:
+                r.set(_REDIS_KEY, json.dumps(sorted(cleaned)), ex=7200)
+            else:
+                r.delete(_REDIS_KEY)
+        except Exception:
+            pass
+    # Same-process consumers (and next watchdog refresh) pick up immediately.
     try:
-        if cleaned:
-            r.set(_REDIS_KEY, json.dumps(sorted(cleaned)), ex=7200)
-        else:
-            r.delete(_REDIS_KEY)
+        from backend.core.orderbook_hot_publish_registry import refresh_hot_tickers_if_stale
+
+        refresh_hot_tickers_if_stale(force=True)
     except Exception:
         pass
 

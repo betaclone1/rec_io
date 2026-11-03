@@ -46,11 +46,17 @@ def test_parse_orderbook_hot_ticker(monkeypatch):
     assert pairs == [("BTC", "15m")]
 
 
-def test_parse_orderbook_cold_ticker_empty():
+def test_parse_orderbook_cold_ticker_empty(monkeypatch):
+    # Hourly crypto is not always-hot; without allowlist/watch it stays cold.
+    monkeypatch.setenv("MARKET_WATCHDOG_HOT_CRYPTO_15M", "1")
+    monkeypatch.delenv("MARKET_WATCHDOG_HOT_ORDERBOOK_TICKERS", raising=False)
+    from backend.core.orderbook_hot_publish_registry import refresh_hot_tickers_if_stale
+
+    refresh_hot_tickers_if_stale(force=True)
     pairs = parse_tradeflow_symbol_market(
         {
             "kind": "orderbook",
-            "market_ticker": "KXBTC15M-26MAY241899-99",
+            "market_ticker": "KXBTCD-26MAY2418-T90000",
         }
     )
     assert pairs == []

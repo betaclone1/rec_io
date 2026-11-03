@@ -592,17 +592,24 @@ def _on_crypto_ob_stream(snap: Any) -> None:
             "yes": getattr(snap, "yes", None) or {},
             "no": getattr(snap, "no", None) or {},
             "ts_ms": getattr(snap, "ts_ms", None),
+            "venue_ts_ms": getattr(snap, "venue_ts_ms", None),
             "redis_written_ms": getattr(snap, "redis_written_ms", None),
         }
     )
     if not touch:
         return
     recv_ms = getattr(snap, "received_ms", None)
-    rw_ms = getattr(snap, "redis_written_ms", None)
+    # Prefer Kalshi venue event time for source_age (not local Redis write).
+    venue_ms = getattr(snap, "venue_ts_ms", None)
     ts_ms = getattr(snap, "ts_ms", None)
-    src_ms = float(rw_ms) if rw_ms is not None else (
-        float(ts_ms) if ts_ms is not None else None
-    )
+    src_ms = None
+    for candidate in (venue_ms, ts_ms):
+        if candidate is not None:
+            try:
+                src_ms = float(candidate)
+                break
+            except (TypeError, ValueError):
+                continue
     age_ms = None
     if src_ms is not None and recv_ms is not None:
         age_ms = max(0.0, float(recv_ms) - src_ms)
@@ -696,8 +703,14 @@ def _qualifying_side_from_orderbook(cy: _Cycle) -> Optional[_TriggerHit]:
     if not side:
         return None
     t_detect = time.time()
-    age_ms = meta.age_sec * 1000.0 if meta.age_sec is not None else None
-    src_ms = meta.redis_written_ms if meta.redis_written_ms is not None else meta.ts_ms
+    src_ms = None
+    for candidate in (meta.venue_ts_ms, meta.ts_ms, meta.redis_written_ms):
+        if candidate is not None:
+            src_ms = float(candidate)
+            break
+    age_ms = None
+    if src_ms is not None:
+        age_ms = max(0.0, t_detect * 1000.0 - src_ms)
     return _TriggerHit(
         side=side,
         mode=TRIGGER_ORDERBOOK,

@@ -270,18 +270,22 @@ def test_qualifying_orderbook_returns_trigger_hit(monkeypatch):
             "no_ask_dollars": "0.0100",
         }
         meta = OrderbookTouchMeta(
-            age_sec=0.012, ts_ms=1_700_000_000_100.0, redis_written_ms=1_700_000_000_120.0
+            age_sec=0.012,
+            ts_ms=1_700_000_000_100.0,
+            redis_written_ms=1_700_000_000_120.0,
+            venue_ts_ms=1_700_000_000_100.0,
         )
         return touch, "ok", meta
 
     monkeypatch.setattr(te, "resolve_orderbook_touch_with_meta", _resolve)
+    monkeypatch.setattr(te.time, "time", lambda: 1_700_000_000_112.0 / 1000.0)
     hit = te._qualifying_side_from_orderbook(cy)
     assert hit is not None
     assert hit.side == "yes"
     assert hit.mode == TRIGGER_ORDERBOOK
     assert hit.source_age_ms is not None
     assert abs(hit.source_age_ms - 12.0) < 0.1
-    assert hit.source_ts_ms == 1_700_000_000_120.0
+    assert hit.source_ts_ms == 1_700_000_000_100.0
 
 
 def test_qualifying_tape_returns_trigger_hit(monkeypatch):
@@ -535,6 +539,7 @@ def test_upper_tail_watch_marks_hot_ticker(monkeypatch):
     from backend.core import upper_tail_orderbook_watch as utw
 
     monkeypatch.setattr(reg, "hot_ticker_flush_enabled", lambda: True)
+    monkeypatch.setattr(reg, "hot_crypto_15m_enabled", lambda: False)
     monkeypatch.setattr(reg, "_parse_allowlist_env", lambda: set())
     monkeypatch.setattr(
         "backend.core.trade_monitor_orderbook_watch.get_trade_monitor_orderbook_watch",
@@ -548,3 +553,18 @@ def test_upper_tail_watch_marks_hot_ticker(monkeypatch):
     assert reg.is_hot_orderbook_ticker("KXBTC15M-HOT") is True
     assert reg.is_hot_orderbook_ticker("KXETH15M-COLD") is False
     utw.set_upper_tail_orderbook_watch([])
+
+
+def test_crypto_15m_always_hot(monkeypatch):
+    from backend.core import orderbook_hot_publish_registry as reg
+
+    monkeypatch.setattr(reg, "hot_ticker_flush_enabled", lambda: True)
+    monkeypatch.setattr(reg, "hot_crypto_15m_enabled", lambda: True)
+    monkeypatch.setattr(reg, "_parse_allowlist_env", lambda: set())
+    monkeypatch.setattr(
+        "backend.core.trade_monitor_orderbook_watch.get_trade_monitor_orderbook_watch",
+        lambda: None,
+    )
+    assert reg.is_hot_orderbook_ticker("KXBTC15M-ANY") is True
+    assert reg.is_hot_orderbook_ticker("KXETH15M-ANY") is True
+    assert reg.is_hot_orderbook_ticker("KXGOLD15M-ANY") is False
