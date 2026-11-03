@@ -644,6 +644,8 @@ class KalshiMarketWsMaster:
     hourly_markets_raw: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     hourly_ob_tickers_cache: dict[str, list[str]] = field(default_factory=dict)
     hourly_ob_cache_key: dict[str, str] = field(default_factory=dict)
+    # Last armed/watch set pushed onto the priority OB socket (change → resync).
+    priority_ob_ingest_key: frozenset[str] = field(default_factory=frozenset)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def all_entries(self) -> list[MarketScheduleEntry]:
@@ -1528,14 +1530,13 @@ def priority_ob_ws_enabled() -> bool:
 
 
 def _priority_ob_tickers(want_ob: set[str]) -> set[str]:
-    """Tickers that belong on the priority OB socket when it is connected."""
-    from backend.core.orderbook_hot_publish_registry import (
-        is_hot_orderbook_ticker,
-        refresh_hot_tickers_if_stale,
-    )
+    """Tickers that belong on the priority OB socket when it is connected.
 
-    refresh_hot_tickers_if_stale()
-    return {mt for mt in want_ob if is_hot_orderbook_ticker(mt)}
+    Default: UT-armed + trade-monitor watch + env allowlist only (not all crypto).
+    """
+    from backend.core.orderbook_hot_publish_registry import is_priority_ob_ingest_ticker
+
+    return {mt for mt in want_ob if is_priority_ob_ingest_ticker(mt)}
 
 
 def _consume_ob_channel_seq(
@@ -2279,15 +2280,34 @@ async def _publish_coalesce_loop(master: KalshiMarketWsMaster) -> None:
             await asyncio.to_thread(_flush_dirty_redis_sync, master, ob_batch, ticker_batch)
 
 
-async def _hot_registry_refresh_loop() -> None:
-    from backend.core.orderbook_hot_publish_registry import refresh_hot_tickers_if_stale
+async def _hot_registry_refresh_loop(master: KalshiMarketWsMaster) -> None:
+    from backend.core.orderbook_hot_publish_registry import (
+        priority_ob_ingest_tickers,
+        refresh_hot_tickers_if_stale,
+    )
 
     # Match MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC (default 50ms) so UT arming
-    # is visible to hot flush without waiting a full second.
+    # is visible to hot flush / priority OB subscribe without waiting a full second.
     refresh_sec = float(os.getenv("MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC", "0.05"))
     refresh_sec = max(0.02, min(1.0, refresh_sec))
     while True:
         refresh_hot_tickers_if_stale(force=True)
+        armed = frozenset(priority_ob_ingest_tickers())
+        if (
+            priority_ob_ws_enabled()
+            and master.hot_ob_ws_connected
+            and armed != master.priority_ob_ingest_key
+        ):
+            master.priority_ob_ingest_key = armed
+            try:
+                await _subscription_sync(master)
+                log.info(
+                    "priority OB arm sync n=%s sample=%s",
+                    len(armed),
+                    sorted(armed)[:6],
+                )
+            except Exception:
+                log.exception("priority OB arm sync failed")
         await asyncio.sleep(refresh_sec)
 
 
@@ -2884,7 +2904,7 @@ async def run_ingest(cfg: IngestConfig) -> None:
         _schedule_loop(master),
         _lifecycle_loop(master),
         _publish_coalesce_loop(master),
-        _hot_registry_refresh_loop(),
+        _hot_registry_refresh_loop(master),
         _ws_loop(master),
         _hot_ob_ws_loop(master),
     ]

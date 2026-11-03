@@ -92,6 +92,46 @@ def is_hot_orderbook_ticker(market_ticker: str) -> bool:
     return False
 
 
+def priority_ob_ingest_armed_only() -> bool:
+    """Dedicated priority OB WS only for armed/watched tickers (default on).
+
+    When on, all other crypto 15m stay on the main socket for flush/coalesce,
+    so UT-armed books do not share a serial recv loop with the full crypto set.
+    """
+    raw = os.getenv("MARKET_WATCHDOG_PRIORITY_OB_ARMED_ONLY", "1").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def is_priority_ob_ingest_ticker(market_ticker: str) -> bool:
+    """Tickers that belong on the dedicated low-latency Kalshi OB websocket."""
+    mt = str(market_ticker or "").strip()
+    if not mt:
+        return False
+    if not priority_ob_ingest_armed_only():
+        # Legacy: same membership as hot flush (includes all crypto 15m).
+        return is_hot_orderbook_ticker(mt)
+    refresh_hot_tickers_if_stale()
+    with _lock:
+        if mt in _allowlist:
+            return True
+        if _watched and mt == _watched:
+            return True
+        if mt in _ut_watched:
+            return True
+    return False
+
+
+def priority_ob_ingest_tickers() -> set[str]:
+    """Current armed/watched/allowlist set for priority OB ingest."""
+    refresh_hot_tickers_if_stale(force=True)
+    with _lock:
+        out = set(_allowlist)
+        out |= set(_ut_watched)
+        if _watched:
+            out.add(_watched)
+        return out
+
+
 def symbol_market_from_orderbook_ticker(market_ticker: str) -> tuple[Optional[str], Optional[str]]:
     """Map Kalshi orderbook ticker to (symbol, market) for tradeflow wake."""
     mt = str(market_ticker or "").strip().upper()

@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import os
-
 import pytest
 
+from backend.core import orderbook_hot_publish_registry as reg
 from backend.core.market_watchdog.venues.kalshi import ws_ingest as wi
 
 
@@ -16,26 +15,45 @@ def test_priority_ob_ws_enabled_default(monkeypatch: pytest.MonkeyPatch) -> None
     assert wi.priority_ob_ws_enabled() is False
 
 
-def test_priority_ob_tickers_selects_hot_crypto(
+def test_priority_ob_tickers_armed_only_not_all_crypto(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setenv("MARKET_WATCHDOG_HOT_TICKER_FLUSH", "1")
     monkeypatch.setenv("MARKET_WATCHDOG_HOT_CRYPTO_15M", "1")
+    monkeypatch.setenv("MARKET_WATCHDOG_PRIORITY_OB_ARMED_ONLY", "1")
+    monkeypatch.setattr(
+        reg,
+        "refresh_hot_tickers_if_stale",
+        lambda force=False: None,
+    )
+    monkeypatch.setattr(reg, "_ut_watched", {"KXBTC15M-26NOV022300-00"})
+    monkeypatch.setattr(reg, "_watched", None)
+    monkeypatch.setattr(reg, "_allowlist", set())
+
     want = {
         "KXBTC15M-26NOV022300-00",
         "KXETH15M-26NOV022300-00",
         "KXGOLD15M-26NOV022300-00",
-        "KXSILVER15M-26NOV022300-00",
+    }
+    got = wi._priority_ob_tickers(want)
+    assert got == {"KXBTC15M-26NOV022300-00"}
+
+
+def test_priority_ob_tickers_legacy_all_hot_crypto(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("MARKET_WATCHDOG_HOT_TICKER_FLUSH", "1")
+    monkeypatch.setenv("MARKET_WATCHDOG_HOT_CRYPTO_15M", "1")
+    monkeypatch.setenv("MARKET_WATCHDOG_PRIORITY_OB_ARMED_ONLY", "0")
+    want = {
+        "KXBTC15M-26NOV022300-00",
+        "KXETH15M-26NOV022300-00",
+        "KXGOLD15M-26NOV022300-00",
     }
     got = wi._priority_ob_tickers(want)
     assert got == {
         "KXBTC15M-26NOV022300-00",
         "KXETH15M-26NOV022300-00",
-    }
-    cold = want - got
-    assert cold == {
-        "KXGOLD15M-26NOV022300-00",
-        "KXSILVER15M-26NOV022300-00",
     }
 
 
