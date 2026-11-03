@@ -1043,8 +1043,9 @@ def _flush_orderbook_tickers_sync(
         published.append((mt, payload))
     if published:
         pipe.execute()
+    # Publish live_state hints BEFORE UI prebuild. Prebuild rebuilds a full WS JSON
+    # blob and must not delay UT/crypto stream consumers on the hot flush path.
     for mt, payload in published:
-        _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
         hint: dict[str, Any] = {
             "kind": "orderbook",
             "market_ticker": mt,
@@ -1062,6 +1063,8 @@ def _flush_orderbook_tickers_sync(
             hint["yes"] = payload.get("yes") or {}
             hint["no"] = payload.get("no") or {}
         _redis_publish_push(hint)
+    for mt, _payload in published:
+        _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
 
 
 def _flush_ticker_tickers_sync(
@@ -1474,7 +1477,8 @@ def _apply_snapshot(
     publish: bool = True,
     envelope: Optional[dict[str, Any]] = None,
     t_ws_recv_ms: Optional[int] = None,
-) -> None:
+) -> Optional[dict[str, Any]]:
+    """Apply snapshot under master.lock. Returns cycle-hot enqueue args (caller runs off-lock)."""
     yes, no = _parse_snapshot(msg)
     b = _book(master, mt)
     b["yes"], b["no"] = yes, no
@@ -1490,11 +1494,41 @@ def _apply_snapshot(
     if publish:
         _publish_book(master, mt)
     _emit_event("orderbook_snapshot", market_ticker=mt, seq=seq)
-    try:
-        from backend.core.cycle_hot_tables import enqueue_snapshot
+    reason = "resync" if int(b.get("resync_count") or 0) > 0 else "snapshot"
+    return {
+        "kind": "snapshot",
+        "market_ticker": mt,
+        "yes": yes,
+        "no": no,
+        "seq": seq,
+        "reason": reason,
+    }
 
-        reason = "resync" if int(b.get("resync_count") or 0) > 0 else "snapshot"
-        enqueue_snapshot(mt, yes=yes, no=no, seq=seq, reason=reason)
+
+def _enqueue_cycle_ob(job: Optional[dict[str, Any]]) -> None:
+    """Cycle-hot PG enqueue — never call while holding master.lock."""
+    if not job:
+        return
+    try:
+        from backend.core.cycle_hot_tables import enqueue_delta, enqueue_snapshot
+
+        kind = job.get("kind")
+        if kind == "snapshot":
+            enqueue_snapshot(
+                job["market_ticker"],
+                yes=job["yes"],
+                no=job["no"],
+                seq=job.get("seq"),
+                reason=str(job.get("reason") or "snapshot"),
+            )
+        elif kind == "delta":
+            enqueue_delta(
+                job["market_ticker"],
+                side=job["side"],
+                price=job["price"],
+                delta=job["delta"],
+                seq=job.get("seq"),
+            )
     except Exception:
         pass
 
@@ -1532,7 +1566,37 @@ def _consume_ob_channel_seq(master: KalshiMarketWsMaster, seq: Any) -> tuple[str
     return "apply", seq_i
 
 
-def _schedule_channel_resync(master: KalshiMarketWsMaster, reason: str) -> None:
+def _periodic_resync_tickers(master: KalshiMarketWsMaster) -> list[str]:
+    """Subset for periodic health snapshots — avoid full-universe get_snapshot storms.
+
+    Prefer crypto/hot books plus any subscribed book with no recent apply. Seq-gap
+    resync still targets the single ticker that saw the hole.
+    """
+    from backend.core.orderbook_hot_publish_registry import (
+        is_crypto_15m_orderbook_ticker,
+        is_hot_orderbook_ticker,
+    )
+
+    now_mono = time.monotonic()
+    stale_sec = float(os.getenv("MARKET_WATCHDOG_PERIODIC_RESYNC_STALE_SEC", "30"))
+    out: set[str] = set()
+    for mt in master.orderbook_subscribed:
+        if is_hot_orderbook_ticker(mt) or is_crypto_15m_orderbook_ticker(mt):
+            out.add(mt)
+            continue
+        b = master.books.get(mt) or {}
+        last = float(b.get("last_book_mono") or 0.0)
+        if last <= 0.0 or (now_mono - last) >= stale_sec:
+            out.add(mt)
+    return sorted(out)
+
+
+def _schedule_channel_resync(
+    master: KalshiMarketWsMaster,
+    reason: str,
+    *,
+    tickers: Optional[list[str]] = None,
+) -> None:
     now = time.monotonic()
     if master.resync_in_progress:
         return
@@ -1546,7 +1610,12 @@ def _schedule_channel_resync(master: KalshiMarketWsMaster, reason: str) -> None:
     master.channel_resync_debounce_until = now + CHANNEL_RESYNC_DEBOUNCE_SEC
     master.channel_resync_last_mono = now
     master.channel_resync_count += 1
-    tickers = sorted(master.orderbook_subscribed)
+    if tickers is None:
+        if reason == "periodic":
+            tickers = _periodic_resync_tickers(master)
+        else:
+            tickers = sorted(master.orderbook_subscribed)
+    tickers = [t for t in tickers if t in master.orderbook_subscribed]
     if tickers:
         _queue_resync(master, tickers, reason)
 
@@ -1561,13 +1630,14 @@ def _apply_delta(
     publish: bool = True,
     envelope: Optional[dict[str, Any]] = None,
     t_ws_recv_ms: Optional[int] = None,
-) -> None:
+) -> Optional[dict[str, Any]]:
+    """Apply delta under master.lock. Returns cycle-hot enqueue args (caller runs off-lock)."""
     b = _book(master, mt)
     if not b["valid"]:
-        return
+        return None
     side = str(msg.get("side") or "").lower()
     if side not in ("yes", "no"):
-        return
+        return None
     price = str(_dec(msg["price_dollars"]).quantize(Decimal("0.000001")))
     delta = _dec(msg.get("delta_fp"))
     cur = _dec(b[side].get(price, "0"))
@@ -1582,12 +1652,14 @@ def _apply_delta(
     _stamp_book_from_venue(b, msg, envelope, t_ws_recv_ms=t_ws_recv_ms)
     if publish:
         _publish_book(master, mt)
-    try:
-        from backend.core.cycle_hot_tables import enqueue_delta
-
-        enqueue_delta(mt, side=side, price=price, delta=delta, seq=seq)
-    except Exception:
-        pass
+    return {
+        "kind": "delta",
+        "market_ticker": mt,
+        "side": side,
+        "price": price,
+        "delta": delta,
+        "seq": seq,
+    }
 
 
 def _extract_market_result(msg: dict[str, Any]) -> Optional[str]:
@@ -2345,7 +2417,11 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
             now_mono = time.monotonic()
             async with master.lock:
                 master.last_trade_mono_by_ticker[mt] = now_mono
-            _publish_public_trade(master, mt, msg)
+            # Off the WS loop: sync Redis for tape must not stall crypto OB apply.
+            asyncio.create_task(
+                asyncio.to_thread(_publish_public_trade, master, mt, msg),
+                name=f"public-trade-{mt[:24]}",
+            )
             _emit_event("trade", market_ticker=mt)
         return
 
@@ -2376,6 +2452,7 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
 
     t_ws_recv_ms = int(time.time() * 1000)
     ob_dirty_mt: Optional[str] = None
+    cycle_ob_job: Optional[dict[str, Any]] = None
     async with master.lock:
         msg = data.get("msg") or {}
         mt = str(msg.get("market_ticker") or "").strip()
@@ -2385,7 +2462,7 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
 
         if dtype == "orderbook_snapshot":
             seq = int(data["seq"]) if data.get("seq") is not None else None
-            _apply_snapshot(
+            cycle_ob_job = _apply_snapshot(
                 master,
                 mt,
                 msg,
@@ -2403,7 +2480,7 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 _invalidate_book(master, mt, f"seq_gap_{master.ob_channel_last_seq}", emit_event=False)
                 _queue_resync(master, [mt], "seq_gap")
             elif action == "apply":
-                _apply_delta(
+                cycle_ob_job = _apply_delta(
                     master,
                     mt,
                     msg,
@@ -2415,6 +2492,9 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 )
                 _mark_ob_dirty(master, mt)
                 ob_dirty_mt = mt
+
+    # Cycle-hot enqueue after lock so PG/queue bookkeeping cannot stall OB apply.
+    _enqueue_cycle_ob(cycle_ob_job)
 
     if ob_dirty_mt:
         from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker

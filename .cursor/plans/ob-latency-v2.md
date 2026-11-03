@@ -4,9 +4,7 @@
 
 **Baseline:** `db278cb9` (prod rollback). Branch: `ver4/ob-latency-v2`.
 
-**Status:** in progress — Phase 1 code on branch (not deployed)
-
-**Phase 1 landed (local):** UT stream fire (`e016ab22`), always-hot crypto + inline hints (`13451803`), stamp clamp (`ee6e927e`). Dual Kalshi OB socket **not** included.
+**Status:** Phase 1 on branch + prod (747aae6a). Phase 2 implemented locally (not deployed).
 
 **Deploy:** local + tests only until owner explicitly says deploy.
 
@@ -41,7 +39,7 @@ Biggest controllable gaps:
 
 ## Phased plan
 
-### Phase 1 — single socket, cut agent + flush waste (do first)
+### Phase 1 — single socket, cut agent + flush waste (done)
 
 1. **Armed crypto → always-hot flush** via `orderbook_hot_publish_registry` (UT-armed / watch / allowlist). No second WS.
 2. **UT stream fire path:** OB hint → cheap in-memory/cached touch → place once; timer loop owns DB/REST/fills/rollover housekeeping.
@@ -49,11 +47,15 @@ Biggest controllable gaps:
 4. **Stamp hygiene:** clamp stale venue/sending vs recv (log truth only).
 5. **Rollover soak tests:** ±12s around quarter; no prolonged miss; no channel-wide resync storm from our changes.
 
-### Phase 2 — ingest loop hygiene (only if Phase 1 measured gap remains)
+### Phase 2 — ingest loop hygiene (implemented locally)
 
-1. Reduce lock hold time on apply path; keep Redis flush on `to_thread`.
-2. Narrow channel resync to affected tickers where Kalshi semantics allow.
-3. Shed non-essential sync work off OB apply (UI prebuild, etc.) carefully.
+1. **Cycle-hot enqueue off `master.lock`:** `_apply_delta` / `_apply_snapshot` return jobs; `_enqueue_cycle_ob` runs after lock release.
+2. **Narrow periodic resync:** `_periodic_resync_tickers` — hot/crypto + stale (≥ `MARKET_WATCHDOG_PERIODIC_RESYNC_STALE_SEC`, default 30s). Seq-gap still single-ticker. Non-periodic reasons keep full subscribed set.
+3. **Shed sync work off OB flush / WS loop:**
+   - `_flush_orderbook_tickers_sync`: publish live_state hints **before** UI prebuild.
+   - Trade Redis (`_publish_public_trade`) via `asyncio.to_thread` off the WS loop.
+
+Tests: `tests/unit/test_ws_ingest_phase2_hygiene.py`.
 
 ### Phase 3 — dual socket (explicit gate; default off)
 
@@ -63,12 +65,13 @@ Only if Phase 1–2 leave proven shared-socket queueing ≥ tens of ms p50 on A/
 
 ## Completion criteria
 
-- [ ] Armed crypto Redis levels update without ~50ms coalesce gap (unit + local probe)
-- [ ] Rail cross → place does not wait on DB/REST tick (unit)
-- [ ] No double-place; cancel/fill/rollover still correct (unit)
+- [x] Armed crypto Redis levels update without ~50ms coalesce gap (unit + local probe)
+- [x] Rail cross → place does not wait on DB/REST tick (unit)
+- [x] No double-place; cancel/fill/rollover still correct (unit)
 - [ ] Rollover soak: no feed stall window we introduced
 - [ ] Latency stage logs: detect→send, source_age, redis age — documented before any prod ask
-- [ ] **No prod deploy** without explicit owner instruction
+- [ ] Phase 2 measured on prod after explicit deploy (source_age / flush lag)
+- [x] **No prod deploy** without explicit owner instruction
 
 ## Blockers / decisions
 
