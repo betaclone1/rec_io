@@ -970,17 +970,22 @@ def _stamp_book_from_venue(
     b["last_book_wall_at"] = now_wall
     b["t_apply_ms"] = t_apply_ms
     b["t_ws_recv_ms"] = recv_ms
-    # Deltas often omit venue/sending stamps. Never keep a minutes-old snapshot
-    # sending_ts beside a fresh t_ws_recv (false multi-second source_age / probes).
-    if venue_ts_ms is not None:
+    # Deltas often omit stamps, or reuse a stale connection/snapshot sending_ts.
+    # Never keep a multi-second-old sending/venue stamp beside a fresh recv.
+    if venue_ts_ms is not None and (recv_ms - venue_ts_ms) <= 250:
         b["venue_ts_ms"] = venue_ts_ms
-    if sending_ts_ms is not None:
+    else:
+        b["venue_ts_ms"] = recv_ms
+    if sending_ts_ms is not None and (recv_ms - sending_ts_ms) <= 250:
         b["sending_ts_ms"] = sending_ts_ms
     else:
         b["sending_ts_ms"] = recv_ms
     b["clock"] = clock
-    # Event time for consumers/probes: venue when present, else local apply.
-    b["ts_ms"] = venue_ts_ms if venue_ts_ms is not None else t_apply_ms
+    # Event time for consumers/probes: fresh venue when sane, else local apply.
+    if venue_ts_ms is not None and (recv_ms - venue_ts_ms) <= 250:
+        b["ts_ms"] = venue_ts_ms
+    else:
+        b["ts_ms"] = t_apply_ms
 
 
 def _parse_snapshot(msg: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
