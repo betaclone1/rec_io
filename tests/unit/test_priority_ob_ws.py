@@ -8,11 +8,20 @@ from backend.core import orderbook_hot_publish_registry as reg
 from backend.core.market_watchdog.venues.kalshi import ws_ingest as wi
 
 
-def test_priority_ob_ws_enabled_default(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_priority_ob_ws_enabled_default_off(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MARKET_WATCHDOG_PRIORITY_OB_WS", raising=False)
-    assert wi.priority_ob_ws_enabled() is True
-    monkeypatch.setenv("MARKET_WATCHDOG_PRIORITY_OB_WS", "0")
     assert wi.priority_ob_ws_enabled() is False
+    monkeypatch.setenv("MARKET_WATCHDOG_PRIORITY_OB_WS", "1")
+    assert wi.priority_ob_ws_enabled() is True
+
+
+def test_priority_ob_isolated_thread_default_off(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("MARKET_WATCHDOG_PRIORITY_OB_ISOLATED_THREAD", raising=False)
+    assert wi.priority_ob_isolated_thread_enabled() is False
+    monkeypatch.setenv("MARKET_WATCHDOG_PRIORITY_OB_ISOLATED_THREAD", "1")
+    assert wi.priority_ob_isolated_thread_enabled() is True
 
 
 def test_priority_ob_tickers_armed_only_not_all_crypto(

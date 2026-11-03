@@ -77,6 +77,18 @@ Entry/exit timestamps in parity output are first-class. Large `|entry Δ|` is a 
 
 **Worked example (2026-07-28, trade 31309 / 15m HTC):** package first flicker at 10:20:36 during/after CFB BRTI lag+reconnect; continuous gate window from ~10:20:56; live AES trigger 10:21:08. Classified as feed/ladder freshness (+ secondary unified-AES cadence), not “ignore the flag.”
 
+### 2.4 Upper Tail live latency (production baseline for new backtests)
+
+Upper Tail is **not** AES. Live entry is `upper_tail_agent_*` + Kalshi orderbook (crypto) or tape (commodities). **Authoritative live path + measured prod latency:** [`docs/UPPER_TAIL_STRATEGY.md`](./UPPER_TAIL_STRATEGY.md) § *Production crypto hot path (latency)*.
+
+**Latency initiative (2026-11-02) and incident (2026-11-03):**
+
+- Pre-patch UT crypto filled ~8–16 trades/hour. Isolated priority-OB **thread** + cross-event-loop `asyncio.Lock` **broke** OB ingest and collapsed fills; see `UPPER_TAIL_STRATEGY.md` § production crypto hot path.
+- **Current safe default:** priority OB WS **off** (single main socket). Do not assume prod still runs the isolated-thread stack.
+- When the feed is healthy, ms-scale awareness + ~20–30ms place RTT is the right **target** model — but **2026-11-03 post-break hours are not a valid fill-rate baseline** (pipeline defect, not market regime).
+- Commodities stay **`path=slow`** (tape); different latency model.
+- When classifying live vs replay misses for UT crypto: check whether the sample is before/after this ingest stack (and whether priority OB was enabled) before calling delay “inherent venue lag.”
+
 ---
 
 ## 3. Time-to-contract (TTC) — units (critical)
@@ -273,6 +285,7 @@ Loaded in **`get_auto_entry_settings()`** (representative query on `users.monito
 | `scripts/backtest/cycle_replay_parity.py` | Side-by-side replay vs live `trades_*` (times first; see §2.3). |
 | **`docs/BACKTESTING.md`** | **This document — initiative source of truth.** |
 | **`docs/BACKTEST_PRICE_ESTIMATOR.md`** | **Peer pricing methodology, holdout protocol, pipeline notes.** |
+| **`docs/UPPER_TAIL_STRATEGY.md`** | Live Upper Tail path; **§ production crypto hot path (latency)** — current-prod baseline for UT backtests (§2.4). |
 
 ---
 
@@ -299,3 +312,4 @@ When adding a new **supervisor-driven** dimension:
 | 2026-04-16 | §5.6: **compounding** bankroll across markets (default); **`--persist-trades`** → `backtest.grid_sweep_trades`; `grid_sweep_trades.py`, `fetch_monitor_trade_meta`. |
 | 2026-03-21 | §2.1 + file map + contributing: AES changes must be reflected in backtest scripts; documented `auto_entry_htc_gates` / `htc_aes_replay`. |
 | 2026-07-28 | §2.3: cycle packages as live-workflow diagnostics; investigate replay-vs-live entry Δ before any simulated lag. |
+| 2026-11-02 | §2.4: Upper Tail prod crypto hot-path latency baseline (`ee6e927e` priority OB + isolated thread + stamp clamp); link `UPPER_TAIL_STRATEGY.md`. Do not model multi-second OB lag for current-prod UT crypto backtests. |

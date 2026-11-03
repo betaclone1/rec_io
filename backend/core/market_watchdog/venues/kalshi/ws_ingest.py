@@ -1551,8 +1551,24 @@ def _maybe_register_cycle_hot(market_ticker: str) -> None:
 
 
 def priority_ob_ws_enabled() -> bool:
-    """Second Kalshi WS for hot/crypto orderbooks (default on)."""
-    raw = os.getenv("MARKET_WATCHDOG_PRIORITY_OB_WS", "1").strip().lower()
+    """Second Kalshi WS for hot/crypto orderbooks.
+
+    Default **off**. The isolated-thread priority path bound ``asyncio.Lock`` across
+    event loops, wedged main ingest, and collapsed UT fills. Keep disabled until the
+    same-loop path is proven; opt in with ``MARKET_WATCHDOG_PRIORITY_OB_WS=1``.
+    """
+    raw = os.getenv("MARKET_WATCHDOG_PRIORITY_OB_WS", "0").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def priority_ob_isolated_thread_enabled() -> bool:
+    """Run priority OB on a dedicated OS thread (default **off**).
+
+    Cross-thread ``asyncio.Lock`` use corrupts the main loop. When priority OB is
+    enabled, it must share the main event loop unless this is explicitly forced on
+    after lock architecture is replaced with thread-safe primitives.
+    """
+    raw = os.getenv("MARKET_WATCHDOG_PRIORITY_OB_ISOLATED_THREAD", "0").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
 
@@ -2121,8 +2137,11 @@ async def _hot_ob_subscription_sync(
         return
     if master.hot_ob_ws_send is None:
         return
+    # Never acquire ``master.lock`` here: this coroutine may run on the priority
+    # OB loop/thread. Binding that asyncio.Lock to the hot loop wedges the main
+    # ingest path (lifecycle, main OB, coalesce) with "bound to a different event loop".
     if want_ob is None:
-        async with master.lock:
+        async with master.hot_ob_lock:
             _, want_ob, _, _ = _lifecycle_sets(master, time.time())
     want_hot = _priority_ob_tickers(want_ob)
     sock = master.hot_ob_ws_send
@@ -2181,7 +2200,7 @@ async def _hot_ob_subscription_sync(
                 ws=sock,
             )
 
-    async with master.lock:
+    async with master.hot_ob_lock:
         master.hot_ob_ws_markets = want_hot
         # Logical universe already set by main sync; ensure union covers hot.
         master.orderbook_subscribed |= want_hot
@@ -2846,7 +2865,19 @@ async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
 
 
 def _spawn_priority_ob_thread(master: KalshiMarketWsMaster) -> None:
-    """Run priority OB WS on a dedicated thread so main WS cannot starve it."""
+    """Start priority OB WS.
+
+    Default: same event loop as main (safe). Isolated thread is opt-in only —
+    it previously bound ``asyncio.Lock`` across loops and broke ingest.
+    """
+    if not priority_ob_ws_enabled():
+        log.info("priority OB WS disabled (MARKET_WATCHDOG_PRIORITY_OB_WS)")
+        return
+    if not priority_ob_isolated_thread_enabled():
+        master.hot_ob_loop = master.main_loop
+        asyncio.create_task(_hot_ob_ws_loop(master), name="kalshi-priority-ob")
+        log.info("priority OB WS started on main event loop")
+        return
 
     def _run() -> None:
         loop = asyncio.new_event_loop()
@@ -2868,7 +2899,7 @@ def _spawn_priority_ob_thread(master: KalshiMarketWsMaster) -> None:
     threading.Thread(
         target=_run, name="kalshi-priority-ob", daemon=True
     ).start()
-    log.info("priority OB thread started")
+    log.info("priority OB isolated thread started (MARKET_WATCHDOG_PRIORITY_OB_ISOLATED_THREAD=1)")
 
 
 def _bind_cfg_globals(cfg: IngestConfig) -> None:
