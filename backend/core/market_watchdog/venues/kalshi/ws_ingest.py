@@ -965,14 +965,19 @@ def _stamp_book_from_venue(
     venue_ts_ms = _optional_int_ms(msg.get("ts_ms"))
     sending_ts_ms = _optional_int_ms((envelope or {}).get("sending_ts_ms"))
     clock = msg.get("clock")
+    recv_ms = int(t_ws_recv_ms) if t_ws_recv_ms is not None else t_apply_ms
     b["last_book_mono"] = time.monotonic()
     b["last_book_wall_at"] = now_wall
     b["t_apply_ms"] = t_apply_ms
-    b["t_ws_recv_ms"] = (
-        int(t_ws_recv_ms) if t_ws_recv_ms is not None else t_apply_ms
-    )
-    b["venue_ts_ms"] = venue_ts_ms
-    b["sending_ts_ms"] = sending_ts_ms
+    b["t_ws_recv_ms"] = recv_ms
+    # Deltas often omit venue/sending stamps. Never keep a minutes-old snapshot
+    # sending_ts beside a fresh t_ws_recv (false multi-second source_age / probes).
+    if venue_ts_ms is not None:
+        b["venue_ts_ms"] = venue_ts_ms
+    if sending_ts_ms is not None:
+        b["sending_ts_ms"] = sending_ts_ms
+    else:
+        b["sending_ts_ms"] = recv_ms
     b["clock"] = clock
     # Event time for consumers/probes: venue when present, else local apply.
     b["ts_ms"] = venue_ts_ms if venue_ts_ms is not None else t_apply_ms
@@ -2795,8 +2800,7 @@ async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
                     "priority_ob_ws_connected",
                     hot_ob_count=len(master.hot_ob_ws_markets),
                 )
-                if master.hot_ob_ws_markets and master.hot_orderbook_sid is not None:
-                    await _get_snapshot(master, sorted(master.hot_ob_ws_markets))
+                snapshot_sent = False
                 async for raw in ws:
                     t_recv_ms = int(time.time() * 1000)
                     if isinstance(raw, bytes):
@@ -2804,6 +2808,15 @@ async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
                     await _on_ws_message(
                         master, raw, conn="hot", t_recv_ms=t_recv_ms
                     )
+                    if (
+                        not snapshot_sent
+                        and master.hot_orderbook_sid is not None
+                        and master.hot_ob_ws_markets
+                    ):
+                        snapshot_sent = True
+                        await _get_snapshot(
+                            master, sorted(master.hot_ob_ws_markets)
+                        )
         except asyncio.CancelledError:
             raise
         except Exception as e:

@@ -343,49 +343,76 @@ async def _minimal_ws_task(state: ProbeState) -> None:
             state.probe_n += 1
 
 
+def _match_row(probe: ProbeSample, watch: WatchSample) -> MatchRow:
+    snd = probe.sending_ts_ms
+    venue = probe.venue_ts_ms
+    if venue is None:
+        venue = watch.venue_ts_ms
+    send_to_probe = float(probe.t_raw_recv_ms - snd)
+    # Prefer wall-clock recv skew when Kalshi omits/stales sending_ts on deltas.
+    if watch.t_ws_recv_ms is not None:
+        send_to_watch = float(watch.t_ws_recv_ms - snd)
+        extra = float(watch.t_ws_recv_ms - probe.t_raw_recv_ms)
+    else:
+        send_to_watch = None
+        extra = None
+    send_to_redis = (
+        float(watch.redis_written_ms - snd)
+        if watch.redis_written_ms is not None
+        else None
+    )
+    venue_to_probe = (
+        float(probe.t_raw_recv_ms - venue) if venue is not None else None
+    )
+    apply_to_redis = None
+    if watch.t_apply_ms is not None and watch.redis_written_ms is not None:
+        apply_to_redis = float(watch.redis_written_ms - watch.t_apply_ms)
+    return MatchRow(
+        market_ticker=probe.market_ticker,
+        sending_ts_ms=snd,
+        seq_probe=probe.seq,
+        seq_watch=watch.seq,
+        sending_to_probe_raw_ms=send_to_probe,
+        sending_to_watch_ws_ms=send_to_watch,
+        sending_to_redis_ms=send_to_redis,
+        venue_to_probe_raw_ms=venue_to_probe,
+        watchdog_extra_ms=extra,
+        apply_to_redis_ms=apply_to_redis,
+        probe_json_ms=float(probe.t_after_json_ms - probe.t_raw_recv_ms),
+    )
+
+
 def _build_matches(state: ProbeState) -> List[MatchRow]:
     rows: List[MatchRow] = []
+    used_watch: set[Key] = set()
+    # 1) Exact Kalshi sending_ts join (best when venue includes it).
     for key, probe in state.probe_by_key.items():
         watch = state.watch_by_key.get(key)
         if not watch:
             continue
-        snd = probe.sending_ts_ms
-        venue = probe.venue_ts_ms
-        if venue is None:
-            venue = watch.venue_ts_ms
-        send_to_probe = float(probe.t_raw_recv_ms - snd)
-        send_to_watch = (
-            float(watch.t_ws_recv_ms - snd) if watch.t_ws_recv_ms is not None else None
-        )
-        send_to_redis = (
-            float(watch.redis_written_ms - snd)
-            if watch.redis_written_ms is not None
-            else None
-        )
-        venue_to_probe = (
-            float(probe.t_raw_recv_ms - venue) if venue is not None else None
-        )
-        extra = None
-        if send_to_watch is not None:
-            extra = send_to_watch - send_to_probe
-        apply_to_redis = None
-        if watch.t_apply_ms is not None and watch.redis_written_ms is not None:
-            apply_to_redis = float(watch.redis_written_ms - watch.t_apply_ms)
-        rows.append(
-            MatchRow(
-                market_ticker=probe.market_ticker,
-                sending_ts_ms=snd,
-                seq_probe=probe.seq,
-                seq_watch=watch.seq,
-                sending_to_probe_raw_ms=send_to_probe,
-                sending_to_watch_ws_ms=send_to_watch,
-                sending_to_redis_ms=send_to_redis,
-                venue_to_probe_raw_ms=venue_to_probe,
-                watchdog_extra_ms=extra,
-                apply_to_redis_ms=apply_to_redis,
-                probe_json_ms=float(probe.t_after_json_ms - probe.t_raw_recv_ms),
-            )
-        )
+        used_watch.add(key)
+        rows.append(_match_row(probe, watch))
+
+    # 2) Fallback: same ticker, nearest wall recv within 40ms (delta stamps omitted).
+    probes_by_mt: Dict[str, List[ProbeSample]] = defaultdict(list)
+    for probe in state.probe_by_key.values():
+        probes_by_mt[probe.market_ticker].append(probe)
+    for lst in probes_by_mt.values():
+        lst.sort(key=lambda p: p.t_raw_recv_ms)
+
+    for key, watch in state.watch_by_key.items():
+        if key in used_watch or watch.t_ws_recv_ms is None:
+            continue
+        best: Optional[ProbeSample] = None
+        best_abs = 40
+        for probe in probes_by_mt.get(watch.market_ticker) or []:
+            d = abs(probe.t_raw_recv_ms - watch.t_ws_recv_ms)
+            if d <= best_abs:
+                best_abs = d
+                best = probe
+        if best is None:
+            continue
+        rows.append(_match_row(best, watch))
     return rows
 
 
