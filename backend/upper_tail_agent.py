@@ -2,11 +2,14 @@
 Upper Tail agent — one GTC limit when the target rail is reached.
 
 Outside trade_executor. During the monitor time window:
-  - crypto (``full``) — Kalshi orderbook Redis touch (best bid/ask ≥ target)
-  - commodity / lean ``market`` — public trades tape print ≥ target
+  - crypto (``full``) — always-on orderbook stream consumer (touch ≥ rail → place)
+  - commodity / lean ``market`` — public trades tape print ≥ target (timer loop)
 Places a single GTC at the target on that side (``post_only`` off). Venue fill
 confirmation books into trade_manager. Paper monitors book when the trigger
 qualifies (no venue order).
+
+Crypto does not "wake" into a full tick: housekeeping is a timer loop; OB deltas
+are cheap per-ticker checks on an armed-cycle cache.
 """
 
 from __future__ import annotations
@@ -15,8 +18,8 @@ import logging
 import os
 import threading
 import time
-from dataclasses import dataclass
-from typing import Any, Dict, Optional
+from dataclasses import dataclass, field
+from typing import Any, Dict, List, Optional
 
 import requests
 import uvicorn
@@ -25,17 +28,23 @@ from fastapi import FastAPI
 from backend.core.aes_btc15m_lower_tail_cutout import resolve_monitor_limit_dollars
 from backend.core.kalshi_event_market_fetch import fetch_market_payload
 from backend.core.lower_tail_kalshi import (
+    build_place_body,
     cancel_order,
+    encode_place_body,
     extract_order_id,
     place_limit_gtc,
     v2_price_for_limit_side,
+    warm_kalshi_http,
 )
 from backend.core.lower_tail_open import (
     fetch_series_15m_markets,
     select_live_targets_by_symbol,
 )
 from backend.core.kalshi_public_trade_redis import load_public_trade_prints
-from backend.core.orderbook_strike_prices import resolve_orderbook_touch_with_meta
+from backend.core.orderbook_strike_prices import (
+    resolve_orderbook_touch_with_meta,
+    touch_dollars_from_orderbook_snapshot,
+)
 from backend.core.port_config import default_pool_user_number, get_port
 from backend.core.upper_tail import (
     STRATEGY_NAME,
@@ -49,6 +58,7 @@ from backend.core.upper_tail import (
     upper_tail_trigger_mode,
     ttc_in_entry_window,
 )
+from backend.core.upper_tail_orderbook_watch import set_upper_tail_orderbook_watch
 from backend.core.time_eastern import now_est
 from backend.trading_mode import effective_paper_trade
 
@@ -59,12 +69,18 @@ logging.basicConfig(
 log = logging.getLogger("upper_tail_agent")
 
 POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "0.25"))
+PLACE_FAIL_COOLDOWN_SEC = float(os.getenv("UPPER_TAIL_PLACE_FAIL_COOLDOWN_SEC", "2.0"))
 
 app = FastAPI(title="Upper Tail Agent")
 _wake = threading.Event()
 _lock = threading.Lock()
+_arm_lock = threading.Lock()
 _started_at = time.time()
 _prev_auto_trade_status: Dict[str, str] = {}
+# ticker → monitor_ids armed for crypto stream fire (timer rebuilds).
+_armed_by_ticker: Dict[str, List[str]] = {}
+_last_http_warm_mono = 0.0
+_HTTP_WARM_SEC = float(os.getenv("UPPER_TAIL_HTTP_WARM_SEC", "30"))
 
 
 def _user_no() -> str:
@@ -73,6 +89,16 @@ def _user_no() -> str:
 
 def _log(msg: str) -> None:
     log.info("[%s] %s", _user_no(), msg)
+
+
+@dataclass
+class _PreparedBodies:
+    """Prebuilt Kalshi bodies for both sides (side chosen at fire)."""
+
+    bid_price: str
+    ask_price: str
+    bid_body: bytes
+    ask_body: bytes
 
 
 @dataclass
@@ -93,11 +119,16 @@ class _Cycle:
     side: Optional[str] = None
     order_id: Optional[str] = None
     placed: bool = False
+    placing: bool = False
     done: bool = False
     trade_id: Optional[int] = None
     fill_sync_done: bool = False
     floor_fetch_mono: float = 0.0
     floor_miss_logged: bool = False
+    trigger_mode: Optional[str] = None
+    prepared: Optional[_PreparedBodies] = None
+    place_cooldown_until: float = 0.0
+    fire_lock: threading.Lock = field(default_factory=threading.Lock)
 
 
 _cycles: Dict[str, _Cycle] = {}
@@ -170,12 +201,52 @@ def _event_ts_to_unix_ms(raw: Any) -> Optional[float]:
         return None
 
 
-def _log_trigger(cy: _Cycle, hit: _TriggerHit, *, ttc: float) -> None:
+def _log_trigger(
+    cy: _Cycle, hit: _TriggerHit, *, ttc: float, path: str = "slow"
+) -> None:
     _log(
         f"TRIGGER monitor={cy.monitor_id} mode={hit.mode} side={hit.side} "
-        f"ticker={cy.ticker} source_age_ms={_ms(hit.source_age_ms)} "
+        f"ticker={cy.ticker} path={path} source_age_ms={_ms(hit.source_age_ms)} "
         f"source_ts_ms={_ms(hit.source_ts_ms, 0)} ttc={ttc:.1f}"
         + (f" {hit.detail}" if hit.detail else "")
+    )
+
+
+def _prepare_place_bodies(cy: _Cycle) -> Optional[_PreparedBodies]:
+    """Encode bid+ask GTC bodies for hot-path place (fresh client_order_ids)."""
+    try:
+        bid_price = v2_price_for_limit_side(side="bid", limit_dollars=cy.limit_px)
+        ask_price = v2_price_for_limit_side(side="ask", limit_dollars=cy.limit_px)
+    except ValueError as exc:
+        _log(f"prepare skip monitor={cy.monitor_id}: {exc}")
+        return None
+    bid_body = encode_place_body(
+        build_place_body(
+            ticker=cy.ticker,
+            side="bid",
+            price=bid_price,
+            count=cy.contracts,
+            subaccount=cy.subaccount,
+            post_only=False,
+            self_trade_prevention_type="taker_at_cross",
+        )
+    )
+    ask_body = encode_place_body(
+        build_place_body(
+            ticker=cy.ticker,
+            side="ask",
+            price=ask_price,
+            count=cy.contracts,
+            subaccount=cy.subaccount,
+            post_only=False,
+            self_trade_prevention_type="taker_at_cross",
+        )
+    )
+    return _PreparedBodies(
+        bid_price=bid_price,
+        ask_price=ask_price,
+        bid_body=bid_body,
+        ask_body=ask_body,
     )
 
 
@@ -365,14 +436,23 @@ def _book(cy: _Cycle, *, side: str, fill_qty: float) -> Optional[int]:
         return None
 
 
-def _place_live(cy: _Cycle, hit: _TriggerHit) -> bool:
+def _place_live(cy: _Cycle, hit: _TriggerHit, *, path: str = "slow") -> bool:
     side = hit.side
     book_side = "bid" if side == "yes" else "ask"
-    try:
-        v2_price_for_limit_side(side=book_side, limit_dollars=cy.limit_px)
-    except ValueError as exc:
-        _log(f"skip monitor={cy.monitor_id}: price map failed: {exc}")
-        return False
+    prep = cy.prepared
+    prebuilt_price = None
+    prebuilt_body = None
+    if prep is not None:
+        if side == "yes":
+            prebuilt_price, prebuilt_body = prep.bid_price, prep.bid_body
+        else:
+            prebuilt_price, prebuilt_body = prep.ask_price, prep.ask_body
+    else:
+        try:
+            v2_price_for_limit_side(side=book_side, limit_dollars=cy.limit_px)
+        except ValueError as exc:
+            _log(f"skip monitor={cy.monitor_id}: price map failed: {exc}")
+            return False
     res = place_limit_gtc(
         ticker=cy.ticker,
         side=book_side,
@@ -381,15 +461,19 @@ def _place_live(cy: _Cycle, hit: _TriggerHit) -> bool:
         subaccount=cy.subaccount,
         post_only=False,
         self_trade_prevention_type="taker_at_cross",
+        prebuilt_price=prebuilt_price,
+        prebuilt_body_bytes=prebuilt_body,
     )
     oid = extract_order_id(res.api_json if res else None)
     if not oid:
         detect_to_fail_ms = (
             (time.time() - hit.t_detect) * 1000.0 if hit.t_detect else None
         )
+        cy.place_cooldown_until = time.time() + PLACE_FAIL_COOLDOWN_SEC
+        cy.prepared = _prepare_place_bodies(cy)
         _log(
             f"place failed monitor={cy.monitor_id} side={side} ticker={cy.ticker} "
-            f"mode={hit.mode} detect_to_fail_ms={_ms(detect_to_fail_ms)} "
+            f"mode={hit.mode} path={path} detect_to_fail_ms={_ms(detect_to_fail_ms)} "
             f"source_age_ms={_ms(hit.source_age_ms)}"
         )
         return False
@@ -409,17 +493,163 @@ def _place_live(cy: _Cycle, hit: _TriggerHit) -> bool:
         kalshi_ts_ms = None
     detect_to_send_ms = (res.t_send - hit.t_detect) * 1000.0
     detect_to_ack_ms = (res.t_ack - hit.t_detect) * 1000.0
-    # PLACE already logs send_lag_prep_ms (sign→POST). detect_to_send covers
-    # everything from first local qualify observation through HTTP send.
     _log(
         f"GTC monitor={cy.monitor_id} ticker={cy.ticker} side={side} "
         f"oid={oid} @{cy.limit_px:.4f} ct={cy.contracts} sa={cy.subaccount} "
-        f"mode={hit.mode} source_age_ms={_ms(hit.source_age_ms)} "
+        f"mode={hit.mode} path={path} source_age_ms={_ms(hit.source_age_ms)} "
         f"detect_to_send_ms={_ms(detect_to_send_ms)} "
+        f"stream_to_send_ms={_ms(detect_to_send_ms)} "
         f"rtt_ms={_ms(res.rtt_ms)} detect_to_ack_ms={_ms(detect_to_ack_ms)} "
         f"fill_on_ack={fill_on_ack:.2f} kalshi_ts_ms={_ms(kalshi_ts_ms, 0)}"
     )
     return True
+
+
+def _fire_paper(cy: _Cycle, hit: _TriggerHit, *, path: str, ttc: float) -> None:
+    _log_trigger(cy, hit, ttc=ttc, path=path)
+    cy.side = hit.side
+    cy.order_id = f"paper_{hit.side}_{cy.monitor_id}"
+    _on_fill(cy, side=hit.side, qty=float(cy.contracts))
+    if cy.done:
+        cy.placed = True
+        cy.fill_sync_done = True
+
+
+def _try_fire_cycle(
+    cy: _Cycle,
+    hit: _TriggerHit,
+    *,
+    path: str,
+    ttc: float,
+) -> bool:
+    """Once-only fire under per-cycle lock. Returns True if this call owns the fire."""
+    with cy.fire_lock:
+        if cy.placed or cy.placing or cy.done:
+            return False
+        now = time.time()
+        if now < cy.place_cooldown_until:
+            return False
+        if not ttc_in_entry_window(
+            ttc=ttc, min_time=cy.min_time, max_time=cy.max_time
+        ):
+            return False
+        cy.placing = True
+    try:
+        if cy.paper:
+            _fire_paper(cy, hit, path=path, ttc=ttc)
+            return True
+        _log_trigger(cy, hit, ttc=ttc, path=path)
+        ok = _place_live(cy, hit, path=path)
+        return ok
+    finally:
+        with cy.fire_lock:
+            cy.placing = False
+
+
+def _hit_from_touch(
+    cy: _Cycle,
+    touch: Dict[str, str],
+    *,
+    t_detect: float,
+    source_age_ms: Optional[float],
+    source_ts_ms: Optional[float],
+) -> Optional[_TriggerHit]:
+    side = upper_tail_side_from_orderbook(
+        yes_ask=_parse_px(touch.get("yes_ask_dollars")),
+        no_ask=_parse_px(touch.get("no_ask_dollars")),
+        yes_bid=_parse_px(touch.get("yes_bid_dollars")),
+        no_bid=_parse_px(touch.get("no_bid_dollars")),
+        limit_px=cy.limit_px,
+    )
+    if not side:
+        return None
+    return _TriggerHit(
+        side=side,
+        mode=TRIGGER_ORDERBOOK,
+        t_detect=t_detect,
+        source_age_ms=source_age_ms,
+        source_ts_ms=source_ts_ms,
+        detail=(
+            f"yb={touch.get('yes_bid_dollars')} ya={touch.get('yes_ask_dollars')} "
+            f"nb={touch.get('no_bid_dollars')} na={touch.get('no_ask_dollars')}"
+        ),
+    )
+
+
+def _on_crypto_ob_stream(snap: Any) -> None:
+    """Always-on crypto stream: cheap touch check; place once on rail cross."""
+    t0 = time.time()
+    mt = str(getattr(snap, "market_ticker", "") or "").strip()
+    if not mt:
+        return
+    with _arm_lock:
+        mids = list(_armed_by_ticker.get(mt) or ())
+    if not mids:
+        return
+    touch = touch_dollars_from_orderbook_snapshot(
+        {
+            "valid": True,
+            "yes": getattr(snap, "yes", None) or {},
+            "no": getattr(snap, "no", None) or {},
+            "ts_ms": getattr(snap, "ts_ms", None),
+            "redis_written_ms": getattr(snap, "redis_written_ms", None),
+        }
+    )
+    if not touch:
+        return
+    recv_ms = getattr(snap, "received_ms", None)
+    rw_ms = getattr(snap, "redis_written_ms", None)
+    ts_ms = getattr(snap, "ts_ms", None)
+    src_ms = float(rw_ms) if rw_ms is not None else (
+        float(ts_ms) if ts_ms is not None else None
+    )
+    age_ms = None
+    if src_ms is not None and recv_ms is not None:
+        age_ms = max(0.0, float(recv_ms) - src_ms)
+    elif src_ms is not None:
+        age_ms = max(0.0, t0 * 1000.0 - src_ms)
+
+    for mid in mids:
+        cy = _cycles.get(mid)
+        if cy is None or cy.ticker != mt:
+            continue
+        if cy.placed or cy.done or cy.placing:
+            continue
+        hit = _hit_from_touch(
+            cy,
+            touch,
+            t_detect=t0,
+            source_age_ms=age_ms,
+            source_ts_ms=src_ms,
+        )
+        if not hit:
+            continue
+        ttc = cy.close_ts - t0
+        _try_fire_cycle(cy, hit, path="hot", ttc=ttc)
+
+
+def _rebuild_armed_index(now: float) -> None:
+    """Timer-only: index crypto cycles ready for stream fire + hot-flush watches."""
+    by_ticker: Dict[str, List[str]] = {}
+    for mid, cy in list(_cycles.items()):
+        if cy.placed or cy.done or cy.placing:
+            continue
+        mode = cy.trigger_mode or upper_tail_trigger_mode(cy.symbol)
+        cy.trigger_mode = mode
+        if mode != TRIGGER_ORDERBOOK:
+            continue
+        ttc = cy.close_ts - now
+        if not ttc_in_entry_window(
+            ttc=ttc, min_time=cy.min_time, max_time=cy.max_time
+        ):
+            continue
+        if cy.prepared is None and not cy.paper:
+            cy.prepared = _prepare_place_bodies(cy)
+        by_ticker.setdefault(cy.ticker, []).append(mid)
+    with _arm_lock:
+        global _armed_by_ticker
+        _armed_by_ticker = by_ticker
+    set_upper_tail_orderbook_watch(by_ticker.keys())
 
 
 def _qualifying_side_from_tape(cy: _Cycle) -> Optional[_TriggerHit]:
@@ -481,16 +711,15 @@ def _qualifying_side_from_orderbook(cy: _Cycle) -> Optional[_TriggerHit]:
     )
 
 
-def _qualifying_side(cy: _Cycle, *, now: float) -> Optional[_TriggerHit]:
-    """Fire on orderbook touch (crypto) or public tape print (commodity/lean)."""
+def _qualifying_side_tape_only(cy: _Cycle, *, now: float) -> Optional[_TriggerHit]:
+    """Timer-loop tape qualify (commodity/lean). Crypto OB fires on the stream."""
     now_ttc = cy.close_ts - now
     if not ttc_in_entry_window(ttc=now_ttc, min_time=cy.min_time, max_time=cy.max_time):
         return None
-    mode = upper_tail_trigger_mode(cy.symbol)
+    mode = cy.trigger_mode or upper_tail_trigger_mode(cy.symbol)
+    cy.trigger_mode = mode
     if mode == TRIGGER_TAPE:
         return _qualifying_side_from_tape(cy)
-    if mode == TRIGGER_ORDERBOOK:
-        return _qualifying_side_from_orderbook(cy)
     return None
 
 
@@ -572,8 +801,27 @@ def _tick() -> None:
                 min_time=_parse_int(mon.get("min_time")),
                 max_time=_parse_int(mon.get("max_time"), 900),
                 bankroll_cents=bankroll,
+                trigger_mode=upper_tail_trigger_mode(sym),
             )
             _cycles[mid] = cy
+
+        cy.trigger_mode = cy.trigger_mode or upper_tail_trigger_mode(sym)
+        # Keep limit/contracts/paper in sync from monitor row.
+        new_limit = float(limit_px)
+        new_sa = int(mon.get("subaccount") or 1)
+        if (
+            cy.limit_px != new_limit
+            or cy.contracts != contracts
+            or cy.subaccount != new_sa
+            or cy.ticker != tgt.market_ticker
+        ):
+            cy.prepared = None
+        cy.limit_px = new_limit
+        cy.contracts = contracts
+        cy.paper = paper
+        cy.subaccount = new_sa
+        cy.ticker = tgt.market_ticker
+        cy.close_ts = float(tgt.close_ts)
 
         if cy.floor_strike is None and tgt.floor_strike is not None:
             cy.floor_strike = float(tgt.floor_strike)
@@ -606,58 +854,59 @@ def _tick() -> None:
                     f"ttc={now_ttc:.1f} window={cy.min_time}-{cy.max_time}"
                 )
             continue
-        if cy.done or cy.placed or not in_window:
+        if cy.done or cy.placed or cy.placing or not in_window:
             continue
-        hit = _qualifying_side(cy, now=now)
+        # Crypto OB: stream consumer only. Timer fires tape/commodity.
+        if cy.trigger_mode == TRIGGER_ORDERBOOK:
+            continue
+        hit = _qualifying_side_tape_only(cy, now=now)
         if not hit:
             continue
-        _log_trigger(cy, hit, ttc=now_ttc)
-        if cy.paper:
-            cy.side = hit.side
-            cy.order_id = f"paper_{hit.side}_{mid}"
-            _on_fill(cy, side=hit.side, qty=float(cy.contracts))
-            if cy.done:
-                cy.placed = True
-                cy.fill_sync_done = True
-            continue
-        _place_live(cy, hit)
+        _try_fire_cycle(cy, hit, path="slow", ttc=now_ttc)
 
     for mid, cy in list(_cycles.items()):
         if mid not in active_ids:
             _drop_cycle(mid, cy, reason="monitor_inactive")
 
+    _rebuild_armed_index(now)
+    global _last_http_warm_mono
+    if time.monotonic() - _last_http_warm_mono >= _HTTP_WARM_SEC:
+        _last_http_warm_mono = time.monotonic()
+        try:
+            warm_kalshi_http()
+        except Exception as exc:
+            _log(f"http warm failed: {exc}")
+
 
 def _loop() -> None:
-    _log("main loop started")
+    _log("timer housekeeping loop started")
     while True:
         try:
             _tick()
         except Exception as exc:
             _log(f"tick error: {exc}")
+        # Tape can nudge early; crypto fire does not use this wake.
         _wake.wait(timeout=POLL_SEC)
         _wake.clear()
 
 
 def _start_listeners() -> None:
-    # Crypto: orderbook hints on live_state:updated.
+    # Crypto: always-on OB stream consumer (no full-tick wake).
     try:
         from backend.core.orderbook_hot_subscriber import start_orderbook_hot_subscriber
 
-        def _on_ob(_snap: Any) -> None:
-            _wake.set()
-
         ok = start_orderbook_hot_subscriber(
-            _on_ob,
-            thread_name="upper_tail_ob",
+            _on_crypto_ob_stream,
+            thread_name="upper_tail_ob_stream",
         )
         if ok:
-            _log("subscribed rec_io:live_state:updated (orderbook touch)")
+            _log("subscribed rec_io:live_state:updated (crypto OB stream)")
         else:
-            _log("orderbook listener not started: redis unavailable")
+            _log("orderbook stream not started: redis unavailable")
     except Exception as exc:
-        _log(f"orderbook listener not started: {exc}")
+        _log(f"orderbook stream not started: {exc}")
 
-    # Commodity / lean: public_trade (+ ticker) on market_watchdog :updated.
+    # Commodity / lean: public_trade nudges timer for tape qualify.
     try:
         from backend.core.live_state_cache import redis_client_optional
         from backend.core.market_watchdog.config import load_config
@@ -671,7 +920,7 @@ def _start_listeners() -> None:
                 return
             pubsub = r.pubsub()
             pubsub.subscribe(channel)
-            _log(f"subscribed {channel} (public tape)")
+            _log(f"subscribed {channel} (public tape → timer)")
             while True:
                 try:
                     msg = pubsub.get_message(
@@ -693,11 +942,16 @@ def _start_listeners() -> None:
 def health() -> Dict[str, Any]:
     with _lock:
         n = len(_cycles)
+    with _arm_lock:
+        armed_n = sum(len(v) for v in _armed_by_ticker.values())
+        armed_tickers = len(_armed_by_ticker)
     return {
         "status": "ok",
         "service": "upper_tail_agent",
         "user_no": _user_no(),
         "cycles": n,
+        "armed_cycles": armed_n,
+        "armed_tickers": armed_tickers,
         "uptime_sec": round(time.time() - _started_at, 1),
     }
 
