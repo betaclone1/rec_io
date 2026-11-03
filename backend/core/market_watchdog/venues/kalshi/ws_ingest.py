@@ -650,6 +650,11 @@ class KalshiMarketWsMaster:
     # Separate from ``lock`` so main-socket / lifecycle work cannot stall the
     # priority OB recv loop (that contention showed up as 300–600ms t_ws_recv).
     hot_ob_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Priority OB runs on its own thread/event loop so main WS sync work cannot
+    # starve armed-ticker recv (shared-loop still produced multi-second tails).
+    main_loop: Optional[asyncio.AbstractEventLoop] = None
+    hot_ob_loop: Optional[asyncio.AbstractEventLoop] = None
+    cmd_id_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def all_entries(self) -> list[MarketScheduleEntry]:
         rows: list[MarketScheduleEntry] = []
@@ -1823,8 +1828,29 @@ def _mark_ticker_dirty(master: KalshiMarketWsMaster, mt: str, msg: dict) -> None
 
 
 def _next_cmd(master: KalshiMarketWsMaster) -> int:
-    master.cmd_id += 1
-    return master.cmd_id
+    with master.cmd_id_lock:
+        master.cmd_id += 1
+        return master.cmd_id
+
+
+def _schedule_on_main_loop(master: KalshiMarketWsMaster, coro: Any) -> None:
+    loop = master.main_loop
+    if loop is None or not loop.is_running():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        log.debug("schedule_on_main_loop failed", exc_info=True)
+
+
+def _schedule_on_hot_ob_loop(master: KalshiMarketWsMaster, coro: Any) -> None:
+    loop = master.hot_ob_loop
+    if loop is None or not loop.is_running():
+        return
+    try:
+        asyncio.run_coroutine_threadsafe(coro, loop)
+    except Exception:
+        log.debug("schedule_on_hot_ob_loop failed", exc_info=True)
 
 
 async def _ws_json(
@@ -1848,6 +1874,18 @@ async def _get_snapshot(master: KalshiMarketWsMaster, tickers: list[str]) -> Non
     main_tickers = [
         t for t in tickers if t not in hot_set and main_sid is not None
     ]
+    # Hot snapshots must be sent from the priority OB loop/thread.
+    if hot_tickers:
+        try:
+            on_hot = (
+                master.hot_ob_loop is not None
+                and asyncio.get_running_loop() is master.hot_ob_loop
+            )
+        except RuntimeError:
+            on_hot = False
+        if not on_hot:
+            _schedule_on_hot_ob_loop(master, _get_snapshot(master, list(hot_tickers)))
+            hot_tickers = []
     for group, sid, sock in (
         (hot_tickers, hot_sid, master.hot_ob_ws_send),
         (main_tickers, main_sid, master.ws_send),
@@ -2049,8 +2087,15 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
             },
         )
 
+    # Hot-socket subscribe must run on the priority OB loop/thread — never await
+    # it on the main loop (cross-loop WS send + event-loop coupling).
     if master.hot_ob_ws_connected and priority_ob_ws_enabled():
-        await _hot_ob_subscription_sync(master, want_ob=want_ob)
+        if master.hot_ob_loop is not None and asyncio.get_running_loop() is master.hot_ob_loop:
+            await _hot_ob_subscription_sync(master, want_ob=want_ob)
+        else:
+            _schedule_on_hot_ob_loop(
+                master, _hot_ob_subscription_sync(master, want_ob=set(want_ob))
+            )
 
     if master.resync_queue:
         _schedule_resync_drain(master)
@@ -2641,10 +2686,15 @@ async def _on_ws_message(
                 ob_dirty_mt = mt
 
     if ob_dirty_mt:
-        from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+        if hot_conn:
+            # Inline flush on the priority thread — no shared event-loop task queue.
+            master.dirty_ob.discard(ob_dirty_mt)
+            _flush_dirty_redis_sync(master, [ob_dirty_mt], [])
+        else:
+            from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
 
-        if is_hot_orderbook_ticker(ob_dirty_mt):
-            _schedule_hot_ob_flush(master, ob_dirty_mt)
+            if is_hot_orderbook_ticker(ob_dirty_mt):
+                _schedule_hot_ob_flush(master, ob_dirty_mt)
 
 
 async def _ws_loop(master: KalshiMarketWsMaster) -> None:
@@ -2715,7 +2765,7 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
 
 
 async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
-    """Dedicated Kalshi WS for hot/crypto orderbooks (low-latency ingest path)."""
+    """Priority OB websocket — intended to run on a dedicated thread/event loop."""
     if not priority_ob_ws_enabled():
         log.info("priority OB WS disabled (MARKET_WATCHDOG_PRIORITY_OB_WS)")
         while True:
@@ -2736,21 +2786,17 @@ async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
                 master.hot_ob_channel_last_seq = None
                 master.hot_ob_ws_markets = set()
                 master.hot_ob_ws_connected = True
-                log.info("priority OB WS connected")
-                # Pull hot markets onto this socket; main sync drops them.
-                await _subscription_sync(master)
+                log.info("priority OB WS connected (isolated thread)")
+                # Subscribe armed tickers on this socket, then ask main to drop them.
+                await _hot_ob_subscription_sync(master)
+                _schedule_on_main_loop(master, _subscription_sync(master))
                 await asyncio.to_thread(_write_meta, master)
                 _emit_disturbance(
                     "priority_ob_ws_connected",
                     hot_ob_count=len(master.hot_ob_ws_markets),
                 )
-                if master.hot_ob_ws_markets:
-                    _queue_resync(
-                        master,
-                        sorted(master.hot_ob_ws_markets),
-                        "priority_ob_ws_connect",
-                    )
-                    _schedule_resync_drain(master)
+                if master.hot_ob_ws_markets and master.hot_orderbook_sid is not None:
+                    await _get_snapshot(master, sorted(master.hot_ob_ws_markets))
                 async for raw in ws:
                     t_recv_ms = int(time.time() * 1000)
                     if isinstance(raw, bytes):
@@ -2773,14 +2819,38 @@ async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
                 _invalidate_book(master, mt, "priority_ob_reconnect", emit_event=False)
             # Re-absorb priority markets onto the main socket if it is up.
             try:
-                if master.ws_connected and master.ws_send is not None:
-                    await _subscription_sync(master)
-                    if dropped:
-                        _queue_resync(master, dropped, "priority_ob_fallback_main")
-                        _schedule_resync_drain(master)
+                if dropped:
+                    _queue_resync(master, dropped, "priority_ob_fallback_main")
+                _schedule_on_main_loop(master, _subscription_sync(master))
             except Exception:
                 log.exception("priority OB fallback onto main failed")
             await asyncio.sleep(3)
+
+
+def _spawn_priority_ob_thread(master: KalshiMarketWsMaster) -> None:
+    """Run priority OB WS on a dedicated thread so main WS cannot starve it."""
+
+    def _run() -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        master.hot_ob_loop = loop
+        try:
+            loop.run_until_complete(_hot_ob_ws_loop(master))
+        except Exception:
+            log.exception("priority OB thread crashed")
+        finally:
+            master.hot_ob_ws_connected = False
+            master.hot_ob_loop = None
+            master.hot_ob_ws_send = None
+            try:
+                loop.close()
+            except Exception:
+                pass
+
+    threading.Thread(
+        target=_run, name="kalshi-priority-ob", daemon=True
+    ).start()
+    log.info("priority OB thread started")
 
 
 def _bind_cfg_globals(cfg: IngestConfig) -> None:
@@ -2923,13 +2993,14 @@ async def run_ingest(cfg: IngestConfig) -> None:
         _rehydrate_settled(master)
         if master.settled_tickers:
             log.info("rehydrated %s settled tickers", len(master.settled_tickers))
+    master.main_loop = asyncio.get_running_loop()
+    _spawn_priority_ob_thread(master)
     tasks = [
         _schedule_loop(master),
         _lifecycle_loop(master),
         _publish_coalesce_loop(master),
         _hot_registry_refresh_loop(master),
         _ws_loop(master),
-        _hot_ob_ws_loop(master),
     ]
     if cfg.event_log_enabled or cfg.disturbance_log_enabled:
         tasks.append(_event_flush_loop())
