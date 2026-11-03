@@ -34,6 +34,30 @@ def test_resolve_orderbook_touch_dollars_ok():
     assert meta.age_sec < 1.0
 
 
+def test_resolve_orderbook_touch_with_meta_venue_stamps():
+    now_ms = int(time.time() * 1000)
+    snap = {
+        "valid": True,
+        "redis_written_ms": now_ms,
+        "ts_ms": now_ms - 20,
+        "venue_ts_ms": now_ms - 20,
+        "sending_ts_ms": now_ms - 15,
+        "t_ws_recv_ms": now_ms - 10,
+        "t_apply_ms": now_ms - 8,
+        "yes": {"0.46": "100"},
+        "no": {"0.52": "80"},
+    }
+    with patch.object(obp, "load_orderbook_snapshot_from_redis", return_value=snap):
+        touch, reason, meta = obp.resolve_orderbook_touch_with_meta(
+            "TICKER-V", max_age_sec=30.0
+        )
+    assert reason == "ok"
+    assert touch is not None
+    assert meta.venue_ts_ms == float(now_ms - 20)
+    assert meta.sending_ts_ms == float(now_ms - 15)
+    assert meta.t_apply_ms == float(now_ms - 8)
+
+
 def test_resolve_orderbook_touch_dollars_stale():
     old_ms = int(time.time() * 1000) - 60_000
     snap = {

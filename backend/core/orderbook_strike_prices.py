@@ -26,6 +26,10 @@ class OrderbookTouchMeta:
     age_sec: Optional[float] = None
     ts_ms: Optional[float] = None
     redis_written_ms: Optional[float] = None
+    venue_ts_ms: Optional[float] = None
+    sending_ts_ms: Optional[float] = None
+    t_ws_recv_ms: Optional[float] = None
+    t_apply_ms: Optional[float] = None
 
 _REQUIRED_TOUCH_KEYS = (
     "yes_ask_dollars",
@@ -42,14 +46,27 @@ def orderbook_max_age_sec() -> float:
 
 
 def _snapshot_age_sec(snap: dict[str, Any]) -> Optional[float]:
+    """Redis-cache freshness (write/apply), not venue event age."""
     now_ms = time.time() * 1000
     rw_ms = snap.get("redis_written_ms")
+    apply_ms = snap.get("t_apply_ms")
     ts_ms = snap.get("ts_ms")
-    ref_ms = rw_ms if rw_ms is not None else ts_ms
+    ref_ms = rw_ms if rw_ms is not None else (
+        apply_ms if apply_ms is not None else ts_ms
+    )
     if ref_ms is None:
         return None
     try:
         return max(0.0, (now_ms - float(ref_ms)) / 1000.0)
+    except (TypeError, ValueError):
+        return None
+
+
+def _opt_float_ms(value: Any) -> Optional[float]:
+    if value is None:
+        return None
+    try:
+        return float(value)
     except (TypeError, ValueError):
         return None
 
@@ -160,19 +177,23 @@ def resolve_orderbook_touch_with_meta(
         return None, "orderbook_invalid", empty
     age_limit = float(max_age_sec if max_age_sec is not None else orderbook_max_age_sec())
     age_sec = _snapshot_age_sec(snap)
-    try:
-        ts_ms = float(snap["ts_ms"]) if snap.get("ts_ms") is not None else None
-    except (TypeError, ValueError):
-        ts_ms = None
-    try:
-        rw_ms = (
-            float(snap["redis_written_ms"])
-            if snap.get("redis_written_ms") is not None
-            else None
-        )
-    except (TypeError, ValueError):
-        rw_ms = None
-    meta = OrderbookTouchMeta(age_sec=age_sec, ts_ms=ts_ms, redis_written_ms=rw_ms)
+    ts_ms = _opt_float_ms(snap.get("ts_ms"))
+    rw_ms = _opt_float_ms(snap.get("redis_written_ms"))
+    venue_ts_ms = _opt_float_ms(snap.get("venue_ts_ms"))
+    sending_ts_ms = _opt_float_ms(snap.get("sending_ts_ms"))
+    t_ws_recv_ms = _opt_float_ms(snap.get("t_ws_recv_ms"))
+    t_apply_ms = _opt_float_ms(snap.get("t_apply_ms"))
+    if ts_ms is None and venue_ts_ms is not None:
+        ts_ms = venue_ts_ms
+    meta = OrderbookTouchMeta(
+        age_sec=age_sec,
+        ts_ms=ts_ms,
+        redis_written_ms=rw_ms,
+        venue_ts_ms=venue_ts_ms,
+        sending_ts_ms=sending_ts_ms,
+        t_ws_recv_ms=t_ws_recv_ms,
+        t_apply_ms=t_apply_ms,
+    )
     if age_sec is None:
         return None, "orderbook_no_timestamp", meta
     if age_sec > age_limit:

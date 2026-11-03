@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Measure orderbook latency stages (delta ts_ms → hot Redis → fanout → WS)."""
+"""Measure orderbook latency stages (venue ts → hot Redis → fanout → WS)."""
 
 from __future__ import annotations
 
@@ -53,6 +53,18 @@ def _summarize_delta(name: str, samples: list[int]) -> None:
     print(f"  {name}: n={len(s)} p50={_pct(s, 0.5)}ms p90={_pct(s, 0.9)}ms")
 
 
+def _event_ts(ob_or_hint: dict) -> Optional[int]:
+    for key in ("venue_ts_ms", "ts_ms"):
+        raw = ob_or_hint.get(key)
+        if raw is None:
+            continue
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            continue
+    return None
+
+
 def redis_worker(
     r: redis.Redis,
     live_state_ch: str,
@@ -61,6 +73,8 @@ def redis_worker(
     stop_at: float,
     hot_samples: list[int],
     hot_apply_samples: list[int],
+    venue_send_samples: list[int],
+    hint_inline_samples: list[int],
     fanout_samples: list[int],
     by_seq: dict,
 ) -> None:
@@ -84,36 +98,75 @@ def redis_worker(
             mt = str(data.get("market_ticker") or "").strip()
             if watch_mt and mt != watch_mt:
                 continue
+            inline = data.get("yes") is not None and data.get("no") is not None
+            if inline:
+                ts_i = _event_ts(data)
+                if ts_i is None:
+                    continue
+                lat = now_ms - ts_i
+                hot_samples.append(lat)
+                hint_inline_samples.append(lat)
+                rw = data.get("redis_written_ms")
+                apply_ms = data.get("t_apply_ms")
+                if rw is not None and apply_ms is not None:
+                    try:
+                        hot_apply_samples.append(int(rw) - int(apply_ms))
+                    except (TypeError, ValueError):
+                        pass
+                venue = data.get("venue_ts_ms")
+                send = data.get("sending_ts_ms")
+                if venue is not None and send is not None:
+                    try:
+                        venue_send_samples.append(int(send) - int(venue))
+                    except (TypeError, ValueError):
+                        pass
+                seq = data.get("book_seq")
+                rec = by_seq.setdefault(seq, {})
+                rec["hot"] = lat
+                rec["inline"] = True
+                continue
+
             blob = r.get(trade_monitor_orderbook_redis_key(mt))
             if not blob:
                 continue
             ob = json.loads(blob)
-            ts_ms = ob.get("ts_ms")
-            if ts_ms is None:
+            ts_i = _event_ts(ob)
+            if ts_i is None:
                 continue
-            ts_i = int(ts_ms)
             lat = now_ms - ts_i
             hot_samples.append(lat)
             rw = ob.get("redis_written_ms")
-            if rw is not None:
+            apply_ms = ob.get("t_apply_ms")
+            if rw is not None and apply_ms is not None:
+                try:
+                    hot_apply_samples.append(int(rw) - int(apply_ms))
+                except (TypeError, ValueError):
+                    pass
+            elif rw is not None:
                 try:
                     hot_apply_samples.append(int(rw) - ts_i)
+                except (TypeError, ValueError):
+                    pass
+            venue = ob.get("venue_ts_ms")
+            send = ob.get("sending_ts_ms")
+            if venue is not None and send is not None:
+                try:
+                    venue_send_samples.append(int(send) - int(venue))
                 except (TypeError, ValueError):
                     pass
             seq = ob.get("seq")
             rec = by_seq.setdefault(seq, {})
             rec["hot"] = lat
-            if rw is not None:
-                rec["apply_hot"] = int(rw) - ts_i
+            rec["inline"] = False
 
         elif channel == db_ch and data.get("type") == "live_orderbook":
             mt = str(data.get("market_ticker") or "").strip()
             if watch_mt and mt != watch_mt:
                 continue
-            ts_ms = data.get("ts_ms")
-            if ts_ms is None:
+            ts_i = _event_ts(data)
+            if ts_i is None:
                 continue
-            lat = now_ms - int(ts_ms)
+            lat = now_ms - ts_i
             fanout_samples.append(lat)
             seq = data.get("book_seq")
             by_seq.setdefault(seq, {})["fanout"] = lat
@@ -142,10 +195,10 @@ async def ws_worker(
             mt = str(data.get("market_ticker") or "").strip()
             if watch_mt and mt != watch_mt:
                 continue
-            ts_ms = data.get("ts_ms")
-            if ts_ms is None:
+            ts_i = _event_ts(data)
+            if ts_i is None:
                 continue
-            lat = recv_ms - int(ts_ms)
+            lat = recv_ms - ts_i
             ws_samples.append(lat)
             seq = data.get("book_seq")
             by_seq.setdefault(seq, {})["ws"] = lat
@@ -163,6 +216,8 @@ async def run_probe(duration_s: int, ws_url: str, watch_mt: str) -> int:
 
     hot_samples: list[int] = []
     hot_apply_samples: list[int] = []
+    venue_send_samples: list[int] = []
+    hint_inline_samples: list[int] = []
     fanout_samples: list[int] = []
     ws_samples: list[int] = []
     by_seq: dict = {}
@@ -182,6 +237,8 @@ async def run_probe(duration_s: int, ws_url: str, watch_mt: str) -> int:
             stop_at,
             hot_samples,
             hot_apply_samples,
+            venue_send_samples,
+            hint_inline_samples,
             fanout_samples,
             by_seq,
         )
@@ -190,9 +247,11 @@ async def run_probe(duration_s: int, ws_url: str, watch_mt: str) -> int:
         finally:
             await redis_fut
 
-    print("=== ms from delta ts_ms ===")
-    _summarize("1_ob_hot_redis (hint+GET)", hot_samples)
-    _summarize_delta("1b_apply_to_hot (redis_written_ms - ts_ms)", hot_apply_samples)
+    print("=== ms from venue/event ts_ms ===")
+    _summarize("1_ob_hot (hint±GET)", hot_samples)
+    _summarize("1a_ob_hot_inline_hint", hint_inline_samples)
+    _summarize_delta("1b_apply_to_hot (redis_written - t_apply)", hot_apply_samples)
+    _summarize_delta("1c_venue_to_send (sending_ts - venue_ts)", venue_send_samples)
     _summarize("2_fanout (db_changes live_orderbook)", fanout_samples)
     _summarize("3_ws (/ws/live_market)", ws_samples)
 

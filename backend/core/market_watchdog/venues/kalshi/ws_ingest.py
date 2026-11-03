@@ -384,15 +384,28 @@ def _redis_publish_push(payload: dict[str, Any]) -> None:
     try:
         r = _redis()
         if kind == "orderbook":
+            extra: dict[str, Any] = {
+                "market_ticker": mt,
+                "market_interval": _market_interval_for_ticker(mt),
+                "book_seq": payload.get("book_seq"),
+                "ts_ms": payload.get("ts_ms"),
+                "venue_ts_ms": payload.get("venue_ts_ms"),
+                "sending_ts_ms": payload.get("sending_ts_ms"),
+                "redis_written_ms": payload.get("redis_written_ms"),
+                "t_ws_recv_ms": payload.get("t_ws_recv_ms"),
+                "t_apply_ms": payload.get("t_apply_ms"),
+                "clock": payload.get("clock"),
+            }
+            # Hot path: embed levels so consumers can skip Redis GET.
+            if payload.get("yes") is not None and payload.get("no") is not None:
+                extra["yes"] = payload["yes"]
+                extra["no"] = payload["no"]
+                extra["valid"] = True
             live_state_cache._publish_updated(
                 r,
                 "orderbook",
                 "",
-                extra={
-                    "market_ticker": mt,
-                    "market_interval": _market_interval_for_ticker(mt),
-                    "book_seq": payload.get("book_seq"),
-                },
+                extra=extra,
             )
             return
         if kind == "ticker":
@@ -899,8 +912,59 @@ def _book(master: KalshiMarketWsMaster, mt: str) -> dict[str, Any]:
             "last_ticker_mono": 0.0,
             "last_book_wall_at": 0.0,
             "last_ticker_wall_at": 0.0,
+            "ts_ms": None,
+            "venue_ts_ms": None,
+            "sending_ts_ms": None,
+            "t_ws_recv_ms": None,
+            "t_apply_ms": None,
+            "clock": None,
         },
     )
+
+
+def _optional_int_ms(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _stamp_book_from_venue(
+    b: dict[str, Any],
+    msg: dict[str, Any],
+    envelope: Optional[dict[str, Any]],
+    *,
+    t_ws_recv_ms: Optional[int],
+) -> None:
+    """Prefer Kalshi msg.ts_ms / envelope sending_ts_ms; keep local apply stamps."""
+    now_wall = time.time()
+    t_apply_ms = int(now_wall * 1000)
+    venue_ts_ms = _optional_int_ms(msg.get("ts_ms"))
+    sending_ts_ms = _optional_int_ms((envelope or {}).get("sending_ts_ms"))
+    clock = msg.get("clock")
+    b["last_book_mono"] = time.monotonic()
+    b["last_book_wall_at"] = now_wall
+    b["t_apply_ms"] = t_apply_ms
+    recv_ms = int(t_ws_recv_ms) if t_ws_recv_ms is not None else t_apply_ms
+    b["t_ws_recv_ms"] = recv_ms
+    # Deltas often omit stamps, or reuse a stale connection/snapshot sending_ts.
+    # Never keep a multi-second-old sending/venue stamp beside a fresh recv.
+    if venue_ts_ms is not None and (recv_ms - venue_ts_ms) <= 250:
+        b["venue_ts_ms"] = venue_ts_ms
+    else:
+        b["venue_ts_ms"] = recv_ms
+    if sending_ts_ms is not None and (recv_ms - sending_ts_ms) <= 250:
+        b["sending_ts_ms"] = sending_ts_ms
+    else:
+        b["sending_ts_ms"] = recv_ms
+    b["clock"] = clock
+    # Event time for consumers/probes: fresh venue when sane, else local apply.
+    if venue_ts_ms is not None and (recv_ms - venue_ts_ms) <= 250:
+        b["ts_ms"] = venue_ts_ms
+    else:
+        b["ts_ms"] = t_apply_ms
 
 
 def _parse_snapshot(msg: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
@@ -964,9 +1028,11 @@ def _flush_orderbook_tickers_sync(
     """Write orderbook level keys + pub/sub hints (shared by hot and bulk flush)."""
     if not ob_tickers:
         return
+    from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+
     r = _redis()
     pipe = r.pipeline()
-    published_ob: list[str] = []
+    published: list[tuple[str, dict[str, Any]]] = []
     redis_written_ms = int(time.time() * 1000)
     for mt in ob_tickers:
         payload = _orderbook_redis_payload(master, mt)
@@ -974,21 +1040,28 @@ def _flush_orderbook_tickers_sync(
             continue
         payload["redis_written_ms"] = redis_written_ms
         pipe.set(_rkey_orderbook(mt), json.dumps(payload, default=str), ex=7200)
-        published_ob.append(mt)
-    if published_ob:
+        published.append((mt, payload))
+    if published:
         pipe.execute()
-    for mt in published_ob:
+    for mt, payload in published:
         _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
-        b = master.books.get(mt) or {}
-        _redis_publish_push(
-            {
-                "kind": "orderbook",
-                "market_ticker": mt,
-                "book_seq": b.get("last_seq"),
-                "ts_ms": b.get("ts_ms"),
-                "redis_written_ms": redis_written_ms,
-            }
-        )
+        hint: dict[str, Any] = {
+            "kind": "orderbook",
+            "market_ticker": mt,
+            "book_seq": payload.get("seq"),
+            "ts_ms": payload.get("ts_ms"),
+            "venue_ts_ms": payload.get("venue_ts_ms"),
+            "sending_ts_ms": payload.get("sending_ts_ms"),
+            "redis_written_ms": redis_written_ms,
+            "t_ws_recv_ms": payload.get("t_ws_recv_ms"),
+            "t_apply_ms": payload.get("t_apply_ms"),
+            "clock": payload.get("clock"),
+        }
+        # Embed levels on hot flush so UT/subscribers can skip Redis GET.
+        if is_hot_orderbook_ticker(mt):
+            hint["yes"] = payload.get("yes") or {}
+            hint["no"] = payload.get("no") or {}
+        _redis_publish_push(hint)
 
 
 def _flush_ticker_tickers_sync(
@@ -1120,6 +1193,11 @@ def _orderbook_redis_payload(master: KalshiMarketWsMaster, mt: str) -> Optional[
         "no": dict(b["no"]),
         "seq": b.get("last_seq"),
         "ts_ms": b.get("ts_ms"),
+        "venue_ts_ms": b.get("venue_ts_ms"),
+        "sending_ts_ms": b.get("sending_ts_ms"),
+        "t_ws_recv_ms": b.get("t_ws_recv_ms"),
+        "t_apply_ms": b.get("t_apply_ms"),
+        "clock": b.get("clock"),
         "valid": True,
     }
 
@@ -1394,6 +1472,8 @@ def _apply_snapshot(
     sid: Optional[int],
     *,
     publish: bool = True,
+    envelope: Optional[dict[str, Any]] = None,
+    t_ws_recv_ms: Optional[int] = None,
 ) -> None:
     yes, no = _parse_snapshot(msg)
     b = _book(master, mt)
@@ -1406,10 +1486,7 @@ def _apply_snapshot(
     if sid is not None:
         b["sid"] = int(sid)
     b["valid"] = True
-    now_wall = time.time()
-    b["last_book_mono"] = time.monotonic()
-    b["last_book_wall_at"] = now_wall
-    b["ts_ms"] = int(now_wall * 1000)
+    _stamp_book_from_venue(b, msg, envelope, t_ws_recv_ms=t_ws_recv_ms)
     if publish:
         _publish_book(master, mt)
     _emit_event("orderbook_snapshot", market_ticker=mt, seq=seq)
@@ -1482,6 +1559,8 @@ def _apply_delta(
     sid: Optional[int] = None,
     *,
     publish: bool = True,
+    envelope: Optional[dict[str, Any]] = None,
+    t_ws_recv_ms: Optional[int] = None,
 ) -> None:
     b = _book(master, mt)
     if not b["valid"]:
@@ -1498,9 +1577,9 @@ def _apply_delta(
     else:
         b[side][price] = str(new_sz.quantize(Decimal("0.01")))
     b["last_seq"] = seq
-    b["last_book_mono"] = time.monotonic()
-    b["last_book_wall_at"] = time.time()
-    b["ts_ms"] = int(time.time() * 1000)
+    if sid is not None:
+        b["sid"] = int(sid)
+    _stamp_book_from_venue(b, msg, envelope, t_ws_recv_ms=t_ws_recv_ms)
     if publish:
         _publish_book(master, mt)
     try:
@@ -1793,6 +1872,8 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
                 "params": {
                     "channels": ["orderbook_delta"],
                     "market_tickers": sorted(want_ob),
+                    # Explicit real-time (Kalshi default); 100/1000 would conflate.
+                    "update_interval_ms": 0,
                 },
             },
         )
@@ -2046,9 +2127,13 @@ async def _publish_coalesce_loop(master: KalshiMarketWsMaster) -> None:
 async def _hot_registry_refresh_loop() -> None:
     from backend.core.orderbook_hot_publish_registry import refresh_hot_tickers_if_stale
 
+    # Match MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC (default 50ms) so UT arming
+    # is visible to hot flush without waiting a full second.
+    refresh_sec = float(os.getenv("MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC", "0.05"))
+    refresh_sec = max(0.02, min(1.0, refresh_sec))
     while True:
         refresh_hot_tickers_if_stale(force=True)
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(refresh_sec)
 
 
 async def _meta_heartbeat_loop(master: KalshiMarketWsMaster) -> None:
@@ -2289,6 +2374,7 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
     if dtype not in ("orderbook_snapshot", "orderbook_delta"):
         return
 
+    t_ws_recv_ms = int(time.time() * 1000)
     ob_dirty_mt: Optional[str] = None
     async with master.lock:
         msg = data.get("msg") or {}
@@ -2299,7 +2385,16 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
 
         if dtype == "orderbook_snapshot":
             seq = int(data["seq"]) if data.get("seq") is not None else None
-            _apply_snapshot(master, mt, msg, seq, sid, publish=False)
+            _apply_snapshot(
+                master,
+                mt,
+                msg,
+                seq,
+                sid,
+                publish=False,
+                envelope=data,
+                t_ws_recv_ms=t_ws_recv_ms,
+            )
             _mark_ob_dirty(master, mt)
             ob_dirty_mt = mt
         else:
@@ -2308,7 +2403,16 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 _invalidate_book(master, mt, f"seq_gap_{master.ob_channel_last_seq}", emit_event=False)
                 _queue_resync(master, [mt], "seq_gap")
             elif action == "apply":
-                _apply_delta(master, mt, msg, int(data["seq"]), sid, publish=False)
+                _apply_delta(
+                    master,
+                    mt,
+                    msg,
+                    int(data["seq"]),
+                    sid,
+                    publish=False,
+                    envelope=data,
+                    t_ws_recv_ms=t_ws_recv_ms,
+                )
                 _mark_ob_dirty(master, mt)
                 ob_dirty_mt = mt
 
