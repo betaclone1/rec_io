@@ -605,7 +605,18 @@ class KalshiMarketWsMaster:
     last_market_result: Optional[dict[str, Any]] = None
     last_rollover_boundary_key: Optional[str] = None
     ticker_subscribed: set[str] = field(default_factory=set)
+    # Logical OB universe (main ∪ priority sockets).
     orderbook_subscribed: set[str] = field(default_factory=set)
+    # Markets actually subscribed on the main WS orderbook channel.
+    main_ob_ws_markets: set[str] = field(default_factory=set)
+    # Priority OB ingest socket (crypto/hot) — keeps armed UT books off the
+    # commodity-heavy main WS queue.
+    hot_ob_ws_markets: set[str] = field(default_factory=set)
+    hot_orderbook_sid: Optional[int] = None
+    hot_ob_channel_last_seq: Optional[int] = None
+    hot_ob_ws_send: Any = None
+    hot_ob_ws_connected: bool = False
+    hot_ob_ws_last_msg_mono: float = 0.0
     trade_subscribed: set[str] = field(default_factory=set)
     outgoing_tickers: set[str] = field(default_factory=set)
     settled_tickers: set[str] = field(default_factory=set)
@@ -1470,8 +1481,15 @@ def _apply_snapshot(
     b["yes"], b["no"] = yes, no
     if seq is not None:
         seq_i = int(seq)
-        last = master.ob_channel_last_seq
-        master.ob_channel_last_seq = seq_i if last is None else max(last, seq_i)
+        # Snapshot may arrive on either OB socket; advance the cursor that owns mt.
+        if mt in master.hot_ob_ws_markets and master.hot_ob_ws_connected:
+            last = master.hot_ob_channel_last_seq
+            master.hot_ob_channel_last_seq = (
+                seq_i if last is None else max(last, seq_i)
+            )
+        else:
+            last = master.ob_channel_last_seq
+            master.ob_channel_last_seq = seq_i if last is None else max(last, seq_i)
         b["last_seq"] = seq_i
     if sid is not None:
         b["sid"] = int(sid)
@@ -1503,7 +1521,29 @@ def _maybe_register_cycle_hot(market_ticker: str) -> None:
         log.debug("15m hot register at subscribe failed %s: %s", market_ticker, e)
 
 
-def _consume_ob_channel_seq(master: KalshiMarketWsMaster, seq: Any) -> tuple[str, Optional[int]]:
+def priority_ob_ws_enabled() -> bool:
+    """Second Kalshi WS for hot/crypto orderbooks (default on)."""
+    raw = os.getenv("MARKET_WATCHDOG_PRIORITY_OB_WS", "1").strip().lower()
+    return raw in ("1", "true", "yes", "on")
+
+
+def _priority_ob_tickers(want_ob: set[str]) -> set[str]:
+    """Tickers that belong on the priority OB socket when it is connected."""
+    from backend.core.orderbook_hot_publish_registry import (
+        is_hot_orderbook_ticker,
+        refresh_hot_tickers_if_stale,
+    )
+
+    refresh_hot_tickers_if_stale()
+    return {mt for mt in want_ob if is_hot_orderbook_ticker(mt)}
+
+
+def _consume_ob_channel_seq(
+    master: KalshiMarketWsMaster,
+    seq: Any,
+    *,
+    hot: bool = False,
+) -> tuple[str, Optional[int]]:
     """Kalshi seq is monotonic per orderbook subscription, shared across all market_tickers."""
     if seq is None:
         return "skip", None
@@ -1511,14 +1551,20 @@ def _consume_ob_channel_seq(master: KalshiMarketWsMaster, seq: Any) -> tuple[str
         seq_i = int(seq)
     except (TypeError, ValueError):
         return "skip", None
-    last = master.ob_channel_last_seq
+    last = master.hot_ob_channel_last_seq if hot else master.ob_channel_last_seq
     if last is not None and seq_i <= last:
         return "drop", seq_i
     if last is not None and seq_i > last + 1:
         # Advance channel cursor so one hole does not gap-storm every following message.
-        master.ob_channel_last_seq = seq_i
+        if hot:
+            master.hot_ob_channel_last_seq = seq_i
+        else:
+            master.ob_channel_last_seq = seq_i
         return "gap", seq_i
-    master.ob_channel_last_seq = seq_i
+    if hot:
+        master.hot_ob_channel_last_seq = seq_i
+    else:
+        master.ob_channel_last_seq = seq_i
     return "apply", seq_i
 
 
@@ -1768,27 +1814,47 @@ def _next_cmd(master: KalshiMarketWsMaster) -> int:
     return master.cmd_id
 
 
-async def _ws_json(master: KalshiMarketWsMaster, payload: dict) -> None:
-    if master.ws_send:
-        await master.ws_send.send(json.dumps(payload))
+async def _ws_json(
+    master: KalshiMarketWsMaster,
+    payload: dict,
+    *,
+    ws: Any = None,
+) -> None:
+    sock = master.ws_send if ws is None else ws
+    if sock:
+        await sock.send(json.dumps(payload))
 
 
 async def _get_snapshot(master: KalshiMarketWsMaster, tickers: list[str]) -> None:
-    if not tickers or master.orderbook_sid is None:
+    if not tickers:
         return
-    for chunk in _ticker_chunks(tickers):
-        await _ws_json(
-            master,
-            {
-                "id": _next_cmd(master),
-                "cmd": "update_subscription",
-                "params": {
-                    "sid": master.orderbook_sid,
-                    "action": "get_snapshot",
-                    "market_tickers": chunk,
+    hot_sid = master.hot_orderbook_sid
+    main_sid = master.orderbook_sid
+    hot_set = set(master.hot_ob_ws_markets) if master.hot_ob_ws_connected else set()
+    hot_tickers = [t for t in tickers if t in hot_set and hot_sid is not None]
+    main_tickers = [
+        t for t in tickers if t not in hot_set and main_sid is not None
+    ]
+    for group, sid, sock in (
+        (hot_tickers, hot_sid, master.hot_ob_ws_send),
+        (main_tickers, main_sid, master.ws_send),
+    ):
+        if not group or sid is None or sock is None:
+            continue
+        for chunk in _ticker_chunks(group):
+            await _ws_json(
+                master,
+                {
+                    "id": _next_cmd(master),
+                    "cmd": "update_subscription",
+                    "params": {
+                        "sid": sid,
+                        "action": "get_snapshot",
+                        "market_tickers": chunk,
+                    },
                 },
-            },
-        )
+                ws=sock,
+            )
 
 
 async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
@@ -1800,6 +1866,7 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
         async with master.lock:
             master.ticker_subscribed = set()
             master.orderbook_subscribed = set()
+            master.main_ob_ws_markets = set()
             master.trade_subscribed = set()
         return
 
@@ -1809,6 +1876,14 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
             master.books.pop(mt, None)
             _redis_del(_rkey_orderbook(mt))
             _emit_event("cycle_cutover", market_ticker=mt)
+
+    # Prefer priority OB socket for hot/crypto when it is up; otherwise keep on main.
+    priority = (
+        _priority_ob_tickers(want_ob)
+        if priority_ob_ws_enabled() and master.hot_ob_ws_connected
+        else set()
+    )
+    want_main_ob = want_ob - priority
 
     if master.ticker_sid is None and want_ticker:
         await _ws_json(
@@ -1850,8 +1925,8 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
                     },
                 )
 
-    if master.orderbook_sid is None and want_ob:
-        for mt in want_ob:
+    if master.orderbook_sid is None and want_main_ob:
+        for mt in want_main_ob:
             _book(master, mt)
             _maybe_register_cycle_hot(mt)
         await _ws_json(
@@ -1861,15 +1936,15 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
                 "cmd": "subscribe",
                 "params": {
                     "channels": ["orderbook_delta"],
-                    "market_tickers": sorted(want_ob),
+                    "market_tickers": sorted(want_main_ob),
                     # Explicit real-time (Kalshi default); 100/1000 would conflate.
                     "update_interval_ms": 0,
                 },
             },
         )
     else:
-        add_ob = want_ob - master.orderbook_subscribed
-        rem_ob = master.orderbook_subscribed - want_ob
+        add_ob = want_main_ob - master.main_ob_ws_markets
+        rem_ob = master.main_ob_ws_markets - want_main_ob
         if add_ob and master.orderbook_sid:
             for mt in add_ob:
                 _book(master, mt)
@@ -1948,6 +2023,7 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
     async with master.lock:
         master.ticker_subscribed = want_ticker
         master.orderbook_subscribed = want_ob
+        master.main_ob_ws_markets = want_main_ob
         master.trade_subscribed = want_trade
 
     if master.lifecycle_sid is None:
@@ -1960,8 +2036,87 @@ async def _subscription_sync(master: KalshiMarketWsMaster) -> None:
             },
         )
 
+    if master.hot_ob_ws_connected and priority_ob_ws_enabled():
+        await _hot_ob_subscription_sync(master, want_ob=want_ob)
+
     if master.resync_queue:
         _schedule_resync_drain(master)
+
+
+async def _hot_ob_subscription_sync(
+    master: KalshiMarketWsMaster,
+    *,
+    want_ob: Optional[set[str]] = None,
+) -> None:
+    """Subscribe priority/hot OB markets on the dedicated socket only."""
+    if not priority_ob_ws_enabled() or not master.hot_ob_ws_connected:
+        return
+    if master.hot_ob_ws_send is None:
+        return
+    if want_ob is None:
+        async with master.lock:
+            _, want_ob, _, _ = _lifecycle_sets(master, time.time())
+    want_hot = _priority_ob_tickers(want_ob)
+    sock = master.hot_ob_ws_send
+
+    if master.hot_orderbook_sid is None and want_hot:
+        for mt in want_hot:
+            _book(master, mt)
+            _maybe_register_cycle_hot(mt)
+        await _ws_json(
+            master,
+            {
+                "id": _next_cmd(master),
+                "cmd": "subscribe",
+                "params": {
+                    "channels": ["orderbook_delta"],
+                    "market_tickers": sorted(want_hot),
+                    "update_interval_ms": 0,
+                },
+            },
+            ws=sock,
+        )
+    else:
+        add_ob = want_hot - master.hot_ob_ws_markets
+        rem_ob = master.hot_ob_ws_markets - want_hot
+        if add_ob and master.hot_orderbook_sid:
+            for mt in add_ob:
+                _book(master, mt)
+                _maybe_register_cycle_hot(mt)
+            for chunk in _ticker_chunks(add_ob):
+                await _ws_json(
+                    master,
+                    {
+                        "id": _next_cmd(master),
+                        "cmd": "update_subscription",
+                        "params": {
+                            "sid": master.hot_orderbook_sid,
+                            "action": "add_markets",
+                            "market_tickers": chunk,
+                        },
+                    },
+                    ws=sock,
+                )
+            _queue_resync(master, sorted(add_ob), "priority_ob_add")
+        if master.hot_orderbook_sid and rem_ob:
+            await _ws_json(
+                master,
+                {
+                    "id": _next_cmd(master),
+                    "cmd": "update_subscription",
+                    "params": {
+                        "sid": master.hot_orderbook_sid,
+                        "action": "delete_markets",
+                        "market_tickers": sorted(rem_ob),
+                    },
+                },
+                ws=sock,
+            )
+
+    async with master.lock:
+        master.hot_ob_ws_markets = want_hot
+        # Logical universe already set by main sync; ensure union covers hot.
+        master.orderbook_subscribed |= want_hot
 
 
 def _queue_resync(master: KalshiMarketWsMaster, tickers: list[str], reason: str) -> None:
@@ -2045,21 +2200,31 @@ def _write_meta(master: KalshiMarketWsMaster) -> None:
             },
             "symbols": master.symbols,
             "ws_connected": master.ws_connected,
+            "hot_ob_ws_connected": master.hot_ob_ws_connected,
             "meta_updated_at": now,
             "ws_last_msg_age_sec": (
                 None
                 if not master.ws_last_msg_mono
                 else round(mono - master.ws_last_msg_mono, 2)
             ),
+            "hot_ob_ws_last_msg_age_sec": (
+                None
+                if not master.hot_ob_ws_last_msg_mono
+                else round(mono - master.hot_ob_ws_last_msg_mono, 2)
+            ),
             "ticker_sid": master.ticker_sid,
             "orderbook_sid": master.orderbook_sid,
+            "hot_orderbook_sid": master.hot_orderbook_sid,
             "ticker_subscribed": sorted(master.ticker_subscribed),
             "orderbook_subscribed": sorted(master.orderbook_subscribed),
+            "main_ob_ws_markets": sorted(master.main_ob_ws_markets),
+            "hot_ob_ws_markets": sorted(master.hot_ob_ws_markets),
             "outgoing_tickers": sorted(master.outgoing_tickers),
             "settled_tickers": sorted(master.settled_tickers),
             "lifecycle_sid": master.lifecycle_sid,
             "last_market_result": master.last_market_result,
             "ob_channel_seq": master.ob_channel_last_seq,
+            "hot_ob_channel_seq": master.hot_ob_channel_last_seq,
             "channel_resync_count": master.channel_resync_count,
             "resync_in_progress": master.resync_in_progress,
             "per_ticker": per_ticker,
@@ -2294,13 +2459,23 @@ async def _lifecycle_loop(master: KalshiMarketWsMaster) -> None:
             log.exception("lifecycle: %s", e)
 
 
-async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
-    master.ws_last_msg_mono = time.monotonic()
+async def _on_ws_message(
+    master: KalshiMarketWsMaster,
+    raw: str,
+    *,
+    conn: str = "main",
+) -> None:
+    now_mono = time.monotonic()
+    if conn == "hot":
+        master.hot_ob_ws_last_msg_mono = now_mono
+    else:
+        master.ws_last_msg_mono = now_mono
     try:
         data = json.loads(raw)
     except json.JSONDecodeError:
         return
     dtype = data.get("type")
+    hot_conn = conn == "hot"
 
     if dtype == "subscribed":
         async with master.lock:
@@ -2310,18 +2485,27 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
             if sid is None:
                 return
             sid = int(sid)
-            if ch == "ticker":
+            if ch == "ticker" and not hot_conn:
                 master.ticker_sid = sid
             elif ch == "orderbook_delta":
-                if master.orderbook_sid != sid:
-                    master.ob_channel_last_seq = None
-                master.orderbook_sid = sid
-            elif ch == "trade":
+                if hot_conn:
+                    if master.hot_orderbook_sid != sid:
+                        master.hot_ob_channel_last_seq = None
+                    master.hot_orderbook_sid = sid
+                    log.info("priority OB subscribed sid=%s", sid)
+                else:
+                    if master.orderbook_sid != sid:
+                        master.ob_channel_last_seq = None
+                    master.orderbook_sid = sid
+            elif ch == "trade" and not hot_conn:
                 master.trade_sid = sid
                 log.info("subscribed trade sid=%s", sid)
-            elif ch == "market_lifecycle_v2":
+            elif ch == "market_lifecycle_v2" and not hot_conn:
                 master.lifecycle_sid = sid
                 log.info("subscribed market_lifecycle_v2 sid=%s", sid)
+        return
+
+    if hot_conn and dtype not in ("orderbook_snapshot", "orderbook_delta", "subscribed"):
         return
 
     if dtype == "market_lifecycle_v2":
@@ -2332,7 +2516,6 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
         msg = data.get("msg") or {}
         mt = str(msg.get("market_ticker") or msg.get("ticker") or "").strip()
         if mt and mt in master.trade_subscribed:
-            now_mono = time.monotonic()
             async with master.lock:
                 master.last_trade_mono_by_ticker[mt] = now_mono
             _publish_public_trade(master, mt, msg)
@@ -2347,7 +2530,6 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 _maybe_apply_market_result_from_ticker(master, mt, msg)
                 b = _book(master, mt)
                 now_wall = time.time()
-                now_mono = time.monotonic()
                 b["last_ticker_mono"] = now_mono
                 b["last_ticker_wall_at"] = now_wall
                 sym = _symbol_for_ticker(mt)
@@ -2371,6 +2553,12 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
         mt = str(msg.get("market_ticker") or "").strip()
         if not mt or mt not in master.orderbook_subscribed:
             return
+        if hot_conn:
+            if mt not in master.hot_ob_ws_markets:
+                return
+        elif master.hot_ob_ws_connected and mt in master.hot_ob_ws_markets:
+            # Owned by priority socket; ignore stragglers on main.
+            return
         sid = int(data["sid"]) if data.get("sid") is not None else None
 
         if dtype == "orderbook_snapshot":
@@ -2388,9 +2576,18 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
             _mark_ob_dirty(master, mt)
             ob_dirty_mt = mt
         else:
-            action, _seq_i = _consume_ob_channel_seq(master, data.get("seq"))
+            action, _seq_i = _consume_ob_channel_seq(
+                master, data.get("seq"), hot=hot_conn
+            )
             if action == "gap":
-                _invalidate_book(master, mt, f"seq_gap_{master.ob_channel_last_seq}", emit_event=False)
+                gap_cursor = (
+                    master.hot_ob_channel_last_seq
+                    if hot_conn
+                    else master.ob_channel_last_seq
+                )
+                _invalidate_book(
+                    master, mt, f"seq_gap_{gap_cursor}", emit_event=False
+                )
                 _queue_resync(master, [mt], "seq_gap")
             elif action == "apply":
                 _apply_delta(
@@ -2431,10 +2628,12 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
                 master.trade_sid = None
                 master.lifecycle_sid = None
                 master.ob_channel_last_seq = None
+                master.main_ob_ws_markets = set()
                 log.info(
-                    "connected symbols=%s lean=%s",
+                    "connected symbols=%s lean=%s priority_ob_ws=%s",
                     master.symbols,
                     sorted(lean_market_symbols()),
+                    priority_ob_ws_enabled(),
                 )
                 await _subscription_sync(master)
                 master.ws_connected = True
@@ -2443,11 +2642,13 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
                     "ws_connected",
                     symbols=master.symbols,
                     ob_sub_count=len(master.orderbook_subscribed),
+                    main_ob_count=len(master.main_ob_ws_markets),
+                    hot_ob_count=len(master.hot_ob_ws_markets),
                 )
                 async for raw in ws:
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8", errors="replace")
-                    await _on_ws_message(master, raw)
+                    await _on_ws_message(master, raw, conn="main")
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -2465,8 +2666,77 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
             master.trade_sid = None
             master.lifecycle_sid = None
             master.ob_channel_last_seq = None
-            for mt in sorted(master.orderbook_subscribed):
+            master.main_ob_ws_markets = set()
+            # Only invalidate books owned by the main socket; priority socket
+            # keeps serving hot/crypto books across main reconnects.
+            for mt in sorted(master.orderbook_subscribed - master.hot_ob_ws_markets):
                 _invalidate_book(master, mt, "reconnect", emit_event=False)
+            await asyncio.sleep(3)
+
+
+async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
+    """Dedicated Kalshi WS for hot/crypto orderbooks (low-latency ingest path)."""
+    if not priority_ob_ws_enabled():
+        log.info("priority OB WS disabled (MARKET_WATCHDOG_PRIORITY_OB_WS)")
+        while True:
+            await asyncio.sleep(3600)
+
+    while True:
+        try:
+            headers = await asyncio.to_thread(_ws_headers)
+            async with websockets.connect(
+                WS_URL,
+                additional_headers=headers,
+                ping_interval=30,
+                ping_timeout=120,
+                max_queue=1024,
+            ) as ws:
+                master.hot_ob_ws_send = ws
+                master.hot_orderbook_sid = None
+                master.hot_ob_channel_last_seq = None
+                master.hot_ob_ws_markets = set()
+                master.hot_ob_ws_connected = True
+                log.info("priority OB WS connected")
+                # Pull hot markets onto this socket; main sync drops them.
+                await _subscription_sync(master)
+                await asyncio.to_thread(_write_meta, master)
+                _emit_disturbance(
+                    "priority_ob_ws_connected",
+                    hot_ob_count=len(master.hot_ob_ws_markets),
+                )
+                if master.hot_ob_ws_markets:
+                    _queue_resync(
+                        master,
+                        sorted(master.hot_ob_ws_markets),
+                        "priority_ob_ws_connect",
+                    )
+                    _schedule_resync_drain(master)
+                async for raw in ws:
+                    if isinstance(raw, bytes):
+                        raw = raw.decode("utf-8", errors="replace")
+                    await _on_ws_message(master, raw, conn="hot")
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("priority OB WS reconnect: %s", e)
+            _emit_disturbance("priority_ob_ws_disconnect", error=str(e))
+            dropped = sorted(master.hot_ob_ws_markets)
+            master.hot_ob_ws_connected = False
+            master.hot_ob_ws_send = None
+            master.hot_orderbook_sid = None
+            master.hot_ob_channel_last_seq = None
+            master.hot_ob_ws_markets = set()
+            for mt in dropped:
+                _invalidate_book(master, mt, "priority_ob_reconnect", emit_event=False)
+            # Re-absorb priority markets onto the main socket if it is up.
+            try:
+                if master.ws_connected and master.ws_send is not None:
+                    await _subscription_sync(master)
+                    if dropped:
+                        _queue_resync(master, dropped, "priority_ob_fallback_main")
+                        _schedule_resync_drain(master)
+            except Exception:
+                log.exception("priority OB fallback onto main failed")
             await asyncio.sleep(3)
 
 
@@ -2616,6 +2886,7 @@ async def run_ingest(cfg: IngestConfig) -> None:
         _publish_coalesce_loop(master),
         _hot_registry_refresh_loop(),
         _ws_loop(master),
+        _hot_ob_ws_loop(master),
     ]
     if cfg.event_log_enabled or cfg.disturbance_log_enabled:
         tasks.append(_event_flush_loop())
