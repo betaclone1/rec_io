@@ -83,11 +83,10 @@ Upper Tail is **not** AES. Live entry is `upper_tail_agent_*` + Kalshi orderbook
 
 **Latency initiative (2026-11-02) and incident (2026-11-03):**
 
-- Pre-patch UT crypto filled ~8–16 trades/hour. Isolated priority-OB **thread** + cross-event-loop `asyncio.Lock` **broke** OB ingest and collapsed fills; see `UPPER_TAIL_STRATEGY.md` § production crypto hot path.
-- **Current safe default:** priority OB WS **off** (single main socket). Do not assume prod still runs the isolated-thread stack.
-- When the feed is healthy, ms-scale awareness + ~20–30ms place RTT is the right **target** model — but **2026-11-03 post-break hours are not a valid fill-rate baseline** (pipeline defect, not market regime).
-- Commodities stay **`path=slow`** (tape); different latency model.
-- When classifying live vs replay misses for UT crypto: check whether the sample is before/after this ingest stack (and whether priority OB was enabled) before calling delay “inherent venue lag.”
+- Pre-break UT crypto filled ~8–16 trades/hour. Isolated priority-OB **thread** + cross-event-loop `asyncio.Lock` **broke** OB ingest; see `UPPER_TAIL_STRATEGY.md`.
+- **Safe design:** priority OB socket on the **same event loop**, handoff only after priority snapshot ready. Isolated thread hard-disabled. **2026-11-03 break hours are not a valid fill-rate baseline.**
+- Target when healthy: ms-scale book awareness + ~20–30ms place RTT.
+- Commodities stay **`path=slow`** (tape).
 
 ---
 

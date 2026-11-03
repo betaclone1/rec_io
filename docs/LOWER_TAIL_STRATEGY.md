@@ -1,5 +1,7 @@
 # Lower Tail — strategy handoff (15m dual-rest)
 
+**v4 CORE context:** Lower Tail is one rail of the main live strategy set — probe W/L → bias meter → sized arm. See `docs/VER4_DEVELOPMENT/CORE_TAIL_BIAS_STRATEGY.md`.
+
 **Product name:** Lower Tail  
 **Audience:** operators + implementers.  
 **Status:** live wiring via `lower_tail_agent` (outside TE); research backtests remain valid for edge thesis.  

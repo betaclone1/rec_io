@@ -67,7 +67,7 @@
 | Agent | Role | Rule |
 |-------|------|------|
 | @db | DB operations, schema, migrations, reference. | .cursor/rules/db.mdc (or archive) |
-| @analyst | Production trade/price analysis, **auto-trade backtests** (`docs/BACKTESTING.md`), **hypothetical fill pricing** (`docs/BACKTEST_PRICE_ESTIMATOR.md`), strategy diagnostics. | `docs/BACKTESTING.md`; `docs/BACKTEST_PRICE_ESTIMATOR.md`; legacy `docs/backtests/` if present. |
+| @analyst | Production trade/price analysis, **auto-trade backtests** (`docs/BACKTESTING.md`), **hypothetical fill pricing** (`docs/BACKTEST_PRICE_ESTIMATOR.md`), strategy diagnostics. For **Upper Tail** live timing / current-prod latency assumptions, also **`docs/UPPER_TAIL_STRATEGY.md`** (§ production crypto hot path) and `BACKTESTING.md` §2.4. | `docs/BACKTESTING.md`; `docs/BACKTEST_PRICE_ESTIMATOR.md`; `docs/UPPER_TAIL_STRATEGY.md`; legacy `docs/backtests/` if present. |
 | @frontend | Frontend, HTML/JS/CSS, mobile, UI/UX. | .cursor/rules/frontend.mdc (or archive) |
 | @updater | Changelog, prepare update, production checklist. | .cursor/rules/updater.mdc (or archive) |
 | @kalshi | Kalshi API, WebSocket, broker. | .cursor/rules/kalshi.mdc (or archive) |

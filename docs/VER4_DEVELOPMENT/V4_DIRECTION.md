@@ -13,14 +13,17 @@ big_ticket_priorities:
   - postgres_lean_droplet_and_pg17_gate
   - subaccount_architecture   # see SUBACCOUNT_ARCHITECTURE.md
   - 15m_market_expansion
-  - upper_lower_tail_meter
+  - core_tail_bias_strategy   # MAIN strategies — see CORE_TAIL_BIAS_STRATEGY.md
   - ui_overhaul               # Subaccounts panel lives under Subaccount Architecture
 pillars:
+  - CORE_TAIL_BIAS_STRATEGY.md   # main UT/LT strategies + live probe meter
   - SUBACCOUNT_ARCHITECTURE.md
-next: Subaccount Architecture first move = sub/monitor shape (REBALANCE back burner); host split / PG options still open
+next: Subaccount Architecture first move = sub/monitor shape (REBALANCE back burner); Tail bias probe is CORE live data + main strategies; host split / PG options still open
 ```
 
 Agents treat the items below as constraints on later plans. Do not invent host counts, service maps, or a frontend information architecture until those discussions land in a new file in this folder.
+
+**Main strategies (CORE):** Live dual-tail probing per tracked asset, rolling win-rate bias vs ~99% / ~1% goals, then strength-gated sized Upper or Lower Tail trading on separate bankroll. Authoritative: [`CORE_TAIL_BIAS_STRATEGY.md`](CORE_TAIL_BIAS_STRATEGY.md).
 
 ---
 

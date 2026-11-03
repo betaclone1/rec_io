@@ -27,7 +27,7 @@ v4.0 pillar for how portfolio capital is held in Kalshi/internal subaccounts, we
 | In this pillar | Priority | Related but separate |
 |----------------|----------|----------------------|
 | Trading vs non-trading SA roles, MTB membership | **first** | Host split / which machine runs Account Manager |
-| MTB Base Value + per-SA % of Base → pinned bankroll | **first** | Upper/Lower Tail meter math (`PIN_UPPER_LOWER_TAIL.md`) |
+| MTB Base Value + per-SA % of Base → pinned bankroll | **first** | Tail bias probe + sized UT/LT (`CORE_TAIL_BIAS_STRATEGY.md`) |
 | Monitor ↔ SA binding (1:1 or small groups) | **first** | Full frontend rewrite / tech stack |
 | Dashboard Subaccounts panel (replaces Allocation) — shape/controls for weights + Base | **first** (read/edit before REBALANCE) | Hourly markets (deferred) |
 | REBALANCE operator function | **back burner** | Postgres droplet / PG17 gate |
@@ -52,10 +52,13 @@ Philosophical change; mechanics ride bones already shipped (per-monitor SA routi
 | Role (intent) | In MTB? | In monitor balancing? | Examples |
 |---------------|---------|------------------------|----------|
 | Unallocated Cash | yes | source for funding monitor SAs; not itself a monitor book | parking / deployment cash |
-| Monitor or monitor-group trading SA | yes | yes — silo for that monitor or small set | per-monitor or small cohort |
+| Monitor or monitor-group trading SA | yes | yes — silo for that monitor or small set | sized UT/LT production per asset |
+| **Tail bias probe SA** | **no** (instrumentation) | **no** — not sized from MTB Base | small static float for 1-lot UT+LT probes; W/L only; occasional top-up (`CORE_TAIL_BIAS_STRATEGY.md`) |
 | Non-trading holdings | no | no | CASH pass-through, reserve, tax, misc |
 
-Non-trading subs are first-class wallets but **excluded** from MTB and from monitor balancing.
+Non-trading and **probe** subs are first-class wallets but **excluded** from MTB and from monitor balancing. Probe capital is judged only as fill/settlement instrumentation, never as a returns book.
+
+**Tail bias link:** Probe SA feeds the CORE meter; trading SAs hold the sized arms when bias activates. See [`CORE_TAIL_BIAS_STRATEGY.md`](CORE_TAIL_BIAS_STRATEGY.md).
 
 **MTB Base Value.** User-set dollar target for the trading set (e.g. $10,000). Distinct from **live MTB** (sum of balances in trading-tagged SAs). Live portfolio and live MTB can be above or below Base at any time.
 

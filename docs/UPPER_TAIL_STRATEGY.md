@@ -23,14 +23,15 @@ Process: `upper_tail_agent_*` (port 8052 for user 0001). Strategy seed: migratio
 
 ### What is running on production
 
-**Incident (2026-11-03):** Isolated priority-OB thread + shared `asyncio.Lock` across event loops wedged Kalshi OB ingest and collapsed crypto UT fills (from ~8–16 trades/hour to ~1). **Mitigation:** `MARKET_WATCHDOG_PRIORITY_OB_WS` defaults **off** (single main OB socket). Isolated thread stays opt-in only (`MARKET_WATCHDOG_PRIORITY_OB_ISOLATED_THREAD`). Do not re-enable until same-loop (or thread-safe lock) path is proven on prod.
+**Incident (2026-11-03):** Isolated priority-OB thread + shared `asyncio.Lock` across event loops wedged Kalshi OB ingest and collapsed crypto UT fills (from ~8–16 trades/hour to ~1).
 
-Prior latency work (when healthy): commit family around **`ee6e927e`** (stamp clamp) plus dedicated priority OB socket / armed-only membership — **without** the broken isolated-thread lock coupling.
+**Safe design (current):** dedicated priority Kalshi OB socket for armed tickers on the **same main event loop** (no OS thread). Main keeps each ticker until `hot_ob_ready_markets` (priority snapshot received) — no silent feed gap. Isolated thread is **hard-disabled**. Stamp clamp retained.
 
 | Piece | Behavior |
 |--------|----------|
 | **Priority OB WebSocket** | Separate Kalshi `orderbook_delta` connection for **armed Upper Tail crypto** tickers only (plus trade-monitor watch / explicit allowlist) — not the full 15m/hourly universe. |
-| **Isolation** | That socket runs on its **own OS thread** (`kalshi-priority-ob`) with its **own asyncio loop** and `hot_ob_lock`, so the main watchdog loop cannot starve hot books. |
+| **Same-loop isolation** | That socket runs as a task on the **main event loop** (not an OS thread). `hot_ob_lock` separates hot apply from main lifecycle under the same loop. Isolated-thread mode is hard-disabled. |
+| **Handoff** | Main keeps serving a ticker until `hot_ob_ready_markets` (priority snapshot received). Priority disconnect falls back to main without invalidating last levels. |
 | **Flush** | Armed books flush to Redis on the hot path; `upper_tail_agent` consumes `path=hot` and places once on rail cross. |
 | **Stamp hygiene** | Kalshi often omits or freezes `sending_ts_ms` / venue stamps on deltas. Watchdog **clamps** venue/sending to `t_ws_recv_ms` when the stamp is **>250ms older** than recv — so logs no longer show multi-second “stale” ages on fresh frames. |
 | **Commodities** | Still **`path=slow`** (tape / timer). Not on this priority OB lane. |
