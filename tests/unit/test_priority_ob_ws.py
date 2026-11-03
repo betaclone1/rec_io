@@ -67,3 +67,11 @@ def test_consume_ob_channel_seq_separate_cursors() -> None:
     assert wi._consume_ob_channel_seq(master, 2, hot=True)[0] == "apply"
     assert master.hot_ob_channel_last_seq == 2
     assert master.ob_channel_last_seq == 1
+
+
+def test_priority_markets_use_separate_ob_lock() -> None:
+    master = wi.KalshiMarketWsMaster(cfg=None, symbols=["BTC"])  # type: ignore[arg-type]
+    master.hot_ob_ws_connected = True
+    master.hot_ob_ws_markets = {"KXBTC15M-26NOV022300-00"}
+    assert wi._lock_for_ob_ticker(master, "KXBTC15M-26NOV022300-00") is master.hot_ob_lock
+    assert wi._lock_for_ob_ticker(master, "KXGOLD15M-26NOV022300-00") is master.lock

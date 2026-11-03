@@ -647,6 +647,9 @@ class KalshiMarketWsMaster:
     # Last armed/watch set pushed onto the priority OB socket (change → resync).
     priority_ob_ingest_key: frozenset[str] = field(default_factory=frozenset)
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    # Separate from ``lock`` so main-socket / lifecycle work cannot stall the
+    # priority OB recv loop (that contention showed up as 300–600ms t_ws_recv).
+    hot_ob_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     def all_entries(self) -> list[MarketScheduleEntry]:
         rows: list[MarketScheduleEntry] = []
@@ -1122,6 +1125,13 @@ def _flush_dirty_redis_sync(master: KalshiMarketWsMaster, ob_tickers: list[str],
         log.debug("flush_dirty_redis failed", exc_info=True)
 
 
+def _lock_for_ob_ticker(master: KalshiMarketWsMaster, mt: str) -> asyncio.Lock:
+    """Priority-socket markets use ``hot_ob_lock``; everything else ``lock``."""
+    if mt in master.hot_ob_ws_markets and master.hot_ob_ws_connected:
+        return master.hot_ob_lock
+    return master.lock
+
+
 async def _hot_ob_flush_worker(master: KalshiMarketWsMaster, mt: str) -> None:
     """Immediate flush for hot orderbook tickers (no coalesce wait)."""
     from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
@@ -1132,12 +1142,14 @@ async def _hot_ob_flush_worker(master: KalshiMarketWsMaster, mt: str) -> None:
         return
     try:
         while True:
-            async with master.lock:
+            lock = _lock_for_ob_ticker(master, ticker)
+            async with lock:
                 if ticker not in master.dirty_ob:
                     break
                 master.dirty_ob.discard(ticker)
             await asyncio.to_thread(_flush_dirty_redis_sync, master, [ticker], [])
-            async with master.lock:
+            lock = _lock_for_ob_ticker(master, ticker)
+            async with lock:
                 if ticker not in master.dirty_ob:
                     break
                 if not is_hot_orderbook_ticker(ticker):
@@ -2484,8 +2496,11 @@ async def _on_ws_message(
     raw: str,
     *,
     conn: str = "main",
+    t_recv_ms: Optional[int] = None,
 ) -> None:
     now_mono = time.monotonic()
+    # Stamp before JSON/lock so queueing delay is visible and not conflated.
+    t_ws_recv_ms = int(t_recv_ms) if t_recv_ms is not None else int(time.time() * 1000)
     if conn == "hot":
         master.hot_ob_ws_last_msg_mono = now_mono
     else:
@@ -2498,7 +2513,8 @@ async def _on_ws_message(
     hot_conn = conn == "hot"
 
     if dtype == "subscribed":
-        async with master.lock:
+        lock = master.hot_ob_lock if hot_conn else master.lock
+        async with lock:
             msg = data.get("msg") or {}
             ch = msg.get("channel")
             sid = msg.get("sid")
@@ -2566,9 +2582,10 @@ async def _on_ws_message(
     if dtype not in ("orderbook_snapshot", "orderbook_delta"):
         return
 
-    t_ws_recv_ms = int(time.time() * 1000)
     ob_dirty_mt: Optional[str] = None
-    async with master.lock:
+    # Priority OB must not await master.lock (main/lifecycle contention = multi-100ms tails).
+    ob_lock = master.hot_ob_lock if hot_conn else master.lock
+    async with ob_lock:
         msg = data.get("msg") or {}
         mt = str(msg.get("market_ticker") or "").strip()
         if not mt or mt not in master.orderbook_subscribed:
@@ -2666,9 +2683,12 @@ async def _ws_loop(master: KalshiMarketWsMaster) -> None:
                     hot_ob_count=len(master.hot_ob_ws_markets),
                 )
                 async for raw in ws:
+                    t_recv_ms = int(time.time() * 1000)
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8", errors="replace")
-                    await _on_ws_message(master, raw, conn="main")
+                    await _on_ws_message(
+                        master, raw, conn="main", t_recv_ms=t_recv_ms
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as e:
@@ -2732,9 +2752,12 @@ async def _hot_ob_ws_loop(master: KalshiMarketWsMaster) -> None:
                     )
                     _schedule_resync_drain(master)
                 async for raw in ws:
+                    t_recv_ms = int(time.time() * 1000)
                     if isinstance(raw, bytes):
                         raw = raw.decode("utf-8", errors="replace")
-                    await _on_ws_message(master, raw, conn="hot")
+                    await _on_ws_message(
+                        master, raw, conn="hot", t_recv_ms=t_recv_ms
+                    )
         except asyncio.CancelledError:
             raise
         except Exception as e:
