@@ -26,7 +26,6 @@ from fastapi import FastAPI
 from backend.core.aes_btc15m_lower_tail_cutout import (
     STRATEGY_NAME,
     list_active_lower_tail_monitor_rows,
-    lower_tail_symbols,
     resolve_monitor_limit_dollars,
 )
 from backend.core.market_watchdog.venues.kalshi.schedule import SERIES_15M_BY_SYMBOL
@@ -1153,29 +1152,11 @@ def _loop() -> None:
 
 
 def _start_listeners() -> None:
-    try:
-        from backend.core.tradeflow_live_state_trigger import (
-            start_tradeflow_live_state_listener,
-        )
+    """Wake only on fill/position updates (+ failsafe poll in ``_loop``).
 
-        def _me_sym_mkt(symbol: str, market: str) -> bool:
-            return (
-                str(symbol).upper() in lower_tail_symbols()
-                and str(market).lower() == "15m"
-            )
-
-        def _on_ladder(symbol: str, market: str) -> None:
-            if _me_sym_mkt(symbol, market):
-                _wake.set()
-
-        start_tradeflow_live_state_listener(
-            on_ladder_update=_on_ladder,
-            service="lower_tail_agent",
-            symbol_market_filter=_me_sym_mkt,
-        )
-    except Exception as exc:
-        _log(f"live_state listener not started: {exc}")
-
+    Do **not** subscribe to orderbook / strike-ladder live_state. After open-time
+    place, resting dual bids wait on the venue; OB flicker must not spin the agent.
+    """
     try:
         from backend.core.trading_redis_comms import (
             channel_tm_positions_updated,
@@ -1188,7 +1169,7 @@ def _start_listeners() -> None:
                 return
             pubsub = r.pubsub()
             pubsub.subscribe(channel_tm_positions_updated())
-            _log(f"subscribed {channel_tm_positions_updated()}")
+            _log(f"subscribed {channel_tm_positions_updated()} (fill wake only)")
             while True:
                 try:
                     msg = pubsub.get_message(

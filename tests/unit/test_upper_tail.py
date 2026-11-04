@@ -416,9 +416,27 @@ def _make_cycle(**kwargs):
     return te._Cycle(**base)
 
 
-def test_crypto_stream_noop_below_rail(monkeypatch):
+def _rail_payload(ticker: str, *, yes: dict, no: dict, limit_px: float = 0.99) -> dict:
+    from backend.core.orderbook_strike_prices import touch_dollars_from_orderbook_snapshot
+
+    touch = touch_dollars_from_orderbook_snapshot(
+        {"valid": True, "yes": yes, "no": no}
+    )
+    return {
+        "type": "upper_tail_rail_trigger",
+        "market_ticker": ticker,
+        "side": "yes",
+        "limit_px": limit_px,
+        "touch": touch or {},
+        "ts_ms": 1_700_000_000_100,
+        "venue_ts_ms": 1_700_000_000_100,
+        "redis_written_ms": 1_700_000_000_110,
+        "emitted_ms": 1_700_000_000_120,
+    }
+
+
+def test_rail_trigger_noop_below_rail(monkeypatch):
     import backend.upper_tail_agent as te
-    from backend.core.orderbook_hot_subscriber import OrderbookCacheSnapshot
 
     cy = _make_cycle()
     te._cycles.clear()
@@ -427,25 +445,16 @@ def test_crypto_stream_noop_below_rail(monkeypatch):
         te._armed_by_ticker = {cy.ticker: [cy.monitor_id]}
     fired = []
     monkeypatch.setattr(te, "_try_fire_cycle", lambda *a, **k: fired.append(1) or True)
-    snap = OrderbookCacheSnapshot(
-        market_ticker=cy.ticker,
-        seq=1,
-        ts_ms=1_700_000_000_000,
-        redis_written_ms=1_700_000_000_010,
-        yes={"0.50": "10"},
-        no={"0.50": "10"},
-        received_ms=1_700_000_000_020,
-        apply_to_hot_ms=10,
-        apply_to_receive_ms=20,
+    # Payload claims trigger but touch is mid-book — agent re-checks limit.
+    te._on_rail_trigger(
+        _rail_payload(cy.ticker, yes={"0.50": "10"}, no={"0.50": "10"})
     )
-    te._on_crypto_ob_stream(snap)
     assert fired == []
     assert cy.placed is False
 
 
-def test_crypto_stream_fires_once_on_rail(monkeypatch):
+def test_rail_trigger_fires_once_on_rail(monkeypatch):
     import backend.upper_tail_agent as te
-    from backend.core.orderbook_hot_subscriber import OrderbookCacheSnapshot
 
     cy = _make_cycle()
     te._cycles.clear()
@@ -460,27 +469,16 @@ def test_crypto_stream_fires_once_on_rail(monkeypatch):
         return 42
 
     monkeypatch.setattr(te, "_book", _book)
-    snap = OrderbookCacheSnapshot(
-        market_ticker=cy.ticker,
-        seq=2,
-        ts_ms=1_700_000_000_100,
-        redis_written_ms=1_700_000_000_110,
-        yes={"0.99": "5"},
-        no={"0.01": "5"},
-        received_ms=1_700_000_000_120,
-        apply_to_hot_ms=10,
-        apply_to_receive_ms=20,
-    )
-    te._on_crypto_ob_stream(snap)
-    te._on_crypto_ob_stream(snap)  # second delta must not double-fire
+    payload = _rail_payload(cy.ticker, yes={"0.99": "5"}, no={"0.01": "5"})
+    te._on_rail_trigger(payload)
+    te._on_rail_trigger(payload)  # second trigger must not double-fire
     assert cy.placed is True
     assert cy.side == "yes"
     assert len(booked) == 1
 
 
-def test_crypto_stream_ignores_unarmed_ticker(monkeypatch):
+def test_rail_trigger_ignores_unarmed_ticker(monkeypatch):
     import backend.upper_tail_agent as te
-    from backend.core.orderbook_hot_subscriber import OrderbookCacheSnapshot
 
     cy = _make_cycle()
     te._cycles.clear()
@@ -489,33 +487,24 @@ def test_crypto_stream_ignores_unarmed_ticker(monkeypatch):
         te._armed_by_ticker = {}
     fired = []
     monkeypatch.setattr(te, "_try_fire_cycle", lambda *a, **k: fired.append(1) or True)
-    snap = OrderbookCacheSnapshot(
-        market_ticker=cy.ticker,
-        seq=3,
-        ts_ms=1_700_000_000_200,
-        redis_written_ms=1_700_000_000_210,
-        yes={"0.99": "5"},
-        no={"0.01": "5"},
-        received_ms=1_700_000_000_220,
-        apply_to_hot_ms=10,
-        apply_to_receive_ms=20,
+    te._on_rail_trigger(
+        _rail_payload(cy.ticker, yes={"0.99": "5"}, no={"0.01": "5"})
     )
-    te._on_crypto_ob_stream(snap)
     assert fired == []
 
 
-def test_rebuild_armed_registers_hot_watch(monkeypatch):
+def test_rebuild_armed_registers_rail_arm(monkeypatch):
     import time
 
     import backend.upper_tail_agent as te
     from backend.core.upper_tail import TRIGGER_ORDERBOOK, TRIGGER_TAPE
 
-    watched = {}
+    armed = {}
 
-    def _set(tickers):
-        watched["tickers"] = set(tickers)
+    def _set(arms):
+        armed["arms"] = dict(arms)
 
-    monkeypatch.setattr(te, "set_upper_tail_orderbook_watch", _set)
+    monkeypatch.setattr(te, "set_upper_tail_orderbook_arm", _set)
     te._cycles.clear()
     btc = _make_cycle(monitor_id="1", ticker="KXBTC15M-A", trigger_mode=TRIGGER_ORDERBOOK)
     gold = _make_cycle(
@@ -527,14 +516,15 @@ def test_rebuild_armed_registers_hot_watch(monkeypatch):
     te._cycles[btc.monitor_id] = btc
     te._cycles[gold.monitor_id] = gold
     te._rebuild_armed_index(time.time())
-    assert "KXBTC15M-A" in watched["tickers"]
-    assert "KXGOLD15M-A" not in watched["tickers"]
+    assert "KXBTC15M-A" in armed["arms"]
+    assert armed["arms"]["KXBTC15M-A"] == 0.99
+    assert "KXGOLD15M-A" not in armed["arms"]
     with te._arm_lock:
         assert btc.monitor_id in te._armed_by_ticker.get("KXBTC15M-A", [])
         assert "KXGOLD15M-A" not in te._armed_by_ticker
 
 
-def test_upper_tail_watch_marks_tradeflow_wake(monkeypatch):
+def test_upper_tail_arm_does_not_wake_tradeflow(monkeypatch):
     from backend.core import orderbook_hot_publish_registry as reg
     from backend.core import upper_tail_orderbook_watch as utw
 
@@ -545,16 +535,15 @@ def test_upper_tail_watch_marks_tradeflow_wake(monkeypatch):
         "backend.core.trade_monitor_orderbook_watch.get_trade_monitor_orderbook_watch",
         lambda: None,
     )
-    utw.set_upper_tail_orderbook_watch(["KXBTC15M-HOT"])
+    utw.set_upper_tail_orderbook_arm({"KXBTC15M-HOT": 0.99})
     monkeypatch.setattr(utw, "_redis", lambda: None)
-    # Force refresh to pick up local set
     with reg._lock:
         reg._last_refresh_mono = 0.0
-    # Flush is universal; UT watch only affects wake.
+    # Flush is universal; UT arm must not wake AES/tradeflow.
     assert reg.should_immediate_flush_orderbook("KXETH15M-COLD") is True
-    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-HOT") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-HOT") is False
     assert reg.should_wake_tradeflow_on_orderbook("KXETH15M-COLD") is False
-    utw.set_upper_tail_orderbook_watch([])
+    utw.set_upper_tail_orderbook_arm({})
 
 
 def test_crypto_15m_tradeflow_wake_not_flush_gate(monkeypatch):

@@ -2,14 +2,15 @@
 Upper Tail agent — one GTC limit when the target rail is reached.
 
 Outside trade_executor. During the monitor time window:
-  - crypto (``full``) — always-on orderbook stream consumer (touch ≥ rail → place)
+  - crypto (``full``) — active ``upper_tail_rail_trigger`` from OB publish
+    (watchdog emits on rising-edge rail cross; this agent only places)
   - commodity / lean ``market`` — public trades tape print ≥ target (timer loop)
 Places a single GTC at the target on that side (``post_only`` off). Venue fill
 confirmation books into trade_manager. Paper monitors book when the trigger
 qualifies (no venue order).
 
-Crypto does not "wake" into a full tick: housekeeping is a timer loop; OB deltas
-are cheap per-ticker checks on an armed-cycle cache.
+Housekeeping (monitors, markets, fills, arm registry) is a slow timer loop.
+Crypto does not subscribe to every orderbook delta.
 """
 
 from __future__ import annotations
@@ -41,10 +42,7 @@ from backend.core.lower_tail_open import (
     select_live_targets_by_symbol,
 )
 from backend.core.kalshi_public_trade_redis import load_public_trade_prints
-from backend.core.orderbook_strike_prices import (
-    resolve_orderbook_touch_with_meta,
-    touch_dollars_from_orderbook_snapshot,
-)
+from backend.core.orderbook_strike_prices import resolve_orderbook_touch_with_meta
 from backend.core.port_config import default_pool_user_number, get_port
 from backend.core.upper_tail import (
     STRATEGY_NAME,
@@ -58,7 +56,7 @@ from backend.core.upper_tail import (
     upper_tail_trigger_mode,
     ttc_in_entry_window,
 )
-from backend.core.upper_tail_orderbook_watch import set_upper_tail_orderbook_watch
+from backend.core.upper_tail_orderbook_watch import set_upper_tail_orderbook_arm
 from backend.core.time_eastern import now_est
 from backend.trading_mode import effective_paper_trade
 
@@ -68,7 +66,7 @@ logging.basicConfig(
 )
 log = logging.getLogger("upper_tail_agent")
 
-POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "0.25"))
+POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "1.0"))
 PLACE_FAIL_COOLDOWN_SEC = float(os.getenv("UPPER_TAIL_PLACE_FAIL_COOLDOWN_SEC", "2.0"))
 
 app = FastAPI(title="Upper Tail Agent")
@@ -576,32 +574,22 @@ def _hit_from_touch(
     )
 
 
-def _on_crypto_ob_stream(snap: Any) -> None:
-    """Always-on crypto stream: cheap touch check; place once on rail cross."""
+def _on_rail_trigger(payload: Dict[str, Any]) -> None:
+    """Active trigger from OB publish: place once for armed monitors on this ticker."""
     t0 = time.time()
-    mt = str(getattr(snap, "market_ticker", "") or "").strip()
+    mt = str(payload.get("market_ticker") or "").strip()
     if not mt:
         return
     with _arm_lock:
         mids = list(_armed_by_ticker.get(mt) or ())
     if not mids:
         return
-    touch = touch_dollars_from_orderbook_snapshot(
-        {
-            "valid": True,
-            "yes": getattr(snap, "yes", None) or {},
-            "no": getattr(snap, "no", None) or {},
-            "ts_ms": getattr(snap, "ts_ms", None),
-            "venue_ts_ms": getattr(snap, "venue_ts_ms", None),
-            "redis_written_ms": getattr(snap, "redis_written_ms", None),
-        }
-    )
-    if not touch:
+    touch = payload.get("touch")
+    if not isinstance(touch, dict) or not touch:
         return
-    recv_ms = getattr(snap, "received_ms", None)
-    # Prefer Kalshi venue event time for source_age (not local Redis write).
-    venue_ms = getattr(snap, "venue_ts_ms", None)
-    ts_ms = getattr(snap, "ts_ms", None)
+    venue_ms = payload.get("venue_ts_ms")
+    ts_ms = payload.get("ts_ms")
+    emitted_ms = payload.get("emitted_ms")
     src_ms = None
     for candidate in (venue_ms, ts_ms):
         if candidate is not None:
@@ -611,8 +599,11 @@ def _on_crypto_ob_stream(snap: Any) -> None:
             except (TypeError, ValueError):
                 continue
     age_ms = None
-    if src_ms is not None and recv_ms is not None:
-        age_ms = max(0.0, float(recv_ms) - src_ms)
+    if src_ms is not None and emitted_ms is not None:
+        try:
+            age_ms = max(0.0, float(emitted_ms) - src_ms)
+        except (TypeError, ValueError):
+            age_ms = None
     elif src_ms is not None:
         age_ms = max(0.0, t0 * 1000.0 - src_ms)
 
@@ -632,12 +623,13 @@ def _on_crypto_ob_stream(snap: Any) -> None:
         if not hit:
             continue
         ttc = cy.close_ts - t0
-        _try_fire_cycle(cy, hit, path="hot", ttc=ttc)
+        _try_fire_cycle(cy, hit, path="rail", ttc=ttc)
 
 
 def _rebuild_armed_index(now: float) -> None:
-    """Timer-only: index crypto cycles ready for stream fire + hot-flush watches."""
+    """Timer-only: index crypto cycles for rail-trigger arm registry."""
     by_ticker: Dict[str, List[str]] = {}
+    arms: Dict[str, float] = {}
     for mid, cy in list(_cycles.items()):
         if cy.placed or cy.done or cy.placing:
             continue
@@ -653,10 +645,13 @@ def _rebuild_armed_index(now: float) -> None:
         if cy.prepared is None and not cy.paper:
             cy.prepared = _prepare_place_bodies(cy)
         by_ticker.setdefault(cy.ticker, []).append(mid)
+        prev = arms.get(cy.ticker)
+        if prev is None or float(cy.limit_px) < prev:
+            arms[cy.ticker] = float(cy.limit_px)
     with _arm_lock:
         global _armed_by_ticker
         _armed_by_ticker = by_ticker
-    set_upper_tail_orderbook_watch(by_ticker.keys())
+    set_upper_tail_orderbook_arm(arms)
 
 
 def _qualifying_side_from_tape(cy: _Cycle) -> Optional[_TriggerHit]:
@@ -869,8 +864,11 @@ def _tick() -> None:
             continue
         if cy.done or cy.placed or cy.placing or not in_window:
             continue
-        # Crypto OB: stream consumer only. Timer fires tape/commodity.
+        # Crypto: rail_trigger is primary; timer is failsafe Redis touch check.
         if cy.trigger_mode == TRIGGER_ORDERBOOK:
+            hit = _qualifying_side_from_orderbook(cy)
+            if hit:
+                _try_fire_cycle(cy, hit, path="failsafe", ttc=now_ttc)
             continue
         hit = _qualifying_side_tape_only(cy, now=now)
         if not hit:
@@ -898,26 +896,26 @@ def _loop() -> None:
             _tick()
         except Exception as exc:
             _log(f"tick error: {exc}")
-        # Tape can nudge early; crypto fire does not use this wake.
+        # Tape can nudge early; crypto rail_trigger does not use this wake.
         _wake.wait(timeout=POLL_SEC)
         _wake.clear()
 
 
 def _start_listeners() -> None:
-    # Crypto: always-on OB stream consumer (no full-tick wake).
+    # Crypto: active rail-cross trigger from OB publish path (not every delta).
     try:
-        from backend.core.orderbook_hot_subscriber import start_orderbook_hot_subscriber
+        from backend.core.upper_tail_rail_trigger import start_rail_trigger_listener
 
-        ok = start_orderbook_hot_subscriber(
-            _on_crypto_ob_stream,
-            thread_name="upper_tail_ob_stream",
+        ok = start_rail_trigger_listener(
+            _on_rail_trigger,
+            thread_name="upper_tail_rail_trigger",
         )
         if ok:
-            _log("subscribed rec_io:live_state:updated (crypto OB stream)")
+            _log("subscribed upper_tail rail_trigger (active OB rail cross)")
         else:
-            _log("orderbook stream not started: redis unavailable")
+            _log("rail_trigger listener not started: redis unavailable")
     except Exception as exc:
-        _log(f"orderbook stream not started: {exc}")
+        _log(f"rail_trigger listener not started: {exc}")
 
     # Commodity / lean: public_trade nudges timer for tape qualify.
     try:

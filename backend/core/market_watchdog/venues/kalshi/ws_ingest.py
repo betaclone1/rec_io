@@ -1059,6 +1059,15 @@ def _flush_orderbook_tickers_sync(
             "no": payload.get("no") or {},
         }
         _redis_publish_push(hint)
+        # Active UT trigger: rising-edge rail cross → dedicated channel (not agent poll).
+        try:
+            from backend.core.upper_tail_rail_trigger import (
+                maybe_emit_rail_from_orderbook_payload,
+            )
+
+            maybe_emit_rail_from_orderbook_payload(mt, payload)
+        except Exception:
+            pass
     for mt, _payload in published:
         _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
 

@@ -21,7 +21,6 @@ _CRYPTO_15M_RE = re.compile(r"^KX(BTC|ETH|SOL|XRP|DOGE)15M-", re.IGNORECASE)
 _lock = threading.Lock()
 _allowlist: set[str] = set()
 _watched: Optional[str] = None
-_ut_watched: set[str] = set()
 _last_refresh_mono: float = 0.0
 
 
@@ -54,8 +53,8 @@ def _parse_allowlist_env() -> set[str]:
 
 
 def refresh_hot_tickers_if_stale(*, force: bool = False) -> None:
-    """Reload watch keys + env allowlist used by tradeflow/UI wake filters."""
-    global _allowlist, _watched, _ut_watched, _last_refresh_mono
+    """Reload TM watch + env allowlist used by tradeflow/UI wake filters."""
+    global _allowlist, _watched, _last_refresh_mono
     now = time.monotonic()
     with _lock:
         if not force and now - _last_refresh_mono < _REFRESH_SEC:
@@ -72,16 +71,6 @@ def refresh_hot_tickers_if_stale(*, force: bool = False) -> None:
         except Exception:
             pass
         _watched = str(watched).strip() if watched else None
-        ut: set[str] = set()
-        try:
-            from backend.core.upper_tail_orderbook_watch import (
-                get_upper_tail_orderbook_watch,
-            )
-
-            ut = set(get_upper_tail_orderbook_watch())
-        except Exception:
-            ut = set()
-        _ut_watched = ut
 
 
 def should_immediate_flush_orderbook(market_ticker: str) -> bool:
@@ -104,7 +93,8 @@ def should_wake_tradeflow_on_orderbook(market_ticker: str) -> bool:
     """
     Whether AES/ATS should wake on this orderbook hint.
 
-    Independent of Redis freshness. Crypto 15m + allowlist + TM watch + UT watch.
+    Independent of Redis freshness. Crypto 15m + allowlist + TM watch.
+    Upper Tail uses ``upper_tail_rail_trigger`` — not tradeflow wake.
     """
     mt = str(market_ticker or "").strip()
     if not mt:
@@ -116,8 +106,6 @@ def should_wake_tradeflow_on_orderbook(market_ticker: str) -> bool:
         if mt in _allowlist:
             return True
         if _watched and mt == _watched:
-            return True
-        if mt in _ut_watched:
             return True
     return False
 

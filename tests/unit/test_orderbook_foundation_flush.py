@@ -70,13 +70,12 @@ def test_ut_watch_does_not_gate_flush(monkeypatch):
     )
     from backend.core import upper_tail_orderbook_watch as utw
 
-    utw.set_upper_tail_orderbook_watch([])
+    utw.set_upper_tail_orderbook_arm({})
     with reg._lock:
         reg._last_refresh_mono = 0.0
-        reg._ut_watched = set()
         reg._watched = None
         reg._allowlist = set()
-    # Flush is universal even with empty UT watch.
+    # Flush is universal even with empty UT arm.
     assert reg.should_immediate_flush_orderbook("KXETH15M-X") is True
     # Wake stays filtered.
     assert reg.should_wake_tradeflow_on_orderbook("KXETH15M-X") is False
