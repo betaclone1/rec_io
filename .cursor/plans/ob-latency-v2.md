@@ -16,7 +16,7 @@
 |------|-----|
 | Single Kalshi OB socket, one event loop | Dual socket / isolated thread collapsed fills |
 | Immediate Redis publish for **every** subscribed OB ticker | Flush policy is not a strategy feature |
-| Embed `yes`/`no` on every OB hint | Same payload shape for all consumers |
+| Lean OB hints (no embedded levels) | Redis levels key is SoT; avoid double JSON fanout |
 | UT / TM watch = wake / UI only | Must never gate whether Redis is fresh |
 | Measure with fill rate (e.g. 10046) + apply→Redis ms | Probe ms alone is not success |
 
@@ -25,19 +25,20 @@
 ## Controllable path
 
 ```
-Kalshi WS → apply (master.lock) → immediate Redis SET + hint (levels embedded)
-  → any consumer: AES / TM / UT / LT / probe
+Kalshi WS → apply (master.lock) → immediate Redis SET + lean hint
+  → any consumer: AES / TM / UT / LT / probe (depth via Redis GET)
 ```
 
-UI prebuild runs after hint. Cycle-hot PG enqueue runs off lock. Public trade Redis off WS loop.
+UI prebuild runs after hint. Cycle-hot PG enqueue runs off lock (current cycle only). Public trade Redis off WS loop. Non-lean 15m OB also pre-subscribes the **next** clock ticker.
 
 ---
 
 ## Done in this pass
 
 - [x] `should_immediate_flush_orderbook` — default on for all tickers
-- [x] `should_wake_tradeflow_on_orderbook` — crypto / allowlist / watches only
-- [x] Embed levels on every OB flush hint
+- [x] `should_wake_tradeflow_on_orderbook` — live crypto current / allowlist / watches only
+- [x] Lean OB hints (levels only in Redis key)
+- [x] Pre-subscribe next 15m OB ticker for non-lean symbols
 - [x] Periodic resync uses wake/crypto/stale — not “all immediate”
 - [x] Unit tests: `tests/unit/test_orderbook_foundation_flush.py` + updated Phase2 / UT tests
 - [x] Docs: `docs/ORDERBOOK_HOT_CACHE.md`

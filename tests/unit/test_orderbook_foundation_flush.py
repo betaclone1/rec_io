@@ -1,4 +1,4 @@
-"""System-wide OB foundation: immediate flush + embedded levels for every subscribed book."""
+"""System-wide OB foundation: immediate flush + lean hints; Redis levels SoT."""
 
 from __future__ import annotations
 
@@ -85,13 +85,24 @@ def test_ut_watch_does_not_gate_flush(monkeypatch):
 def test_tradeflow_wake_crypto_independent_of_flush(monkeypatch):
     monkeypatch.setenv("MARKET_WATCHDOG_IMMEDIATE_ORDERBOOK_FLUSH", "1")
     monkeypatch.setenv("MARKET_WATCHDOG_HOT_CRYPTO_15M", "1")
-    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-A") is True
+    import time
+
+    from backend.core.market_watchdog.venues.kalshi.schedule import (
+        clock_current_15m_ticker,
+        clock_next_15m_ticker,
+    )
+
+    now = time.time()
+    cur = clock_current_15m_ticker("BTC", now)
+    nxt = clock_next_15m_ticker("BTC", now)
+    assert reg.should_wake_tradeflow_on_orderbook(cur) is True
+    assert reg.should_wake_tradeflow_on_orderbook(nxt) is False
     assert reg.should_wake_tradeflow_on_orderbook("KXGOLD15M-A") is False
     # Gold still flushes.
     assert reg.should_immediate_flush_orderbook("KXGOLD15M-A") is True
 
 
-def test_flush_embeds_levels_for_commodity_book():
+def test_flush_lean_hint_keeps_levels_in_redis_only():
     master = _master("KXGOLD15M-CUR")
     hints: list[dict] = []
 
@@ -123,8 +134,15 @@ def test_flush_embeds_levels_for_commodity_book():
 
     assert len(hints) == 1
     assert hints[0]["market_ticker"] == "KXGOLD15M-CUR"
-    assert hints[0]["yes"] == {"0.40": "3"}
-    assert hints[0]["no"] == {"0.60": "4"}
+    assert hints[0]["book_seq"] == 9
+    assert "yes" not in hints[0]
+    assert "no" not in hints[0]
+    # Full book still written to Redis levels key.
+    assert pipe.set.called
+    set_args = pipe.set.call_args[0]
+    body = json.loads(set_args[1])
+    assert body["yes"] == {"0.40": "3"}
+    assert body["no"] == {"0.60": "4"}
 
 
 def test_delta_schedules_immediate_flush_even_when_not_ut_armed():

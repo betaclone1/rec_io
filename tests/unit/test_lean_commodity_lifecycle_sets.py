@@ -40,10 +40,29 @@ def test_lean_symbols_skip_orderbook():
     }
     with patch.object(wi, "_resolve_live_15m_current", side_effect=lambda sym, *a, **k: f"KX{sym}15M-CUR"):
         with patch.object(wi, "_latest_outgoing_15m", return_value=None):
-            ticker, ob, trade, _new = wi._lifecycle_sets(master, 0.0)
+            with patch.object(wi, "_clock_next_15m_ticker", side_effect=lambda sym, *a, **k: f"KX{sym}15M-NXT"):
+                ticker, ob, trade, _new = wi._lifecycle_sets(master, 0.0)
     assert "KXBTC15M-CUR" in ticker
     assert "KXBTC15M-CUR" in ob
+    assert "KXBTC15M-NXT" in ob  # pre-subscribe next crypto/full OB symbol
     assert "KXBTC15M-CUR" in trade
     assert "KXGOLD15M-CUR" in ticker
     assert "KXGOLD15M-CUR" not in ob
+    assert "KXGOLD15M-NXT" not in ob
     assert "KXGOLD15M-CUR" in trade
+
+
+def test_full_ob_symbols_presub_next_cycle():
+    cfg = _cfg(["BTC", "ETH"])
+    master = wi.KalshiMarketWsMaster(cfg=cfg, symbols=list(cfg.symbols))
+    master.schedule_by_symbol = {"BTC": {"15m": []}, "ETH": {"15m": []}}
+    with patch.object(wi, "_resolve_live_15m_current", side_effect=lambda sym, *a, **k: f"KX{sym}15M-CUR"):
+        with patch.object(wi, "_latest_outgoing_15m", return_value=None):
+            with patch.object(wi, "_clock_next_15m_ticker", side_effect=lambda sym, *a, **k: f"KX{sym}15M-NXT"):
+                _ticker, ob, _trade, _new = wi._lifecycle_sets(master, 0.0)
+    assert ob == {
+        "KXBTC15M-CUR",
+        "KXBTC15M-NXT",
+        "KXETH15M-CUR",
+        "KXETH15M-NXT",
+    }

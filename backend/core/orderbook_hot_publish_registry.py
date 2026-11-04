@@ -93,14 +93,29 @@ def should_wake_tradeflow_on_orderbook(market_ticker: str) -> bool:
     """
     Whether AES/ATS should wake on this orderbook hint.
 
-    Independent of Redis freshness. Crypto 15m + allowlist + TM watch.
+    Independent of Redis freshness. Live crypto 15m current cycle + allowlist
+    + TM watch. Pre-subscribed *next* crypto 15m books do not wake tradeflow
+    until the clock rolls (blank-slate lab lesson).
     Upper Tail uses ``upper_tail_rail_trigger`` — not tradeflow wake.
     """
     mt = str(market_ticker or "").strip()
     if not mt:
         return False
     if hot_crypto_15m_enabled() and is_crypto_15m_orderbook_ticker(mt):
-        return True
+        sym, market = symbol_market_from_orderbook_ticker(mt)
+        if sym and market == "15m":
+            try:
+                from backend.core.market_watchdog.venues.kalshi.schedule import (
+                    clock_current_15m_ticker,
+                )
+
+                if mt == clock_current_15m_ticker(sym, time.time()):
+                    return True
+            except Exception:
+                # Clock helper unavailable — keep prior "any crypto 15m" wake.
+                return True
+        else:
+            return True
     refresh_hot_tickers_if_stale()
     with _lock:
         if mt in _allowlist:

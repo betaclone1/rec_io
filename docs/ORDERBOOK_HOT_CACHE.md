@@ -2,11 +2,13 @@
 
 Redis-backed Kalshi orderbook depth. **One book for every consumer** (AES, TM, UT, LT, UI, probes). Strategy arming does not create a separate feed.
 
+Blank-slate lab lessons applied here: **lean pub/sub hints** (no full-book JSON fanout) and **pre-subscribe the next 15m cycle** on the OB channel.
+
 ## Keys
 
 | Key | Content |
 |-----|---------|
-| `trade_monitor:orderbook_levels:v1:{market_ticker}` | Raw YES/NO level maps, seq, venue/local stamps, `valid` |
+| `trade_monitor:orderbook_levels:v1:{market_ticker}` | Raw YES/NO level maps, seq, venue/local stamps, `valid` (**SoT for depth**) |
 | `trade_monitor:orderbook_ws:v1:{market_ticker}` | Pre-serialized `live_orderbook` JSON (when TM watch active + prebuild enabled) |
 | `rec_io:trade_monitor:orderbook_watch:v1` | TM UI watched ticker (wake / prebuild only) |
 | `rec_io:upper_tail:orderbook_watch:v1` | Armed Upper Tail tickers (**wake only** — never gates Redis freshness) |
@@ -16,15 +18,19 @@ Redis-backed Kalshi orderbook depth. **One book for every consumer** (AES, TM, U
 With `MARKET_WATCHDOG_IMMEDIATE_ORDERBOOK_FLUSH=1` (default):
 
 1. Apply snapshot/delta in memory on the single Kalshi OB socket.
-2. **Immediately** SET the levels key and publish a pub/sub hint.
-3. Embed `yes` / `no` levels on **every** hint so subscribers can skip GET.
+2. **Immediately** SET the levels key.
+3. Publish a **lean** pub/sub hint (ticker + seq + latency stamps — **no** embedded `yes`/`no`).
 4. UI prebuild (heavy JSON) runs **after** the hint so it cannot delay book readers.
 
 There is no “hot for Tail / cold for everyone else” flush policy. Coalesce (`MARKET_WATCHDOG_PUBLISH_COALESCE_MS`, default 50ms) only applies when immediate flush is disabled.
 
+## Pre-subscribe (15m rollover)
+
+Non-lean 15m symbols keep **current + next** market tickers on the OB channel. The next cycle is quiet until open; at the boundary the clock advances and the prior ticker drops via normal subscription sync. Tradeflow wake and cycle-hot PG enqueue only follow the **current** clock ticker.
+
 ## Wake filters (not freshness)
 
-AES/ATS orderbook wakes use `should_wake_tradeflow_on_orderbook` (crypto 15m + allowlist + TM watch + UT watch). That filter must never decide whether Redis gets the book.
+AES/ATS orderbook wakes use `should_wake_tradeflow_on_orderbook` (live crypto 15m **current** cycle + allowlist + TM watch). That filter must never decide whether Redis gets the book. Pre-subscribed next-cycle books do not wake AES until they become current.
 
 ## Latency timestamps
 
@@ -55,12 +61,11 @@ Channel: `rec_io:live_state:updated` (env: `LIVE_STATE_UPDATED_CHANNEL`)
   "sending_ts_ms": 1716234567895,
   "t_ws_recv_ms": 1716234567900,
   "t_apply_ms": 1716234567901,
-  "redis_written_ms": 1716234567902,
-  "yes": {"0.99": "5"},
-  "no": {"0.01": "10"},
-  "valid": true
+  "redis_written_ms": 1716234567902
 }
 ```
+
+Consumers that need depth: `GET trade_monitor:orderbook_levels:v1:{market_ticker}` (see `orderbook_hot_subscriber.load_orderbook_cache_snapshot`).
 
 ## Python subscriber
 
@@ -88,7 +93,7 @@ python3 scripts/dev/ob_latency_probe.py --ticker KXBTC15M-26MAY241830-30
 |----------|---------|---------|
 | `MARKET_WATCHDOG_IMMEDIATE_ORDERBOOK_FLUSH` | `1` | Immediate Redis publish for every dirty OB/ticker |
 | `MARKET_WATCHDOG_HOT_TICKER_FLUSH` | (alias) | Same as immediate flush (back-compat) |
-| `MARKET_WATCHDOG_HOT_CRYPTO_15M` | `1` | Include crypto 15m in **tradeflow wake** set |
+| `MARKET_WATCHDOG_HOT_CRYPTO_15M` | `1` | Include **live current** crypto 15m in tradeflow wake set |
 | `MARKET_WATCHDOG_HOT_ORDERBOOK_TICKERS` | empty | Extra tradeflow-wake tickers |
 | `MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC` | `0.05` | Watch/allowlist refresh for wake filters |
 | `MARKET_WATCHDOG_PUBLISH_COALESCE_MS` | `50` | Fallback batch interval when immediate flush is off |

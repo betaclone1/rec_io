@@ -174,6 +174,17 @@ def clock_previous_15m_ticker(symbol: str, now: float) -> str:
     return ticker_for_15m_end(series, prev_end)
 
 
+def clock_next_15m_ticker(symbol: str, now: float) -> str:
+    """Upcoming 15m market ticker (current period end + 15m).
+
+    Used to pre-subscribe the next cycle on the OB channel before it opens.
+    """
+    series = series_15m(symbol)
+    end = est_15m_period_end(datetime.fromtimestamp(now, timezone.utc))
+    next_end = end + timedelta(minutes=15)
+    return ticker_for_15m_end(series, next_end)
+
+
 def on_15m_rollover_boundary(now: float) -> bool:
     est = datetime.fromtimestamp(now, timezone.utc).astimezone(EST)
     return est.minute % 15 == 0 and est.second < 12

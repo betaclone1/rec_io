@@ -396,11 +396,7 @@ def _redis_publish_push(payload: dict[str, Any]) -> None:
                 "t_apply_ms": payload.get("t_apply_ms"),
                 "clock": payload.get("clock"),
             }
-            # Foundation: embed levels on every OB publish so all consumers share one book.
-            if payload.get("yes") is not None and payload.get("no") is not None:
-                extra["yes"] = payload["yes"]
-                extra["no"] = payload["no"]
-                extra["valid"] = True
+            # Lean hint: depth lives in Redis levels key; pub/sub is wake + stamps only.
             live_state_cache._publish_updated(
                 r,
                 "orderbook",
@@ -760,6 +756,13 @@ def _clock_previous_15m_ticker(symbol: str, now: float) -> str:
     return _ticker_for_15m_end(series, prev_end)
 
 
+def _clock_next_15m_ticker(symbol: str, now: float) -> str:
+    series = _series_15m(symbol)
+    end = _est_15m_period_end(datetime.fromtimestamp(now, timezone.utc))
+    next_end = end + timedelta(minutes=15)
+    return _ticker_for_15m_end(series, next_end)
+
+
 def _on_15m_rollover_boundary(now: float) -> bool:
     """First ~12s of each quarter hour — refresh schedule + prioritize rollover subs."""
     est = datetime.fromtimestamp(now, timezone.utc).astimezone(EST)
@@ -880,6 +883,11 @@ def _lifecycle_sets(
                 trade_sub.add(current)
                 if not lean:
                     ob_sub.add(current)
+                    # Pre-subscribe the next 15m cycle (lab lesson): Kalshi
+                    # sends little/nothing until open; avoids last-second add.
+                    nxt = _clock_next_15m_ticker(sym, now)
+                    if nxt and nxt != current:
+                        ob_sub.add(nxt)
         if master.cfg.includes_hourly and not lean:
             entries_h = master.schedule_by_symbol.get(sym, {}).get("hourly", [])
             for mt in _hourly_live_ob_tickers(sym, entries_h, now, master):
@@ -1054,9 +1062,8 @@ def _flush_orderbook_tickers_sync(
             "t_ws_recv_ms": payload.get("t_ws_recv_ms"),
             "t_apply_ms": payload.get("t_apply_ms"),
             "clock": payload.get("clock"),
-            # Same levels blob as Redis — every strat reads this foundation.
-            "yes": payload.get("yes") or {},
-            "no": payload.get("no") or {},
+            # Depth stays in Redis levels key — do not re-serialize full books
+            # into every pub/sub fanout (blank-slate lab lesson).
         }
         _redis_publish_push(hint)
         # Active UT trigger: rising-edge rail cross → dedicated channel (not agent poll).
@@ -2509,7 +2516,27 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 ob_dirty_mt = mt
 
     # Cycle-hot enqueue after lock so PG/queue bookkeeping cannot stall OB apply.
-    _enqueue_cycle_ob(cycle_ob_job)
+    # Skip pre-subscribed next-cycle books until the clock makes them current.
+    if cycle_ob_job:
+        job_mt = str((cycle_ob_job or {}).get("market_ticker") or ob_dirty_mt or "").strip()
+        enqueue_ok = True
+        if job_mt:
+            try:
+                from backend.core.orderbook_hot_publish_registry import (
+                    is_crypto_15m_orderbook_ticker,
+                    symbol_market_from_orderbook_ticker,
+                )
+
+                if is_crypto_15m_orderbook_ticker(job_mt):
+                    sym, market = symbol_market_from_orderbook_ticker(job_mt)
+                    if sym and market == "15m":
+                        enqueue_ok = job_mt == _clock_current_15m_ticker(
+                            sym, time.time()
+                        )
+            except Exception:
+                enqueue_ok = True
+        if enqueue_ok:
+            _enqueue_cycle_ob(cycle_ob_job)
 
     if ob_dirty_mt:
         from backend.core.orderbook_hot_publish_registry import (

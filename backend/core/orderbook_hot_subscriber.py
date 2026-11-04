@@ -4,7 +4,8 @@ Subscribe to hot orderbook cache updates (HF backend scripts).
 Reads ``rec_io:live_state:updated`` hints (``kind=orderbook``) and optionally loads
 the Redis levels blob at ``trade_monitor:orderbook_levels:v1:{ticker}``.
 
-Hot flushes may embed ``yes``/``no`` levels in the hint so consumers can skip GET.
+Hints are lean (ticker + seq + latency stamps). Depth is always loaded from the
+Redis levels key — do not expect ``yes``/``no`` on the pub/sub payload.
 """
 
 from __future__ import annotations
@@ -163,7 +164,11 @@ def snapshot_from_orderbook_hint(
     *,
     received_ms: Optional[int] = None,
 ) -> Optional[OrderbookCacheSnapshot]:
-    """Build a snapshot from an embedded hot pub/sub hint (no Redis GET)."""
+    """Build a snapshot only when the hint still embeds levels (legacy).
+
+    Production hints are lean; prefer ``load_orderbook_cache_snapshot`` after the
+    hint. Kept for probes/tests that inject inline levels.
+    """
     if not isinstance(payload, dict):
         return None
     if str(payload.get("kind") or "") != "orderbook":
@@ -202,7 +207,8 @@ def start_orderbook_hot_subscriber(
     """
     Blocking Redis pub/sub loop in a daemon thread.
 
-    Prefers levels embedded in the hot hint; falls back to Redis GET.
+    Lean hints trigger a Redis GET for levels (SoT). Legacy embedded-level
+    hints are still accepted when present.
     Returns False if Redis unavailable.
     """
     r = redis_client_optional()
