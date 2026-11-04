@@ -7,7 +7,7 @@ One-sided entry at the expensive end of a 15m book. Same monitor criteria as Low
 Kalshi will not rest these orders from the open. `upper_tail_agent` qualifies during the monitor time window, then sends a single GTC limit at the target on that side (`post_only` off):
 
 - **Crypto** at `live_data_level=full` — active trigger on the OB publish path: when an armed ticker’s touch crosses the rail, watchdog publishes `rec_io:upper_tail:rail_trigger:v1`; `upper_tail_agent` places once (`path=rail`). The agent does **not** subscribe to every orderbook delta. Housekeeping (monitors, markets, fills, arm registry) is a slow timer loop with a Redis-touch failsafe (`path=failsafe`). Crypto 15m is assumed **24/7**.
-- **Commodity** / lean `market` feed — public trades tape print ≥ target on the timer loop (`path=slow`). Commodity books stay off the rail-trigger path for now. Weekend REST polling is gated by hardcoded metals/energy dark hours in `backend/core/market_watchdog/venues/kalshi/schedule.py` (assume recent-month calendar; recheck periodically; new non-crypto symbols need their own close_time back-check before joining a cohort).
+- **Commodity** / lean `market` feed — public trades tape print ≥ target on the same slow timer loop (`path=slow`). Commodity books stay off the rail-trigger path for now. Weekend REST polling is gated by hardcoded metals/energy dark hours in `backend/core/market_watchdog/venues/kalshi/schedule.py` (assume recent-month calendar; recheck periodically; new non-crypto symbols need their own close_time back-check before joining a cohort).
 
 The trade is booked only after our own fill (`intent=upper_tail_fill`). Paper monitors book when the trigger qualifies.
 

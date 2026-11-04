@@ -67,18 +67,20 @@ logging.basicConfig(
 log = logging.getLogger("upper_tail_agent")
 
 POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "1.0"))
+LIVE_MARKETS_CACHE_SEC = float(os.getenv("UPPER_TAIL_LIVE_MARKETS_CACHE_SEC", "15"))
 PLACE_FAIL_COOLDOWN_SEC = float(os.getenv("UPPER_TAIL_PLACE_FAIL_COOLDOWN_SEC", "2.0"))
 
 app = FastAPI(title="Upper Tail Agent")
-_wake = threading.Event()
 _lock = threading.Lock()
 _arm_lock = threading.Lock()
 _started_at = time.time()
 _prev_auto_trade_status: Dict[str, str] = {}
-# ticker → monitor_ids armed for crypto stream fire (timer rebuilds).
+# ticker → monitor_ids armed for crypto rail fire (timer rebuilds).
 _armed_by_ticker: Dict[str, List[str]] = {}
 _last_http_warm_mono = 0.0
 _HTTP_WARM_SEC = float(os.getenv("UPPER_TAIL_HTTP_WARM_SEC", "30"))
+_live_markets_cache: list = []
+_live_markets_cache_mono = 0.0
 
 
 def _user_no() -> str:
@@ -753,10 +755,21 @@ def _on_fill(cy: _Cycle, *, side: str, qty: float) -> None:
     )
 
 
-def _live_markets() -> list:
+def _live_markets(*, force: bool = False) -> list:
+    """Cached series market list — avoid REST thrash on every housekeeping tick."""
+    global _live_markets_cache, _live_markets_cache_mono
+    now = time.monotonic()
+    if (
+        not force
+        and _live_markets_cache
+        and (now - _live_markets_cache_mono) < LIVE_MARKETS_CACHE_SEC
+    ):
+        return _live_markets_cache
     out: list = []
     for series in upper_tail_series_tickers():
         out.extend(fetch_series_15m_markets(series))
+    _live_markets_cache = out
+    _live_markets_cache_mono = now
     return out
 
 
@@ -890,15 +903,15 @@ def _tick() -> None:
 
 
 def _loop() -> None:
-    _log("timer housekeeping loop started")
+    _log(f"timer housekeeping loop started (poll={POLL_SEC}s)")
     while True:
         try:
             _tick()
         except Exception as exc:
             _log(f"tick error: {exc}")
-        # Tape can nudge early; crypto rail_trigger does not use this wake.
-        _wake.wait(timeout=POLL_SEC)
-        _wake.clear()
+        # Hard rate limit. Do not Event-wake on tape/OB — that busy-loops under load.
+        # Crypto places on rail_trigger; tape/commodity qualifies on this poll.
+        time.sleep(POLL_SEC)
 
 
 def _start_listeners() -> None:
@@ -916,37 +929,6 @@ def _start_listeners() -> None:
             _log("rail_trigger listener not started: redis unavailable")
     except Exception as exc:
         _log(f"rail_trigger listener not started: {exc}")
-
-    # Commodity / lean: public_trade nudges timer for tape qualify.
-    try:
-        from backend.core.live_state_cache import redis_client_optional
-        from backend.core.market_watchdog.config import load_config
-
-        cfg = load_config(exchange="kalshi", market_interval="15m")
-        channel = str(cfg.settled_redis_key).rsplit(":", 1)[0] + ":updated"
-
-        def _tape_worker() -> None:
-            r = redis_client_optional()
-            if not r:
-                return
-            pubsub = r.pubsub()
-            pubsub.subscribe(channel)
-            _log(f"subscribed {channel} (public tape → timer)")
-            while True:
-                try:
-                    msg = pubsub.get_message(
-                        ignore_subscribe_messages=True, timeout=1.0
-                    )
-                    if msg and msg.get("type") == "message":
-                        _wake.set()
-                except Exception:
-                    time.sleep(0.5)
-
-        threading.Thread(
-            target=_tape_worker, name="upper_tail_tape", daemon=True
-        ).start()
-    except Exception as exc:
-        _log(f"public tape listener not started: {exc}")
 
 
 @app.get("/health")
