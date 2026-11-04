@@ -244,6 +244,13 @@ async def run_probe(duration_s: int, ws_url: str, watch_mt: str) -> int:
         )
         try:
             await ws_worker(ws_url, watch_mt, stop_at, ws_samples, by_seq)
+        except OSError as e:
+            # Local probe often runs without main_app WS (:3000). Redis stages still count.
+            print(f"WS stage skipped ({e})", file=sys.stderr)
+            # Keep redis_worker sampling until stop_at.
+            remaining = max(0.0, stop_at - time.time())
+            if remaining > 0:
+                await asyncio.sleep(remaining)
         finally:
             await redis_fut
 

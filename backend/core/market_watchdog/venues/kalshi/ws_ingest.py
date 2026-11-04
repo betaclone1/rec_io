@@ -396,7 +396,7 @@ def _redis_publish_push(payload: dict[str, Any]) -> None:
                 "t_apply_ms": payload.get("t_apply_ms"),
                 "clock": payload.get("clock"),
             }
-            # Hot path: embed levels so consumers can skip Redis GET.
+            # Foundation: embed levels on every OB publish so all consumers share one book.
             if payload.get("yes") is not None and payload.get("no") is not None:
                 extra["yes"] = payload["yes"]
                 extra["no"] = payload["no"]
@@ -1028,8 +1028,6 @@ def _flush_orderbook_tickers_sync(
     """Write orderbook level keys + pub/sub hints (shared by hot and bulk flush)."""
     if not ob_tickers:
         return
-    from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
-
     r = _redis()
     pipe = r.pipeline()
     published: list[tuple[str, dict[str, Any]]] = []
@@ -1043,8 +1041,7 @@ def _flush_orderbook_tickers_sync(
         published.append((mt, payload))
     if published:
         pipe.execute()
-    # Publish live_state hints BEFORE UI prebuild. Prebuild rebuilds a full WS JSON
-    # blob and must not delay UT/crypto stream consumers on the hot flush path.
+    # Publish live_state hints BEFORE UI prebuild. Prebuild must not delay book consumers.
     for mt, payload in published:
         hint: dict[str, Any] = {
             "kind": "orderbook",
@@ -1057,11 +1054,10 @@ def _flush_orderbook_tickers_sync(
             "t_ws_recv_ms": payload.get("t_ws_recv_ms"),
             "t_apply_ms": payload.get("t_apply_ms"),
             "clock": payload.get("clock"),
+            # Same levels blob as Redis — every strat reads this foundation.
+            "yes": payload.get("yes") or {},
+            "no": payload.get("no") or {},
         }
-        # Embed levels on hot flush so UT/subscribers can skip Redis GET.
-        if is_hot_orderbook_ticker(mt):
-            hint["yes"] = payload.get("yes") or {}
-            hint["no"] = payload.get("no") or {}
         _redis_publish_push(hint)
     for mt, _payload in published:
         _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
@@ -1123,8 +1119,8 @@ def _flush_dirty_redis_sync(master: KalshiMarketWsMaster, ob_tickers: list[str],
 
 
 async def _hot_ob_flush_worker(master: KalshiMarketWsMaster, mt: str) -> None:
-    """Immediate flush for hot orderbook tickers (no coalesce wait)."""
-    from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+    """Immediate Redis publish for a dirty orderbook ticker (no coalesce wait)."""
+    from backend.core.orderbook_hot_publish_registry import should_immediate_flush_orderbook
 
     ticker = str(mt or "").strip()
     if not ticker:
@@ -1140,7 +1136,7 @@ async def _hot_ob_flush_worker(master: KalshiMarketWsMaster, mt: str) -> None:
             async with master.lock:
                 if ticker not in master.dirty_ob:
                     break
-                if not is_hot_orderbook_ticker(ticker):
+                if not should_immediate_flush_orderbook(ticker):
                     break
     finally:
         master.hot_ob_flush_scheduled.discard(ticker)
@@ -1569,19 +1565,20 @@ def _consume_ob_channel_seq(master: KalshiMarketWsMaster, seq: Any) -> tuple[str
 def _periodic_resync_tickers(master: KalshiMarketWsMaster) -> list[str]:
     """Subset for periodic health snapshots — avoid full-universe get_snapshot storms.
 
-    Prefer crypto/hot books plus any subscribed book with no recent apply. Seq-gap
-    resync still targets the single ticker that saw the hole.
+    Prefer crypto / tradeflow-wake books plus any subscribed book with no recent apply.
+    Do **not** use immediate-flush membership (that is every ticker). Seq-gap resync
+    still targets the single ticker that saw the hole.
     """
     from backend.core.orderbook_hot_publish_registry import (
         is_crypto_15m_orderbook_ticker,
-        is_hot_orderbook_ticker,
+        should_wake_tradeflow_on_orderbook,
     )
 
     now_mono = time.monotonic()
     stale_sec = float(os.getenv("MARKET_WATCHDOG_PERIODIC_RESYNC_STALE_SEC", "30"))
     out: set[str] = set()
     for mt in master.orderbook_subscribed:
-        if is_hot_orderbook_ticker(mt) or is_crypto_15m_orderbook_ticker(mt):
+        if is_crypto_15m_orderbook_ticker(mt) or should_wake_tradeflow_on_orderbook(mt):
             out.add(mt)
             continue
         b = master.books.get(mt) or {}
@@ -2172,23 +2169,32 @@ def _write_meta_transport_pulse(master: KalshiMarketWsMaster) -> None:
 
 
 async def _publish_coalesce_loop(master: KalshiMarketWsMaster) -> None:
-    """Flush cold dirty books/tickers on an interval; hot tickers use immediate flush."""
+    """Flush non-immediate leftovers on an interval.
+
+    With ``MARKET_WATCHDOG_IMMEDIATE_ORDERBOOK_FLUSH=1`` (default), orderbook dirty
+    set is drained by ``_schedule_hot_ob_flush``; this loop mainly covers ticker BBO
+    and the flush-disabled fallback.
+    """
     from backend.core.orderbook_hot_publish_registry import (
-        is_hot_orderbook_ticker,
         refresh_hot_tickers_if_stale,
+        should_immediate_flush_orderbook,
     )
 
     while True:
         await asyncio.sleep(PUBLISH_COALESCE_SEC)
         refresh_hot_tickers_if_stale()
         async with master.lock:
+            # When immediate flush is on (default), dirty sets are drained by
+            # _schedule_hot_*_flush; this batch is only the disabled-flush fallback.
             ob_batch = sorted(
-                mt for mt in master.dirty_ob if not is_hot_orderbook_ticker(mt)
+                mt for mt in master.dirty_ob if not should_immediate_flush_orderbook(mt)
             )
             for mt in ob_batch:
                 master.dirty_ob.discard(mt)
             ticker_batch = sorted(
-                mt for mt in master.dirty_ticker if not is_hot_orderbook_ticker(mt)
+                mt
+                for mt in master.dirty_ticker
+                if not should_immediate_flush_orderbook(mt)
             )
             for mt in ticker_batch:
                 master.dirty_ticker.discard(mt)
@@ -2497,9 +2503,11 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
     _enqueue_cycle_ob(cycle_ob_job)
 
     if ob_dirty_mt:
-        from backend.core.orderbook_hot_publish_registry import is_hot_orderbook_ticker
+        from backend.core.orderbook_hot_publish_registry import (
+            should_immediate_flush_orderbook,
+        )
 
-        if is_hot_orderbook_ticker(ob_dirty_mt):
+        if should_immediate_flush_orderbook(ob_dirty_mt):
             _schedule_hot_ob_flush(master, ob_dirty_mt)
 
 

@@ -73,11 +73,12 @@ def parse_tradeflow_symbol_market(payload: dict) -> List[Tuple[str, str]]:
         if not mt:
             return []
         from backend.core.orderbook_hot_publish_registry import (
-            is_hot_tradeflow_orderbook_ticker,
+            should_wake_tradeflow_on_orderbook,
             symbol_market_from_orderbook_ticker,
         )
 
-        if not is_hot_tradeflow_orderbook_ticker(mt):
+        # Wake filter only — Redis book freshness is not gated here.
+        if not should_wake_tradeflow_on_orderbook(mt):
             return []
         sym, mkt = symbol_market_from_orderbook_ticker(mt)
         if sym and mkt:

@@ -534,11 +534,11 @@ def test_rebuild_armed_registers_hot_watch(monkeypatch):
         assert "KXGOLD15M-A" not in te._armed_by_ticker
 
 
-def test_upper_tail_watch_marks_hot_ticker(monkeypatch):
+def test_upper_tail_watch_marks_tradeflow_wake(monkeypatch):
     from backend.core import orderbook_hot_publish_registry as reg
     from backend.core import upper_tail_orderbook_watch as utw
 
-    monkeypatch.setattr(reg, "hot_ticker_flush_enabled", lambda: True)
+    monkeypatch.setattr(reg, "immediate_orderbook_flush_enabled", lambda: True)
     monkeypatch.setattr(reg, "hot_crypto_15m_enabled", lambda: False)
     monkeypatch.setattr(reg, "_parse_allowlist_env", lambda: set())
     monkeypatch.setattr(
@@ -550,21 +550,24 @@ def test_upper_tail_watch_marks_hot_ticker(monkeypatch):
     # Force refresh to pick up local set
     with reg._lock:
         reg._last_refresh_mono = 0.0
-    assert reg.is_hot_orderbook_ticker("KXBTC15M-HOT") is True
-    assert reg.is_hot_orderbook_ticker("KXETH15M-COLD") is False
+    # Flush is universal; UT watch only affects wake.
+    assert reg.should_immediate_flush_orderbook("KXETH15M-COLD") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-HOT") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXETH15M-COLD") is False
     utw.set_upper_tail_orderbook_watch([])
 
 
-def test_crypto_15m_always_hot(monkeypatch):
+def test_crypto_15m_tradeflow_wake_not_flush_gate(monkeypatch):
     from backend.core import orderbook_hot_publish_registry as reg
 
-    monkeypatch.setattr(reg, "hot_ticker_flush_enabled", lambda: True)
+    monkeypatch.setattr(reg, "immediate_orderbook_flush_enabled", lambda: True)
     monkeypatch.setattr(reg, "hot_crypto_15m_enabled", lambda: True)
     monkeypatch.setattr(reg, "_parse_allowlist_env", lambda: set())
     monkeypatch.setattr(
         "backend.core.trade_monitor_orderbook_watch.get_trade_monitor_orderbook_watch",
         lambda: None,
     )
-    assert reg.is_hot_orderbook_ticker("KXBTC15M-ANY") is True
-    assert reg.is_hot_orderbook_ticker("KXETH15M-ANY") is True
-    assert reg.is_hot_orderbook_ticker("KXGOLD15M-ANY") is False
+    assert reg.should_immediate_flush_orderbook("KXGOLD15M-ANY") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-ANY") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXETH15M-ANY") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXGOLD15M-ANY") is False

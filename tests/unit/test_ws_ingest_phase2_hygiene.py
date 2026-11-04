@@ -85,10 +85,6 @@ def test_flush_publishes_hint_before_prebuild():
         ),
         patch.object(wi, "_redis_publish_push", side_effect=_track_publish),
         patch.object(wi, "_maybe_prebuild_orderbook_ws_payload", side_effect=_track_prebuild),
-        patch(
-            "backend.core.orderbook_hot_publish_registry.is_hot_orderbook_ticker",
-            return_value=True,
-        ),
     ):
         wi._flush_orderbook_tickers_sync(master, ["KXBTC15M-HOT"])
 
@@ -112,7 +108,7 @@ def test_periodic_resync_prefers_hot_crypto_and_stale_only(monkeypatch):
     with (
         patch("time.monotonic", return_value=now),
         patch(
-            "backend.core.orderbook_hot_publish_registry.is_hot_orderbook_ticker",
+            "backend.core.orderbook_hot_publish_registry.should_wake_tradeflow_on_orderbook",
             side_effect=lambda mt: mt.startswith("KXBTC15M"),
         ),
         patch(
@@ -224,13 +220,15 @@ def test_ob_delta_enqueues_cycle_hot_after_lock():
         "sending_ts_ms": 1_700_000_000_200,
     }
 
+    scheduled: list[str] = []
+
     async def _run():
         with (
             patch.object(wi, "_enqueue_cycle_ob", side_effect=lambda job: jobs.append(job)),
-            patch.object(wi, "_schedule_hot_ob_flush"),
-            patch(
-                "backend.core.orderbook_hot_publish_registry.is_hot_orderbook_ticker",
-                return_value=False,
+            patch.object(
+                wi,
+                "_schedule_hot_ob_flush",
+                side_effect=lambda m, mt: scheduled.append(mt),
             ),
         ):
             await wi._on_ws_message(master, json.dumps(raw))
@@ -241,6 +239,7 @@ def test_ob_delta_enqueues_cycle_hot_after_lock():
     assert jobs[0]["market_ticker"] == "KXBTC15M-CUR"
     assert jobs[0]["side"] == "yes"
     assert "KXBTC15M-CUR" in master.dirty_ob
+    assert scheduled == ["KXBTC15M-CUR"]
 
 
 def test_enqueue_cycle_ob_snapshot_and_delta():

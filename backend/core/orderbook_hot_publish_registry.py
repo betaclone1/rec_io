@@ -1,4 +1,9 @@
-"""Hot orderbook/ticker publish registry for immediate Redis flush (HF path)."""
+"""Orderbook publish policy: immediate Redis flush is universal; wake filters are separate.
+
+Foundation rule: every subscribed orderbook ticker publishes levels to Redis as soon as
+a delta/snapshot is applied. Strategy arming (UT watch, TM watch) must never gate
+whether the shared book is fresh — only whether a given consumer wakes on the hint.
+"""
 
 from __future__ import annotations
 
@@ -8,7 +13,7 @@ import threading
 import time
 from typing import Optional
 
-# Short so UT arm / trade-monitor watch flips take effect before the next cold coalesce.
+# Short so TM / UT watch flips take effect for *wake* filters quickly.
 _REFRESH_SEC = float(os.getenv("MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC", "0.05"))
 
 _CRYPTO_15M_RE = re.compile(r"^KX(BTC|ETH|SOL|XRP|DOGE)15M-", re.IGNORECASE)
@@ -20,13 +25,19 @@ _ut_watched: set[str] = set()
 _last_refresh_mono: float = 0.0
 
 
-def hot_ticker_flush_enabled() -> bool:
-    raw = os.getenv("MARKET_WATCHDOG_HOT_TICKER_FLUSH", "1").strip().lower()
+def immediate_orderbook_flush_enabled() -> bool:
+    """System-wide: flush every dirty OB ticker immediately (default on)."""
+    raw = os.getenv("MARKET_WATCHDOG_IMMEDIATE_ORDERBOOK_FLUSH", "1").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
 
+def hot_ticker_flush_enabled() -> bool:
+    """Back-compat alias for immediate OB flush."""
+    return immediate_orderbook_flush_enabled()
+
+
 def hot_crypto_15m_enabled() -> bool:
-    """Always immediate-flush crypto 15m books (no coalesce / no UT-arm wait)."""
+    """Crypto 15m is always in the tradeflow wake set (not a flush gate)."""
     raw = os.getenv("MARKET_WATCHDOG_HOT_CRYPTO_15M", "1").strip().lower()
     return raw in ("1", "true", "yes", "on")
 
@@ -43,7 +54,7 @@ def _parse_allowlist_env() -> set[str]:
 
 
 def refresh_hot_tickers_if_stale(*, force: bool = False) -> None:
-    """Reload watch keys + env allowlist (throttled unless forced)."""
+    """Reload watch keys + env allowlist used by tradeflow/UI wake filters."""
     global _allowlist, _watched, _ut_watched, _last_refresh_mono
     now = time.monotonic()
     with _lock:
@@ -73,9 +84,28 @@ def refresh_hot_tickers_if_stale(*, force: bool = False) -> None:
         _ut_watched = ut
 
 
-def is_hot_orderbook_ticker(market_ticker: str) -> bool:
-    if not hot_ticker_flush_enabled():
+def should_immediate_flush_orderbook(market_ticker: str) -> bool:
+    """True → publish Redis levels now. Foundation path: all non-empty tickers when enabled."""
+    if not immediate_orderbook_flush_enabled():
         return False
+    return bool(str(market_ticker or "").strip())
+
+
+def is_hot_orderbook_ticker(market_ticker: str) -> bool:
+    """
+    Back-compat name used by ingest flush scheduling.
+
+    Means: immediate Redis publish for this book. Does **not** mean UT-armed.
+    """
+    return should_immediate_flush_orderbook(market_ticker)
+
+
+def should_wake_tradeflow_on_orderbook(market_ticker: str) -> bool:
+    """
+    Whether AES/ATS should wake on this orderbook hint.
+
+    Independent of Redis freshness. Crypto 15m + allowlist + TM watch + UT watch.
+    """
     mt = str(market_ticker or "").strip()
     if not mt:
         return False
@@ -92,6 +122,11 @@ def is_hot_orderbook_ticker(market_ticker: str) -> bool:
     return False
 
 
+def is_hot_tradeflow_orderbook_ticker(market_ticker: str) -> bool:
+    """Back-compat alias for tradeflow wake filter."""
+    return should_wake_tradeflow_on_orderbook(market_ticker)
+
+
 def symbol_market_from_orderbook_ticker(market_ticker: str) -> tuple[Optional[str], Optional[str]]:
     """Map Kalshi orderbook ticker to (symbol, market) for tradeflow wake."""
     mt = str(market_ticker or "").strip().upper()
@@ -103,9 +138,8 @@ def symbol_market_from_orderbook_ticker(market_ticker: str) -> tuple[Optional[st
     mh = re.match(r"^KX(BTC|ETH|SOL|XRP|DOGE)D-", mt)
     if mh:
         return mh.group(1), "hourly"
+    # Commodity 15m (and any other KX*15M) — symbol from ticker prefix after KX.
+    m_any = re.match(r"^KX([A-Z0-9]+)15M-", mt)
+    if m_any:
+        return m_any.group(1), "15m"
     return None, None
-
-
-def is_hot_tradeflow_orderbook_ticker(market_ticker: str) -> bool:
-    """Orderbook hints wake AES/ATS only for hot/watched tickers."""
-    return is_hot_orderbook_ticker(market_ticker)
