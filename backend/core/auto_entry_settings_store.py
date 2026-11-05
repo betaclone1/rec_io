@@ -618,18 +618,47 @@ def apply_auto_entry_settings(
         update_fields.append("reverse = %s")
         update_values.append(bool(rev))
 
+    if "time_in_force" in data or "order_type" in data:
+        # Audit execution-shape changes — UI modal contamination has flipped these silently.
+        cursor.execute(
+            f"SELECT order_type, time_in_force, strategy FROM {ml} WHERE id = %s",
+            (monitor_id,),
+        )
+        prev_exec = cursor.fetchone()
+        prev_ot = str(prev_exec[0]) if prev_exec and prev_exec[0] is not None else None
+        prev_tif = str(prev_exec[1]) if prev_exec and prev_exec[1] is not None else None
+        prev_strat = str(prev_exec[2]) if prev_exec and prev_exec[2] is not None else None
+    else:
+        prev_ot = prev_tif = prev_strat = None
+
     if "time_in_force" in data:
         tif = normalize_kalshi_time_in_force(data["time_in_force"])
         if not tif:
             return {"status": "error", "message": "invalid_time_in_force"}
         update_fields.append("time_in_force = %s")
         update_values.append(tif)
+        if prev_tif is not None and prev_tif != tif:
+            _log.warning(
+                "[auto_entry_settings] monitor %s (%s) time_in_force %s → %s",
+                monitor_id,
+                prev_strat,
+                prev_tif,
+                tif,
+            )
     if "order_type" in data:
         ot = normalize_execution_order_type(data["order_type"])
         if not ot:
             return {"status": "error", "message": "invalid_order_type_policy"}
         update_fields.append("order_type = %s")
         update_values.append(ot)
+        if prev_ot is not None and prev_ot != ot:
+            _log.warning(
+                "[auto_entry_settings] monitor %s (%s) order_type %s → %s",
+                monitor_id,
+                prev_strat,
+                prev_ot,
+                ot,
+            )
 
     if "weekend_adjustment" in data:
         from backend.core.weekend_adjustment import normalize_weekend_adjustment

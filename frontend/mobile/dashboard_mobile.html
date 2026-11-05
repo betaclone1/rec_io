@@ -8993,8 +8993,8 @@
         <div style="display:flex; flex-direction:column; gap:4px; min-width:140px;">
           <label for="m_uatKalshiOrderType" style="font-size:12px; color:#9ca3af; font-weight:600;">Order Type</label>
           <select id="m_uatKalshiOrderType" aria-label="Order type" style="padding:6px 8px; border-radius:4px; border:1px solid #4a5568; background:#2a3441; color:#e2e8f0; font-size:14px;">
+            <option value="market" selected>Market</option>
             <option value="limit">Limit</option>
-            <option value="market">Market</option>
           </select>
         </div>
         <div style="display:flex; flex-direction:column; gap:4px; min-width:160px;">
@@ -9921,13 +9921,33 @@
         const tifEl = document.getElementById('m_uatKalshiTimeInForce');
         const otWrap = otEl && otEl.parentElement;
         const tifWrap = tifEl && tifEl.parentElement;
+        // Tail forces limit/GTC into shared selects while hidden. Non-Tail must not inherit
+        // that DOM residue — hydrate owns what Save persists.
         if (otEl) {
           otEl.disabled = !!tailStrategy;
-          if (tailStrategy) otEl.value = 'limit';
+          if (tailStrategy) {
+            otEl.value = 'limit';
+          } else {
+            const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+            const hydrated = modal && modal.dataset.uatHydratedOrderType;
+            otEl.value = (hydrated === 'limit' || hydrated === 'market') ? hydrated : 'market';
+          }
         }
         if (tifEl) {
           tifEl.disabled = !!tailStrategy;
-          if (tailStrategy) tifEl.value = 'good_till_canceled';
+          if (tailStrategy) {
+            tifEl.value = 'good_till_canceled';
+          } else {
+            const modal = document.getElementById('mobileUnifiedAutoTradeModal');
+            const hydrated = modal && modal.dataset.uatHydratedTif;
+            if (
+              hydrated === 'fill_or_kill'
+              || hydrated === 'immediate_or_cancel'
+              || hydrated === 'good_till_canceled'
+            ) {
+              tifEl.value = hydrated;
+            }
+          }
         }
         if (otWrap) otWrap.style.display = tailStrategy ? 'none' : '';
         if (tifWrap) tifWrap.style.display = tailStrategy ? 'none' : '';
@@ -11280,6 +11300,92 @@
       }
 
 
+      function mobileClearExecutionOrderHydration(modal) {
+        if (!modal) return;
+        delete modal.dataset.uatHydratedOrderType;
+        delete modal.dataset.uatHydratedTif;
+        modal.dataset.uatOrderTypeTouched = '0';
+        modal.dataset.uatTifTouched = '0';
+      }
+
+      function mobileWireExecutionOrderFieldGuards(modal) {
+        if (!modal) return;
+        const otEl = document.getElementById('m_uatKalshiOrderType');
+        const tifEl = document.getElementById('m_uatKalshiTimeInForce');
+        if (otEl && !otEl._uatExecGuardWired) {
+          otEl._uatExecGuardWired = true;
+          otEl.addEventListener('change', function () {
+            const m = document.getElementById('mobileUnifiedAutoTradeModal');
+            if (m) m.dataset.uatOrderTypeTouched = '1';
+          });
+        }
+        if (tifEl && !tifEl._uatExecGuardWired) {
+          tifEl._uatExecGuardWired = true;
+          tifEl.addEventListener('change', function () {
+            const m = document.getElementById('mobileUnifiedAutoTradeModal');
+            if (m) m.dataset.uatTifTouched = '1';
+          });
+        }
+      }
+
+      function mobileApplyExecutionOrderFromApi(modal, data) {
+        const ot = data && data.order_type;
+        const tif = data && data.time_in_force;
+        const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
+        const validTif = (
+          tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled'
+        ) ? tif : 'fill_or_kill';
+        if (modal) {
+          modal.dataset.uatHydratedOrderType = validOt;
+          modal.dataset.uatHydratedTif = validTif;
+          modal.dataset.uatOrderTypeTouched = '0';
+          modal.dataset.uatTifTouched = '0';
+        }
+        const otEl = document.getElementById('m_uatKalshiOrderType');
+        const tifEl = document.getElementById('m_uatKalshiTimeInForce');
+        if (otEl) { otEl.value = validOt; otEl.disabled = false; }
+        if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
+      }
+
+      function mobileResolveExecutionOrderForSave(modal, isTailStrategy) {
+        if (isTailStrategy) {
+          return { order_type: 'limit', time_in_force: 'good_till_canceled' };
+        }
+        if (!modal || !modal.dataset.uatHydratedOrderType || !modal.dataset.uatHydratedTif) {
+          return { error: 'Order type did not load from the monitor. Nothing was saved.' };
+        }
+        const otEl = document.getElementById('m_uatKalshiOrderType');
+        const tifEl = document.getElementById('m_uatKalshiTimeInForce');
+        const hydratedOt = modal.dataset.uatHydratedOrderType;
+        const hydratedTif = modal.dataset.uatHydratedTif;
+        const touchedOt = modal.dataset.uatOrderTypeTouched === '1';
+        const touchedTif = modal.dataset.uatTifTouched === '1';
+
+        let order_type = hydratedOt;
+        if (touchedOt && otEl && (otEl.value === 'limit' || otEl.value === 'market')) {
+          order_type = otEl.value;
+        } else if (otEl && otEl.value !== hydratedOt) {
+          console.warn('[UAT mobile] Ignoring contaminated order_type DOM', otEl.value, '→ hydrated', hydratedOt);
+          otEl.value = hydratedOt;
+        }
+
+        let time_in_force = hydratedTif;
+        if (
+          touchedTif && tifEl && (
+            tifEl.value === 'fill_or_kill'
+            || tifEl.value === 'immediate_or_cancel'
+            || tifEl.value === 'good_till_canceled'
+          )
+        ) {
+          time_in_force = tifEl.value;
+        } else if (tifEl && tifEl.value !== hydratedTif) {
+          console.warn('[UAT mobile] Ignoring contaminated time_in_force DOM', tifEl.value, '→ hydrated', hydratedTif);
+          tifEl.value = hydratedTif;
+        }
+
+        return { order_type, time_in_force };
+      }
+
       async function openModal(tileId) {
         const apiId = mobileNormalizeMonitorId(tileId);
         const modal = document.getElementById('mobileUnifiedAutoTradeModal');
@@ -11290,6 +11396,8 @@
         modal.setAttribute('data-uat-tile-id', tileId);
         // Never allow Save until this open has loaded authoritative monitor settings.
         modal.dataset.uatSettingsHydrated = '0';
+        mobileClearExecutionOrderHydration(modal);
+        mobileWireExecutionOrderFieldGuards(modal);
         state.minTimeSeconds = null;
         state.maxTimeSeconds = null;
         msState.minTimeSeconds = null;
@@ -11462,14 +11570,7 @@
         }
 
         {
-          const ot = data.order_type;
-          const tif = data.time_in_force;
-          const otEl = document.getElementById('m_uatKalshiOrderType');
-          const tifEl = document.getElementById('m_uatKalshiTimeInForce');
-          const validOt = ot === 'limit' || ot === 'market' ? ot : 'market';
-          const validTif = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
-          if (otEl) { otEl.value = validOt; otEl.disabled = false; }
-          if (tifEl) { tifEl.value = validTif; tifEl.disabled = false; }
+          mobileApplyExecutionOrderFromApi(modal, data);
         }
         {
           const waEl = document.getElementById('m_uatWeekendAdjustment');
@@ -11985,16 +12086,19 @@
             payload.test_filter = mTfEl ? mTfEl.checked : false;
             const mRevEl = document.getElementById('m_uatMonitorReverse');
             payload.reverse = mRevEl ? mRevEl.checked : false;
-            if (uatMobileIsLowerTail(currentStrategy) || uatMobileIsUpperTail(currentStrategy)) {
-              payload.order_type = 'limit';
-              payload.time_in_force = 'good_till_canceled';
-            } else {
-              const otEl = document.getElementById('m_uatKalshiOrderType');
-              const tifEl = document.getElementById('m_uatKalshiTimeInForce');
-              const ot = otEl && otEl.value;
-              const tif = tifEl && tifEl.value;
-              payload.order_type = ot === 'limit' || ot === 'market' ? ot : 'market';
-              payload.time_in_force = tif === 'fill_or_kill' || tif === 'immediate_or_cancel' || tif === 'good_till_canceled' ? tif : 'fill_or_kill';
+            {
+              const isTailSave = uatMobileIsLowerTail(currentStrategy) || uatMobileIsUpperTail(currentStrategy);
+              const exec = mobileResolveExecutionOrderForSave(uatModal, isTailSave);
+              if (exec.error) {
+                alert(exec.error);
+                return;
+              }
+              payload.order_type = exec.order_type;
+              payload.time_in_force = exec.time_in_force;
+              uatModal.dataset.uatHydratedOrderType = exec.order_type;
+              uatModal.dataset.uatHydratedTif = exec.time_in_force;
+              uatModal.dataset.uatOrderTypeTouched = '0';
+              uatModal.dataset.uatTifTouched = '0';
             }
             {
               const waEl = document.getElementById('m_uatWeekendAdjustment');
