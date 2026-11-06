@@ -275,8 +275,14 @@ class ObLiveFeed:
         self.channel_gaps = 0
         self.sid: Optional[int] = None
 
-    def bind(self, symbol: str, ticker: str) -> None:
+    def bind(self, symbol: str, ticker: str) -> bool:
+        """Bind active ticker. Returns True if ticker changed (book reset)."""
         book = self.books[symbol]
+        ticker = str(ticker or "").strip()
+        if book.ticker == ticker:
+            if ticker:
+                self.by_ticker[ticker] = book
+            return False
         if book.ticker and book.ticker in self.by_ticker:
             self.by_ticker.pop(book.ticker, None)
         book.ticker = ticker
@@ -286,9 +292,15 @@ class ObLiveFeed:
         book.valid = False
         if ticker:
             self.by_ticker[ticker] = book
+        return True
 
-    def set_pending(self, symbol: str, ticker: str) -> None:
-        self.books[symbol].pending_ticker = ticker
+    def set_pending(self, symbol: str, ticker: str) -> bool:
+        book = self.books[symbol]
+        ticker = str(ticker or "").strip()
+        if book.pending_ticker == ticker:
+            return False
+        book.pending_ticker = ticker
+        return True
 
     def subscribed_tickers(self) -> List[str]:
         out: list[str] = []
@@ -396,40 +408,36 @@ def _ws_headers() -> dict[str, str]:
 
 
 def _sync_clock_bindings(feed: ObLiveFeed) -> Tuple[List[str], List[str]]:
-    """Bind current+next tickers from wall clock. Returns (adds, drops)."""
+    """Bind current+next tickers from wall clock. Returns (adds, drops).
+
+    Clock is the only authority for which ticker is active. Pending is
+    subscribed early but ignored until the clock advances (no WS promote).
+    """
     now = time.time()
     want: set[str] = set()
     adds: list[str] = []
+    prev_sub = set(feed.subscribed_tickers())
     for sym, book in feed.books.items():
         cur = clock_current_15m_ticker(sym, now)
         nxt = clock_next_15m_ticker(sym, now)
-        if book.ticker != cur:
-            old = book.ticker
-            feed.bind(sym, cur)
-            if cur and cur not in want:
+        old = book.ticker
+        if feed.bind(sym, cur):
+            if cur:
                 adds.append(cur)
             log.info("bind %s active %s (was %s)", sym, cur, old or "-")
-        want.add(book.ticker)
-        if nxt and nxt != book.ticker:
-            if book.pending_ticker != nxt:
-                old_p = book.pending_ticker
-                feed.set_pending(sym, nxt)
-                if nxt not in want:
-                    adds.append(nxt)
+        if cur:
+            want.add(cur)
+        if nxt and nxt != cur:
+            old_p = book.pending_ticker
+            if feed.set_pending(sym, nxt):
+                adds.append(nxt)
                 log.info("bind %s pending %s (was %s)", sym, nxt, old_p or "-")
             want.add(nxt)
         else:
             feed.set_pending(sym, "")
-    have = set(feed.by_ticker) | {
-        b.pending_ticker for b in feed.books.values() if b.pending_ticker
-    }
-    # by_ticker only has actives; rebuild from subscribed
-    drops = [mt for mt in have if mt and mt not in want]
-    # Refresh by_ticker for pending so messages can promote
-    for b in feed.books.values():
-        if b.pending_ticker:
-            # pending maps to same Book for promote-on-delta
-            pass
+    drops = [mt for mt in prev_sub if mt and mt not in want]
+    # Dedupe adds that are already subscribed
+    adds = [mt for mt in adds if mt and mt not in (prev_sub - set(drops))]
     return adds, drops
 
 
@@ -505,25 +513,23 @@ async def run_ob_live(symbols: Optional[List[str]] = None) -> None:
                     while True:
                         await asyncio.sleep(1.0)
                         adds2, drops2 = _sync_clock_bindings(feed)
-                        # Recompute drops against subscribed set after bind
-                        sub = set(feed.subscribed_tickers())
-                        # Anything previously tracked but not wanted
-                        tracked = set(feed.by_ticker.keys())
-                        for b in feed.books.values():
-                            if b.pending_ticker:
-                                tracked.add(b.pending_ticker)
-                        drops2 = [mt for mt in tracked if mt not in sub]
                         if adds2:
                             await _update("add_markets", adds2)
-                            await _update("get_snapshot", adds2)
+                            # Snapshot only newly active markets (not pending).
+                            actives = [
+                                b.ticker
+                                for b in feed.books.values()
+                                if b.ticker and b.ticker in adds2
+                            ]
+                            if actives:
+                                await _update("get_snapshot", actives)
                         if drops2:
                             await _update("delete_markets", drops2)
-                            for mt in drops2:
-                                feed.by_ticker.pop(mt, None)
 
                 roll_task = asyncio.create_task(roll_watch(), name="ob_live_roll")
                 last_stat = time.monotonic()
                 last_age: Optional[int] = None
+                snap_requested = False
                 async for raw in ws:
                     recv_ms = _now_ms()
                     try:
@@ -539,6 +545,10 @@ async def run_ob_live(symbols: Optional[List[str]] = None) -> None:
                         except (TypeError, ValueError):
                             feed.sid = None
                         log.info("ws sid=%s", feed.sid)
+                        if not snap_requested:
+                            actives = [b.ticker for b in feed.books.values() if b.ticker]
+                            await _update("get_snapshot", actives)
+                            snap_requested = True
                         continue
                     if etype in ("ok", "error"):
                         if etype == "error":
@@ -553,25 +563,10 @@ async def run_ob_live(symbols: Optional[List[str]] = None) -> None:
                         continue
                     if ch == "gap":
                         await _update("get_snapshot", feed.subscribed_tickers())
+                    # Clock owns rollover. Pending-market noise is ignored until
+                    # roll_watch rebinds active via wall clock.
                     book = feed.by_ticker.get(mt)
-                    if book is None:
-                        # Promote pending on first useful message.
-                        for b in feed.books.values():
-                            if b.pending_ticker == mt:
-                                old = b.ticker
-                                feed.bind(b.symbol, mt)
-                                b.pending_ticker = ""
-                                # arm next
-                                nxt = clock_next_15m_ticker(b.symbol, time.time())
-                                if nxt and nxt != mt:
-                                    feed.set_pending(b.symbol, nxt)
-                                    await _update("add_markets", [nxt])
-                                if old:
-                                    await _update("delete_markets", [old])
-                                book = b
-                                log.info("promote %s %s → %s", b.symbol, old, mt)
-                                break
-                    if book is None:
+                    if book is None or mt != book.ticker:
                         continue
                     if etype == "orderbook_snapshot":
                         feed.apply_snapshot(book, envelope, msg, recv_ms)
