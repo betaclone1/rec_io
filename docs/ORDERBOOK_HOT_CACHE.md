@@ -24,7 +24,7 @@ With `MARKET_WATCHDOG_IMMEDIATE_ORDERBOOK_FLUSH=1` (default):
 3. Publish a **lean** pub/sub hint (ticker + seq + latency stamps — **no** embedded `yes`/`no`).
 4. UI prebuild (heavy JSON) runs **after** the hint so it cannot delay book readers.
 
-There is no “hot for Tail / cold for everyone else” flush policy. Coalesce (`MARKET_WATCHDOG_PUBLISH_COALESCE_MS`, default 50ms) only applies when immediate flush is disabled.
+There is no “hot for Tail / cold for everyone else” flush policy. Coalesce (`MARKET_WATCHDOG_PUBLISH_COALESCE_MS`, default **0**) only applies when immediate flush is disabled; raise it only as an explicit override.
 
 ## Pre-subscribe (15m rollover)
 
@@ -100,8 +100,9 @@ python3 scripts/dev/ob_latency_probe.py --ticker KXBTC15M-26MAY241830-30
 | `MARKET_WATCHDOG_HOT_CRYPTO_15M` | `1` | Include **live current** crypto 15m in tradeflow wake set |
 | `MARKET_WATCHDOG_HOT_ORDERBOOK_TICKERS` | empty | Extra tradeflow-wake tickers |
 | `MARKET_WATCHDOG_HOT_REGISTRY_REFRESH_SEC` | `0.05` | Watch/allowlist refresh for wake filters |
-| `MARKET_WATCHDOG_PUBLISH_COALESCE_MS` | `50` | Fallback batch interval when immediate flush is off |
+| `MARKET_WATCHDOG_PUBLISH_COALESCE_MS` | `0` | Fallback batch interval when immediate flush is off (0 = no batch delay) |
 | `ORDERBOOK_PREBUILD_WS_PAYLOAD` | `1` | Prebuild WS JSON after hint for watched ticker |
-| `TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC` | `0.05` | AES/ATS wake coalesce on orderbook hints |
+| `TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC` | `0` | AES/ATS wake coalesce on live_state hints (0 = none) |
+| `TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC` | `0` | AES/ATS wake coalesce on orderbook hints (0 = none) |
 
 Restart `market_watchdog_ws_kalshi` after changing ingest env vars.

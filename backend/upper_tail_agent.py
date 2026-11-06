@@ -67,7 +67,8 @@ logging.basicConfig(
 )
 log = logging.getLogger("upper_tail_agent")
 
-POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "1.0"))
+# Housekeeping only (floor/cancel/commodity tape). Crypto place is evented on rail.
+POLL_SEC = float(os.getenv("UPPER_TAIL_POLL_SEC", "0.25"))
 LIVE_MARKETS_CACHE_SEC = float(os.getenv("UPPER_TAIL_LIVE_MARKETS_CACHE_SEC", "15"))
 PLACE_FAIL_COOLDOWN_SEC = float(os.getenv("UPPER_TAIL_PLACE_FAIL_COOLDOWN_SEC", "2.0"))
 

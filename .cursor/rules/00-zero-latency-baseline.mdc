@@ -1,0 +1,35 @@
+# Zero-latency baseline (non-negotiable for market-data paths)
+
+External market data flowing through Rec must not pick up **internal** delay by default. Confirmation, coalesce, and poll cadence are **opt-in**, never the ambient culture.
+
+## Baseline
+
+1. **Wire → apply → consumers as fast as the source allows.** No default coalesce, debounce, or Hz cap on orderbook, ticker, symbol live_state, or tradeflow wake for that data.
+2. **Intentional latency is strategy product**, not pipeline habit. Entry/stop verification dwell (Exp Scalp, HTC, HWS, etc.) stays — configured on the strategy/monitor, not by slowing the shared feed.
+3. **No strategy cutouts that re-introduce pipeline lag.** Do not keep a slower shared coalesce “for Exp Scalp” while racing UT. Same pipe; strategies that need dwell use verification columns.
+
+## What is allowed without being “latency bias”
+
+| Mechanism | Role |
+|-----------|------|
+| Venue/network floor | Outside our control |
+| Latest-wins mailbox / drop intermediates | Prefer newest state; do not FIFO-delay |
+| Failsafe poll (`AES_FAILSAFE_*`, etc.) | Reliability if events miss — not the primary clock |
+| `TRADEFLOW_LANE_REEVAL_SEC` | Quiet-book window re-check (clock), not book coalesce |
+| Raising env caps under load | Explicit ops override (`TRADEFLOW_*_TRIGGER_MIN_SEC`, `SYMBOL_HOT_PUBLISH_MAX_HZ`, `STRIKE_REGEN_MIN_INTERVAL_SEC`, `MARKET_WATCHDOG_PUBLISH_COALESCE_MS`) |
+
+## Forbidden defaults
+
+- Shipping new code with non-zero coalesce/debounce/Hz caps “to be safe” on live market-data paths
+- Special-casing one strategy to keep pipeline lag while others need wire speed
+- Hiding lag with stamp clamps or synthetic timestamps
+
+## Defaults (code)
+
+- `TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC` = `0`
+- `TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC` = `0`
+- `MARKET_WATCHDOG_PUBLISH_COALESCE_MS` = `0` (immediate flush remains default on)
+- `SYMBOL_HOT_PUBLISH_MAX_HZ` = `0` (uncapped)
+- `STRIKE_REGEN_MIN_INTERVAL_SEC` = `0`
+
+Raise those only when measuring CPU/flood and choosing the tradeoff on purpose.

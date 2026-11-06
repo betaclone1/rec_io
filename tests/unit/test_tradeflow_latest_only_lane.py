@@ -141,7 +141,8 @@ def test_same_gen_should_reeval_after_interval(monkeypatch):
 
 
 def test_hub_schedules_reeval_on_same_gen(monkeypatch):
-    monkeypatch.setenv("TRADEFLOW_LANE_REEVAL_SEC", "0.05")
+    # Explicit quiet re-eval interval (not clamped — zero-latency floor is 0).
+    monkeypatch.setenv("TRADEFLOW_LANE_REEVAL_SEC", "0.2")
     from backend.core.tradeflow_latest_only_lane import LatestOnlyLaneHub
 
     snap = {
@@ -168,10 +169,10 @@ def test_hub_schedules_reeval_on_same_gen(monkeypatch):
     time.sleep(0.15)
     assert len(evals) >= 1
     first_n = len(evals)
-    hub.on_ladder_notify("BTC", "15m")  # same gen, too soon
+    hub.on_ladder_notify("BTC", "15m")  # same gen, too soon (< 0.2s)
     time.sleep(0.05)
     assert len(evals) == first_n
-    time.sleep(0.1)
+    time.sleep(0.2)
     hub.on_ladder_notify("BTC", "15m")  # same gen, reeval due
     time.sleep(0.15)
     assert len(evals) > first_n

@@ -1,8 +1,9 @@
 """Upper Tail crypto book trigger — emit when armed ticker is at the rail.
 
-On each OB Redis flush, if the ticker is armed and best bid/ask is at/above the
-limit, publish ``rec_io:upper_tail:rail_trigger:v1`` with the touch. No rising-edge
-memory: state is enough. The agent places once (``placed``) and drops the arm.
+Called on in-memory OB apply (not Redis flush). If the ticker is armed and
+best bid/ask is at/above the limit, publish ``rec_io:upper_tail:rail_trigger:v1``
+with the touch. No rising-edge memory: state is enough. The agent places once
+(``placed``) and drops the arm.
 """
 
 from __future__ import annotations
@@ -52,7 +53,7 @@ def maybe_emit_rail_from_orderbook_payload(
     """
     If this ticker is armed and touch is at the rail, publish a book trigger.
 
-    Returns True if a message was published. Safe to call on every flush.
+    Returns True if a message was published. Safe to call on every apply.
     """
     mt = str(market_ticker or "").strip()
     if not mt or not isinstance(payload, dict):

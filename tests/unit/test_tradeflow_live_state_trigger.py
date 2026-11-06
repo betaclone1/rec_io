@@ -6,6 +6,8 @@ from backend.core.tradeflow_live_state_trigger import (
     TradeflowLiveStateCoalescer,
     parse_tradeflow_symbol_market,
     tradeflow_live_state_trigger_enabled,
+    tradeflow_orderbook_trigger_min_interval_sec,
+    tradeflow_trigger_min_interval_sec,
 )
 
 
@@ -70,3 +72,25 @@ def test_coalescer_rate_limits():
 
 def test_trigger_enabled_default_on():
     assert tradeflow_live_state_trigger_enabled() is True
+
+
+def test_live_state_trigger_min_default_zero(monkeypatch):
+    monkeypatch.delenv("TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC", raising=False)
+    assert tradeflow_trigger_min_interval_sec() == 0.0
+
+
+def test_orderbook_trigger_min_default_zero(monkeypatch):
+    monkeypatch.delenv("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", raising=False)
+    assert tradeflow_orderbook_trigger_min_interval_sec() == 0.0
+
+
+def test_orderbook_coalescer_zero_never_blocks():
+    c = TradeflowLiveStateCoalescer(0.0)
+    assert c.should_fire("BTC", "15m")
+    assert c.should_fire("BTC", "15m")
+
+
+def test_general_coalescer_zero_never_blocks():
+    c = TradeflowLiveStateCoalescer(0.0)
+    assert c.should_fire("ETH", "hourly")
+    assert c.should_fire("ETH", "hourly")

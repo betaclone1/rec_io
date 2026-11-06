@@ -1163,7 +1163,11 @@ environment={env_vars}
             for _hf_key, _hf_default in (
                 ("MARKET_WATCHDOG_HOT_TICKER_FLUSH", "1"),
                 ("ORDERBOOK_PREBUILD_WS_PAYLOAD", "1"),
-                ("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", "0.05"),
+                ("TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC", "0"),
+                ("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", "0"),
+                ("SYMBOL_HOT_PUBLISH_MAX_HZ", "0"),
+                ("STRIKE_REGEN_MIN_INTERVAL_SEC", "0"),
+                ("MARKET_WATCHDOG_PUBLISH_COALESCE_MS", "0"),
             ):
                 if any(x.startswith(f"{_hf_key}=") for x in env_vars):
                     continue

@@ -13,12 +13,19 @@ def test_ob_live_owner_enabled_default(monkeypatch):
     assert ob.ob_live_owner_enabled() is False
 
 
-def test_apply_delta_submits_payload_with_raw_venue_stamp():
+def test_apply_delta_submits_payload_with_raw_venue_stamp(monkeypatch):
     submitted = []
+    rail_calls = []
 
     class Pub:
         def submit(self, payload):
             submitted.append(payload)
+
+    monkeypatch.setattr(
+        ob,
+        "_maybe_emit_rail_on_apply",
+        lambda payload: rail_calls.append(dict(payload)),
+    )
 
     feed = ObLiveFeed(["BTC"], Pub())  # type: ignore[arg-type]
     feed.bind("BTC", "KXBTC15M-TEST")
@@ -43,6 +50,47 @@ def test_apply_delta_submits_payload_with_raw_venue_stamp():
     assert body["t_ws_recv_ms"] == 1_700_000_000_080
     assert body["yes"]["0.990000"] == "5.00"
     assert book.t_ws_recv_ms - book.venue_ts_ms == 80
+    # Rail detect runs on apply, before Redis flush.
+    assert len(rail_calls) == 1
+    assert rail_calls[0]["market_ticker"] == "KXBTC15M-TEST"
+    assert "redis_written_ms" not in rail_calls[0]
+
+
+def test_flush_batch_does_not_emit_rail(monkeypatch):
+    rail_calls = []
+    monkeypatch.setattr(
+        ob,
+        "_maybe_emit_rail_on_apply",
+        lambda payload: rail_calls.append(1),
+    )
+
+    class FakeRedis:
+        def pipeline(self):
+            return self
+
+        def set(self, *a, **k):
+            return self
+
+        def execute(self):
+            return []
+
+        def publish(self, *a, **k):
+            return 1
+
+    pub = ob.LatestWinsRedisPublisher()
+    pub._r = FakeRedis()  # type: ignore[assignment]
+    pub._flush_batch(
+        {
+            "KXBTC15M-TEST": {
+                "market_ticker": "KXBTC15M-TEST",
+                "yes": {"0.99": "1"},
+                "no": {"0.01": "1"},
+                "seq": 1,
+            }
+        }
+    )
+    assert rail_calls == []
+    assert pub.published == 1
 
 
 def test_lifecycle_skips_full_15m_ob_when_live_owner(monkeypatch):

@@ -38,8 +38,12 @@ def test_aes_lane_parallelism_default_12(monkeypatch):
     assert aes._aes_lane_parallelism() == 12
 
 
-def test_strike_regen_floor_default_1():
-    assert float(stg_ws.STRIKE_REGEN_MIN_INTERVAL_SEC) >= 1.0
+def test_strike_regen_floor_default_zero(monkeypatch):
+    monkeypatch.delenv("STRIKE_REGEN_MIN_INTERVAL_SEC", raising=False)
+    import importlib
+
+    importlib.reload(stg_ws)
+    assert float(stg_ws.STRIKE_REGEN_MIN_INTERVAL_SEC) == 0.0
 
 
 def test_cooldown_timer_display_write_throttled(monkeypatch):

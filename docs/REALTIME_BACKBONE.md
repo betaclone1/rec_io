@@ -41,6 +41,10 @@ Adding a new "backbone" file (e.g. a new Python module under backend/) for real-
 
 This section is the **governance** for the backbone. Update it when we explicitly decide to expand scope; do not bypass it by "just adding one small thing."
 
+### 0.1 Zero-latency baseline (market data)
+
+External venue/source data through ingest → Redis/live_state → consumers must not accumulate **internal** delay by default. Shared pipeline coalesce, debounce, and Hz caps default to **off / 0**. Intentional waiting belongs on the **strategy** (entry/stop verification dwell for Exp Scalp, HTC, HWS, etc.), not as ambient lag on the pipe that every strategy shares. Do not add strategy-specific pipeline cutouts that keep the shared feed slow. Failsafe polls and quiet-book lane re-eval are reliability/clock mechanisms, not substitutes for verification. Full rule: `.cursor/rules/00-zero-latency-baseline.mdc`.
+
 ---
 
 ## 1. Role of the backbone

@@ -85,8 +85,9 @@ def _ttc_bucket(ttc_raw: Any) -> Any:
     """
     Bucket TTC so countdown ticks alone do not thrash the mailbox.
 
-    Ask/cent changes still advance the gen. Default bucket is 1s
-    (``TRADEFLOW_LANE_TTC_BUCKET_SEC``); raise to 5+ only to reduce cancel thrash.
+    Ask/cent changes still advance the gen. Default bucket is 1s (integer
+    second — finest wall-second grain). Raise ``TRADEFLOW_LANE_TTC_BUCKET_SEC``
+    explicitly (e.g. 5+) only to reduce cancel thrash under load.
     """
     try:
         ttc_i = int(float(ttc_raw))
@@ -158,9 +159,14 @@ class LaneSnapshot:
 
 
 def _reeval_sec() -> float:
-    """Min quiet time after an eval before same-gen mailboxes schedule again."""
+    """Min quiet time after an eval before same-gen mailboxes schedule again.
+
+    This is clock/window re-check when the book fingerprint is quiet — not a
+    market-data coalesce. Default 1s so entry windows still open on a static
+    book; set 0 to disable. Floor is 0 (no hidden 200ms bias).
+    """
     try:
-        return max(0.2, min(float(os.getenv("TRADEFLOW_LANE_REEVAL_SEC", "1")), 30.0))
+        return max(0.0, min(float(os.getenv("TRADEFLOW_LANE_REEVAL_SEC", "1")), 30.0))
     except (TypeError, ValueError):
         return 1.0
 

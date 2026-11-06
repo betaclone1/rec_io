@@ -25,19 +25,26 @@ def tradeflow_live_state_trigger_enabled() -> bool:
 
 
 def tradeflow_trigger_min_interval_sec() -> float:
-    raw = os.getenv("TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC", "0.2").strip()
+    """Live-state wake coalesce. Default 0 — no internal delay on external data.
+
+    Raise only as an explicit CPU / flood-control override. Strategy confirmation
+    (Exp Scalp / HTC verification dwell) is separate and must not be replaced by
+    pipeline coalesce.
+    """
+    raw = os.getenv("TRADEFLOW_LIVE_STATE_TRIGGER_MIN_SEC", "0").strip()
     try:
-        return max(0.05, float(raw))
+        return max(0.0, float(raw))
     except (TypeError, ValueError):
-        return 0.2
+        return 0.0
 
 
 def tradeflow_orderbook_trigger_min_interval_sec() -> float:
-    raw = os.getenv("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", "0.05").strip()
+    """OB wake coalesce. Default 0 — same zero-latency baseline as general wake."""
+    raw = os.getenv("TRADEFLOW_ORDERBOOK_TRIGGER_MIN_SEC", "0").strip()
     try:
-        return max(0.01, float(raw))
+        return max(0.0, float(raw))
     except (TypeError, ValueError):
-        return 0.05
+        return 0.0
 
 
 class TradeflowLiveStateCoalescer:
