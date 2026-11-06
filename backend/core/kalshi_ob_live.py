@@ -227,16 +227,12 @@ def _stamp(book: Book, envelope: dict, msg: dict, recv_ms: int) -> None:
 
 
 def _enqueue_cycle(book: Book, *, kind: str, side: str = "", price: str = "", delta: Any = None) -> None:
-    """Off-hot-path cycle package recording for the active ticker only."""
+    """Optional cycle-package recording. Off by default — must not touch the live path."""
+    if os.getenv("REC_OB_LIVE_CYCLE_HOT", "").strip() not in ("1", "true", "yes"):
+        return
     try:
         from backend.core.cycle_hot_tables import enqueue_delta, enqueue_snapshot
-        from backend.core.market_watchdog.venues.kalshi.schedule import (
-            clock_current_15m_ticker as clock_cur,
-        )
 
-        now = time.time()
-        if book.ticker != clock_cur(book.symbol, now):
-            return
         if kind == "snapshot":
             enqueue_snapshot(
                 book.ticker,
