@@ -45,6 +45,7 @@ UI prebuild runs after hint. Cycle-hot PG enqueue runs off lock (current cycle o
 
 ## Still open (prod)
 
-- [ ] Owner decision: deploy foundation vs rollback to `db278cb9`
-- [ ] After enact: soak Exp Scalp (10046) fill rate + `ob_latency_probe` apply→Redis
-- [ ] No dual socket without explicit gate + abort criteria
+- [x] Dedicated `kalshi_orderbook_live` owns non-lean 15m OB (lab architecture; latest-wins Redis)
+- [x] Watchdog skips those OB subs when `REC_KALSHI_OB_LIVE_OWNER=1`
+- [ ] Deploy + soak: venue→recv p99 must stay well under 100ms; Exp Scalp (10046) fill rate
+- [ ] Abort if dual writers appear on `trade_monitor:orderbook_levels:v1:KX*15M-*`

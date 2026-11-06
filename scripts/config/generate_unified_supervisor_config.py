@@ -117,6 +117,10 @@ def global_core_service_specs():
         {"name": "cfbenchmarks_price_watchdog", "script": "cfbenchmarks_price_watchdog.py"},
         {"name": "pyth_price_watchdog", "script": "pyth_price_watchdog.py"},
         {
+            "name": "kalshi_orderbook_live",
+            "script": "kalshi_orderbook_live.py",
+        },
+        {
             "name": "market_watchdog_ws_kalshi",
             "script": f"market_watchdog_ws.py --exchange kalshi --market {mw_market}",
         },
@@ -574,10 +578,20 @@ class SupervisorConfigGenerator:
             )
         services.append(
             {
+                "name": "kalshi_orderbook_live",
+                "script": "kalshi_orderbook_live.py",
+                "port": 0,
+                "environment": env_global + ',REC_KALSHI_OB_LIVE_OWNER="1"',
+                "autostart": True,
+            }
+        )
+        services.append(
+            {
                 "name": "market_watchdog_ws_kalshi",
                 "script": f"market_watchdog_ws.py --exchange kalshi --market {mw_market}",
                 "port": ports.get("market_watchdog_ws_kalshi", 8005),
                 "environment": env_global
+                + ',REC_KALSHI_OB_LIVE_OWNER="1"'
                 + (
                     f',MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE="{stream_overlay["MARKET_WATCHDOG_HOURLY_ATM_STRIKES_EACH_SIDE"]}"'
                     if hourly_live

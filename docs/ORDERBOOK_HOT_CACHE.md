@@ -2,7 +2,9 @@
 
 Redis-backed Kalshi orderbook depth. **One book for every consumer** (AES, TM, UT, LT, UI, probes). Strategy arming does not create a separate feed.
 
-Blank-slate lab lessons applied here: **lean pub/sub hints** (no full-book JSON fanout) and **pre-subscribe the next 15m cycle** on the OB channel.
+**Owner:** non-lean 15m books are published by `kalshi_orderbook_live` (lab architecture: WS → RAM apply → latest-wins Redis). With `REC_KALSHI_OB_LIVE_OWNER=1` (default), `market_watchdog_ws_kalshi` does **not** subscribe those OB markets — dual ownership destroyed live-view latency (~1s venue→recv).
+
+Blank-slate lab lessons: **lean pub/sub hints**, **pre-subscribe next 15m cycle**, **never block the WS loop on Redis**.
 
 ## Keys
 

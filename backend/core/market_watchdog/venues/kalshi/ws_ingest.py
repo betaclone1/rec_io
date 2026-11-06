@@ -881,13 +881,18 @@ def _lifecycle_sets(
             if current:
                 ticker_sub.add(current)
                 trade_sub.add(current)
+                # Full (non-lean) 15m orderbooks are owned by kalshi_orderbook_live
+                # when REC_KALSHI_OB_LIVE_OWNER=1 (default). Watchdog must not
+                # also subscribe — dual apply/flush destroys live-view latency.
                 if not lean:
-                    ob_sub.add(current)
-                    # Pre-subscribe the next 15m cycle (lab lesson): Kalshi
-                    # sends little/nothing until open; avoids last-second add.
-                    nxt = _clock_next_15m_ticker(sym, now)
-                    if nxt and nxt != current:
-                        ob_sub.add(nxt)
+                    from backend.core.kalshi_ob_live import ob_live_owner_enabled
+
+                    if not ob_live_owner_enabled():
+                        ob_sub.add(current)
+                        # Pre-subscribe the next 15m cycle (lab lesson).
+                        nxt = _clock_next_15m_ticker(sym, now)
+                        if nxt and nxt != current:
+                            ob_sub.add(nxt)
         if master.cfg.includes_hourly and not lean:
             entries_h = master.schedule_by_symbol.get(sym, {}).get("hourly", [])
             for mt in _hourly_live_ob_tickers(sym, entries_h, now, master):
