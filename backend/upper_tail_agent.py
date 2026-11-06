@@ -2,16 +2,16 @@
 Upper Tail agent — one GTC limit when the target rail is reached.
 
 Outside trade_executor. During the monitor time window:
-  - crypto (``full``) — active ``upper_tail_rail_trigger`` from OB publish
-    (watchdog emits on rising-edge rail cross; this agent only places)
+  - crypto (``full``) — OB flush publishes when best bid/ask is at the target;
+    this agent places once (``path=book``). Also checks Redis once when a ticker
+    newly arms (already-at-rail).
   - commodity / lean ``market`` — public trades tape print ≥ target (timer loop)
 Places a single GTC at the target on that side (``post_only`` off). Venue fill
 confirmation books into trade_manager. Paper monitors book when the trigger
 qualifies (no venue order).
 
 Housekeeping (monitors, markets, fills, arm registry) is a slow timer loop.
-Crypto does **not** re-qualify Redis touch on that timer — no backup place path.
-Crypto does not subscribe to every orderbook delta.
+Crypto entry is not polled on that timer.
 """
 
 from __future__ import annotations
@@ -76,8 +76,9 @@ _lock = threading.Lock()
 _arm_lock = threading.Lock()
 _started_at = time.time()
 _prev_auto_trade_status: Dict[str, str] = {}
-# ticker → monitor_ids armed for crypto rail fire (timer rebuilds).
+# ticker → monitor_ids armed for crypto book fire (housekeeping rebuilds).
 _armed_by_ticker: Dict[str, List[str]] = {}
+_prev_armed_tickers: set = set()
 _last_http_warm_mono = 0.0
 _HTTP_WARM_SEC = float(os.getenv("UPPER_TAIL_HTTP_WARM_SEC", "30"))
 _live_markets_cache: list = []
@@ -577,15 +578,44 @@ def _hit_from_touch(
     )
 
 
-def _on_rail_trigger(payload: Dict[str, Any]) -> None:
-    """Active trigger from OB publish: place once for armed monitors on this ticker."""
-    t0 = time.time()
-    mt = str(payload.get("market_ticker") or "").strip()
-    if not mt:
-        return
+def _fire_armed_ticker_from_touch(
+    mt: str,
+    touch: Dict[str, Any],
+    *,
+    path: str,
+    t_detect: float,
+    source_age_ms: Optional[float],
+    source_ts_ms: Optional[float],
+) -> None:
+    """Place once for each armed monitor on ``mt`` if touch is at that monitor's rail."""
     with _arm_lock:
         mids = list(_armed_by_ticker.get(mt) or ())
     if not mids:
+        return
+    for mid in mids:
+        cy = _cycles.get(mid)
+        if cy is None or cy.ticker != mt:
+            continue
+        if cy.placed or cy.done or cy.placing:
+            continue
+        hit = _hit_from_touch(
+            cy,
+            touch,
+            t_detect=t_detect,
+            source_age_ms=source_age_ms,
+            source_ts_ms=source_ts_ms,
+        )
+        if not hit:
+            continue
+        ttc = cy.close_ts - t_detect
+        _try_fire_cycle(cy, hit, path=path, ttc=ttc)
+
+
+def _on_rail_trigger(payload: Dict[str, Any]) -> None:
+    """OB flush said this armed ticker is at the rail — place once."""
+    t0 = time.time()
+    mt = str(payload.get("market_ticker") or "").strip()
+    if not mt:
         return
     touch = payload.get("touch")
     if not isinstance(touch, dict) or not touch:
@@ -610,27 +640,43 @@ def _on_rail_trigger(payload: Dict[str, Any]) -> None:
     elif src_ms is not None:
         age_ms = max(0.0, t0 * 1000.0 - src_ms)
 
-    for mid in mids:
-        cy = _cycles.get(mid)
-        if cy is None or cy.ticker != mt:
-            continue
-        if cy.placed or cy.done or cy.placing:
-            continue
-        hit = _hit_from_touch(
-            cy,
-            touch,
-            t_detect=t0,
-            source_age_ms=age_ms,
-            source_ts_ms=src_ms,
-        )
-        if not hit:
-            continue
-        ttc = cy.close_ts - t0
-        _try_fire_cycle(cy, hit, path="rail", ttc=ttc)
+    _fire_armed_ticker_from_touch(
+        mt,
+        touch,
+        path="book",
+        t_detect=t0,
+        source_age_ms=age_ms,
+        source_ts_ms=src_ms,
+    )
+
+
+def _evaluate_book_from_redis(mt: str) -> None:
+    """One-shot state check when a ticker newly arms (book may already be at rail)."""
+    t0 = time.time()
+    touch, reason, meta = resolve_orderbook_touch_with_meta(mt)
+    if not touch or reason != "ok":
+        return
+    src_ms = None
+    for candidate in (meta.venue_ts_ms, meta.ts_ms, meta.redis_written_ms):
+        if candidate is not None:
+            src_ms = float(candidate)
+            break
+    age_ms = (t0 * 1000.0 - src_ms) if src_ms is not None else None
+    if age_ms is not None and age_ms < 0:
+        age_ms = 0.0
+    _fire_armed_ticker_from_touch(
+        mt,
+        touch,
+        path="arm",
+        t_detect=t0,
+        source_age_ms=age_ms,
+        source_ts_ms=src_ms,
+    )
 
 
 def _rebuild_armed_index(now: float) -> None:
-    """Timer-only: index crypto cycles for rail-trigger arm registry."""
+    """Housekeeping: which crypto tickers are live for book triggers."""
+    global _prev_armed_tickers
     by_ticker: Dict[str, List[str]] = {}
     arms: Dict[str, float] = {}
     for mid, cy in list(_cycles.items()):
@@ -655,6 +701,10 @@ def _rebuild_armed_index(now: float) -> None:
         global _armed_by_ticker
         _armed_by_ticker = by_ticker
     set_upper_tail_orderbook_arm(arms)
+    newly = set(arms.keys()) - _prev_armed_tickers
+    _prev_armed_tickers = set(arms.keys())
+    for mt in newly:
+        _evaluate_book_from_redis(mt)
 
 
 def _qualifying_side_from_tape(cy: _Cycle) -> Optional[_TriggerHit]:
@@ -878,7 +928,7 @@ def _tick() -> None:
             continue
         if cy.done or cy.placed or cy.placing or not in_window:
             continue
-        # Crypto orderbook: place only on rail_trigger. Timer never re-qualifies OB.
+        # Crypto: place on OB book trigger only (not this timer).
         if cy.trigger_mode == TRIGGER_ORDERBOOK:
             continue
         hit = _qualifying_side_tape_only(cy, now=now)
@@ -907,26 +957,24 @@ def _loop() -> None:
             _tick()
         except Exception as exc:
             _log(f"tick error: {exc}")
-        # Hard rate limit. Do not Event-wake on tape/OB — that busy-loops under load.
-        # Crypto places only on rail_trigger; tape/commodity qualifies on this poll.
+        # Hard sleep. Tape qualifies here; crypto places on OB book trigger.
         time.sleep(POLL_SEC)
 
 
 def _start_listeners() -> None:
-    # Crypto: active rail-cross trigger from OB publish path (not every delta).
     try:
         from backend.core.upper_tail_rail_trigger import start_rail_trigger_listener
 
         ok = start_rail_trigger_listener(
             _on_rail_trigger,
-            thread_name="upper_tail_rail_trigger",
+            thread_name="upper_tail_book_trigger",
         )
         if ok:
-            _log("subscribed upper_tail rail_trigger (active OB rail cross)")
+            _log("subscribed upper_tail book trigger (OB at-rail)")
         else:
-            _log("rail_trigger listener not started: redis unavailable")
+            _log("book trigger listener not started: redis unavailable")
     except Exception as exc:
-        _log(f"rail_trigger listener not started: {exc}")
+        _log(f"book trigger listener not started: {exc}")
 
 
 @app.get("/health")

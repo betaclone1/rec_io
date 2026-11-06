@@ -386,7 +386,7 @@ def test_place_live_logs_detect_to_ack(monkeypatch):
     assert "rtt_ms=" in gtc
     assert "source_age_ms=8.0" in gtc
     assert "mode=orderbook" in gtc
-    assert "path=hot" in gtc
+    assert "path=hot" in gtc  # path label is caller-supplied
     assert cy.order_id == "oid-1"
 
 
@@ -453,7 +453,7 @@ def test_rail_trigger_noop_below_rail(monkeypatch):
     assert cy.placed is False
 
 
-def test_rail_trigger_fires_once_on_rail(monkeypatch):
+def test_book_trigger_fires_once_on_rail(monkeypatch):
     import backend.upper_tail_agent as te
 
     cy = _make_cycle()
@@ -471,13 +471,13 @@ def test_rail_trigger_fires_once_on_rail(monkeypatch):
     monkeypatch.setattr(te, "_book", _book)
     payload = _rail_payload(cy.ticker, yes={"0.99": "5"}, no={"0.01": "5"})
     te._on_rail_trigger(payload)
-    te._on_rail_trigger(payload)  # second trigger must not double-fire
+    te._on_rail_trigger(payload)  # second publish must not double-fire
     assert cy.placed is True
     assert cy.side == "yes"
     assert len(booked) == 1
 
 
-def test_rail_trigger_ignores_unarmed_ticker(monkeypatch):
+def test_book_trigger_ignores_unarmed_ticker(monkeypatch):
     import backend.upper_tail_agent as te
 
     cy = _make_cycle()
@@ -493,19 +493,24 @@ def test_rail_trigger_ignores_unarmed_ticker(monkeypatch):
     assert fired == []
 
 
-def test_rebuild_armed_registers_rail_arm(monkeypatch):
+def test_rebuild_armed_registers_book_arm_and_evaluates_new(monkeypatch):
     import time
 
     import backend.upper_tail_agent as te
     from backend.core.upper_tail import TRIGGER_ORDERBOOK, TRIGGER_TAPE
 
     armed = {}
+    evaluated = []
 
     def _set(arms):
         armed["arms"] = dict(arms)
 
     monkeypatch.setattr(te, "set_upper_tail_orderbook_arm", _set)
+    monkeypatch.setattr(
+        te, "_evaluate_book_from_redis", lambda mt: evaluated.append(mt)
+    )
     te._cycles.clear()
+    te._prev_armed_tickers = set()
     btc = _make_cycle(monitor_id="1", ticker="KXBTC15M-A", trigger_mode=TRIGGER_ORDERBOOK)
     gold = _make_cycle(
         monitor_id="2",
@@ -519,9 +524,14 @@ def test_rebuild_armed_registers_rail_arm(monkeypatch):
     assert "KXBTC15M-A" in armed["arms"]
     assert armed["arms"]["KXBTC15M-A"] == 0.99
     assert "KXGOLD15M-A" not in armed["arms"]
+    assert evaluated == ["KXBTC15M-A"]
     with te._arm_lock:
         assert btc.monitor_id in te._armed_by_ticker.get("KXBTC15M-A", [])
         assert "KXGOLD15M-A" not in te._armed_by_ticker
+    # Second rebuild: same arm → no re-evaluate
+    evaluated.clear()
+    te._rebuild_armed_index(time.time())
+    assert evaluated == []
 
 
 def test_upper_tail_arm_does_not_wake_tradeflow(monkeypatch):

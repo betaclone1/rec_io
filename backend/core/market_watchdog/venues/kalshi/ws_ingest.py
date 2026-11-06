@@ -1066,7 +1066,7 @@ def _flush_orderbook_tickers_sync(
             # into every pub/sub fanout (blank-slate lab lesson).
         }
         _redis_publish_push(hint)
-        # Active UT trigger: rising-edge rail cross → dedicated channel (not agent poll).
+        # UT: if armed and bid/ask at rail → dedicated channel (agent places once).
         try:
             from backend.core.upper_tail_rail_trigger import (
                 maybe_emit_rail_from_orderbook_payload,

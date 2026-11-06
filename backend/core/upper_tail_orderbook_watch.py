@@ -1,8 +1,8 @@
-"""Armed Upper Tail crypto tickers + min limit for rail-trigger evaluation.
+"""Armed Upper Tail crypto tickers + min limit for book-trigger evaluation.
 
-Watchdog uses this only to decide whether a published book can emit
-``upper_tail_rail_trigger``. Redis OB flush itself is universal (foundation path);
-this set does **not** gate freshness or tradeflow wake.
+Watchdog uses this only to decide whether a published book at the rail should
+emit ``upper_tail_rail_trigger``. Redis OB flush itself is universal; this set
+does **not** gate freshness or tradeflow wake.
 """
 
 from __future__ import annotations

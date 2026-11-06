@@ -1,4 +1,4 @@
-"""Upper Tail active rail-trigger: rising edge only, armed tickers only."""
+"""Upper Tail book trigger: emit while armed and at rail (state, not rising edge)."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import backend.core.upper_tail_orderbook_watch as utw
 import backend.core.upper_tail_rail_trigger as rt
 
 
-def test_maybe_emit_rising_edge_only(monkeypatch):
+def test_maybe_emit_while_at_rail(monkeypatch):
     published = []
 
     class _R:
@@ -19,7 +19,6 @@ def test_maybe_emit_rising_edge_only(monkeypatch):
     monkeypatch.setattr(rt, "_redis", lambda: _R())
     monkeypatch.setattr(utw, "_redis", lambda: None)
     utw.set_upper_tail_orderbook_arm({"KXBTC15M-T": 0.99})
-    rt.clear_rail_edge()
 
     mid = {
         "yes": {"0.50": "10"},
@@ -43,12 +42,7 @@ def test_maybe_emit_rising_edge_only(monkeypatch):
     assert published[0][1]["side"] == "yes"
     assert published[0][1]["market_ticker"] == "KXBTC15M-T"
 
-    # Still at rail → no second publish
-    assert rt.maybe_emit_rail_from_orderbook_payload("KXBTC15M-T", rail) is False
-    assert len(published) == 1
-
-    # Drop off rail, then re-cross → emit again
-    assert rt.maybe_emit_rail_from_orderbook_payload("KXBTC15M-T", mid) is False
+    # Still at rail → publish again (agent dedupes via placed)
     assert rt.maybe_emit_rail_from_orderbook_payload("KXBTC15M-T", rail) is True
     assert len(published) == 2
 
@@ -66,7 +60,6 @@ def test_maybe_emit_skips_unarmed(monkeypatch):
     monkeypatch.setattr(rt, "_redis", lambda: _R())
     monkeypatch.setattr(utw, "_redis", lambda: None)
     utw.set_upper_tail_orderbook_arm({})
-    rt.clear_rail_edge()
     assert (
         rt.maybe_emit_rail_from_orderbook_payload(
             "KXBTC15M-T",

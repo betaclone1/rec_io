@@ -1,8 +1,8 @@
-"""Active Upper Tail rail-cross trigger — emit on OB publish, not agent polling.
+"""Upper Tail crypto book trigger — emit when armed ticker is at the rail.
 
-Watchdog (or any flush path) evaluates armed tickers once when levels are published.
-On rising edge (not-at-rail → at-rail), publishes ``rec_io:upper_tail:rail_trigger:v1``.
-Upper Tail agents subscribe to that channel and place; they do not chew every OB delta.
+On each OB Redis flush, if the ticker is armed and best bid/ask is at/above the
+limit, publish ``rec_io:upper_tail:rail_trigger:v1`` with the touch. No rising-edge
+memory: state is enough. The agent places once (``placed``) and drops the arm.
 """
 
 from __future__ import annotations
@@ -20,10 +20,6 @@ CHANNEL = os.getenv(
     "UPPER_TAIL_RAIL_TRIGGER_CHANNEL",
     "rec_io:upper_tail:rail_trigger:v1",
 )
-
-_edge_lock = threading.Lock()
-# ticker → last emitted side (None = not currently at rail for emit purposes)
-_last_emitted_side: Dict[str, Optional[str]] = {}
 
 
 def _redis():
@@ -45,14 +41,8 @@ def _parse_px(raw: Any) -> Optional[float]:
 
 
 def clear_rail_edge(market_ticker: Optional[str] = None) -> None:
-    """Reset edge state (tests / when arms clear)."""
-    with _edge_lock:
-        if market_ticker is None:
-            _last_emitted_side.clear()
-            return
-        mt = str(market_ticker or "").strip()
-        if mt:
-            _last_emitted_side.pop(mt, None)
+    """No-op kept for call sites that cleared rising-edge state (removed)."""
+    del market_ticker
 
 
 def maybe_emit_rail_from_orderbook_payload(
@@ -60,9 +50,9 @@ def maybe_emit_rail_from_orderbook_payload(
     payload: Dict[str, Any],
 ) -> bool:
     """
-    Cheap rising-edge check after OB Redis publish.
+    If this ticker is armed and touch is at the rail, publish a book trigger.
 
-    Returns True if a rail_trigger message was published.
+    Returns True if a message was published. Safe to call on every flush.
     """
     mt = str(market_ticker or "").strip()
     if not mt or not isinstance(payload, dict):
@@ -89,8 +79,6 @@ def maybe_emit_rail_from_orderbook_payload(
         }
     )
     if not touch:
-        with _edge_lock:
-            _last_emitted_side[mt] = None
         return False
 
     side = upper_tail_side_from_orderbook(
@@ -100,14 +88,8 @@ def maybe_emit_rail_from_orderbook_payload(
         no_bid=_parse_px(touch.get("no_bid_dollars")),
         limit_px=float(limit),
     )
-    with _edge_lock:
-        prev = _last_emitted_side.get(mt)
-        if not side:
-            _last_emitted_side[mt] = None
-            return False
-        if prev == side:
-            return False
-        _last_emitted_side[mt] = side
+    if not side:
+        return False
 
     body = {
         "type": "upper_tail_rail_trigger",
@@ -125,28 +107,21 @@ def maybe_emit_rail_from_orderbook_payload(
     }
     r = _redis()
     if not r:
-        # Edge already marked; allow retry next delta if publish skipped.
-        with _edge_lock:
-            if _last_emitted_side.get(mt) == side:
-                _last_emitted_side[mt] = None
         return False
     try:
         r.publish(CHANNEL, json.dumps(body, default=str))
         return True
     except Exception:
-        with _edge_lock:
-            if _last_emitted_side.get(mt) == side:
-                _last_emitted_side[mt] = None
-        log.debug("upper_tail rail_trigger publish failed for %s", mt, exc_info=True)
+        log.debug("upper_tail book trigger publish failed for %s", mt, exc_info=True)
         return False
 
 
 def start_rail_trigger_listener(
     on_trigger: Callable[[Dict[str, Any]], None],
     *,
-    thread_name: str = "upper_tail_rail_trigger",
+    thread_name: str = "upper_tail_book_trigger",
 ) -> bool:
-    """Daemon pub/sub on the rail-trigger channel. Returns False if Redis down."""
+    """Daemon pub/sub on the book-trigger channel. Returns False if Redis down."""
     r = _redis()
     if not r:
         return False
