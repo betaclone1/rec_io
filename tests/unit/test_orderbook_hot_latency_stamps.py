@@ -24,25 +24,27 @@ def test_stamp_book_prefers_venue_ts_ms():
 def test_stamp_book_falls_back_to_local_apply():
     b: dict = {}
     wi._stamp_book_from_venue(b, {}, {}, t_ws_recv_ms=1_700_000_000_200)
-    # Missing venue/sending → clamp to recv (never leave stale/None ages).
-    assert b["venue_ts_ms"] == 1_700_000_000_200
-    assert b["sending_ts_ms"] == 1_700_000_000_200
+    # Missing venue/sending stay None so latency probes are not lied to.
+    assert b["venue_ts_ms"] is None
+    assert b["sending_ts_ms"] is None
     assert b["ts_ms"] == b["t_apply_ms"]
     assert b["t_ws_recv_ms"] == 1_700_000_000_200
 
 
-def test_stamp_book_clamps_stale_sending_ts():
+def test_stamp_book_preserves_stale_venue_ts_for_latency():
     b: dict = {}
     recv = 1_700_000_000_500
+    venue = recv - 60_000
     wi._stamp_book_from_venue(
         b,
-        {"ts_ms": recv - 60_000},
-        {"sending_ts_ms": recv - 60_000},
+        {"ts_ms": venue},
+        {"sending_ts_ms": venue + 5},
         t_ws_recv_ms=recv,
     )
-    assert b["venue_ts_ms"] == recv
-    assert b["sending_ts_ms"] == recv
-    assert b["ts_ms"] == b["t_apply_ms"]
+    assert b["venue_ts_ms"] == venue
+    assert b["sending_ts_ms"] == venue + 5
+    assert b["ts_ms"] == venue
+    assert b["t_ws_recv_ms"] - b["venue_ts_ms"] == 60_000
 
 
 def test_snapshot_from_inline_hint():

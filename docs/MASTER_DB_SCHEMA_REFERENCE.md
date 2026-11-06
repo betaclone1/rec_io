@@ -9552,8 +9552,8 @@ Per enabled market ticker (quoted identifiers), six tables:
 
 | Suffix | Role | Key columns |
 |--------|------|-------------|
-| `_snapshot` | OB baselines / resyncs | `seq`, `received_at` (UTC ISO-Z), `reason`, `yes`/`no` JSONB |
-| `_deltas` | OB deltas | `seq`, `received_at`, `side`, `price`, `delta`, `snapshot_seq` |
+| `_snapshot` | OB baselines / resyncs | `seq`, `received_at` (UTC ISO-Z), `reason`, `yes`/`no` JSONB, `ts_ms` / `sending_ts_ms` (Kalshi), `t_ws_recv_ms` (local) |
+| `_deltas` | OB deltas | `seq`, `received_at`, `side`, `price`, `delta`, `snapshot_seq`, `ts_ms`, `sending_ts_ms`, `t_ws_recv_ms` |
 | `_strike_table` | Irreversible strike path | `timestamp` (UTC ISO-Z), `probability_15m`, `yes_prob_15m`, `no_prob_15m`, `fair_price` |
 | `_price_ring` | Index spot + avgs (1 Hz) | `timestamp` PK, `price`, `avg_60s`, `last_60s_windowed_average_15min` |
 | `_metrics_ring` | Profile percentiles | `timestamp` PK + momentum/vol/movement fields (same as `live_metrics_ring_90m_*`) |

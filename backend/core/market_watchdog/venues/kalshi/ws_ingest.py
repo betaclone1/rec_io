@@ -946,7 +946,13 @@ def _stamp_book_from_venue(
     *,
     t_ws_recv_ms: Optional[int],
 ) -> None:
-    """Prefer Kalshi msg.ts_ms / envelope sending_ts_ms; keep local apply stamps."""
+    """Preserve raw Kalshi stamps; never rewrite them to local recv.
+
+    Latency is ``t_ws_recv_ms - venue_ts_ms`` (and vs ``sending_ts_ms``).
+    Clamping those fields to recv hid multi-hundred-ms lag and made probes lie.
+    Missing stamps stay None. Consumer event time ``ts_ms`` uses venue when
+    present, else local apply.
+    """
     now_wall = time.time()
     t_apply_ms = int(now_wall * 1000)
     venue_ts_ms = _optional_int_ms(msg.get("ts_ms"))
@@ -957,22 +963,10 @@ def _stamp_book_from_venue(
     b["t_apply_ms"] = t_apply_ms
     recv_ms = int(t_ws_recv_ms) if t_ws_recv_ms is not None else t_apply_ms
     b["t_ws_recv_ms"] = recv_ms
-    # Deltas often omit stamps, or reuse a stale connection/snapshot sending_ts.
-    # Never keep a multi-second-old sending/venue stamp beside a fresh recv.
-    if venue_ts_ms is not None and (recv_ms - venue_ts_ms) <= 250:
-        b["venue_ts_ms"] = venue_ts_ms
-    else:
-        b["venue_ts_ms"] = recv_ms
-    if sending_ts_ms is not None and (recv_ms - sending_ts_ms) <= 250:
-        b["sending_ts_ms"] = sending_ts_ms
-    else:
-        b["sending_ts_ms"] = recv_ms
+    b["venue_ts_ms"] = venue_ts_ms
+    b["sending_ts_ms"] = sending_ts_ms
     b["clock"] = clock
-    # Event time for consumers/probes: fresh venue when sane, else local apply.
-    if venue_ts_ms is not None and (recv_ms - venue_ts_ms) <= 250:
-        b["ts_ms"] = venue_ts_ms
-    else:
-        b["ts_ms"] = t_apply_ms
+    b["ts_ms"] = venue_ts_ms if venue_ts_ms is not None else t_apply_ms
 
 
 def _parse_snapshot(msg: dict[str, Any]) -> tuple[dict[str, str], dict[str, str]]:
@@ -1514,6 +1508,9 @@ def _apply_snapshot(
         "no": no,
         "seq": seq,
         "reason": reason,
+        "ts_ms": b.get("venue_ts_ms"),
+        "sending_ts_ms": b.get("sending_ts_ms"),
+        "t_ws_recv_ms": b.get("t_ws_recv_ms"),
     }
 
 
@@ -1532,6 +1529,9 @@ def _enqueue_cycle_ob(job: Optional[dict[str, Any]]) -> None:
                 no=job["no"],
                 seq=job.get("seq"),
                 reason=str(job.get("reason") or "snapshot"),
+                ts_ms=job.get("ts_ms"),
+                sending_ts_ms=job.get("sending_ts_ms"),
+                t_ws_recv_ms=job.get("t_ws_recv_ms"),
             )
         elif kind == "delta":
             enqueue_delta(
@@ -1540,6 +1540,9 @@ def _enqueue_cycle_ob(job: Optional[dict[str, Any]]) -> None:
                 price=job["price"],
                 delta=job["delta"],
                 seq=job.get("seq"),
+                ts_ms=job.get("ts_ms"),
+                sending_ts_ms=job.get("sending_ts_ms"),
+                t_ws_recv_ms=job.get("t_ws_recv_ms"),
             )
     except Exception:
         pass
@@ -1672,6 +1675,9 @@ def _apply_delta(
         "price": price,
         "delta": delta,
         "seq": seq,
+        "ts_ms": b.get("venue_ts_ms"),
+        "sending_ts_ms": b.get("sending_ts_ms"),
+        "t_ws_recv_ms": b.get("t_ws_recv_ms"),
     }
 
 

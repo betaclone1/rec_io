@@ -676,6 +676,30 @@ def _table_exists(cur, table: str) -> bool:
     return cur.fetchone() is not None
 
 
+def _add_column_if_missing(cur, table: str, column: str, col_type: str) -> None:
+    cur.execute(
+        """
+        SELECT 1 FROM information_schema.columns
+        WHERE table_schema = %s AND table_name = %s AND column_name = %s
+        LIMIT 1
+        """,
+        (_SCHEMA, table, column),
+    )
+    if cur.fetchone():
+        return
+    cur.execute(
+        f"ALTER TABLE {_qualified(table)} ADD COLUMN {_qi(column)} {col_type}"
+    )
+
+
+def _upgrade_ob_stamp_columns(cur, table: str) -> None:
+    """Kalshi venue stamps + local WS recv for latency (recv - ts_ms)."""
+    if not _table_exists(cur, table):
+        return
+    for col in ("ts_ms", "sending_ts_ms", "t_ws_recv_ms"):
+        _add_column_if_missing(cur, table, col, "BIGINT")
+
+
 def _create_snapshot_table(cur, snap: str) -> None:
     cur.execute(
         f"""
@@ -684,7 +708,10 @@ def _create_snapshot_table(cur, snap: str) -> None:
             received_at TEXT NOT NULL,
             reason TEXT,
             yes JSONB NOT NULL DEFAULT '{{}}'::jsonb,
-            no JSONB NOT NULL DEFAULT '{{}}'::jsonb
+            no JSONB NOT NULL DEFAULT '{{}}'::jsonb,
+            ts_ms BIGINT,
+            sending_ts_ms BIGINT,
+            t_ws_recv_ms BIGINT
         )
         """
     )
@@ -694,6 +721,7 @@ def _create_snapshot_table(cur, snap: str) -> None:
         ON {_qualified(snap)} (received_at)
         """
     )
+    _upgrade_ob_stamp_columns(cur, snap)
 
 
 def _create_deltas_table(cur, deltas: str) -> None:
@@ -705,7 +733,10 @@ def _create_deltas_table(cur, deltas: str) -> None:
             side TEXT NOT NULL,
             price NUMERIC(20, 8) NOT NULL,
             delta NUMERIC(20, 8) NOT NULL,
-            snapshot_seq BIGINT
+            snapshot_seq BIGINT,
+            ts_ms BIGINT,
+            sending_ts_ms BIGINT,
+            t_ws_recv_ms BIGINT
         )
         """
     )
@@ -721,6 +752,7 @@ def _create_deltas_table(cur, deltas: str) -> None:
         ON {_qualified(deltas)} (received_at)
         """
     )
+    _upgrade_ob_stamp_columns(cur, deltas)
 
 
 def _create_strike_table(cur, name: str) -> None:
@@ -1102,6 +1134,15 @@ def _floor_strike_from_live_state(market_ticker: str) -> Optional[Decimal]:
     return None
 
 
+def _opt_bigint_ms(value: Any) -> Optional[int]:
+    if value is None:
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def enqueue_snapshot(
     market_ticker: str,
     *,
@@ -1110,6 +1151,9 @@ def enqueue_snapshot(
     seq: Optional[int],
     reason: str = "snapshot",
     sid: Optional[int] = None,
+    ts_ms: Any = None,
+    sending_ts_ms: Any = None,
+    t_ws_recv_ms: Any = None,
 ) -> None:
     del sid
     if not recorder_enabled() or not is_cycle_ticker(market_ticker):
@@ -1128,7 +1172,20 @@ def enqueue_snapshot(
         _last_snapshot_seq[mt.upper()] = seq_i
     try:
         _ob_put(
-            ("snapshot", (mt, dict(yes or {}), dict(no or {}), seq_i, reason, received_at))
+            (
+                "snapshot",
+                (
+                    mt,
+                    dict(yes or {}),
+                    dict(no or {}),
+                    seq_i,
+                    reason,
+                    received_at,
+                    _opt_bigint_ms(ts_ms),
+                    _opt_bigint_ms(sending_ts_ms),
+                    _opt_bigint_ms(t_ws_recv_ms),
+                ),
+            )
         )
     except Exception as e:
         logger.warning("OB cycle snapshot enqueue failed %s: %s", mt, e)
@@ -1142,6 +1199,9 @@ def enqueue_delta(
     delta: Any,
     seq: Optional[int],
     sid: Optional[int] = None,
+    ts_ms: Any = None,
+    sending_ts_ms: Any = None,
+    t_ws_recv_ms: Any = None,
 ) -> None:
     del sid
     if not recorder_enabled() or not is_cycle_ticker(market_ticker):
@@ -1166,7 +1226,23 @@ def enqueue_delta(
     with _snapshot_seq_lock:
         snap_seq = _last_snapshot_seq.get(mt.upper())
     try:
-        _ob_put(("delta", (mt, side_l, p, d, seq_i, snap_seq, received_at)))
+        _ob_put(
+            (
+                "delta",
+                (
+                    mt,
+                    side_l,
+                    p,
+                    d,
+                    seq_i,
+                    snap_seq,
+                    received_at,
+                    _opt_bigint_ms(ts_ms),
+                    _opt_bigint_ms(sending_ts_ms),
+                    _opt_bigint_ms(t_ws_recv_ms),
+                ),
+            )
+        )
     except Exception as e:
         logger.warning("OB cycle delta enqueue failed %s: %s", mt, e)
 
@@ -1353,20 +1429,31 @@ def _write_snapshot(
     seq: int,
     reason: str,
     received_at: str,
+    ts_ms: Optional[int] = None,
+    sending_ts_ms: Optional[int] = None,
+    t_ws_recv_ms: Optional[int] = None,
 ) -> None:
     if _should_skip_ob_ticker(market_ticker):
         return
     snap_tbl, *_ = ensure_cycle_tables(market_ticker, conn)
+    row = (
+        seq,
+        received_at,
+        reason,
+        json.dumps(yes),
+        json.dumps(no),
+        ts_ms,
+        sending_ts_ms,
+        t_ws_recv_ms,
+    )
+    insert_sql = f"""
+        INSERT INTO {_qualified(snap_tbl)}
+            (seq, received_at, reason, yes, no, ts_ms, sending_ts_ms, t_ws_recv_ms)
+        VALUES (%s, %s, %s, %s::jsonb, %s::jsonb, %s, %s, %s)
+        """
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                INSERT INTO {_qualified(snap_tbl)}
-                    (seq, received_at, reason, yes, no)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
-                """,
-                (seq, received_at, reason, json.dumps(yes), json.dumps(no)),
-            )
+            cur.execute(insert_sql, row)
         conn.commit()
     except Exception as e:
         if not _is_undefined_relation(e):
@@ -1381,14 +1468,7 @@ def _write_snapshot(
             return
         ensure_cycle_tables(market_ticker, conn, force=True)
         with conn.cursor() as cur:
-            cur.execute(
-                f"""
-                INSERT INTO {_qualified(snap_tbl)}
-                    (seq, received_at, reason, yes, no)
-                VALUES (%s, %s, %s, %s::jsonb, %s::jsonb)
-                """,
-                (seq, received_at, reason, json.dumps(yes), json.dumps(no)),
-            )
+            cur.execute(insert_sql, row)
         conn.commit()
     with _snapshot_seq_lock:
         _last_snapshot_seq[market_ticker.upper()] = int(seq)
@@ -1397,14 +1477,21 @@ def _write_snapshot(
 def _insert_delta_group(conn, mt: str, group: List[Tuple[Any, ...]]) -> None:
     names = ensure_cycle_tables(mt, conn)
     deltas_tbl = names[1]
-    params = [
-        (seq, received_at, side, price, delta, snap_seq)
-        for (_mt, side, price, delta, seq, snap_seq, received_at) in group
-    ]
+    params = []
+    for row in group:
+        # (mt, side, price, delta, seq, snap_seq, received_at[, ts_ms, sending_ts_ms, t_ws_recv_ms])
+        _mt, side, price, delta, seq, snap_seq, received_at = row[:7]
+        ts_ms = row[7] if len(row) > 7 else None
+        sending_ts_ms = row[8] if len(row) > 8 else None
+        t_ws_recv_ms = row[9] if len(row) > 9 else None
+        params.append(
+            (seq, received_at, side, price, delta, snap_seq, ts_ms, sending_ts_ms, t_ws_recv_ms)
+        )
     q = f"""
         INSERT INTO {_qualified(deltas_tbl)}
-            (seq, received_at, side, price, delta, snapshot_seq)
-        VALUES (%s, %s, %s, %s, %s, %s)
+            (seq, received_at, side, price, delta, snapshot_seq,
+             ts_ms, sending_ts_ms, t_ws_recv_ms)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
         """
     with conn.cursor() as cur:
         cur.executemany(q, params)
@@ -1508,7 +1595,13 @@ def _ob_writer_loop() -> None:
 
     def _handle_snapshot(payload: Tuple[Any, ...]) -> None:
         _flush_or_drop()
-        write_payload = payload[:6] if len(payload) > 6 else payload
+        # (mt, yes, no, seq, reason, received_at, ts_ms, sending_ts_ms, t_ws_recv_ms[, attempts])
+        if len(payload) < 6:
+            return
+        base = list(payload[:9])
+        while len(base) < 9:
+            base.append(None)
+        write_payload = tuple(base)
         mt = write_payload[0] if write_payload else ""
         if _should_skip_ob_ticker(str(mt)):
             return
@@ -1546,9 +1639,9 @@ def _ob_writer_loop() -> None:
             logger.warning("OB cycle snapshot write failed %s: %s", mt, e)
             _close_conn()
             attempts = 0
-            if len(payload) >= 7:
+            if len(payload) >= 10:
                 try:
-                    attempts = int(payload[6])
+                    attempts = int(payload[9])
                 except (TypeError, ValueError):
                     attempts = 0
             if attempts < _SNAPSHOT_REQUEUE_MAX and q is not None:

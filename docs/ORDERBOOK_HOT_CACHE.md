@@ -36,13 +36,15 @@ AES/ATS orderbook wakes use `should_wake_tradeflow_on_orderbook` (live crypto 15
 
 | Field | Meaning |
 |-------|---------|
-| `venue_ts_ms` | Kalshi `msg.ts_ms` |
-| `sending_ts_ms` | Kalshi envelope `sending_ts_ms` (clamped when stale vs recv) |
-| `ts_ms` | Event time for consumers: `venue_ts_ms` when present |
+| `venue_ts_ms` | Raw Kalshi `msg.ts_ms` (None if omitted; never rewritten to local recv) |
+| `sending_ts_ms` | Raw Kalshi envelope `sending_ts_ms` (None if omitted) |
+| `ts_ms` | Event time for consumers: `venue_ts_ms` when present, else `t_apply_ms` |
 | `t_ws_recv_ms` | Local wall ms when WS frame received |
 | `t_apply_ms` | Local wall ms when delta applied in memory |
 | `redis_written_ms` | Wall ms when levels key was SET |
 | Consumer `received_ms` | Wall ms when subscriber got the hint |
+
+**Latency:** `t_ws_recv_ms − venue_ts_ms` (and vs `sending_ts_ms`). Cycle-package `deltas.csv` / `_deltas` rows store `ts_ms`, `sending_ts_ms`, `t_ws_recv_ms` beside `received_at` so sealed archives can measure the same gap.
 
 Subscribe uses explicit `update_interval_ms: 0` (Kalshi real-time).
 
