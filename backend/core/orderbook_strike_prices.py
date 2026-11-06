@@ -123,11 +123,8 @@ def touch_dollars_from_orderbook_snapshot(
         out["no_ask_dollars"] = f"{1.0 - float(yes_bids[0]['price']):.4f}"
     if not out.get("yes_ask_dollars") and no_bids:
         out["yes_ask_dollars"] = f"{1.0 - float(no_bids[0]['price']):.4f}"
-    # One-sided book: no contra resting liquidity → ask caps at $1.00 (still OB-derived).
-    if not out.get("yes_ask_dollars") and yes_bids and not no_levels:
-        out["yes_ask_dollars"] = "1.0000"
-    if not out.get("no_ask_dollars") and no_bids and not yes_levels:
-        out["no_ask_dollars"] = "1.0000"
+    # Do **not** invent $1.00 asks on one-sided books. Empty contra liquidity means
+    # that ask is unknown — synthesizing 1.00 falsely trips Upper Tail rails.
     if not out.get("yes_bid_dollars") and out.get("no_ask_dollars"):
         out["yes_bid_dollars"] = f"{max(0.0, 1.0 - float(out['no_ask_dollars'])):.4f}"
     if not out.get("no_bid_dollars") and out.get("yes_ask_dollars"):

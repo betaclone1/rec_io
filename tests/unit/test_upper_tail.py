@@ -556,7 +556,20 @@ def test_crypto_15m_tradeflow_wake_not_flush_gate(monkeypatch):
         "backend.core.trade_monitor_orderbook_watch.get_trade_monitor_orderbook_watch",
         lambda: None,
     )
+
+    def _clock(sym, _now):
+        return {
+            "BTC": "KXBTC15M-CUR",
+            "ETH": "KXETH15M-CUR",
+        }.get(str(sym).upper())
+
+    monkeypatch.setattr(
+        "backend.core.market_watchdog.venues.kalshi.schedule.clock_current_15m_ticker",
+        _clock,
+    )
     assert reg.should_immediate_flush_orderbook("KXGOLD15M-ANY") is True
-    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-ANY") is True
-    assert reg.should_wake_tradeflow_on_orderbook("KXETH15M-ANY") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-CUR") is True
+    assert reg.should_wake_tradeflow_on_orderbook("KXETH15M-CUR") is True
+    # Next-cycle crypto book: flush ok, no tradeflow wake until clock rolls.
+    assert reg.should_wake_tradeflow_on_orderbook("KXBTC15M-NEXT") is False
     assert reg.should_wake_tradeflow_on_orderbook("KXGOLD15M-ANY") is False

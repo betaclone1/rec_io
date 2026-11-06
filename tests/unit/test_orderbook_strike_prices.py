@@ -81,10 +81,14 @@ def test_resolve_orderbook_touch_dollars_one_sided_yes_book():
     }
     with patch.object(obp, "load_orderbook_snapshot_from_redis", return_value=snap):
         touch, reason = obp.resolve_orderbook_touch_dollars("TICKER-OTM", max_age_sec=30.0)
-    assert reason == "ok"
-    assert touch is not None
-    assert touch["yes_ask_dollars"] == "1.0000"
-    assert touch["no_ask_dollars"] == "0.0100"
+    # Strict resolve requires all four touches; do not invent ya=$1.00 to pass.
+    assert touch is None
+    assert reason == "orderbook_incomplete:yes_ask_dollars"
+    raw = obp.touch_dollars_from_orderbook_snapshot(snap)
+    assert raw is not None
+    assert "yes_ask_dollars" not in raw
+    assert raw["yes_bid_dollars"] == "0.9900"
+    assert raw["no_ask_dollars"] == "0.0100"
 
 
 def test_apply_orderbook_touch_overrides_no_ticker_fallback():

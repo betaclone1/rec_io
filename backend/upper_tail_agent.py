@@ -10,6 +10,7 @@ confirmation books into trade_manager. Paper monitors book when the trigger
 qualifies (no venue order).
 
 Housekeeping (monitors, markets, fills, arm registry) is a slow timer loop.
+Crypto does **not** re-qualify Redis touch on that timer — no backup place path.
 Crypto does not subscribe to every orderbook delta.
 """
 
@@ -877,11 +878,8 @@ def _tick() -> None:
             continue
         if cy.done or cy.placed or cy.placing or not in_window:
             continue
-        # Crypto: rail_trigger is primary; timer is failsafe Redis touch check.
+        # Crypto orderbook: place only on rail_trigger. Timer never re-qualifies OB.
         if cy.trigger_mode == TRIGGER_ORDERBOOK:
-            hit = _qualifying_side_from_orderbook(cy)
-            if hit:
-                _try_fire_cycle(cy, hit, path="failsafe", ttc=now_ttc)
             continue
         hit = _qualifying_side_tape_only(cy, now=now)
         if not hit:
@@ -910,7 +908,7 @@ def _loop() -> None:
         except Exception as exc:
             _log(f"tick error: {exc}")
         # Hard rate limit. Do not Event-wake on tape/OB — that busy-loops under load.
-        # Crypto places on rail_trigger; tape/commodity qualifies on this poll.
+        # Crypto places only on rail_trigger; tape/commodity qualifies on this poll.
         time.sleep(POLL_SEC)
 
 
