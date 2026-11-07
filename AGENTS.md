@@ -4,8 +4,6 @@
 
 **15m cycle bedrock (non-negotiable):** Floor strike = asset price at cycle open; market is higher/lower than that price 15 minutes later; opens are ~50/50; path drives to one extreme; anomalies = extreme then reverse to opposite settlement. Full law: `.cursor/rules/00-15m-cycle-bedrock.mdc`.
 
-**Zero-latency baseline (non-negotiable for market data):** External data through the system must not pick up ambient internal delay. Coalesce/Hz/regen defaults are **0**; intentional waits are strategy verification only. Full law: `.cursor/rules/00-zero-latency-baseline.mdc`. VER4 pillar: `docs/VER4_DEVELOPMENT/ZERO_LATENCY_PIPELINE.md` (`@ver4`).
-
 **Autonomy / no interrogation (non-negotiable):** Execute simple operational and investigative prompts without questionnaires or multiple-choice “how should I proceed?” menus. Infer scope, choose sensible defaults, and return findings. Rare exceptions: true blockers, destructive/irreversible confirmation, real-money approval, or git actions that require an explicit instruction. See `.cursor/rules/01-core-operating-law.mdc`.
 
 **NO FALLBACKS (non-negotiable):** Do **not** add code that substitutes guessed, cached, or second-best data when the authoritative source is missing — especially for persisted fields (`trades_*`, settlements, `market_result`, `win_loss_confirmed`, prices, fills). Missing data stays **NULL** or the operation **fails** until the real source delivers (WS, API poll, retry, scheduler). Fallbacks that write to the DB are **data corruption**, not resilience. Full rule: `.cursor/rules/00-no-fallbacks.mdc`.
@@ -73,7 +71,6 @@
 | @frontend | Frontend, HTML/JS/CSS, mobile, UI/UX. | .cursor/rules/frontend.mdc (or archive) |
 | @updater | Changelog, prepare update, production checklist. | .cursor/rules/updater.mdc (or archive) |
 | @kalshi | Kalshi API, WebSocket, broker. | .cursor/rules/kalshi.mdc (or archive) |
-| @ver4 | VER 4.0 initiative: pillars (subaccounts, zero-latency pipeline, host/PG, 15m expansion, Tail meter, UI). Workspace `docs/VER4_DEVELOPMENT/`. | `.cursor/rules/ver4.mdc` |
 | @digitalocean | DO API, snapshots, backups, droplets. | .cursor/rules/digitalocean.mdc (or archive) |
 | @assistant | Gmail, Calendar, personal productivity. No backend/DB/trading. | .cursor/rules/assistant.mdc (or archive) |
 

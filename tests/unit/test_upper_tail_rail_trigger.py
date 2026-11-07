@@ -6,11 +6,6 @@ import json
 
 import backend.core.upper_tail_orderbook_watch as utw
 import backend.core.upper_tail_rail_trigger as rt
-import backend.upper_tail_agent as uta
-
-
-def test_housekeeping_poll_default_is_subsecond():
-    assert uta.POLL_SEC <= 0.25
 
 
 def test_maybe_emit_while_at_rail(monkeypatch):

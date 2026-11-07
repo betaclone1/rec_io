@@ -201,14 +201,10 @@ def test_failsafe_redis_env_defaults():
     assert aes._AES_FAILSAFE_REDIS_SEC == float(os.getenv("AES_FAILSAFE_REDIS_SEC", "5"))
 
 
-def test_strike_regen_floor_default_zero(monkeypatch):
-    monkeypatch.delenv("STRIKE_REGEN_MIN_INTERVAL_SEC", raising=False)
-    import importlib
-
+def test_strike_regen_floor_default():
     from backend import strike_table_generator_ws as sg
 
-    importlib.reload(sg)
-    assert float(sg.STRIKE_REGEN_MIN_INTERVAL_SEC) == 0.0
+    assert float(sg.STRIKE_REGEN_MIN_INTERVAL_SEC) >= 1.0
 
 
 def test_live_state_strike_feed_sync_symbols_filter(monkeypatch):

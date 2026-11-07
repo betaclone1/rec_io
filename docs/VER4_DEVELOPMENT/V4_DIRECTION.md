@@ -12,15 +12,12 @@ big_ticket_priorities:
   - host_split
   - postgres_lean_droplet_and_pg17_gate
   - subaccount_architecture   # see SUBACCOUNT_ARCHITECTURE.md
-  - zero_latency_pipeline     # see ZERO_LATENCY_PIPELINE.md — shared pipe defaults to 0 internal delay
   - 15m_market_expansion
   - upper_lower_tail_meter
   - ui_overhaul               # Subaccounts panel lives under Subaccount Architecture
 pillars:
   - SUBACCOUNT_ARCHITECTURE.md
-  - ZERO_LATENCY_PIPELINE.md
-agent: .cursor/rules/ver4.mdc
-next: Subaccount Architecture first move = sub/monitor shape (REBALANCE back burner); zero-latency baseline enforced on market-data paths; host split / PG options still open
+next: Subaccount Architecture first move = sub/monitor shape (REBALANCE back burner); host split / PG options still open
 ```
 
 Agents treat the items below as constraints on later plans. Do not invent host counts, service maps, or a frontend information architecture until those discussions land in a new file in this folder.
@@ -45,18 +42,8 @@ v4 will explore breaking that into discrete production servers with separate res
 Open (do not fill in):
 
 - How many machines, which DigitalOcean products, and whether Postgres and Redis stay co-located with one tier or become shared services.
-- What crosses the network (live_state, orders, packages) and what the latency budget is for the trading tier — **must not** reintroduce ambient coalesce; see [ZERO_LATENCY_PIPELINE.md](ZERO_LATENCY_PIPELINE.md).
+- What crosses the network (live_state, orders, packages) and what the latency budget is for the trading tier.
 - Whether archiving stays on Google Drive or moves to object storage. The cycle-product note already says object storage is required only if the dataset is sold (`docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`). That sale decision is separate from splitting servers.
-
----
-
-## 1b. Zero-latency pipeline (pillar)
-
-Named v4 pillar: **[ZERO_LATENCY_PIPELINE.md](ZERO_LATENCY_PIPELINE.md)**.
-
-Shared market-data path defaults to **zero internal delay**. Exp Scalp / HTC / HWS intentional waits stay on verification dwell columns — not on pipeline coalesce cutouts. Rule: `.cursor/rules/00-zero-latency-baseline.mdc`. Domain agent: `@ver4`.
-
-Shipped direction (2026-11-06): tradeflow wake coalesce defaults 0, OB publish coalesce default 0, symbol hot publish uncapped, strike regen floor 0, UT rail on apply, dedicated crypto OB live publisher. Raise env caps only as measured CPU overrides.
 
 ---
 

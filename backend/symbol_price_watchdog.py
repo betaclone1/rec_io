@@ -180,14 +180,13 @@ _last_hot_publish_mono: Dict[str, float] = {}
 def _symbol_hot_publish_min_interval_sec() -> float:
     """Min seconds between Redis live_state publishes per symbol (buffer still gets every tick).
 
-    ``SYMBOL_HOT_PUBLISH_MAX_HZ`` defaults to 0 (no cap — zero-latency baseline).
-    Set a positive Hz only as an explicit CPU / flood-control override.
+    ``SYMBOL_HOT_PUBLISH_MAX_HZ`` defaults to 1 (one publish/sec). Set <= 0 to disable cap.
     """
-    raw = os.getenv("SYMBOL_HOT_PUBLISH_MAX_HZ", "0").strip()
+    raw = os.getenv("SYMBOL_HOT_PUBLISH_MAX_HZ", "1").strip()
     try:
         hz = float(raw)
     except (TypeError, ValueError):
-        hz = 0.0
+        hz = 1.0
     if hz <= 0:
         return 0.0
     return 1.0 / hz
@@ -215,7 +214,7 @@ def _hot_wall_timestamp_ms() -> str:
 
 
 def _coinbase_live_hot_path(symbol: str) -> bool:
-    """Coinbase crypto: WS ticks → tick buffer; live_state publish (uncapped by default)."""
+    """Coinbase crypto: WS ticks → tick buffer; live_state publish rate-capped (default 1 Hz)."""
     try:
         from backend.core.live_state_config import live_state_cache_enabled
 

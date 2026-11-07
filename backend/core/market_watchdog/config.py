@@ -82,11 +82,9 @@ def load_config(*, exchange: str, market_interval: str = "all") -> IngestConfig:
                 "20",
             )
         ),
-        # Default 0: zero internal publish delay. Immediate flush is the hot path;
-        # raise coalesce only as an explicit override when immediate flush is off.
         publish_coalesce_sec=max(
-            0.0,
-            float(_env("MARKET_WATCHDOG_PUBLISH_COALESCE_MS", "SANDBOX_KALSHI_PUBLISH_COALESCE_MS", "0"))
+            0.01,
+            float(_env("MARKET_WATCHDOG_PUBLISH_COALESCE_MS", "SANDBOX_KALSHI_PUBLISH_COALESCE_MS", "50"))
             / 1000.0,
         ),
         ws_market_chunk=max(

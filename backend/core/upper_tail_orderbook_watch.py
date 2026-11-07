@@ -1,6 +1,6 @@
 """Armed Upper Tail crypto tickers + min limit for book-trigger evaluation.
 
-OB apply uses this only to decide whether an in-memory book at the rail should
+Watchdog uses this only to decide whether a published book at the rail should
 emit ``upper_tail_rail_trigger``. Redis OB flush itself is universal; this set
 does **not** gate freshness or tradeflow wake.
 """
@@ -10,16 +10,11 @@ from __future__ import annotations
 import json
 import os
 import threading
-import time
 from typing import Dict, Iterable, Mapping, Optional, Set, Union
 
 _lock = threading.Lock()
 # ticker → minimum armed limit_px (most sensitive rail among monitors)
 _local_arms: Dict[str, float] = {}
-# Cross-process Redis view (OB live / watchdog) — short TTL so apply stays hot.
-_redis_arms_cache: Dict[str, float] = {}
-_redis_arms_mono: float = 0.0
-_REDIS_ARMS_TTL_SEC = float(os.getenv("UPPER_TAIL_ORDERBOOK_ARM_CACHE_SEC", "0.05"))
 
 _REDIS_KEY = os.getenv(
     "UPPER_TAIL_ORDERBOOK_WATCH_KEY",
@@ -61,10 +56,8 @@ def set_upper_tail_orderbook_arm(arms: Mapping[str, float]) -> None:
     """Replace armed UT tickers with per-ticker min limit_px (local + Redis)."""
     cleaned = _normalize_arms(arms)
     with _lock:
-        global _local_arms, _redis_arms_cache, _redis_arms_mono
+        global _local_arms
         _local_arms = dict(cleaned)
-        _redis_arms_cache = dict(cleaned)
-        _redis_arms_mono = time.monotonic()
     r = _redis()
     if r:
         try:
@@ -90,41 +83,28 @@ def set_upper_tail_orderbook_watch(tickers: Iterable[str]) -> None:
 
 def get_upper_tail_orderbook_arm() -> Dict[str, float]:
     """Armed UT ticker → min limit_px (process-local first, else Redis)."""
-    global _redis_arms_cache, _redis_arms_mono
     with _lock:
         if _local_arms:
             return dict(_local_arms)
-        now = time.monotonic()
-        if (
-            _REDIS_ARMS_TTL_SEC > 0
-            and (now - _redis_arms_mono) < _REDIS_ARMS_TTL_SEC
-        ):
-            return dict(_redis_arms_cache)
     r = _redis()
     if not r:
         return {}
     try:
         raw = r.get(_REDIS_KEY)
         if not raw:
-            cleaned: Dict[str, float] = {}
-        else:
-            if isinstance(raw, bytes):
-                raw = raw.decode("utf-8", errors="replace")
-            data = json.loads(raw)
-            if isinstance(data, dict):
-                cleaned = _normalize_arms(data)
-            elif isinstance(data, list):
-                cleaned = _normalize_arms(data)
-            elif isinstance(data, str) and data.strip():
-                cleaned = {data.strip(): 0.99}
-            else:
-                cleaned = {}
-        with _lock:
-            _redis_arms_cache = cleaned
-            _redis_arms_mono = time.monotonic()
-            return dict(_redis_arms_cache)
+            return {}
+        if isinstance(raw, bytes):
+            raw = raw.decode("utf-8", errors="replace")
+        data = json.loads(raw)
+        if isinstance(data, dict):
+            return _normalize_arms(data)
+        if isinstance(data, list):
+            return _normalize_arms(data)
+        if isinstance(data, str) and data.strip():
+            return {data.strip(): 0.99}
     except Exception:
         return {}
+    return {}
 
 
 def get_upper_tail_arm_limit(market_ticker: str) -> Optional[float]:

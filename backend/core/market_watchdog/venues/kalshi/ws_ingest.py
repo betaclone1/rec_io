@@ -79,7 +79,7 @@ CHANNEL_RESYNC_MIN_INTERVAL_SEC = float(
 META_HEARTBEAT_SEC = float(os.getenv("SANDBOX_KALSHI_META_HEARTBEAT_SEC", "0.5"))
 LIFECYCLE_SYNC_SEC = float(os.getenv("SANDBOX_KALSHI_LIFECYCLE_SYNC_SEC", "1.0"))
 PUBLISH_COALESCE_SEC = max(
-    0.0, float(os.getenv("SANDBOX_KALSHI_PUBLISH_COALESCE_MS", "0")) / 1000.0
+    0.01, float(os.getenv("SANDBOX_KALSHI_PUBLISH_COALESCE_MS", "50")) / 1000.0
 )
 EVENT_LOG_PATH = Path(
     os.getenv("SANDBOX_KALSHI_EVENT_LOG", str(SANDBOX_DIR / "kalshi_market_events.jsonl"))
@@ -1065,7 +1065,15 @@ def _flush_orderbook_tickers_sync(
             # into every pub/sub fanout (blank-slate lab lesson).
         }
         _redis_publish_push(hint)
-        # UT rail emit moved to apply (not flush) — see _maybe_emit_ut_rail_on_apply.
+        # UT: if armed and bid/ask at rail → dedicated channel (agent places once).
+        try:
+            from backend.core.upper_tail_rail_trigger import (
+                maybe_emit_rail_from_orderbook_payload,
+            )
+
+            maybe_emit_rail_from_orderbook_payload(mt, payload)
+        except Exception:
+            pass
     for mt, _payload in published:
         _maybe_prebuild_orderbook_ws_payload(mt, redis_written_ms=redis_written_ms)
 
@@ -2200,9 +2208,7 @@ async def _publish_coalesce_loop(master: KalshiMarketWsMaster) -> None:
     )
 
     while True:
-        # Zero coalesce = no intentional batch delay; keep a tiny idle so this
-        # fallback loop cannot spin when immediate flush owns the hot path.
-        await asyncio.sleep(PUBLISH_COALESCE_SEC if PUBLISH_COALESCE_SEC > 0 else 0.05)
+        await asyncio.sleep(PUBLISH_COALESCE_SEC)
         refresh_hot_tickers_if_stale()
         async with master.lock:
             # When immediate flush is on (default), dirty sets are drained by
@@ -2480,7 +2486,6 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
     t_ws_recv_ms = int(time.time() * 1000)
     ob_dirty_mt: Optional[str] = None
     cycle_ob_job: Optional[dict[str, Any]] = None
-    rail_emit_mt: Optional[str] = None
     async with master.lock:
         msg = data.get("msg") or {}
         mt = str(msg.get("market_ticker") or "").strip()
@@ -2502,7 +2507,6 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
             )
             _mark_ob_dirty(master, mt)
             ob_dirty_mt = mt
-            rail_emit_mt = mt
         else:
             action, _seq_i = _consume_ob_channel_seq(master, data.get("seq"))
             if action == "gap":
@@ -2521,21 +2525,6 @@ async def _on_ws_message(master: KalshiMarketWsMaster, raw: str) -> None:
                 )
                 _mark_ob_dirty(master, mt)
                 ob_dirty_mt = mt
-                rail_emit_mt = mt
-        # Snapshot payload for rail while book is consistent under lock; emit after.
-        rail_payload = (
-            _orderbook_redis_payload(master, rail_emit_mt) if rail_emit_mt else None
-        )
-
-    if rail_emit_mt and rail_payload:
-        try:
-            from backend.core.upper_tail_rail_trigger import (
-                maybe_emit_rail_from_orderbook_payload,
-            )
-
-            maybe_emit_rail_from_orderbook_payload(rail_emit_mt, rail_payload)
-        except Exception:
-            pass
 
     # Cycle-hot enqueue after lock so PG/queue bookkeeping cannot stall OB apply.
     # Skip pre-subscribed next-cycle books until the clock makes them current.

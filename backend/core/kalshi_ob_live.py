@@ -189,22 +189,15 @@ class LatestWinsRedisPublisher:
                 "clock": body.get("clock"),
             }
             r.publish(LIVE_STATE_CHANNEL, json.dumps(hint, default=str))
+            try:
+                from backend.core.upper_tail_rail_trigger import (
+                    maybe_emit_rail_from_orderbook_payload,
+                )
+
+                maybe_emit_rail_from_orderbook_payload(mt, body)
+            except Exception:
+                pass
             self.published += 1
-
-
-def _maybe_emit_rail_on_apply(payload: dict[str, Any]) -> None:
-    """Rail detect on in-memory apply — Redis flush only persists depth."""
-    mt = str(payload.get("market_ticker") or "").strip()
-    if not mt:
-        return
-    try:
-        from backend.core.upper_tail_rail_trigger import (
-            maybe_emit_rail_from_orderbook_payload,
-        )
-
-        maybe_emit_rail_from_orderbook_payload(mt, payload)
-    except Exception:
-        pass
 
 
 def _book_payload(book: Book) -> dict[str, Any]:
@@ -353,9 +346,7 @@ class ObLiveFeed:
         book.valid = True
         _stamp(book, envelope, msg, recv_ms)
         book.updates += 1
-        payload = _book_payload(book)
-        _maybe_emit_rail_on_apply(payload)
-        self.publisher.submit(payload)
+        self.publisher.submit(_book_payload(book))
         _enqueue_cycle(book, kind="snapshot")
 
     def apply_delta(self, book: Book, envelope: dict, msg: dict, recv_ms: int) -> None:
@@ -381,9 +372,7 @@ class ObLiveFeed:
             book.last_seq = int(seq)
         _stamp(book, envelope, msg, recv_ms)
         book.updates += 1
-        payload = _book_payload(book)
-        _maybe_emit_rail_on_apply(payload)
-        self.publisher.submit(payload)
+        self.publisher.submit(_book_payload(book))
         _enqueue_cycle(book, kind="delta", side=side, price=price, delta=delta)
 
 
