@@ -637,6 +637,20 @@ class SupervisorConfigGenerator:
                 "autostart": cycle_capture_enabled,
             }
         )
+        # Background-only: public trades day CSV catchup → month tar.xz → Drive.
+        # Isolated from live ingest / trading (no Redis, no monitors).
+        public_trades_drive_sync_enabled = (
+            self.config.get("features.public_trades_drive_sync") is not False
+        )
+        services.append(
+            {
+                "name": "public_trades_drive_sync",
+                "script": "public_trades_drive_sync.py",
+                "port": 0,
+                "environment": self._cycle_packager_environment(env_global),
+                "autostart": public_trades_drive_sync_enabled,
+            }
+        )
         # PRE always on (HWS Scalp LVWAP decisions; ATS remains sole closer).
         pre_autostart = _position_risk_engine_autostart()
         pre_env = env_global
@@ -883,6 +897,8 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
             for s in services
             if s["name"].startswith("trade_manager_")
         }
+        # Public-trades Drive sync wakes can run long (multi-series day pulls).
+        PROGRAM_EXTRA_DIRECTIVES["public_trades_drive_sync"] = ["stopwaitsecs=600"]
         # Critical assets get higher log retention (see docs/CRITICAL_ASSET_LOGGING.md)
         CRITICAL_LOG_SERVICES = {"system_monitor", "cascading_failure_detector"}
         CRITICAL_STDOUT_MAX, CRITICAL_STDOUT_BACKUPS = "20MB", 10

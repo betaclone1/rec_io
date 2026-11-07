@@ -199,6 +199,8 @@ Docs: `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, `docs/MASTER_DB_SCHEMA_REFERENCE.
 
 Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` → `KXBTC15M_public_trades_YYYY-MM-DD_et.csv`; month Drive bundle `package_month_public_trades_to_drive.py`. Flush per-ticker `.cache_*` after successful day CSV (rule `09-no-duplicate-historical-artifacts`).
 
+**Prod hourly Drive archive (background only):** supervisord program `public_trades_drive_sync` (`backend/public_trades_drive_sync.py`). Serial low-load wake: refresh today’s tape + current-month market results for BTC/ETH/SOL/XRP/GOLD/SILVER/WTI, rebuild that month’s `{SERIES}_public_trades_{YYYY-MM}_et.tar.xz`, upload to Drive `DATA/HISTORICAL_DATA/BACKTESTING_DATA`. Same wake upserts exact-cent LT/UT cycle rows into `historical_data.*_tail_backtest_cycles` (migration `20261107_1600_tail_backtest_cycles`; scorer `backend/core/tail_backtest_cycles.py`). No Redis/monitors/trading path; not a parallel worker farm. Disable with `PUBLIC_TRADES_DRIVE_SYNC=0` or `features.public_trades_drive_sync: false`; skip PG scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`. One-time full-history seed uses a separate parallel local packaging/upload job (not the hourly wake).
+
 ---
 
 ## 6. Trading logic (spec for implementer)
@@ -245,6 +247,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 | Lifecycle | `docs/TRADE_LIFECYCLE_AND_AUTO_STOP_CURRENT.md` |
 | Cycle packages | `backend/core/cycle_packager.py`, `cycle_package_members.py`, `cycle_package.py` |
 | Drive | `backend/core/cycle_gdrive_upload.py` |
+| Public trades → Drive + tail cycle PG (hourly bg) | `backend/public_trades_drive_sync.py`, `backend/core/public_trades_drive_sync.py`, `backend/core/tail_backtest_cycles.py` |
 
 ---
 
@@ -255,7 +258,9 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 | Script | Role |
 |--------|------|
 | `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` | Day tape pull |
-| `scripts/backtest/package_month_public_trades_to_drive.py` | Month tape archive → Drive |
+| `scripts/backtest/package_month_public_trades_to_drive.py` | Month tape archive → Drive (manual) |
+| `backend/public_trades_drive_sync.py` | Hourly catchup → month tar.xz → Drive (prod bg) |
+| `scripts/backtest/catchup_public_trades_and_market_results.py` | Multi-day catchup (missing days) |
 | `scripts/backtest/run_kxbtc15m_longshot_month.py` | First-≤$0.02 month (legacy) |
 | `scripts/backtest/run_kxbtc15m_longshot_limit_sweep.py` | Multi-limit ≤ sweep |
 | `scripts/backtest/kxbtc15m_exact_cent_cum_size_span.py` | Exact-cent + cum vol gate |

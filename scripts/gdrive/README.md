@@ -47,6 +47,26 @@ Mirrors local layout under that folder (e.g. ``KXBTC15M/2026/2026_07_JUL/*.tar.x
 
 The hourly supervisor program ``cycle_packager`` calls this after each successful local package when credentials resolve (``CYCLE_GDRIVE_UPLOAD=1``; legacy ``BTC15M_CYCLE_GDRIVE_UPLOAD``). Disable with ``CYCLE_GDRIVE_UPLOAD=0``.
 
+## Public trades + market results (month archives → Drive)
+
+Same Drive root (``BACKTESTING_DATA``). Layout:
+
+```
+{SERIES}/{YYYY}/{YYYY_MM_MON}/{SERIES}_public_trades_{YYYY-MM}_et.tar.xz
+```
+
+Members: day ``*_public_trades_*_et.csv``, month ``*_market_results_*_et.csv``, manifest JSON.
+
+Supervisor program ``public_trades_drive_sync`` (background only — not on the live trading path) wakes hourly on a **serial low-load** path: refresh today’s day CSV per series, refresh current-month market results, rebuild the current-month archive, upload, then upsert exact-cent LT/UT rows into ``historical_data.*_tail_backtest_cycles``. Defaults stay light (``LOOKBACK_DAYS=1``, ``WORKERS=2``) — not a multi-process farm. Env: ``PUBLIC_TRADES_DRIVE_SYNC`` (auto-on when OAuth present), ``PUBLIC_TRADES_DRIVE_SYNC_INTERVAL_SEC`` (default 3600), ``PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`` to skip PG scoring. Bulk historical seed (many months) is a separate local parallel job, not the hourly prod wake.
+
+```bash
+# One wake (dry-run upload)
+PYTHONPATH=$(pwd) .venv/bin/python backend/public_trades_drive_sync.py --once --dry-run-upload
+
+# Seed Drive from day CSVs already on disk
+PYTHONPATH=$(pwd) .venv/bin/python backend/public_trades_drive_sync.py --once --backfill-local-months
+```
+
 ```bash
 # Preview
 node scripts/gdrive/upload-backtesting-data.js --dry-run

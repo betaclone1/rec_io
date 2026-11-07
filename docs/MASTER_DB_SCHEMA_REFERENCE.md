@@ -8249,6 +8249,36 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+### Tables: `historical_data.{kxbtc15m,kxeth15m,kxsol15m,kxxrp15m,kxgold15m,kxsilver15m,kxwti15m}_tail_backtest_cycles`
+
+**Purpose:** One row per expected 15m cycle with **exact-cent backtest** Lower Tail (`$0.01`) and Upper Tail (`$0.99`) outcomes from the public-trades tape (not live OB monitors). Same row carries LT and UT columns. Cycles with no exact-cent print still appear; that side’s fill / `*_win_loss` stay NULL so win-rate math ignores them while participation remains visible. Crypto days with missing/sparse tape outside known Kalshi maintenance set `data_gap`.
+
+**Creation:** Migration `20261107_1600_tail_backtest_cycles`.
+
+**Population:** `backend/core/tail_backtest_cycles.py` via hourly `public_trades_drive_sync` after public-trades catchup (`--skip-score` to bypass).
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `timestamp` | `timestamp without time zone` | NO | Cycle settlement end, US Eastern wall (no TZ). |
+| `ticker` | `text` | NO | Market ticker (PK). |
+| `trading_day` | `date` | NO | Eastern calendar day of settlement end (lookback key). |
+| `market_result` | `text` | YES | Kalshi `yes` / `no`; NULL if unsettled / unknown. |
+| `lt_fill_ts` | `timestamp without time zone` | YES | First exact `$0.01` print time (ET naive). |
+| `lt_side` | `text` | YES | `yes` / `no` of that LT print. |
+| `lt_price` | `numeric(8,4)` | YES | `0.01` when filled. |
+| `lt_win_loss` | `boolean` | YES | TRUE iff LT side == `market_result`; NULL if no fill or unsettled. |
+| `ut_fill_ts` | `timestamp without time zone` | YES | First exact `$0.99` print time (ET naive). |
+| `ut_side` | `text` | YES | `yes` / `no` of that UT print. |
+| `ut_price` | `numeric(8,4)` | YES | `0.99` when filled. |
+| `ut_win_loss` | `boolean` | YES | TRUE iff UT side == `market_result`; NULL if no fill or unsettled. |
+| `data_gap` | `boolean` | NO | Crypto unexplained missing/sparse day tape. |
+| `data_gap_reason` | `text` | YES | e.g. `missing_day_csv`, `sparse_day_tape`. |
+| `updated_at` | `timestamp without time zone` | NO | Last upsert (session Eastern). |
+
+**Indexes:** `idx_*_tail_backtest_cycles_ts` on `"timestamp"`; `idx_*_tail_backtest_cycles_day` on `trading_day`.
+
+---
+
 ### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)
 
 **Not** created by `database.py` or routine migrations. Tables matching **`kalshi_candles_1m_<slug>_<YYYYMMDD>`** are created by **`scripts/backtest/helpers/kalshi_market_candles_scratch.py`** for ad-hoc analysis (Kalshi 1m OHLC for a market’s trading window). **`YYYYMMDD`** is a UTC calendar date suffix for rotation. **Row count** follows Kalshi’s session length (e.g. **15** rows for a **15m** contract, **~60** for a typical **hourly** contract); see **`docs/BACKTESTING.md`** §5.4.

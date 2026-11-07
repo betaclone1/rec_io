@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-11-07 — Release v3.12.29: Public-trades Drive sync + tail backtest cycle tables
+
+**Summary**
+- **Release: v3.12.29**
+- **Plans:** `public-trades-drive-hourly-sync`, `tail-backtest-cycle-tables`
+- **Change:**
+  - New background supervisord program `public_trades_drive_sync`: hourly serial catchup of Kalshi public-trades day CSVs + market results for BTC/ETH/SOL/XRP/GOLD/SILVER/WTI, month `tar.xz` package, upload to Drive `DATA/HISTORICAL_DATA/BACKTESTING_DATA`. Isolated from Redis / monitors / trading.
+  - Same wake upserts exact-cent Lower Tail ($0.01) and Upper Tail ($0.99) backtest outcomes into one `historical_data.*_tail_backtest_cycles` table per series (one row per expected cycle; no-fill / unsettled → NULL win/loss).
+  - Crypto unexplained missing/sparse tape days set `data_gap`; commodities use session-gated expected cycles.
+- **DB:** Migration `20261107_1600_tail_backtest_cycles` (seven tables under `historical_data`).
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-11-07`**. Code: `git revert` + `scripts/MASTER_RESTART.sh` (drops new supervisor program). Migration: `down 20261107_1600_tail_backtest_cycles` only if intentionally dropping the tables.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261107_1600_tail_backtest_cycles`
+- [ ] Regenerate supervisor + full restart (new `public_trades_drive_sync`): `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [ ] Verify: `public_trades_drive_sync` RUNNING (or starts when Drive OAuth present); migration listed in `run_migration.py list`; sample `SELECT count(*) FROM historical_data.kxbtc15m_tail_backtest_cycles`; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.29`
+
+---
+
 ## 2026-10-31 — Release v3.12.28: Crypto OB + commodity tape UT + weekend dark gate
 
 **Summary**
