@@ -41,15 +41,12 @@ SERIES_TO_TABLE: dict[str, str] = {
     "KXWTI15M": "kxwti15m_tail_backtest_cycles",
 }
 
-CRYPTO_SERIES = frozenset(
-    {"KXBTC15M", "KXETH15M", "KXSOL15M", "KXXRP15M", "KXDOGE15M"}
-)
-
 # Known Kalshi maintenance / venue dark windows (Eastern calendar dates).
 # Extend as Kalshi publishes outages; days in this set are not flagged as data_gap.
 KNOWN_MAINTENANCE_DAYS_ET: frozenset[date] = frozenset()
 
-# Crypto day with fewer than this many public-trade rows → sparse gap (unless maintenance).
+# Day with fewer than this many public-trade rows → sparse gap (unless maintenance).
+# Same floor the rolling charts used for commodity trading-day membership.
 SPARSE_DAY_TRADE_FLOOR = 100
 
 _REPO = Path(__file__).resolve().parents[2]
@@ -131,31 +128,43 @@ def _parse_created_time_et_naive(raw: Any) -> Optional[datetime]:
     return dt.astimezone(EST).replace(tzinfo=None, microsecond=0)
 
 
+def _exact_cent_price(raw: object, limit: float) -> bool:
+    """True only when ``raw`` is exactly ``limit`` (not round-to-cent neighbors)."""
+    try:
+        return abs(float(raw) - float(limit)) < 1e-9
+    except (TypeError, ValueError):
+        return False
+
+
 def first_exact_touch(rows: Sequence[dict], limit: float) -> Optional[TailFill]:
-    """First tape print at exact cent ``limit`` on yes or no; chronological."""
-    L = round(float(limit), 2)
+    """First tape print at exact cent ``limit`` on yes or no; chronological.
+
+    Exact means the printed dollar price equals ``limit`` within float noise.
+    Do **not** round to 2 decimals first — that treats 0.005–0.014 as $0.01
+    (and 0.985–0.994 as $0.99) and rewrites first-touch side vs the chart.
+    """
+    L = float(limit)
     ordered = sorted(
         rows,
         key=lambda r: (str(r.get("created_time") or ""), str(r.get("trade_id") or "")),
     )
     for r in ordered:
         try:
-            y = round(float(r["yes_price_dollars"]), 2)
-            n = round(float(r["no_price_dollars"]), 2)
-        except (KeyError, TypeError, ValueError):
+            y_raw = r["yes_price_dollars"]
+            n_raw = r["no_price_dollars"]
+        except KeyError:
             continue
         side: Optional[str] = None
-        price: Optional[float] = None
-        if y == L:
-            side, price = "yes", L
-        elif n == L:
-            side, price = "no", L
-        if side is None or price is None:
+        if _exact_cent_price(y_raw, L):
+            side = "yes"
+        elif _exact_cent_price(n_raw, L):
+            side = "no"
+        if side is None:
             continue
         ts = _parse_created_time_et_naive(r.get("created_time"))
         if ts is None:
             continue
-        return TailFill(side=side, fill_ts=ts, price=price)
+        return TailFill(side=side, fill_ts=ts, price=L)
     return None
 
 
@@ -196,8 +205,6 @@ def _day_gap(
     day_csv: Path,
     trade_row_count: int,
 ) -> tuple[bool, Optional[str]]:
-    if series not in CRYPTO_SERIES:
-        return False, None
     if trading_day in KNOWN_MAINTENANCE_DAYS_ET:
         return False, None
     if not day_csv.is_file() or day_csv.stat().st_size <= 0:
@@ -214,7 +221,7 @@ def score_day(
     cache: Optional[dict[str, Any]] = None,
     root: Optional[Path] = None,
 ) -> list[CycleScore]:
-    """Score every expected cycle for one Eastern day. Never omits an expected cycle."""
+    """Score expected session cycles plus any extra tickers present on the day CSV."""
     series_u = series.strip().upper()
     root = root or trades_dir()
     cache = cache if cache is not None else load_market_result_cache(root / ".cache_market_result_by_ticker.json")
@@ -235,8 +242,18 @@ def score_day(
         series_u, trading_day, day_csv=day_csv, trade_row_count=trade_row_count
     )
 
+    # Expected session cycles (may be empty on metal Saturdays) ∪ tickers on the
+    # day CSV. Charts scored every ticker present on the tape; skipping CSV-only
+    # tickers dropped whole ≥100-trade Saturday silver/gold days from rolling WRs.
+    tickers = list(expected_tickers_for_day(series_u, trading_day))
+    seen = set(tickers)
+    for t in sorted(by_ticker):
+        if t not in seen:
+            tickers.append(t)
+            seen.add(t)
+
     scores: list[CycleScore] = []
-    for ticker in expected_tickers_for_day(series_u, trading_day):
+    for ticker in tickers:
         ts = settlement_end_et_naive(ticker)
         if ts is None:
             continue

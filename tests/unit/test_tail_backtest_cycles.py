@@ -51,6 +51,29 @@ def test_first_exact_touch_ut_on_no():
     assert ut.price == 0.99
 
 
+def test_first_exact_touch_rejects_round_to_cent_neighbors():
+    """round(0.014, 2)==0.01 must not count as an exact $0.01 fill."""
+    rows = [
+        {
+            "created_time": "2026-11-06T12:00:00Z",
+            "trade_id": "near",
+            "yes_price_dollars": "0.014",
+            "no_price_dollars": "0.986",
+        },
+        {
+            "created_time": "2026-11-06T12:01:00Z",
+            "trade_id": "exact",
+            "yes_price_dollars": "0.0100",
+            "no_price_dollars": "0.9900",
+        },
+    ]
+    hit = tbc.first_exact_touch(rows, 0.01)
+    assert hit is not None
+    assert hit.side == "yes"
+    assert hit.fill_ts == datetime(2026, 11, 6, 7, 1, 0)
+    assert tbc.first_exact_touch(rows[:1], 0.01) is None
+
+
 def test_win_loss_null_when_no_fill_or_unsettled():
     fill = tbc.TailFill(side="yes", fill_ts=datetime(2026, 11, 6, 10, 0, 0), price=0.01)
     assert tbc._win_loss(None, "yes") is None
@@ -96,6 +119,30 @@ def test_score_day_never_omits_cycle_and_nulls_no_fill(tmp_path: Path):
     assert other.lt_win_loss is None
     assert other.ut_win_loss is None
     assert other.market_result is None
+
+
+def test_score_day_includes_csv_tickers_when_session_dark(tmp_path: Path):
+    """Metal Saturdays can still have tape; charts counted those ≥100-trade days."""
+    day = date(2026, 8, 8)  # Saturday
+    series = "KXSILVER15M"
+    assert tbc.expected_tickers_for_day(series, day) == []
+    ticker = "KXSILVER15M-26AUG081600-00"
+    csv_path = tmp_path / f"{series}_public_trades_{day.isoformat()}_et.csv"
+    lines = [
+        "trade_id,ticker,created_time,yes_price_dollars,no_price_dollars\n",
+        f"1,{ticker},2026-08-08T16:00:00Z,0.0100,0.9900\n",
+    ]
+    for i in range(120):
+        lines.append(f"{i+2},{ticker},2026-08-08T15:00:00Z,0.5000,0.5000\n")
+    csv_path.write_text("".join(lines), encoding="utf-8")
+    scores = tbc.score_day(
+        series, day, cache={ticker: {"mr": "yes"}}, root=tmp_path
+    )
+    assert len(scores) == 1
+    assert scores[0].ticker == ticker
+    assert scores[0].lt is not None
+    assert scores[0].lt_win_loss is True
+    assert scores[0].data_gap is False
 
 
 def test_crypto_missing_csv_sets_data_gap(tmp_path: Path):

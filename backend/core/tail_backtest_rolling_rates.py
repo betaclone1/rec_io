@@ -59,17 +59,32 @@ def is_trading_day(series: str, day: date) -> bool:
     return bool(expected_tickers_for_day(series, day))
 
 
-def trading_days_ending(series: str, as_of: date, n: int) -> list[date]:
-    """Last ``n`` trading days ending at ``as_of`` (inclusive), chronological."""
+def trading_days_ending(
+    series: str,
+    as_of: date,
+    n: int,
+    *,
+    eligible_days: Optional[set[date]] = None,
+) -> list[date]:
+    """Last ``n`` trading days ending at ``as_of`` (inclusive), chronological.
+
+    When ``eligible_days`` is provided (preferred for live/backfill), only those
+    dates count — matching the chart rule of real tape days (≥100 public trades),
+    not thin session calendar days.
+    """
     if n <= 0:
         return []
     out: list[date] = []
     d = as_of
-    # Commodities need extra calendar span for weekend dark hours.
-    guard_limit = max(n * 5, n + 14)
+    # Commodities need extra calendar span for weekend dark hours / sparse skips.
+    guard_limit = max(n * 5, n + 40)
     guard = 0
     while len(out) < n and guard < guard_limit:
-        if is_trading_day(series, d):
+        if eligible_days is not None:
+            ok = d in eligible_days
+        else:
+            ok = is_trading_day(series, d)
+        if ok:
             out.append(d)
         d -= timedelta(days=1)
         guard += 1
@@ -216,6 +231,8 @@ class _DayAgg:
     ut_filled: int = 0
     ut_scored: int = 0
     ut_wins: int = 0
+    # False when the day CSV was missing/sparse (< SPARSE_DAY_TRADE_FLOOR trades).
+    tape_eligible: bool = True
 
 
 def load_daily_aggregates(conn, series: str) -> dict[date, _DayAgg]:
@@ -229,7 +246,8 @@ def load_daily_aggregates(conn, series: str) -> dict[date, _DayAgg]:
                count(*) FILTER (WHERE lt_win_loss IS TRUE)::int,
                count(ut_side)::int,
                count(ut_win_loss)::int,
-               count(*) FILTER (WHERE ut_win_loss IS TRUE)::int
+               count(*) FILTER (WHERE ut_win_loss IS TRUE)::int,
+               count(*) FILTER (WHERE NOT COALESCE(data_gap, FALSE))::int
         FROM historical_data.{table}
         GROUP BY trading_day
         ORDER BY trading_day
@@ -238,6 +256,7 @@ def load_daily_aggregates(conn, series: str) -> dict[date, _DayAgg]:
     with conn.cursor() as cur:
         cur.execute(sql)
         for row in cur.fetchall():
+            non_gap = int(row[8])
             out[row[0]] = _DayAgg(
                 cycles=int(row[1]),
                 lt_filled=int(row[2]),
@@ -246,8 +265,14 @@ def load_daily_aggregates(conn, series: str) -> dict[date, _DayAgg]:
                 ut_filled=int(row[5]),
                 ut_scored=int(row[6]),
                 ut_wins=int(row[7]),
+                tape_eligible=non_gap > 0,
             )
     return out
+
+
+def tape_eligible_days(aggs: dict[date, _DayAgg]) -> set[date]:
+    """Trading days that match the chart rule: real tape, not sparse/missing."""
+    return {d for d, a in aggs.items() if a.tape_eligible}
 
 
 def _stats_from_days(aggs: dict[date, _DayAgg], days: Sequence[date]) -> tuple[TailWindowStats, TailWindowStats, int]:
@@ -256,7 +281,7 @@ def _stats_from_days(aggs: dict[date, _DayAgg], days: Sequence[date]) -> tuple[T
     with_rows = 0
     for d in days:
         a = aggs.get(d)
-        if a is None:
+        if a is None or not a.tape_eligible:
             continue
         with_rows += 1
         lt_c += a.cycles
@@ -285,10 +310,13 @@ def refresh_rolling_rates_for_series(
     """Recompute and upsert all windows for each as_of day."""
     series_u = series.strip().upper()
     aggs = daily if daily is not None else load_daily_aggregates(conn, series_u)
+    eligible = tape_eligible_days(aggs)
     rows: list[RollingRateRow] = []
     for as_of in as_of_days:
         for w in windows:
-            days = trading_days_ending(series_u, as_of, int(w))
+            days = trading_days_ending(
+                series_u, as_of, int(w), eligible_days=eligible
+            )
             lt, ut, with_rows = _stats_from_days(aggs, days)
             rows.append(
                 RollingRateRow(
@@ -323,14 +351,8 @@ def backfill_rolling_rates_all_history(
                 daily = load_daily_aggregates(conn, ser_u)
                 if not daily:
                     continue
-                d_min = min(daily)
-                d_max = max(daily)
-                as_ofs: list[date] = []
-                d = d_min
-                while d <= d_max:
-                    if is_trading_day(ser_u, d):
-                        as_ofs.append(d)
-                    d += timedelta(days=1)
+                eligible = tape_eligible_days(daily)
+                as_ofs = sorted(eligible) if eligible else sorted(daily)
                 total += refresh_rolling_rates_for_series(
                     conn, ser_u, as_ofs, daily=daily
                 )
@@ -367,16 +389,20 @@ def refresh_rolling_rates_after_score(
             if ser_u not in SERIES_TO_TABLE:
                 failed.append(f"rolling:unsupported:{ser_u}")
                 continue
+            daily = load_daily_aggregates(conn, ser_u)
+            eligible = tape_eligible_days(daily)
             as_ofs: list[date] = []
             d = start
             while d <= today:
-                if is_trading_day(ser_u, d):
+                if d in eligible or (not eligible and is_trading_day(ser_u, d)):
                     as_ofs.append(d)
                 d += timedelta(days=1)
             if not as_ofs:
                 as_ofs = [today]
             try:
-                total += refresh_rolling_rates_for_series(conn, ser_u, as_ofs)
+                total += refresh_rolling_rates_for_series(
+                    conn, ser_u, as_ofs, daily=daily
+                )
             except Exception as e:
                 log.exception("rolling refresh failed %s", ser_u)
                 failed.append(f"rolling:{ser_u}:{e}")
