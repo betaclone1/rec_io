@@ -1,6 +1,7 @@
-"""Exact-cent LT/UT backtest cycle rows → historical_data.*_tail_backtest_cycles.
+"""LT/UT backtest cycle rows → historical_data.*_tail_backtest_cycles.
 
-Backtest tape only (first $0.01 / $0.99 public print). Not the live OB monitor path.
+Backtest tape only: first public print at the extreme
+(LT: yes/no ≤ $0.01; UT: yes/no ≥ $0.99). Not the live OB monitor path.
 Written by the hourly public_trades_drive_sync worker after catchup.
 """
 
@@ -128,43 +129,49 @@ def _parse_created_time_et_naive(raw: Any) -> Optional[datetime]:
     return dt.astimezone(EST).replace(tzinfo=None, microsecond=0)
 
 
-def _exact_cent_price(raw: object, limit: float) -> bool:
-    """True only when ``raw`` is exactly ``limit`` (not round-to-cent neighbors)."""
+def _price_dollars(raw: object) -> Optional[float]:
     try:
-        return abs(float(raw) - float(limit)) < 1e-9
+        return float(raw)
     except (TypeError, ValueError):
-        return False
+        return None
 
 
 def first_exact_touch(rows: Sequence[dict], limit: float) -> Optional[TailFill]:
-    """First tape print at exact cent ``limit`` on yes or no; chronological.
+    """First chronological extreme tape print on yes or no.
 
-    Exact means the printed dollar price equals ``limit`` within float noise.
-    Do **not** round to 2 decimals first — that treats 0.005–0.014 as $0.01
-    (and 0.985–0.994 as $0.99) and rewrites first-touch side vs the chart.
+    LT (``limit`` ≤ 0.5, typically 0.01): first print with yes **or** no **≤ limit**
+    (bought at 1¢ or cheaper). UT (``limit`` ≥ 0.5, typically 0.99): first print
+    with yes **or** no **≥ limit**.
+
+    Uses the printed dollar price as-is — no ``round(..., 2)`` rewrite.
     """
     L = float(limit)
+    longshot = L <= 0.5
     ordered = sorted(
         rows,
         key=lambda r: (str(r.get("created_time") or ""), str(r.get("trade_id") or "")),
     )
     for r in ordered:
-        try:
-            y_raw = r["yes_price_dollars"]
-            n_raw = r["no_price_dollars"]
-        except KeyError:
-            continue
+        y = _price_dollars(r.get("yes_price_dollars"))
+        n = _price_dollars(r.get("no_price_dollars"))
         side: Optional[str] = None
-        if _exact_cent_price(y_raw, L):
-            side = "yes"
-        elif _exact_cent_price(n_raw, L):
-            side = "no"
-        if side is None:
+        price: Optional[float] = None
+        if longshot:
+            if y is not None and y <= L + 1e-12:
+                side, price = "yes", y
+            elif n is not None and n <= L + 1e-12:
+                side, price = "no", n
+        else:
+            if y is not None and y >= L - 1e-12:
+                side, price = "yes", y
+            elif n is not None and n >= L - 1e-12:
+                side, price = "no", n
+        if side is None or price is None:
             continue
         ts = _parse_created_time_et_naive(r.get("created_time"))
         if ts is None:
             continue
-        return TailFill(side=side, fill_ts=ts, price=L)
+        return TailFill(side=side, fill_ts=ts, price=float(price))
     return None
 
 

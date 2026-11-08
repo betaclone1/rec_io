@@ -46,7 +46,7 @@ On each 15m cycle the floor strike is the open price, so the book starts near ev
 
 ### 3.1 Exact-cent first-touch (tape oracle)
 
-**Rule:** On each market ticker’s public tape, find the first trade where yes or no price **equals** `L` exactly (float noise only — do **not** `round(..., 2)` first; that treats 0.005–0.014 as $0.01). Enter that side for full `contracts` at price `L`. Score vs `market_result`. Implemented in `backend/core/tail_backtest_cycles.first_exact_touch`.
+**Rule:** On each market ticker’s public tape, find the first trade where yes or no price is at the extreme: LT **≤ $0.01**, UT **≥ $0.99** (printed dollars, no `round(..., 2)` rewrite). Enter that side; score vs `market_result` (reversion = win). Implemented in `backend/core/tail_backtest_cycles.first_exact_touch`.
 
 - **Pros:** Fast offline; clear; strong 4-month headline at `L=0.01`.
 - **Cons:** Assumes you get the first print size; ignores queue ahead; optimistic vs maker reality.

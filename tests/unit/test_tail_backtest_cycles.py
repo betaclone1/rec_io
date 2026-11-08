@@ -51,27 +51,44 @@ def test_first_exact_touch_ut_on_no():
     assert ut.price == 0.99
 
 
-def test_first_exact_touch_rejects_round_to_cent_neighbors():
-    """round(0.014, 2)==0.01 must not count as an exact $0.01 fill."""
-    rows = [
+def test_first_exact_touch_lt_is_at_or_below_one_cent():
+    """LT fill = bought at ≤ $0.01. Above 1¢ does not count; below 1¢ does."""
+    above = [
         {
             "created_time": "2026-11-06T12:00:00Z",
-            "trade_id": "near",
+            "trade_id": "above",
             "yes_price_dollars": "0.014",
             "no_price_dollars": "0.986",
-        },
-        {
-            "created_time": "2026-11-06T12:01:00Z",
-            "trade_id": "exact",
-            "yes_price_dollars": "0.0100",
-            "no_price_dollars": "0.9900",
-        },
+        }
     ]
-    hit = tbc.first_exact_touch(rows, 0.01)
+    assert tbc.first_exact_touch(above, 0.01) is None
+    below = [
+        {
+            "created_time": "2026-11-06T12:00:00Z",
+            "trade_id": "below",
+            "yes_price_dollars": "0.005",
+            "no_price_dollars": "0.995",
+        }
+    ]
+    hit = tbc.first_exact_touch(below, 0.01)
     assert hit is not None
     assert hit.side == "yes"
-    assert hit.fill_ts == datetime(2026, 11, 6, 7, 1, 0)
-    assert tbc.first_exact_touch(rows[:1], 0.01) is None
+    assert hit.price == 0.005
+
+
+def test_first_exact_touch_ut_is_at_or_above_ninetynine():
+    rows = [
+        {
+            "created_time": "2026-11-06T15:00:00Z",
+            "trade_id": "1",
+            "yes_price_dollars": "0.995",
+            "no_price_dollars": "0.005",
+        }
+    ]
+    ut = tbc.first_exact_touch(rows, 0.99)
+    assert ut is not None
+    assert ut.side == "yes"
+    assert ut.price == 0.995
 
 
 def test_win_loss_null_when_no_fill_or_unsettled():
