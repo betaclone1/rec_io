@@ -2,7 +2,7 @@
 
 **Goal:** Maintain one Postgres cycle table per asset with Lower Tail and Upper Tail backtest outcomes (exact-cent tape), updated by the hourly public-trades historical worker, as the durable source for participation and win-rate scoring later.
 **Scope:** Schema + scoring from public-trades/market-results archives into `historical_data`; extend `public_trades_drive_sync` wake to upsert cycle rows **and** refresh 7/30/90 trading-day rolling rate snapshots. Out of scope for now: UI, monitor gating thresholds, live-path verification.
-**Status:** in progress (rolling rates)
+**Status:** done (prod seeded)
 
 ## Locked decisions
 
