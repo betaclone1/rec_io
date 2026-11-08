@@ -150,7 +150,8 @@
     }
     .legend {
       display: flex;
-      gap: 12px;
+      flex-wrap: wrap;
+      gap: 10px 12px;
       margin-top: 8px;
       font-size: 11px;
       color: var(--muted);
@@ -167,6 +168,13 @@
     .legend .l7::before { background: var(--w7); }
     .legend .l30::before { background: var(--w30); }
     .legend .l90::before { background: var(--w90); }
+    .legend .l1::before,
+    .legend .l99::before {
+      height: 0;
+      border-top: 1px dashed rgba(255,255,255,0.55);
+      background: transparent;
+      border-radius: 0;
+    }
   </style>
 </head>
 <body>
@@ -243,12 +251,66 @@
         '<span class="l7">7d</span>' +
         '<span class="l30">30d</span>' +
         '<span class="l90">90d</span>' +
+        '<span class="l1">1%</span>' +
+        '<span class="l99">99%</span>' +
       "</div>";
     return panel;
   }
 
+  const baselinePlugin = {
+    id: "fairBaselines",
+    afterDraw: function (chart) {
+      const yScale = chart.scales.y;
+      const area = chart.chartArea;
+      if (!yScale || !area) return;
+      const ctx = chart.ctx;
+      [1, 99].forEach(function (level) {
+        if (level < yScale.min || level > yScale.max) return;
+        const y = yScale.getPixelForValue(level);
+        ctx.save();
+        ctx.beginPath();
+        ctx.setLineDash([5, 4]);
+        ctx.strokeStyle = "rgba(255,255,255,0.55)";
+        ctx.lineWidth = 1;
+        ctx.moveTo(area.left, y);
+        ctx.lineTo(area.right, y);
+        ctx.stroke();
+        ctx.setLineDash([]);
+        ctx.fillStyle = "#c4c4c4";
+        ctx.font = "10px IBM Plex Sans, sans-serif";
+        ctx.textAlign = "right";
+        ctx.fillText(level + "%", area.right - 4, y - 4);
+        ctx.restore();
+      });
+    },
+  };
+
+  function yBounds(asset) {
+    const vals = [];
+    asset.points.forEach(function (p) {
+      [p.w7, p.w30, p.w90].forEach(function (v) {
+        if (v != null && !Number.isNaN(Number(v))) vals.push(Number(v));
+      });
+    });
+    if (!vals.length) {
+      return side === "ut" ? { min: 90, max: 100 } : { min: 0, max: 3 };
+    }
+    let min = Math.min.apply(null, vals);
+    let max = Math.max.apply(null, vals);
+    if (side === "ut") {
+      min = Math.min(min, 99);
+      max = Math.max(max, 99, 100);
+    } else {
+      min = Math.min(0, min, 1);
+      max = Math.max(max, 1);
+    }
+    const pad = Math.max((max - min) * 0.08, 0.15);
+    return { min: min - pad * 0.15, max: max + pad };
+  }
+
   function buildChart(canvas, asset) {
     const labels = asset.points.map((p) => p.as_of);
+    const bounds = yBounds(asset);
     const mk = (key, label, color) => ({
       label,
       data: asset.points.map((p) => p[key]),
@@ -270,6 +332,7 @@
           mk("w90", "90d", "#3ecf8e"),
         ],
       },
+      plugins: [baselinePlugin],
       options: {
         responsive: true,
         maintainAspectRatio: false,
@@ -297,6 +360,8 @@
             grid: { color: "rgba(255,255,255,0.06)" },
           },
           y: {
+            min: bounds.min,
+            max: bounds.max,
             ticks: {
               color: "#c4c4c4",
               font: { size: 10 },
