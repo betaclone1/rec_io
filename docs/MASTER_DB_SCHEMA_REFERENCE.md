@@ -8279,6 +8279,33 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+### Table: `historical_data.tail_backtest_rolling_rates`
+
+**Purpose:** Snapshot of **7 / 30 / 90 trading-day** exact-cent Lower Tail and Upper Tail win rate + participation per series, derived from `*_tail_backtest_cycles`. Refreshed on each `public_trades_drive_sync` wake after cycle upserts. Win rate ignores NULL `*_win_loss` (no fill / unsettled); participation is fills / cycles.
+
+**Creation:** Migration `20261107_2115_tail_backtest_rolling_rates`.
+
+**Population:** `backend/core/tail_backtest_rolling_rates.py`.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `series` | `text` | NO | e.g. `KXBTC15M` (PK part). |
+| `as_of_trading_day` | `date` | NO | Eastern as-of day for the window (PK part). |
+| `window_trading_days` | `integer` | NO | `7`, `30`, or `90` (PK part). |
+| `lt_cycles` / `ut_cycles` | `integer` | NO | Cycles in window. |
+| `lt_filled` / `ut_filled` | `integer` | NO | Cycles with an exact-cent fill. |
+| `lt_scored` / `ut_scored` | `integer` | NO | Cycles with non-null win/loss. |
+| `lt_wins` / `ut_wins` | `integer` | NO | Wins among scored. |
+| `lt_win_rate` / `ut_win_rate` | `numeric(10,6)` | YES | wins/scored; NULL if scored=0. |
+| `lt_participation` / `ut_participation` | `numeric(10,6)` | YES | filled/cycles; NULL if cycles=0. |
+| `trading_days_in_window` | `integer` | NO | Trading days requested in the lookback. |
+| `trading_days_with_rows` | `integer` | NO | How many of those days have cycle rows. |
+| `updated_at` | `timestamp without time zone` | NO | Last upsert. |
+
+**Indexes:** `idx_tail_backtest_rolling_rates_as_of`; `idx_tail_backtest_rolling_rates_series_window`.
+
+---
+
 ### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)
 
 **Not** created by `database.py` or routine migrations. Tables matching **`kalshi_candles_1m_<slug>_<YYYYMMDD>`** are created by **`scripts/backtest/helpers/kalshi_market_candles_scratch.py`** for ad-hoc analysis (Kalshi 1m OHLC for a market’s trading window). **`YYYYMMDD`** is a UTC calendar date suffix for rotation. **Row count** follows Kalshi’s session length (e.g. **15** rows for a **15m** contract, **~60** for a typical **hourly** contract); see **`docs/BACKTESTING.md`** §5.4.

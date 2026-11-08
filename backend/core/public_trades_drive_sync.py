@@ -405,8 +405,12 @@ def run_once(
             skip_package=skip_package,
         )
     scored = 0
+    rolling = 0
     if do_score:
         from backend.core.tail_backtest_cycles import score_lookback_for_sync
+        from backend.core.tail_backtest_rolling_rates import (
+            refresh_rolling_rates_after_score,
+        )
 
         try:
             scored, score_failed = score_lookback_for_sync(
@@ -417,15 +421,27 @@ def run_once(
         except Exception as e:
             log.exception("tail_backtest_cycles scoring failed")
             failed.append(f"score:fatal:{e}")
+        try:
+            # Keep current as_of (+ lookback days) 7/30/90 snapshots current.
+            # Windows look back through whatever cycle history is already in PG.
+            rolling, roll_failed = refresh_rolling_rates_after_score(
+                ser, lookback_days=max(lb, 1)
+            )
+            failed.extend(roll_failed)
+            log.info("tail_backtest_rolling_rates upserted=%s", rolling)
+        except Exception as e:
+            log.exception("tail_backtest_rolling_rates refresh failed")
+            failed.append(f"rolling:fatal:{e}")
     ok = True
     if not skip_upload:
         ok = upload_archives(archives, dry_run=dry_run_upload)
     if failed:
         log.warning("failures=%s", failed)
     log.info(
-        "wake done archives=%s scored=%s upload_ok=%s failures=%s",
+        "wake done archives=%s scored=%s rolling=%s upload_ok=%s failures=%s",
         len(archives),
         scored,
+        rolling,
         ok,
         len(failed),
     )

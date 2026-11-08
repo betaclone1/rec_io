@@ -1,8 +1,8 @@
 # Tail backtest cycle tables (UT/LT historical PG)
 
 **Goal:** Maintain one Postgres cycle table per asset with Lower Tail and Upper Tail backtest outcomes (exact-cent tape), updated by the hourly public-trades historical worker, as the durable source for participation and win-rate scoring later.
-**Scope:** Schema + scoring from public-trades/market-results archives into `historical_data`; extend `public_trades_drive_sync` wake to upsert cycle rows. Out of scope for v1: companion rollup tables, UI, monitor gating thresholds, live-path verification.
-**Status:** done (local); prod apply/deploy not requested
+**Scope:** Schema + scoring from public-trades/market-results archives into `historical_data`; extend `public_trades_drive_sync` wake to upsert cycle rows **and** refresh 7/30/90 trading-day rolling rate snapshots. Out of scope for now: UI, monitor gating thresholds, live-path verification.
+**Status:** in progress (rolling rates)
 
 ## Locked decisions
 
@@ -15,7 +15,7 @@
 | Granularity | One **row per cycle** per asset. Never omit a cycle. |
 | UT+LT shape | **One table per asset**, LT and UT columns on the same row (parse either side later). |
 | No exact-cent hit | Still insert the cycle row; that tail’s fill fields / `win_loss` stay **NULL** (participation yes, WR denominator no). |
-| Rolling windows | Always **trading days** (crypto expected 24/7; unexplained gaps outside known Kalshi maintenance → **flag**). No companion rollup process in v1 — derive WR when a consumer needs it. |
+| Rolling windows | Always **trading days** (crypto expected 24/7; unexplained gaps outside known Kalshi maintenance → **flag**). Materialized in `historical_data.tail_backtest_rolling_rates` (7/30/90) and refreshed every hourly wake. |
 | Writer | Same hourly historical worker that updates public-trades + Drive also upserts these tables. Part of that historical dataset. |
 | Isolation | Still off the live trading / Redis / monitor path. System PG only (`get_system_postgresql_connection`). |
 

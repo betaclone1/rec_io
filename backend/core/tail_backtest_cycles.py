@@ -316,11 +316,42 @@ def upsert_scores(conn, series: str, scores: Sequence[CycleScore]) -> int:
         return 0
     table = table_for_series(series)
     sql = _upsert_sql(table)
+    params = [_row_params(s) for s in scores]
     with conn.cursor() as cur:
-        for s in scores:
-            cur.execute(sql, _row_params(s))
+        cur.executemany(sql, params)
     conn.commit()
     return len(scores)
+
+
+def discover_day_csvs(
+    series: Sequence[str],
+    *,
+    root: Optional[Path] = None,
+    start: Optional[date] = None,
+    end: Optional[date] = None,
+) -> list[tuple[str, date]]:
+    """Return (series, day) pairs for non-empty day CSVs on disk."""
+    root = root or trades_dir()
+    out: list[tuple[str, date]] = []
+    for ser in series:
+        ser_u = str(ser).strip().upper()
+        prefix = f"{ser_u}_public_trades_"
+        for p in sorted(root.glob(f"{prefix}*_et.csv")):
+            if p.stat().st_size <= 0:
+                continue
+            mid = p.name[len(prefix) : -len("_et.csv")]
+            if len(mid) != 10:
+                continue
+            try:
+                d = date.fromisoformat(mid)
+            except ValueError:
+                continue
+            if start is not None and d < start:
+                continue
+            if end is not None and d > end:
+                continue
+            out.append((ser_u, d))
+    return out
 
 
 def score_and_upsert_range(

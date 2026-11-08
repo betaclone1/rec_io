@@ -6,6 +6,30 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-11-07 — Release v3.12.30: Tail backtest rolling rates + full history seed
+
+**Summary**
+- **Release: v3.12.30**
+- **Plans:** `tail-backtest-cycle-tables`
+- **Change:**
+  - Add `historical_data.tail_backtest_rolling_rates` (7/30/90 trading-day LT/UT win rate + participation).
+  - Hourly `public_trades_drive_sync` refreshes rolling snapshots after cycle upserts.
+  - Full-history backfill tool: `scripts/backtest/backfill_tail_backtest_tables.py` (seed cycles + rolling from day CSVs; hourly then maintains).
+  - Operator: after migrate/restart, load full cycle + rolling history into prod PG (pg_dump/restore from local seed or run backfill against day CSVs).
+- **DB:** Migration `20261107_2115_tail_backtest_rolling_rates`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-11-07-b`**. Code: `git revert` + restart `public_trades_drive_sync`. Migration: `down 20261107_2115_tail_backtest_rolling_rates`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261107_2115_tail_backtest_rolling_rates`
+- [ ] Restart public-trades sync: `./venv/bin/supervisorctl -c backend/supervisord.conf restart public_trades_drive_sync`
+- [ ] Seed full cycle + rolling history into prod PG (from local dump or `backfill_tail_backtest_tables.py`)
+- [ ] Verify: `tail_backtest_rolling_rates` row counts; cycle tables span full history; `public_trades_drive_sync` RUNNING; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.30`
+
+---
+
 ## 2026-11-07 — Release v3.12.29: Public-trades Drive sync + tail backtest cycle tables
 
 **Summary**
