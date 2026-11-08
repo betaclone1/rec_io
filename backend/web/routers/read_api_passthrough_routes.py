@@ -366,3 +366,10 @@ async def get_strategies(request: Request, user_id: Optional[str] = None):
 @read_api_passthrough_router.get("/api/earliest_trade_date")
 async def get_earliest_trade_date(request: Request):
     return await _get(request, "/api/earliest_trade_date")
+
+
+@read_api_passthrough_router.get("/api/tail_strat_win_rate")
+async def get_tail_strat_win_rate(request: Request):
+    q = request.url.query
+    path = f"/api/tail_strat_win_rate?{q}" if q else "/api/tail_strat_win_rate"
+    return await _get(request, path)

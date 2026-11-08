@@ -1362,6 +1362,35 @@ async def get_performance_monitor_tiles(
     return performance_monitor_tiles_read_payload(period=period, rollup_view=rollup_view)
 
 
+@app.get("/api/tail_strat_win_rate")
+async def get_tail_strat_win_rate(
+    side: str = Query("lt", description="lt | ut — Lower Tail or Upper Tail"),
+) -> Dict[str, Any]:
+    """7/30/90 trading-day exact-cent rolling win rates for the chart page."""
+    from backend.core.tail_backtest_rolling_rates_read import rolling_rates_chart_payload
+
+    started = time.perf_counter()
+    conn = None
+    try:
+        side_n = str(side or "lt").strip().lower()
+        if side_n not in ("lt", "ut"):
+            raise HTTPException(status_code=400, detail="side must be lt or ut")
+        conn = get_system_postgresql_connection()
+        return rolling_rates_chart_payload(conn, side=side_n)  # type: ignore[arg-type]
+    except HTTPException:
+        raise
+    except Exception as e:
+        _read_logger.exception("GET /api/tail_strat_win_rate failed")
+        raise HTTPException(status_code=500, detail=str(e)) from e
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        _log_route_timing("/api/tail_strat_win_rate", started)
+
+
 @app.get("/api/dashboard/preferences")
 async def get_dashboard_preferences(mode: str = "prod") -> Dict[str, Any]:
     """Get dashboard preferences for the current tenant."""

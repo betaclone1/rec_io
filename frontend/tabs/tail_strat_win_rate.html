@@ -1,0 +1,381 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <script src="/js/rec_session.js"></script>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>tail_strat_win_rate</title>
+  <link rel="stylesheet" href="/styles/global.css" />
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root {
+      --page-bg: #101018;
+      --panel: #323c4e;
+      --border: #4a5568;
+      --text: #ffffff;
+      --muted: #c4c4c4;
+      --chip: #2a3344;
+      --w7: #4a9eff;
+      --w30: #f0b429;
+      --w90: #3ecf8e;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 20px 24px 48px;
+      background: var(--page-bg);
+      color: var(--text);
+      font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
+      line-height: 1.45;
+    }
+    header {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: flex-end;
+      justify-content: space-between;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    h1 {
+      margin: 0 0 6px;
+      font-size: 1.55rem;
+      font-weight: 700;
+    }
+    .sub {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      max-width: 52rem;
+    }
+    .controls {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      align-items: center;
+    }
+    .toggle {
+      display: inline-flex;
+      background: var(--chip);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+    }
+    .toggle button {
+      border: 0;
+      background: transparent;
+      color: var(--muted);
+      padding: 8px 14px;
+      font: inherit;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+    .toggle button.active {
+      background: #1f6aa5;
+      color: #fff;
+    }
+    .meta {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .status {
+      margin: 0 0 14px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+    .status.error { color: #ff8a8a; }
+    .section-title {
+      margin: 22px 0 10px;
+      font-size: 13px;
+      font-weight: 700;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+      color: var(--muted);
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+    }
+    @media (max-width: 1100px) {
+      .grid { grid-template-columns: 1fr; }
+    }
+    .panel-container {
+      margin-bottom: 0;
+      padding: 14px 16px 10px;
+      min-height: 320px;
+    }
+    .panel-top {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 8px;
+    }
+    .panel-title {
+      font-size: 15px;
+      font-weight: 700;
+      color: var(--text);
+    }
+    .panel-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 2px;
+    }
+    .stats {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+    .stat {
+      background: var(--chip);
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      padding: 4px 8px;
+      font-size: 11px;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+    .stat strong {
+      color: var(--text);
+      font-weight: 700;
+      margin-left: 4px;
+    }
+    .stat.w7 strong { color: var(--w7); }
+    .stat.w30 strong { color: var(--w30); }
+    .stat.w90 strong { color: var(--w90); }
+    .chart-wrap {
+      position: relative;
+      height: 240px;
+    }
+    .legend {
+      display: flex;
+      gap: 12px;
+      margin-top: 8px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+    .legend span::before {
+      content: "";
+      display: inline-block;
+      width: 10px;
+      height: 3px;
+      margin-right: 6px;
+      vertical-align: middle;
+      border-radius: 1px;
+    }
+    .legend .l7::before { background: var(--w7); }
+    .legend .l30::before { background: var(--w30); }
+    .legend .l90::before { background: var(--w90); }
+  </style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>tail_strat_win_rate</h1>
+      <p class="sub">
+        First public-tape touch at exact $0.01 (LT) or $0.99 (UT), scored vs Kalshi
+        <code>market_result</code>. Windows are 7 / 30 / 90 trading days (≥100 tape prints).
+        Crypto from 2026-05-01 · commodities from 2026-09-01.
+      </p>
+    </div>
+    <div class="controls">
+      <div class="toggle" role="group" aria-label="Tail side">
+        <button type="button" id="btn-lt" class="active">Lower Tail</button>
+        <button type="button" id="btn-ut">Upper Tail</button>
+      </div>
+      <span class="meta" id="generated-at"></span>
+    </div>
+  </header>
+
+  <p class="status" id="status">Loading…</p>
+
+  <div class="section-title">Crypto</div>
+  <div class="grid" id="crypto-grid"></div>
+
+  <div class="section-title">Commodities</div>
+  <div class="grid" id="commodity-grid"></div>
+
+  <script>
+(function () {
+  const API = "/api/tail_strat_win_rate";
+  const charts = new Map();
+  let side = "lt";
+
+  const statusEl = document.getElementById("status");
+  const generatedEl = document.getElementById("generated-at");
+  const cryptoGrid = document.getElementById("crypto-grid");
+  const commodityGrid = document.getElementById("commodity-grid");
+  const btnLt = document.getElementById("btn-lt");
+  const btnUt = document.getElementById("btn-ut");
+
+  function fmtPct(v) {
+    if (v == null || Number.isNaN(Number(v))) return "—";
+    return Number(v).toFixed(2) + "%";
+  }
+
+  function destroyCharts() {
+    for (const c of charts.values()) c.destroy();
+    charts.clear();
+  }
+
+  function makePanel(asset) {
+    const panel = document.createElement("div");
+    panel.className = "panel-container";
+    const latest = asset.latest || {};
+    panel.innerHTML =
+      '<div class="panel-top">' +
+        '<div>' +
+          '<div class="panel-title">' + asset.symbol + "</div>" +
+          '<div class="panel-sub">' + asset.series +
+            " · from " + asset.start_date +
+            (latest.as_of ? " · as of " + latest.as_of : "") +
+          "</div>" +
+        "</div>" +
+        '<div class="stats">' +
+          '<div class="stat w7">7d<strong>' + fmtPct(latest.w7) + "</strong></div>" +
+          '<div class="stat w30">30d<strong>' + fmtPct(latest.w30) + "</strong></div>" +
+          '<div class="stat w90">90d<strong>' + fmtPct(latest.w90) + "</strong></div>" +
+        "</div>" +
+      "</div>" +
+      '<div class="chart-wrap"><canvas></canvas></div>' +
+      '<div class="legend">' +
+        '<span class="l7">7d</span>' +
+        '<span class="l30">30d</span>' +
+        '<span class="l90">90d</span>' +
+      "</div>";
+    return panel;
+  }
+
+  function buildChart(canvas, asset) {
+    const labels = asset.points.map((p) => p.as_of);
+    const mk = (key, label, color) => ({
+      label,
+      data: asset.points.map((p) => p[key]),
+      borderColor: color,
+      backgroundColor: "transparent",
+      borderWidth: 1.75,
+      pointRadius: 0,
+      pointHoverRadius: 3,
+      tension: 0.15,
+      spanGaps: false,
+    });
+    return new Chart(canvas.getContext("2d"), {
+      type: "line",
+      data: {
+        labels,
+        datasets: [
+          mk("w7", "7d", "#4a9eff"),
+          mk("w30", "30d", "#f0b429"),
+          mk("w90", "90d", "#3ecf8e"),
+        ],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        interaction: { mode: "index", intersect: false },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label(ctx) {
+                const v = ctx.parsed.y;
+                return ctx.dataset.label + ": " + (v == null ? "—" : v.toFixed(3) + "%");
+              },
+            },
+          },
+        },
+        scales: {
+          x: {
+            ticks: {
+              color: "#c4c4c4",
+              maxRotation: 0,
+              autoSkip: true,
+              maxTicksLimit: 8,
+              font: { size: 10 },
+            },
+            grid: { color: "rgba(255,255,255,0.06)" },
+          },
+          y: {
+            ticks: {
+              color: "#c4c4c4",
+              font: { size: 10 },
+              callback(v) { return v + "%"; },
+            },
+            grid: { color: "rgba(255,255,255,0.08)" },
+            title: {
+              display: true,
+              text: "Win rate %",
+              color: "#c4c4c4",
+              font: { size: 11 },
+            },
+          },
+        },
+      },
+    });
+  }
+
+  function render(payload) {
+    destroyCharts();
+    cryptoGrid.innerHTML = "";
+    commodityGrid.innerHTML = "";
+    for (const asset of payload.assets || []) {
+      const panel = makePanel(asset);
+      const canvas = panel.querySelector("canvas");
+      const chart = buildChart(canvas, asset);
+      charts.set(asset.series, chart);
+      if (asset.asset_class === "commodity") commodityGrid.appendChild(panel);
+      else cryptoGrid.appendChild(panel);
+    }
+    generatedEl.textContent = payload.generated_at
+      ? "Updated " + payload.generated_at + " ET"
+      : "";
+  }
+
+  async function load() {
+    statusEl.classList.remove("error");
+    statusEl.textContent = "Loading…";
+    try {
+      const r = await fetch(API + "?side=" + encodeURIComponent(side), {
+        credentials: "same-origin",
+        headers: { Accept: "application/json" },
+      });
+      if (!r.ok) {
+        const t = await r.text();
+        throw new Error(r.status + " " + (t || r.statusText));
+      }
+      const payload = await r.json();
+      render(payload);
+      const n = (payload.assets || []).length;
+      statusEl.textContent =
+        (side === "ut" ? "Upper Tail" : "Lower Tail") +
+        " · " + n + " assets · pooled wins ÷ scored fills";
+    } catch (err) {
+      statusEl.classList.add("error");
+      statusEl.textContent = "Failed to load: " + (err && err.message ? err.message : err);
+      destroyCharts();
+      cryptoGrid.innerHTML = "";
+      commodityGrid.innerHTML = "";
+    }
+  }
+
+  btnLt.addEventListener("click", function () {
+    if (side === "lt") return;
+    side = "lt";
+    btnLt.classList.add("active");
+    btnUt.classList.remove("active");
+    load();
+  });
+  btnUt.addEventListener("click", function () {
+    if (side === "ut") return;
+    side = "ut";
+    btnUt.classList.add("active");
+    btnLt.classList.remove("active");
+    load();
+  });
+
+  load();
+})();
+  </script>
+</body>
+</html>

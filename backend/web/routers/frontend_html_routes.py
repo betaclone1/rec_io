@@ -452,3 +452,28 @@ async def serve_mobile_trade_history(request: Request):
                 },
             )
     return HTMLResponse(content="Mobile trade history not found", status_code=404)
+
+
+@frontend_html_router.get("/tail_strat_win_rate", response_class=HTMLResponse)
+@frontend_html_router.get("/tail_strat_win_rate.html", response_class=HTMLResponse)
+async def serve_tail_strat_win_rate(request: Request):
+    if AUTH_ENABLED:
+        if not query_token_auth_ok(request):
+            return RedirectResponse(url="/login")
+    file_path = f"{frontend_dir}/tabs/tail_strat_win_rate.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), headers=_html_no_cache_headers())
+    return HTMLResponse(content="tail_strat_win_rate page not found", status_code=404)
+
+
+@frontend_html_router.get("/mobile/tail_strat_win_rate", response_class=HTMLResponse)
+async def serve_mobile_tail_strat_win_rate(request: Request):
+    if AUTH_ENABLED:
+        if not query_token_auth_ok(request):
+            return RedirectResponse(url="/login")
+    file_path = f"{frontend_dir}/mobile/tail_strat_win_rate_mobile.html"
+    if os.path.exists(file_path):
+        with open(file_path, "r", encoding="utf-8") as f:
+            return HTMLResponse(content=f.read(), headers=_html_no_cache_headers())
+    return HTMLResponse(content="Mobile tail_strat_win_rate page not found", status_code=404)
