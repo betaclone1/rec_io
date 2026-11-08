@@ -233,13 +233,7 @@
     const latest = asset.latest || {};
     panel.innerHTML =
       '<div class="panel-top">' +
-        '<div>' +
-          '<div class="panel-title">' + asset.symbol + "</div>" +
-          '<div class="panel-sub">' + asset.series +
-            " · from " + asset.start_date +
-            (latest.as_of ? " · as of " + latest.as_of : "") +
-          "</div>" +
-        "</div>" +
+        '<div class="panel-title">' + asset.symbol + "</div>" +
         '<div class="stats">' +
           '<div class="stat w7">7d<strong>' + fmtPct(latest.w7) + "</strong></div>" +
           '<div class="stat w30">30d<strong>' + fmtPct(latest.w30) + "</strong></div>" +
