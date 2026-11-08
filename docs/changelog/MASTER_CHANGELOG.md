@@ -19,12 +19,12 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-11-07`**. Code: `git revert` + `scripts/MASTER_RESTART.sh` (drops new supervisor program). Migration: `down 20261107_1600_tail_backtest_cycles` only if intentionally dropping the tables.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261107_1600_tail_backtest_cycles`
-- [ ] Regenerate supervisor + full restart (new `public_trades_drive_sync`): `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
-- [ ] Verify: `public_trades_drive_sync` RUNNING (or starts when Drive OAuth present); migration listed in `run_migration.py list`; sample `SELECT count(*) FROM historical_data.kxbtc15m_tail_backtest_cycles`; health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.29`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261107_1600_tail_backtest_cycles`
+- [x] Regenerate supervisor + full restart (new `public_trades_drive_sync`): `cd /opt/rec_io_server && scripts/MASTER_RESTART.sh`
+- [x] Verify: `public_trades_drive_sync` RUNNING (or starts when Drive OAuth present); migration listed in `run_migration.py list`; sample `SELECT count(*) FROM historical_data.kxbtc15m_tail_backtest_cycles`; health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.29`
 
 ---
 
