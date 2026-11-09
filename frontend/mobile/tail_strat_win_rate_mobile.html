@@ -250,7 +250,10 @@
   };
 
   function buildChart(canvas, asset) {
-    const labels = asset.points.map((p) => p.as_of);
+    const labels = asset.points.map((p) => {
+      const s = String(p.as_of || "");
+      return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(5, 10) : s;
+    });
     const axis = yAxisForSide();
     const mk = (key, label, color) => ({
       label,
