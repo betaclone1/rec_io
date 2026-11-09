@@ -7,6 +7,8 @@
   <title>tail_strat_win_rate</title>
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans&display=swap" rel="stylesheet" />
   <link rel="stylesheet" href="/styles/global.css" />
+  <script src="/js/db_changes_prefilter.js"></script>
+  <script src="/js/realtime-ws-coordinator.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
   <style>
     :root {
@@ -340,30 +342,82 @@
       : "";
   }
 
-  async function load() {
-    statusEl.classList.remove("error");
-    statusEl.textContent = "Loading…";
-    try {
-      const r = await fetch(API + "?side=" + encodeURIComponent(side), {
-        credentials: "same-origin",
-        headers: { Accept: "application/json" },
-      });
-      if (!r.ok) {
-        const t = await r.text();
-        throw new Error(r.status + " " + (t || r.statusText));
-      }
-      const payload = await r.json();
-      render(payload);
-      statusEl.textContent =
-        (side === "ut" ? "Upper Tail" : "Lower Tail") +
-        " · " + (payload.assets || []).length + " assets";
-    } catch (err) {
-      statusEl.classList.add("error");
-      statusEl.textContent = "Failed: " + (err && err.message ? err.message : err);
-      destroyCharts();
-      cryptoGrid.innerHTML = "";
-      commodityGrid.innerHTML = "";
+  let loadInFlight = null;
+  let refreshTimer = null;
+  let dbUnsub = null;
+
+  async function load(opts) {
+    const silent = !!(opts && opts.silent);
+    if (!silent) {
+      statusEl.classList.remove("error");
+      statusEl.textContent = "Loading…";
     }
+    const run = (async function () {
+      try {
+        const r = await fetch(API + "?side=" + encodeURIComponent(side), {
+          credentials: "same-origin",
+          headers: { Accept: "application/json" },
+        });
+        if (!r.ok) {
+          const t = await r.text();
+          throw new Error(r.status + " " + (t || r.statusText));
+        }
+        const payload = await r.json();
+        render(payload);
+        statusEl.classList.remove("error");
+        statusEl.textContent =
+          (side === "ut" ? "Upper Tail" : "Lower Tail") +
+          " · " + (payload.assets || []).length + " assets · live";
+      } catch (err) {
+        if (!silent) {
+          statusEl.classList.add("error");
+          statusEl.textContent = "Failed: " + (err && err.message ? err.message : err);
+          destroyCharts();
+          cryptoGrid.innerHTML = "";
+          commodityGrid.innerHTML = "";
+        }
+      }
+    })();
+    loadInFlight = run;
+    try {
+      await run;
+    } finally {
+      if (loadInFlight === run) loadInFlight = null;
+    }
+  }
+
+  function scheduleLiveRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(function () {
+      refreshTimer = null;
+      load({ silent: true });
+    }, 400);
+  }
+
+  function connectLive() {
+    if (dbUnsub) {
+      try { dbUnsub(); } catch (e) { /* ignore */ }
+      dbUnsub = null;
+    }
+    if (!window.recRealtimeWsCoordinator || typeof window.recRealtimeWsCoordinator.subscribe !== "function") {
+      return;
+    }
+    const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    const wsUrl = protocol + "//" + window.location.host + "/ws/db_changes";
+    dbUnsub = window.recRealtimeWsCoordinator.subscribe(wsUrl, {
+      onlyDbStreams: ["tail_backtest_rolling_rates"],
+      onMessage: function (event) {
+        try {
+          const data =
+            typeof recRealtimeWsJson === "function" ? recRealtimeWsJson(event) : JSON.parse(event.data);
+          if (data && data.type === "db_change" && data.database === "tail_backtest_rolling_rates") {
+            scheduleLiveRefresh();
+          }
+        } catch (e) {
+          // ignore malformed frames
+        }
+      },
+    });
   }
 
   btnLt.addEventListener("click", function () {
@@ -381,6 +435,7 @@
     load();
   });
 
+  connectLive();
   load();
 })();
   </script>

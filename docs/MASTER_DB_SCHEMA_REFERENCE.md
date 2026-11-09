@@ -8304,6 +8304,8 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Indexes:** `idx_tail_backtest_rolling_rates_as_of`; `idx_tail_backtest_rolling_rates_series_window`.
 
+**Realtime:** Statement-level trigger `tail_backtest_rolling_rates_rec_io_db_notify_stmt` → `public.rec_io_db_notify_stmt()` → stream `tail_backtest_rolling_rates` (migration `20261109_0445_tail_backtest_rolling_rates_db_notify`).
+
 ---
 
 ### Ephemeral: `historical_data.kalshi_candles_1m_*_*` (scratch)

@@ -1,0 +1,2 @@
+DROP TRIGGER IF EXISTS tail_backtest_rolling_rates_rec_io_db_notify_stmt
+  ON historical_data.tail_backtest_rolling_rates;

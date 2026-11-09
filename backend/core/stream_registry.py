@@ -43,6 +43,8 @@ TABLE_TO_STREAM: Dict[Tuple[str, str], str] = {
     ("live_data", "strike_table_15m"): "strike_table_15m",
     # Unified hourly strike rows
     ("live_data", "strike_table_hourly"): "strike_table_hourly",
+    # Tail strat win-rate charts (7/30/90 TD); statement-level NOTIFY on upsert
+    ("historical_data", "tail_backtest_rolling_rates"): "tail_backtest_rolling_rates",
 }
 
 

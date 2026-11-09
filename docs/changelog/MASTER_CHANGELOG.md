@@ -6,6 +6,28 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-11-09 — Release v3.12.31: Live Redis feed for tail_strat_win_rate charts
+
+**Summary**
+- **Release: v3.12.31**
+- **Plans:** none (follow-on to tail win-rate UI).
+- **Change:**
+  - Statement-level NOTIFY on `historical_data.tail_backtest_rolling_rates` → stream `tail_backtest_rolling_rates`.
+  - Desktop + mobile `tail_strat_win_rate` pages subscribe to same-origin `/ws/db_changes` and silently refetch charts when rolling rates upsert.
+  - Rolling upserts batched as one SQL statement so each wake emits one notify (not per-row).
+- **DB:** Migration `20261109_0445_tail_backtest_rolling_rates_db_notify`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-11-09`**. Code: `git revert` + restart listed programs. Migration: `down 20261109_0445_tail_backtest_rolling_rates_db_notify`.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261109_0445_tail_backtest_rolling_rates_db_notify`
+- [ ] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart redis_switchboard main_app read_api public_trades_drive_sync`
+- [ ] Verify: migration in `run_migration.py list`; open `/tail_strat_win_rate` shows live status; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.31`
+
+---
+
 ## 2026-11-07 — Release v3.12.30: Tail backtest rolling rates + full history seed
 
 **Summary**

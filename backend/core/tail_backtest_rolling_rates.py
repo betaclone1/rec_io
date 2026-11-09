@@ -158,18 +158,14 @@ def compute_rolling_rate(
 
 
 def _upsert_sql() -> str:
+    # Single multi-row statement so statement-level NOTIFY fires once per batch.
     return """
         INSERT INTO historical_data.tail_backtest_rolling_rates (
             series, as_of_trading_day, window_trading_days,
             lt_cycles, lt_filled, lt_scored, lt_wins, lt_win_rate, lt_participation,
             ut_cycles, ut_filled, ut_scored, ut_wins, ut_win_rate, ut_participation,
             trading_days_in_window, trading_days_with_rows, updated_at
-        ) VALUES (
-            %s, %s, %s,
-            %s, %s, %s, %s, %s, %s,
-            %s, %s, %s, %s, %s, %s,
-            %s, %s, CURRENT_TIMESTAMP
-        )
+        ) VALUES %s
         ON CONFLICT (series, as_of_trading_day, window_trading_days) DO UPDATE SET
             lt_cycles = EXCLUDED.lt_cycles,
             lt_filled = EXCLUDED.lt_filled,
@@ -214,10 +210,21 @@ def _params(row: RollingRateRow) -> tuple:
 def upsert_rolling_rates(conn, rows: Sequence[RollingRateRow]) -> int:
     if not rows:
         return 0
-    sql = _upsert_sql()
+    from psycopg2.extras import execute_values
+
     params = [_params(row) for row in rows]
+    # CURRENT_TIMESTAMP is fixed in the template so the whole batch is one statement.
+    template = (
+        "(%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)"
+    )
     with conn.cursor() as cur:
-        cur.executemany(sql, params)
+        execute_values(
+            cur,
+            _upsert_sql(),
+            params,
+            template=template,
+            page_size=max(len(params), 1),
+        )
     conn.commit()
     return len(rows)
 
