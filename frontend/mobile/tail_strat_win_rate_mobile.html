@@ -35,16 +35,6 @@
       padding: 14px 14px 36px;
       max-width: 100%;
     }
-    h1 {
-      margin: 0 0 4px;
-      font-size: 1.2rem;
-      font-weight: 700;
-    }
-    .sub {
-      margin: 0 0 12px;
-      color: var(--muted);
-      font-size: 12px;
-    }
     .controls {
       display: flex;
       flex-wrap: wrap;
@@ -73,7 +63,7 @@
       background: #1f6aa5;
       color: #fff;
     }
-    .meta, .status {
+    .status {
       color: var(--muted);
       font-size: 12px;
     }
@@ -163,15 +153,11 @@
 </head>
 <body>
   <div class="mobile-container">
-    <h1>tail_strat_win_rate</h1>
-    <p class="sub">First tape ≤ $0.01 (LT) / ≥ $0.99 (UT) · reversion = win · 7/30/90 TD · crypto from 5/1 · commodities from 9/1</p>
-
     <div class="controls">
       <div class="toggle" role="group" aria-label="Tail side">
         <button type="button" id="btn-lt" class="active">LT</button>
         <button type="button" id="btn-ut">UT</button>
       </div>
-      <span class="meta" id="generated-at"></span>
     </div>
 
     <p class="status" id="status">Loading…</p>
@@ -190,7 +176,6 @@
   let side = "lt";
 
   const statusEl = document.getElementById("status");
-  const generatedEl = document.getElementById("generated-at");
   const cryptoGrid = document.getElementById("crypto-grid");
   const commodityGrid = document.getElementById("commodity-grid");
   const btnLt = document.getElementById("btn-lt");
@@ -337,9 +322,6 @@
       if (asset.asset_class === "commodity") commodityGrid.appendChild(panel);
       else cryptoGrid.appendChild(panel);
     }
-    generatedEl.textContent = payload.generated_at
-      ? payload.generated_at.replace("T", " ").slice(0, 16) + " ET"
-      : "";
   }
 
   let loadInFlight = null;

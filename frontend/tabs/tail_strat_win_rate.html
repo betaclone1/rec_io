@@ -30,30 +30,12 @@
       font-family: 'IBM Plex Sans', system-ui, -apple-system, sans-serif;
       line-height: 1.45;
     }
-    header {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: flex-end;
-      justify-content: space-between;
-      gap: 16px;
-      margin-bottom: 18px;
-    }
-    h1 {
-      margin: 0 0 6px;
-      font-size: 1.55rem;
-      font-weight: 700;
-    }
-    .sub {
-      margin: 0;
-      color: var(--muted);
-      font-size: 13px;
-      max-width: 52rem;
-    }
     .controls {
       display: flex;
       flex-wrap: wrap;
       gap: 8px;
       align-items: center;
+      margin-bottom: 14px;
     }
     .toggle {
       display: inline-flex;
@@ -75,10 +57,6 @@
     .toggle button.active {
       background: #1f6aa5;
       color: #fff;
-    }
-    .meta {
-      color: var(--muted);
-      font-size: 12px;
     }
     .status {
       margin: 0 0 14px;
@@ -180,23 +158,12 @@
   </style>
 </head>
 <body>
-  <header>
-    <div>
-      <h1>tail_strat_win_rate</h1>
-      <p class="sub">
-        First public-tape print at ≤ $0.01 (LT) or ≥ $0.99 (UT), scored vs Kalshi
-        <code>market_result</code> (reversion = win). Windows are 7 / 30 / 90 trading days
-        (≥100 tape prints). Crypto from 2026-05-01 · commodities from 2026-09-01.
-      </p>
+  <div class="controls">
+    <div class="toggle" role="group" aria-label="Tail side">
+      <button type="button" id="btn-lt" class="active">Lower Tail</button>
+      <button type="button" id="btn-ut">Upper Tail</button>
     </div>
-    <div class="controls">
-      <div class="toggle" role="group" aria-label="Tail side">
-        <button type="button" id="btn-lt" class="active">Lower Tail</button>
-        <button type="button" id="btn-ut">Upper Tail</button>
-      </div>
-      <span class="meta" id="generated-at"></span>
-    </div>
-  </header>
+  </div>
 
   <p class="status" id="status">Loading…</p>
 
@@ -213,7 +180,6 @@
   let side = "lt";
 
   const statusEl = document.getElementById("status");
-  const generatedEl = document.getElementById("generated-at");
   const cryptoGrid = document.getElementById("crypto-grid");
   const commodityGrid = document.getElementById("commodity-grid");
   const btnLt = document.getElementById("btn-lt");
@@ -373,9 +339,6 @@
       if (asset.asset_class === "commodity") commodityGrid.appendChild(panel);
       else cryptoGrid.appendChild(panel);
     }
-    generatedEl.textContent = payload.generated_at
-      ? "Updated " + payload.generated_at + " ET"
-      : "";
   }
 
   let loadInFlight = null;
