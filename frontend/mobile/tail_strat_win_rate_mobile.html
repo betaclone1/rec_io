@@ -122,6 +122,22 @@
       position: relative;
       height: 200px;
     }
+    .score-badge {
+      position: absolute;
+      top: 4px;
+      right: 6px;
+      z-index: 2;
+      font-size: 16px;
+      font-weight: 700;
+      font-variant-numeric: tabular-nums;
+      letter-spacing: 0.02em;
+      pointer-events: none;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+    }
+    .score-badge.neg { color: #ff5c5c; }
+    .score-badge.mid { color: #f0b429; }
+    .score-badge.pos { color: #3ecf8e; }
+    .score-badge.na { color: var(--muted); font-size: 13px; }
     .legend {
       display: flex;
       flex-wrap: wrap;
@@ -186,6 +202,23 @@
     return Number(v).toFixed(2) + "%";
   }
 
+  /** 30d WR vs side baseline → −100..100 style score (pct points × 100). */
+  function scoreFromLatest(latest) {
+    if (!latest || latest.w30 == null || Number.isNaN(Number(latest.w30))) return null;
+    const baseline = side === "ut" ? 99 : 1;
+    return (Number(latest.w30) - baseline) * 100;
+  }
+
+  function scoreBadgeHtml(score) {
+    if (score == null || Number.isNaN(Number(score))) {
+      return '<div class="score-badge na">—</div>';
+    }
+    const s = Number(score);
+    const cls = s < 0 ? "neg" : s <= 10 ? "mid" : "pos";
+    const text = (s > 0 ? "+" : "") + s.toFixed(1);
+    return '<div class="score-badge ' + cls + '">' + text + "</div>";
+  }
+
   function destroyCharts() {
     for (const c of charts.values()) c.destroy();
     charts.clear();
@@ -204,7 +237,10 @@
           '<div class="stat w90">90d<strong>' + fmtPct(latest.w90) + "</strong></div>" +
         "</div>" +
       "</div>" +
-      '<div class="chart-wrap"><canvas></canvas></div>' +
+      '<div class="chart-wrap">' +
+        scoreBadgeHtml(scoreFromLatest(latest)) +
+        "<canvas></canvas>" +
+      "</div>" +
       '<div class="legend">' +
         '<span class="l7">7d</span>' +
         '<span class="l30">30d</span>' +
