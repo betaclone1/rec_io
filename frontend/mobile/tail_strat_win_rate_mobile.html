@@ -215,9 +215,9 @@
     if (score == null || Number.isNaN(Number(score))) {
       return '<div class="score-badge na">—</div>';
     }
-    const s = Number(score);
-    const cls = s < 0 ? "neg" : s <= 10 ? "mid" : "pos";
-    const text = (s > 0 ? "+" : "") + s.toFixed(1);
+    const s = Math.round(Number(score));
+    const cls = s < 0 ? "neg" : s < 20 ? "mid" : "pos";
+    const text = (s > 0 ? "+" : "") + String(s);
     return '<div class="score-badge ' + cls + '">' + text + "</div>";
   }
 
