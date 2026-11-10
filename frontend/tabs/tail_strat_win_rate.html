@@ -88,11 +88,12 @@
     .panel-top {
       display: flex;
       flex-wrap: wrap;
-      justify-content: space-between;
+      align-items: center;
       gap: 10px;
       margin-bottom: 8px;
     }
     .panel-title {
+      margin-right: auto;
       font-size: 15px;
       font-weight: 700;
       color: var(--text);
@@ -129,16 +130,11 @@
       height: 240px;
     }
     .score-badge {
-      position: absolute;
-      top: 6px;
-      right: 8px;
-      z-index: 2;
       font-size: 18px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       letter-spacing: 0.02em;
-      pointer-events: none;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+      line-height: 1;
     }
     .score-badge.neg { color: #ff5c5c; }
     .score-badge.mid { color: #f0b429; }
@@ -240,11 +236,9 @@
           '<div class="stat w30">30d<strong>' + fmtPct(latest.w30) + "</strong></div>" +
           '<div class="stat w90">90d<strong>' + fmtPct(latest.w90) + "</strong></div>" +
         "</div>" +
-      "</div>" +
-      '<div class="chart-wrap">' +
         scoreBadgeHtml(scoreFromLatest(latest)) +
-        "<canvas></canvas>" +
       "</div>" +
+      '<div class="chart-wrap"><canvas></canvas></div>' +
       '<div class="legend">' +
         '<span class="l7">7d</span>' +
         '<span class="l30">30d</span>' +

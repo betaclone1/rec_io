@@ -83,12 +83,17 @@
       padding: 12px;
     }
     .panel-top {
-      display: flex;
-      flex-direction: column;
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-areas:
+        "title score"
+        "stats stats";
       gap: 8px;
       margin-bottom: 8px;
+      align-items: center;
     }
     .panel-title {
+      grid-area: title;
       font-size: 14px;
       font-weight: 700;
     }
@@ -98,6 +103,7 @@
       margin-top: 2px;
     }
     .stats {
+      grid-area: stats;
       display: flex;
       flex-wrap: wrap;
       gap: 6px;
@@ -123,16 +129,12 @@
       height: 200px;
     }
     .score-badge {
-      position: absolute;
-      top: 4px;
-      right: 6px;
-      z-index: 2;
+      grid-area: score;
       font-size: 16px;
       font-weight: 700;
       font-variant-numeric: tabular-nums;
       letter-spacing: 0.02em;
-      pointer-events: none;
-      text-shadow: 0 1px 2px rgba(0, 0, 0, 0.65);
+      line-height: 1;
     }
     .score-badge.neg { color: #ff5c5c; }
     .score-badge.mid { color: #f0b429; }
@@ -231,16 +233,14 @@
     panel.innerHTML =
       '<div class="panel-top">' +
         '<div class="panel-title">' + asset.symbol + "</div>" +
+        scoreBadgeHtml(scoreFromLatest(latest)) +
         '<div class="stats">' +
           '<div class="stat w7">7d<strong>' + fmtPct(latest.w7) + "</strong></div>" +
           '<div class="stat w30">30d<strong>' + fmtPct(latest.w30) + "</strong></div>" +
           '<div class="stat w90">90d<strong>' + fmtPct(latest.w90) + "</strong></div>" +
         "</div>" +
       "</div>" +
-      '<div class="chart-wrap">' +
-        scoreBadgeHtml(scoreFromLatest(latest)) +
-        "<canvas></canvas>" +
-      "</div>" +
+      '<div class="chart-wrap"><canvas></canvas></div>' +
       '<div class="legend">' +
         '<span class="l7">7d</span>' +
         '<span class="l30">30d</span>' +
