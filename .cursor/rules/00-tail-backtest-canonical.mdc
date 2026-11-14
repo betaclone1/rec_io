@@ -1,0 +1,32 @@
+---
+description: Exact-cent LT/UT backtest data has one canonical path (cycle tables → rolling rates)
+globs:
+  - backend/core/tail_backtest_*.py
+  - backend/core/public_trades_drive_sync.py
+  - backend/public_trades_drive_sync.py
+  - scripts/backtest/backfill_tail_backtest_tables.py
+  - frontend/tabs/tail_strat_win_rate.html
+  - frontend/mobile/tail_strat_win_rate_mobile.html
+  - docs/LOWER_TAIL_STRATEGY.md
+alwaysApply: true
+---
+
+# Tail backtest canonical data (non-negotiable)
+
+Exact-cent Lower/Upper Tail **ops and UI backtest numbers** use **one** pipeline. Do not invent parallel result stores.
+
+## Source of truth
+
+1. **Canonical:** `historical_data.*_tail_backtest_cycles` — one row per 15m ticker (fill, `market_result`, W/L).
+2. **Derived only:** `historical_data.tail_backtest_rolling_rates` — 7/30/90 WR/participation **recomputed from cycle rows**. Win-rate charts and `/api/tail_strat_win_rate` read this table.
+3. **Raw tape:** day CSVs / month archives feed the scorer; they are not the operator-facing result DB.
+4. **Week-slice tables** (`btc_lt_week_results`, etc.) are temporary slices **reloaded from** cycle tables, not a second truth.
+
+## Agent obligations
+
+- Live-vs-BT, WR charts, and “official” LT/UT history → cycle tables (or rolling rates derived from them).
+- Do **not** add another exact-cent outcome table, CSV-as-SoT for the UI, or a second moving-average writer that bypasses cycles.
+- Research sweep scripts under `scripts/backtest/` stay exploration-only unless explicitly promoted into this path.
+- Do not conflate this with AES/monitor auto-trade backtests (`docs/BACKTESTING.md`) — different product.
+
+Full note: `docs/LOWER_TAIL_STRATEGY.md` §0.1.

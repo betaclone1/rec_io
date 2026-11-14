@@ -46,3 +46,12 @@ def test_aggregate_side_null_win_loss_excluded_from_rate():
 
 def test_windows_constant():
     assert rr.ROLLING_WINDOWS == (7, 30, 90)
+
+
+def test_tail_score_from_win_rate_matches_ui_formula():
+    # UI: (wr_pct - baseline) * 100, then Math.round
+    # 1.6103% LT → (1.6103 - 1) * 100 = 61.03 → 61
+    assert rr.tail_score_from_win_rate(0.016103, side="lt") == 61
+    # 98.3897% UT → (98.3897 - 99) * 100 = -61.03 → -61
+    assert rr.tail_score_from_win_rate(0.983897, side="ut") == -61
+    assert rr.tail_score_from_win_rate(None, side="lt") is None

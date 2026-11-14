@@ -110,12 +110,34 @@ def market_result_for(cache: dict[str, Any], ticker: str) -> Optional[str]:
     return None
 
 
+def _normalize_iso_fractional_seconds(s: str) -> str:
+    """Pad/truncate fractional seconds to 1–6 digits so fromisoformat accepts Kalshi stamps.
+
+    Kalshi often emits 5-digit fractions (e.g. ``...09.59756Z``). Python's
+    ``datetime.fromisoformat`` rejects those (needs 0 or 1–6 digits), which used
+    to drop early ≤$0.01 prints and flip LT side to a later parseable trade.
+    """
+    if "." not in s:
+        return s
+    head, frac_and_rest = s.split(".", 1)
+    digits = []
+    i = 0
+    while i < len(frac_and_rest) and frac_and_rest[i].isdigit():
+        digits.append(frac_and_rest[i])
+        i += 1
+    if not digits:
+        return s
+    frac = "".join(digits)[:6].ljust(6, "0")
+    return f"{head}.{frac}{frac_and_rest[i:]}"
+
+
 def _parse_created_time_et_naive(raw: Any) -> Optional[datetime]:
     if raw is None:
         return None
     s = str(raw).strip()
     if not s:
         return None
+    s = _normalize_iso_fractional_seconds(s)
     try:
         if s.endswith("Z"):
             dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
@@ -221,6 +243,127 @@ def _day_gap(
     return False, None
 
 
+def _score_ticker_rows(
+    ticker: str,
+    rows: list[dict],
+    *,
+    trading_day: date,
+    cache: dict[str, Any],
+    gap: bool,
+    gap_reason: Optional[str],
+) -> Optional[CycleScore]:
+    """Score a single ticker from its trade rows only (caller holds one ticker at a time)."""
+    ts = settlement_end_et_naive(ticker)
+    if ts is None:
+        return None
+    mr = market_result_for(cache, ticker)
+    lt = first_exact_touch(rows, LT_LIMIT)
+    ut = first_exact_touch(rows, UT_LIMIT)
+    return CycleScore(
+        ticker=ticker,
+        timestamp=ts,
+        trading_day=trading_day,
+        market_result=mr,
+        lt=lt,
+        ut=ut,
+        lt_win_loss=_win_loss(lt, mr),
+        ut_win_loss=_win_loss(ut, mr),
+        data_gap=gap,
+        data_gap_reason=gap_reason if gap else None,
+    )
+
+
+def iter_score_day(
+    series: str,
+    trading_day: date,
+    *,
+    cache: Optional[dict[str, Any]] = None,
+    root: Optional[Path] = None,
+):
+    """Yield one ``CycleScore`` at a time.
+
+    Day CSVs are ticker-contiguous. Stream the file and keep **only the current
+    ticker's rows** in memory, flush/score/discard, then move on. Never materialize
+    the full day tape as ``dict[ticker, list[row]]``.
+    """
+    series_u = series.strip().upper()
+    root = root or trades_dir()
+    cache = (
+        cache
+        if cache is not None
+        else load_market_result_cache(root / ".cache_market_result_by_ticker.json")
+    )
+    day_csv = root / f"{series_u}_public_trades_{trading_day.isoformat()}_et.csv"
+
+    expected = list(expected_tickers_for_day(series_u, trading_day))
+    seen_on_tape: set[str] = set()
+    trade_row_count = 0
+
+    if day_csv.is_file() and day_csv.stat().st_size > 0:
+        # Thin line count for sparse/missing gap, then score pass. Peak RAM = one
+        # ticker block (day CSVs are ticker-contiguous).
+        with day_csv.open(encoding="utf-8") as f:
+            next(f, None)  # header
+            trade_row_count = sum(1 for _ in f)
+
+        gap, gap_reason = _day_gap(
+            series_u, trading_day, day_csv=day_csv, trade_row_count=trade_row_count
+        )
+
+        cur_ticker: Optional[str] = None
+        cur_rows: list[dict] = []
+
+        def _flush(ticker: str, rows: list[dict]) -> Optional[CycleScore]:
+            seen_on_tape.add(ticker)
+            return _score_ticker_rows(
+                ticker,
+                rows,
+                trading_day=trading_day,
+                cache=cache,
+                gap=gap,
+                gap_reason=gap_reason,
+            )
+
+        with day_csv.open(newline="", encoding="utf-8") as f:
+            for row in csv.DictReader(f):
+                t = (row.get("ticker") or "").strip()
+                if not t:
+                    continue
+                if cur_ticker is None:
+                    cur_ticker = t
+                if t != cur_ticker:
+                    sc = _flush(cur_ticker, cur_rows)
+                    if sc is not None:
+                        yield sc
+                    cur_ticker = t
+                    cur_rows = [row]
+                else:
+                    cur_rows.append(row)
+            if cur_ticker is not None:
+                sc = _flush(cur_ticker, cur_rows)
+                if sc is not None:
+                    yield sc
+    else:
+        gap, gap_reason = _day_gap(
+            series_u, trading_day, day_csv=day_csv, trade_row_count=0
+        )
+
+    # Expected session cycles with no tape rows (null fills).
+    for ticker in expected:
+        if ticker in seen_on_tape:
+            continue
+        sc = _score_ticker_rows(
+            ticker,
+            [],
+            trading_day=trading_day,
+            cache=cache,
+            gap=gap,
+            gap_reason=gap_reason,
+        )
+        if sc is not None:
+            yield sc
+
+
 def score_day(
     series: str,
     trading_day: date,
@@ -228,61 +371,11 @@ def score_day(
     cache: Optional[dict[str, Any]] = None,
     root: Optional[Path] = None,
 ) -> list[CycleScore]:
-    """Score expected session cycles plus any extra tickers present on the day CSV."""
-    series_u = series.strip().upper()
-    root = root or trades_dir()
-    cache = cache if cache is not None else load_market_result_cache(root / ".cache_market_result_by_ticker.json")
-    day_csv = root / f"{series_u}_public_trades_{trading_day.isoformat()}_et.csv"
+    """Score expected session cycles plus any extra tickers present on the day CSV.
 
-    by_ticker: dict[str, list[dict]] = {}
-    trade_row_count = 0
-    if day_csv.is_file() and day_csv.stat().st_size > 0:
-        with day_csv.open(newline="", encoding="utf-8") as f:
-            for row in csv.DictReader(f):
-                t = (row.get("ticker") or "").strip()
-                if not t:
-                    continue
-                by_ticker.setdefault(t, []).append(row)
-                trade_row_count += 1
-
-    gap, gap_reason = _day_gap(
-        series_u, trading_day, day_csv=day_csv, trade_row_count=trade_row_count
-    )
-
-    # Expected session cycles (may be empty on metal Saturdays) ∪ tickers on the
-    # day CSV. Charts scored every ticker present on the tape; skipping CSV-only
-    # tickers dropped whole ≥100-trade Saturday silver/gold days from rolling WRs.
-    tickers = list(expected_tickers_for_day(series_u, trading_day))
-    seen = set(tickers)
-    for t in sorted(by_ticker):
-        if t not in seen:
-            tickers.append(t)
-            seen.add(t)
-
-    scores: list[CycleScore] = []
-    for ticker in tickers:
-        ts = settlement_end_et_naive(ticker)
-        if ts is None:
-            continue
-        rows = by_ticker.get(ticker) or []
-        mr = market_result_for(cache, ticker)
-        lt = first_exact_touch(rows, LT_LIMIT)
-        ut = first_exact_touch(rows, UT_LIMIT)
-        scores.append(
-            CycleScore(
-                ticker=ticker,
-                timestamp=ts,
-                trading_day=trading_day,
-                market_result=mr,
-                lt=lt,
-                ut=ut,
-                lt_win_loss=_win_loss(lt, mr),
-                ut_win_loss=_win_loss(ut, mr),
-                data_gap=gap,
-                data_gap_reason=gap_reason if gap else None,
-            )
-        )
-    return scores
+    Implementation streams one ticker at a time (see ``iter_score_day``).
+    """
+    return list(iter_score_day(series, trading_day, cache=cache, root=root))
 
 
 def _upsert_sql(table: str) -> str:
@@ -301,15 +394,27 @@ def _upsert_sql(table: str) -> str:
         ON CONFLICT (ticker) DO UPDATE SET
             "timestamp" = EXCLUDED."timestamp",
             trading_day = EXCLUDED.trading_day,
-            market_result = EXCLUDED.market_result,
+            market_result = COALESCE(EXCLUDED.market_result, historical_data.{table}.market_result),
             lt_fill_ts = EXCLUDED.lt_fill_ts,
             lt_side = EXCLUDED.lt_side,
             lt_price = EXCLUDED.lt_price,
-            lt_win_loss = EXCLUDED.lt_win_loss,
+            lt_win_loss = CASE
+                WHEN EXCLUDED.market_result IS NOT NULL THEN EXCLUDED.lt_win_loss
+                WHEN EXCLUDED.lt_side IS NOT NULL
+                     AND historical_data.{table}.market_result IN ('yes', 'no')
+                THEN (EXCLUDED.lt_side = historical_data.{table}.market_result)
+                ELSE EXCLUDED.lt_win_loss
+            END,
             ut_fill_ts = EXCLUDED.ut_fill_ts,
             ut_side = EXCLUDED.ut_side,
             ut_price = EXCLUDED.ut_price,
-            ut_win_loss = EXCLUDED.ut_win_loss,
+            ut_win_loss = CASE
+                WHEN EXCLUDED.market_result IS NOT NULL THEN EXCLUDED.ut_win_loss
+                WHEN EXCLUDED.ut_side IS NOT NULL
+                     AND historical_data.{table}.market_result IN ('yes', 'no')
+                THEN (EXCLUDED.ut_side = historical_data.{table}.market_result)
+                ELSE EXCLUDED.ut_win_loss
+            END,
             data_gap = EXCLUDED.data_gap,
             data_gap_reason = EXCLUDED.data_gap_reason,
             updated_at = CURRENT_TIMESTAMP

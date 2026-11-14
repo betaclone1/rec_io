@@ -1,22 +1,27 @@
 #!/usr/bin/env python3
 """
-Full-history backfill: public-trades day CSVs → cycle tables → rolling 7/30/90 rates.
+Full-history backfill: public-trades day CSVs → ``*_tail_backtest_cycles`` → rolling 7/30/90.
 
-Uses a process pool for day scoring (local / catchup). Hourly prod wake only
-maintains the recent lookback after this has seeded history.
+Scores **one ticker at a time** (day CSVs are ticker-contiguous; never loads a full
+day tape into RAM). Default is a single process writing upserts as each ticker
+is scored. Optional ``--workers`` runs multiple day files in parallel — keep it
+low; each worker still only holds one ticker's rows.
+
+Scoring rule (same as charts / live-vs-BT checks): first public print with yes or no
+≤ $0.01 (LT) or ≥ $0.99 (UT); W/L vs ``market_result``. After this seeds history,
+hourly ``public_trades_drive_sync`` only re-scores the recent lookback (default 2
+calendar days).
 
 Example:
+  PYTHONPATH=$(pwd) .venv/bin/python scripts/backtest/backfill_tail_backtest_tables.py
   PYTHONPATH=$(pwd) .venv/bin/python scripts/backtest/backfill_tail_backtest_tables.py \\
-    --workers 8
-  PYTHONPATH=$(pwd) .venv/bin/python scripts/backtest/backfill_tail_backtest_tables.py \\
-    --series KXBTC15M --start 2026-09-01 --end 2026-11-07 --workers 4
+    --series KXBTC15M --start 2026-09-01 --end 2026-11-07 --workers 2
 """
 
 from __future__ import annotations
 
 import argparse
 import logging
-import os
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -46,14 +51,14 @@ DEFAULT_SERIES = (
 
 
 def _score_one(args: tuple[str, str, str]) -> tuple[str, str, list[tuple], str | None]:
-    """Worker: score one (series, day). Returns params for upsert."""
+    """Worker: stream one day file ticker-by-ticker; return upsert params."""
     series, day_iso, root_s = args
     from datetime import date as date_cls
 
     from backend.core.tail_backtest_cycles import (
         _row_params,
+        iter_score_day,
         load_market_result_cache,
-        score_day,
         trades_dir,
     )
 
@@ -61,10 +66,27 @@ def _score_one(args: tuple[str, str, str]) -> tuple[str, str, list[tuple], str |
     day = date_cls.fromisoformat(day_iso)
     try:
         cache = load_market_result_cache(root / ".cache_market_result_by_ticker.json")
-        scores = score_day(series, day, cache=cache, root=root)
-        return series, day_iso, [_row_params(s) for s in scores], None
+        params = [
+            _row_params(s)
+            for s in iter_score_day(series, day, cache=cache, root=root)
+        ]
+        return series, day_iso, params, None
     except Exception as e:
         return series, day_iso, [], f"{type(e).__name__}: {e}"
+
+
+def _upsert_day(conn, series: str, params: list[tuple]) -> int:
+    from backend.core.tail_backtest_cycles import _upsert_sql, table_for_series
+
+    if not params:
+        return 0
+    sql = _upsert_sql(table_for_series(series))
+    # One ticker row per execute — tiny; avoids holding giant executemany batches.
+    with conn.cursor() as cur:
+        for row in params:
+            cur.execute(sql, row)
+    conn.commit()
+    return len(params)
 
 
 def main() -> int:
@@ -72,7 +94,12 @@ def main() -> int:
     ap.add_argument("--series", nargs="+", default=list(DEFAULT_SERIES))
     ap.add_argument("--start", default="")
     ap.add_argument("--end", default="")
-    ap.add_argument("--workers", type=int, default=max(4, (os.cpu_count() or 4)))
+    ap.add_argument(
+        "--workers",
+        type=int,
+        default=1,
+        help="Parallel day files (default 1). Each worker still scores one ticker at a time.",
+    )
     ap.add_argument(
         "--skip-cycles",
         action="store_true",
@@ -83,6 +110,11 @@ def main() -> int:
         action="store_true",
         help="Only upsert cycle rows",
     )
+    ap.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-score days that already have rows in the cycle table (default: skip them)",
+    )
     args = ap.parse_args()
 
     from backend.core.config.database import get_system_postgresql_connection
@@ -90,7 +122,6 @@ def main() -> int:
         discover_day_csvs,
         table_for_series,
         trades_dir,
-        _upsert_sql,
     )
     from backend.core.tail_backtest_rolling_rates import backfill_rolling_rates_all_history
 
@@ -99,14 +130,44 @@ def main() -> int:
     end = date.fromisoformat(args.end) if args.end else None
     root = trades_dir()
     jobs = discover_day_csvs(series, root=root, start=start, end=end)
+    workers = max(1, int(args.workers))
+
+    skipped_existing = 0
+    if not args.skip_cycles and not args.force:
+        conn_chk = get_system_postgresql_connection()
+        if conn_chk is None:
+            log.error("DB connect failed; cannot check existing days")
+            return 1
+        try:
+            existing: dict[str, set[str]] = {}
+            with conn_chk.cursor() as cur:
+                for ser in series:
+                    cur.execute(
+                        f"SELECT DISTINCT trading_day::text "
+                        f"FROM historical_data.{table_for_series(ser)}"
+                    )
+                    existing[ser] = {r[0] for r in cur.fetchall()}
+            kept = []
+            for ser, d in jobs:
+                if d.isoformat() in existing.get(ser, ()):
+                    skipped_existing += 1
+                else:
+                    kept.append((ser, d))
+            jobs = kept
+        finally:
+            conn_chk.close()
+
     log.info(
-        "backfill start series=%s jobs=%s workers=%s root=%s skip_cycles=%s skip_rolling=%s",
+        "backfill start series=%s jobs=%s skipped_existing=%s workers=%s "
+        "root=%s skip_cycles=%s skip_rolling=%s force=%s",
         series,
         len(jobs),
-        args.workers,
+        skipped_existing,
+        workers,
         root,
         args.skip_cycles,
         args.skip_rolling,
+        args.force,
     )
 
     total_rows = 0
@@ -114,29 +175,28 @@ def main() -> int:
     t0 = time.time()
 
     if not args.skip_cycles:
+        if not jobs:
+            log.info("no missing cycle days; nothing to score")
         work = [(ser, d.isoformat(), str(root)) for ser, d in jobs]
         conn = get_system_postgresql_connection()
+        if conn is None:
+            log.error("DB connect failed")
+            return 1
         try:
             done = 0
-            with ProcessPoolExecutor(max_workers=max(1, int(args.workers))) as pool:
-                futs = {pool.submit(_score_one, w): w for w in work}
-                for fut in as_completed(futs):
-                    ser, day_iso, params, err = fut.result()
+            if not work:
+                pass
+            elif workers == 1:
+                for w in work:
+                    ser, day_iso, params, err = _score_one(w)
                     done += 1
                     if err:
                         failed.append(f"score:{ser}:{day_iso}:{err}")
                         log.warning("FAIL %s %s %s", ser, day_iso, err)
                         continue
-                    if not params:
-                        if done % 50 == 0 or done == len(work):
-                            log.info("progress %s/%s rows=%s", done, len(work), total_rows)
-                        continue
-                    sql = _upsert_sql(table_for_series(ser))
-                    with conn.cursor() as cur:
-                        cur.executemany(sql, params)
-                    conn.commit()
-                    total_rows += len(params)
-                    if done % 25 == 0 or done == len(work):
+                    n = _upsert_day(conn, ser, params)
+                    total_rows += n
+                    if done % 10 == 0 or done == len(work):
                         log.info(
                             "progress %s/%s rows=%s last=%s %s",
                             done,
@@ -145,6 +205,27 @@ def main() -> int:
                             ser,
                             day_iso,
                         )
+            else:
+                with ProcessPoolExecutor(max_workers=workers) as pool:
+                    futs = {pool.submit(_score_one, w): w for w in work}
+                    for fut in as_completed(futs):
+                        ser, day_iso, params, err = fut.result()
+                        done += 1
+                        if err:
+                            failed.append(f"score:{ser}:{day_iso}:{err}")
+                            log.warning("FAIL %s %s %s", ser, day_iso, err)
+                            continue
+                        n = _upsert_day(conn, ser, params)
+                        total_rows += n
+                        if done % 10 == 0 or done == len(work):
+                            log.info(
+                                "progress %s/%s rows=%s last=%s %s",
+                                done,
+                                len(work),
+                                total_rows,
+                                ser,
+                                day_iso,
+                            )
         finally:
             conn.close()
         log.info(

@@ -6,6 +6,32 @@ This changelog is used when pushing updates to production. Each entry is timesta
 
 ---
 
+## 2026-11-14 — Release v3.12.32: Canonical tail cycles + symbols_list scores
+
+**Summary**
+- **Release: v3.12.32**
+- **Plans:** `tail-backtest-cycle-tables` (follow-on).
+- **Change:**
+  - Exact-cent LT/UT **canonical path:** `*_tail_backtest_cycles` → derived `tail_backtest_rolling_rates` → UI; agent rule + LOWER_TAIL §0.1.
+  - Scorer streams **one ticker at a time** (day CSVs ticker-contiguous); backfill skips days already in PG unless `--force`; lookback default **2**.
+  - `live_data.symbols_list.lower_tail_score` / `upper_tail_score` (30d badge scores); synced on every rolling-rates upsert (`sync_symbols_list_tail_scores`).
+  - Week-slice LT result tables for accuracy checks (BTC/ETH/multi).
+- **DB:** Migrations `20261114_0606_btc_lt_week_results`, `20261114_0628_eth_lt_week_results`, `20261114_0635_lt_week_results_multi`, `20261114_1439_symbols_list_tail_scores`.
+- **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-11-14`**. Code: `git revert` + restart `public_trades_drive_sync`. Migrations: `down` each id if intentionally rolling back schema.
+
+**Production checklist**
+- [ ] Confirm codebase changes (pull latest on production):
+  `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0606_btc_lt_week_results`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0628_eth_lt_week_results`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0635_lt_week_results_multi`
+- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_1439_symbols_list_tail_scores`
+- [ ] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart public_trades_drive_sync`
+- [ ] Verify: migrations in `run_migration.py list`; `symbols_list` has score columns; `public_trades_drive_sync` RUNNING; health 3000/8001
+- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.32`
+
+---
+
 ## 2026-11-09 — Release v3.12.31: Live Redis feed for tail_strat_win_rate charts
 
 **Summary**

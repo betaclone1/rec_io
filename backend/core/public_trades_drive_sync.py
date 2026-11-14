@@ -64,11 +64,15 @@ def interval_sec() -> float:
 
 
 def lookback_days() -> int:
-    """Calendar days to refresh. Hourly prod stays at 1 (today only — low load)."""
+    """Calendar days to refresh + re-score.
+
+    Default **2** so yesterday is force-refreshed after midnight. Lookback=1 sealed
+    incomplete day CSVs forever and left live fills missing from backtest cycles.
+    """
     try:
-        return max(1, int(_env_first("PUBLIC_TRADES_DRIVE_SYNC_LOOKBACK_DAYS", default="1")))
+        return max(1, int(_env_first("PUBLIC_TRADES_DRIVE_SYNC_LOOKBACK_DAYS", default="2")))
     except (TypeError, ValueError):
-        return 1
+        return 2
 
 
 def pull_workers() -> int:
@@ -115,6 +119,68 @@ def _run(argv: list[str], *, label: str) -> int:
 
 def day_csv_path(series: str, day: date) -> Path:
     return TRADES_DIR / f"{series}_public_trades_{day.isoformat()}_et.csv"
+
+
+def _parse_created_time_utc(raw: object) -> Optional[datetime]:
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    # Same Kalshi 5-digit fraction normalization as tail_backtest_cycles.
+    from backend.core.tail_backtest_cycles import _normalize_iso_fractional_seconds
+
+    s = _normalize_iso_fractional_seconds(s)
+    try:
+        if s.endswith("Z"):
+            s = s[:-1] + "+00:00"
+        dt = datetime.fromisoformat(s)
+    except ValueError:
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt.astimezone(timezone.utc)
+
+
+def _last_trade_created_utc(path: Path) -> Optional[datetime]:
+    """Last ``created_time`` in a day CSV (scan tail; files can be hundreds of MB)."""
+    if not path.is_file() or path.stat().st_size <= 0:
+        return None
+    try:
+        with path.open("rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            f.seek(max(0, size - 256_000))
+            chunk = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return None
+    last: Optional[datetime] = None
+    for line in chunk.splitlines():
+        if not line or line.startswith("trade_id"):
+            continue
+        parts = line.split(",")
+        if len(parts) < 3:
+            continue
+        ts = _parse_created_time_utc(parts[2])
+        if ts is not None:
+            last = ts
+    return last
+
+
+def day_csv_incomplete(path: Path, day: date, *, today: date) -> bool:
+    """True if a closed day's CSV ends before the last 15m settlement (~23:45 ET)."""
+    if day >= today:
+        return False
+    if not path.is_file() or path.stat().st_size <= 0:
+        return True
+    last = _last_trade_created_utc(path)
+    if last is None:
+        return True
+    day_end = datetime(day.year, day.month, day.day, 23, 45, tzinfo=EST).astimezone(
+        timezone.utc
+    )
+    # Allow small API lag; truncated files (e.g. ending ~03:50Z vs ~04:45Z) fail this.
+    return last < (day_end - timedelta(minutes=20))
 
 
 def month_archive_path(series: str, year: int, month: int) -> Path:
@@ -244,23 +310,25 @@ def catchup_and_package(
     *,
     lookback: int,
     workers: int,
-    force_recent_days: int = 1,
+    force_recent_days: int = 2,
     package_months: Optional[Sequence[tuple[int, int]]] = None,
     skip_trades: bool = False,
     skip_results: bool = False,
     skip_package: bool = False,
 ) -> tuple[list[Path], list[str]]:
     """
-    Low-load hourly path (serial): refresh today, light market-result update,
-    re-package current month (plus previous month on the 1st).
+    Low-load hourly path (serial): refresh today + yesterday, light market-result
+    update, re-package current month (plus previous month on the 1st).
 
-    Intentionally not parallel — prod only needs the newest cycles each hour.
+    Also force-repulls any lookback day whose CSV ends before ~23:45 ET (truncated
+    seal). Intentionally not parallel — prod hourly load stays bounded.
     Bulk historical seeds use a separate parallel local script.
     """
     TRADES_DIR.mkdir(parents=True, exist_ok=True)
     today = et_today()
     end = today
-    start = end - timedelta(days=lookback)
+    # lookback=2 → yesterday..today (same window as score_lookback_for_sync)
+    start = end - timedelta(days=max(0, lookback - 1))
     failed: list[str] = []
     archives: list[Path] = []
     months: set[tuple[int, int]] = {(end.year, end.month)}
@@ -280,10 +348,18 @@ def catchup_and_package(
         for ser in series:
             d = start
             while d <= end:
-                exists = day_csv_path(ser, d).is_file()
+                path = day_csv_path(ser, d)
+                exists = path.is_file()
                 force = d >= force_cut
-                if force or not exists:
-                    rc = pull_day(ser, d, force=force, workers=workers)
+                truncated = exists and day_csv_incomplete(path, d, today=today)
+                if force or not exists or truncated:
+                    if truncated and not force:
+                        log.warning(
+                            "day CSV truncated — force re-pull %s %s",
+                            ser,
+                            d.isoformat(),
+                        )
+                    rc = pull_day(ser, d, force=True, workers=workers)
                     if rc != 0:
                         failed.append(f"trades:{ser}:{d.isoformat()}:rc={rc}")
                 d += timedelta(days=1)

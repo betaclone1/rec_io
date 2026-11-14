@@ -207,6 +207,74 @@ def _params(row: RollingRateRow) -> tuple:
     )
 
 
+def tail_score_from_win_rate(
+    win_rate: Optional[float],
+    *,
+    side: str,
+) -> Optional[int]:
+    """Badge score shown in the tails UI (same formula as the chart page).
+
+    ``win_rate`` is the fractional rate stored on ``tail_backtest_rolling_rates``
+    (e.g. 0.0161). Converted to percent, then:
+      LT: round((wr_pct - 1) * 100)
+      UT: round((wr_pct - 99) * 100)
+    """
+    if win_rate is None:
+        return None
+    wr_pct = float(win_rate) * 100.0
+    baseline = 99.0 if str(side).strip().lower() == "ut" else 1.0
+    return int(round((wr_pct - baseline) * 100.0))
+
+
+def sync_symbols_list_tail_scores(conn) -> int:
+    """Write latest 30d LT/UT scores onto ``live_data.symbols_list``.
+
+    Called whenever rolling rates are upserted so the roster stays the single
+    place other surfaces can read the same scores the tails UI shows.
+    """
+    from backend.core.tail_backtest_rolling_rates_read import SERIES_META
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT DISTINCT ON (series)
+                   series, lt_win_rate, ut_win_rate
+            FROM historical_data.tail_backtest_rolling_rates
+            WHERE window_trading_days = 30
+            ORDER BY series, as_of_trading_day DESC
+            """
+        )
+        latest = {str(r[0]).upper(): (r[1], r[2]) for r in cur.fetchall()}
+
+        # Clear first so symbols without a 15m series (e.g. DOGE) stay NULL.
+        cur.execute(
+            """
+            UPDATE live_data.symbols_list
+            SET lower_tail_score = NULL, upper_tail_score = NULL
+            """
+        )
+
+        updated = 0
+        for series, meta in SERIES_META.items():
+            sym = str(meta["symbol"]).upper()
+            rates = latest.get(series.upper())
+            if rates is None:
+                continue
+            lt_s = tail_score_from_win_rate(rates[0], side="lt")
+            ut_s = tail_score_from_win_rate(rates[1], side="ut")
+            cur.execute(
+                """
+                UPDATE live_data.symbols_list
+                SET lower_tail_score = %s, upper_tail_score = %s
+                WHERE UPPER(TRIM(symbol)) = %s
+                """,
+                (lt_s, ut_s, sym),
+            )
+            updated += cur.rowcount
+    conn.commit()
+    return updated
+
+
 def upsert_rolling_rates(conn, rows: Sequence[RollingRateRow]) -> int:
     if not rows:
         return 0
@@ -226,6 +294,11 @@ def upsert_rolling_rates(conn, rows: Sequence[RollingRateRow]) -> int:
             page_size=max(len(params), 1),
         )
     conn.commit()
+    try:
+        n_sym = sync_symbols_list_tail_scores(conn)
+        log.info("symbols_list tail scores synced rows=%s", n_sym)
+    except Exception:
+        log.exception("symbols_list tail score sync failed after rolling upsert")
     return len(rows)
 
 

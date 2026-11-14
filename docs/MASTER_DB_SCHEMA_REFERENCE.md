@@ -8251,11 +8251,11 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ### Tables: `historical_data.{kxbtc15m,kxeth15m,kxsol15m,kxxrp15m,kxgold15m,kxsilver15m,kxwti15m}_tail_backtest_cycles`
 
-**Purpose:** One row per expected 15m cycle with **exact-cent backtest** Lower Tail (`$0.01`) and Upper Tail (`$0.99`) outcomes from the public-trades tape (not live OB monitors). Same row carries LT and UT columns. Cycles with no exact-cent print still appear; that side’s fill / `*_win_loss` stay NULL so win-rate math ignores them while participation remains visible. Crypto days with missing/sparse tape outside known Kalshi maintenance set `data_gap`.
+**Purpose:** **Canonical** exact-cent LT/UT backtest store — one row per expected 15m cycle with Lower Tail (`$0.01`) and Upper Tail (`$0.99`) outcomes from the public-trades tape (not live OB monitors). Same row carries LT and UT columns. Rolling WR UI (`tail_backtest_rolling_rates`) and week-slice check tables are **derived from these rows only** (`docs/LOWER_TAIL_STRATEGY.md` §0.1). Cycles with no exact-cent print still appear; that side’s fill / `*_win_loss` stay NULL so win-rate math ignores them while participation remains visible. Crypto days with missing/sparse tape outside known Kalshi maintenance set `data_gap`.
 
 **Creation:** Migration `20261107_1600_tail_backtest_cycles`.
 
-**Population:** `backend/core/tail_backtest_cycles.py` via hourly `public_trades_drive_sync` after public-trades catchup (`--skip-score` to bypass).
+**Population:** `backend/core/tail_backtest_cycles.py`. Full-history seed: `scripts/backtest/backfill_tail_backtest_tables.py` over day CSVs (earliest → today). Ongoing: hourly `public_trades_drive_sync` after public-trades catchup re-scores a short lookback (default **2** calendar days: yesterday + today; truncated sealed days are force-repulled). Bypass scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -8263,13 +8263,13 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 | `ticker` | `text` | NO | Market ticker (PK). |
 | `trading_day` | `date` | NO | Eastern calendar day of settlement end (lookback key). |
 | `market_result` | `text` | YES | Kalshi `yes` / `no`; NULL if unsettled / unknown. |
-| `lt_fill_ts` | `timestamp without time zone` | YES | First exact `$0.01` print time (ET naive). |
+| `lt_fill_ts` | `timestamp without time zone` | YES | First public print with yes **or** no **≤ $0.01** (ET naive). |
 | `lt_side` | `text` | YES | `yes` / `no` of that LT print. |
-| `lt_price` | `numeric(8,4)` | YES | `0.01` when filled. |
+| `lt_price` | `numeric(8,4)` | YES | Printed dollar price (≤ `0.01`) when filled. |
 | `lt_win_loss` | `boolean` | YES | TRUE iff LT side == `market_result`; NULL if no fill or unsettled. |
-| `ut_fill_ts` | `timestamp without time zone` | YES | First exact `$0.99` print time (ET naive). |
+| `ut_fill_ts` | `timestamp without time zone` | YES | First public print with yes **or** no **≥ $0.99** (ET naive). |
 | `ut_side` | `text` | YES | `yes` / `no` of that UT print. |
-| `ut_price` | `numeric(8,4)` | YES | `0.99` when filled. |
+| `ut_price` | `numeric(8,4)` | YES | Printed dollar price (≥ `0.99`) when filled. |
 | `ut_win_loss` | `boolean` | YES | TRUE iff UT side == `market_result`; NULL if no fill or unsettled. |
 | `data_gap` | `boolean` | NO | Crypto unexplained missing/sparse day tape. |
 | `data_gap_reason` | `text` | YES | e.g. `missing_day_csv`, `sparse_day_tape`. |
@@ -8279,9 +8279,52 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 ---
 
+### Table: `historical_data.btc_lt_week_results`
+
+**Purpose:** Week-slice BTC Lower Tail per-ticker outcomes for live-vs-backtest accuracy checks. Reloaded from `kxbtc15m_tail_backtest_cycles` (exact-cent tape), not live monitors.
+
+**Creation:** Migration `20261114_0606_btc_lt_week_results`.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `ticker` | `text` | NO | Market ticker (PK). |
+| `fill_time` | `timestamp without time zone` | YES | First exact-cent LT print (ET naive). |
+| `side` | `text` | YES | `yes` / `no` (`lt_side`). |
+| `result` | `text` | YES | Venue `market_result` `yes` / `no`. |
+| `win_loss` | `boolean` | YES | TRUE iff side matches result; NULL if no fill or unsettled. |
+
+---
+
+### Table: `historical_data.eth_lt_week_results`
+
+**Purpose:** Week-slice ETH Lower Tail per-ticker outcomes for live-vs-backtest accuracy checks. Reloaded from `kxeth15m_tail_backtest_cycles` (exact-cent tape), not live monitors.
+
+**Creation:** Migration `20261114_0628_eth_lt_week_results`.
+
+Same columns as `historical_data.btc_lt_week_results`.
+
+---
+
+### Table: `historical_data.lt_week_results`
+
+**Purpose:** Week-slice Lower Tail per-ticker outcomes for non-BTC/ETH assets (SOL/XRP/GOLD/SILVER/WTI). Reloaded from the matching `*_tail_backtest_cycles` tables.
+
+**Creation:** Migration `20261114_0635_lt_week_results_multi`.
+
+| Column | Type | Nullable | Description |
+|--------|------|----------|-------------|
+| `symbol` | `text` | NO | Asset symbol (PK part). |
+| `ticker` | `text` | NO | Market ticker (PK part). |
+| `fill_time` | `timestamp without time zone` | YES | First print ≤ $0.01 (ET naive). |
+| `side` | `text` | YES | `yes` / `no`. |
+| `result` | `text` | YES | Venue `market_result`. |
+| `win_loss` | `boolean` | YES | TRUE iff side matches result. |
+
+---
+
 ### Table: `historical_data.tail_backtest_rolling_rates`
 
-**Purpose:** Snapshot of **7 / 30 / 90 trading-day** exact-cent Lower Tail and Upper Tail win rate + participation per series, derived from `*_tail_backtest_cycles`. Refreshed on each `public_trades_drive_sync` wake after cycle upserts. Win rate ignores NULL `*_win_loss` (no fill / unsettled); participation is fills / cycles.
+**Purpose:** **Derived** snapshot of **7 / 30 / 90 trading-day** exact-cent Lower Tail and Upper Tail win rate + participation per series. **Canonical source is always** `*_tail_backtest_cycles` — this table is recomputed from those rows only (never a parallel tape path). Refreshed on each `public_trades_drive_sync` wake after cycle upserts. Win rate ignores NULL `*_win_loss` (no fill / unsettled); participation is fills / cycles. See `docs/LOWER_TAIL_STRATEGY.md` §0.1.
 
 **Creation:** Migration `20261107_2115_tail_backtest_rolling_rates`.
 
@@ -9143,6 +9186,8 @@ Lean commodity live-data package health (market meta + public trades WS). Tradin
 | `date_added` | `timestamp without time zone` | YES | - | |
 | `category` | `text` | NO | `'crypto'` | Asset class: `crypto` or `commodity`. Feed depth is `live_data_level`. |
 | `live_data_level` | `text` | NO | `'none'` | Live feed depth: `full`, `market`, `price_only`, or `none`. Pipelines follow this value and switch when it changes. |
+| `lower_tail_score` | `integer` | YES | - | Tails UI LT badge: `round((30d_wr_pct - 1) * 100)`. Synced from `tail_backtest_rolling_rates` on each rolling upsert. Migration **`20261114_1439_symbols_list_tail_scores`**. |
+| `upper_tail_score` | `integer` | YES | - | Tails UI UT badge: `round((30d_wr_pct - 99) * 100)`. Same sync path as `lower_tail_score`. |
 
 #### Constraints
 
@@ -9157,7 +9202,7 @@ Lean commodity live-data package health (market meta + public trades WS). Tradin
   CREATE UNIQUE INDEX symbols_list_pkey ON live_data.symbols_list USING btree (id)
   ```
 
-**Migrations:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`). `20261021_1322_symbols_list_live_data_level` (adds `live_data_level`). `20261031_1223_symbols_list_full_tracked_assets` (SOL, XRP, GOLD, SILVER, WTI → `full`). `20261031_1255_symbols_list_commodity_market_level` (GOLD, SILVER, WTI → `market` again; crypto stays `full` for OB). Seeded/current levels: BTC, ETH, SOL, XRP `full`; GOLD, SILVER, WTI `market`; DOGE `none`. Commodity `market` uses `commodity_pipeline_health`; crypto `full` uses `strike_pipeline_health`.
+**Migrations:** `20261020_1130_symbols_list_category` (adds `category`; creates `commodity_pipeline_health`). `20261021_1322_symbols_list_live_data_level` (adds `live_data_level`). `20261031_1223_symbols_list_full_tracked_assets` (SOL, XRP, GOLD, SILVER, WTI → `full`). `20261031_1255_symbols_list_commodity_market_level` (GOLD, SILVER, WTI → `market` again; crypto stays `full` for OB). `20261114_1439_symbols_list_tail_scores` (adds `lower_tail_score` / `upper_tail_score`). Seeded/current levels: BTC, ETH, SOL, XRP `full`; GOLD, SILVER, WTI `market`; DOGE `none`. Commodity `market` uses `commodity_pipeline_health`; crypto `full` uses `strike_pipeline_health`.
 
 ---
 

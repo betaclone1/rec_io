@@ -24,6 +24,24 @@ Do not design or interpret Lower Tail / backtests without this frame.
 
 ---
 
+## 0.1 Canonical backtest data (one path)
+
+**Single source of truth for exact-cent LT/UT outcomes:**  
+`historical_data.*_tail_backtest_cycles` (one row per 15m ticker: fill side/price/ts, `market_result`, W/L, gap flags).
+
+| Layer | Role |
+|-------|------|
+| **Day public-trades CSVs** (+ month archives) | Raw tape input only. Not the operator-facing result store. |
+| **`*_tail_backtest_cycles`** | **Canonical** scored history. Seed with `scripts/backtest/backfill_tail_backtest_tables.py`; keep current via hourly `public_trades_drive_sync` → `score_lookback_for_sync`. |
+| **`tail_backtest_rolling_rates`** | **Derived only** — 7/30/90 trading-day WR/participation recomputed from the cycle tables (`tail_backtest_rolling_rates.py`). UI (`/api/tail_strat_win_rate`, win-rate charts) reads this. Never invent a second rolling pipeline from CSVs or ad-hoc scripts. |
+| **`live_data.symbols_list.lower_tail_score` / `upper_tail_score`** | Same badge scores the tails UI shows (30d WR vs 1% / 99% baselines). Written by the rolling-rates upsert path (`sync_symbols_list_tail_scores`) — not a separate scorer. |
+| **Week-slice tables** (`btc_lt_week_results`, `eth_lt_week_results`, `lt_week_results`) | Temporary accuracy-check slices **reloaded from** cycle tables — not a parallel truth. |
+| **Research CSVs / one-off sweep scripts** | Exploration only. Do not wire UI, monitors, or “official” WR to them. |
+
+**Agent rule:** Prefer cycle rows (or rolling rates derived from them) for live-vs-BT, charts, and ops comparisons. Do not add a second exact-cent result store or a second moving-average writer. AES/monitor auto-trade backtests in `docs/BACKTESTING.md` are a **different product** (entry-gate replay); do not conflate them with this LT/UT tape path.
+
+---
+
 ## 1. Thesis (one paragraph)
 
 On each 15m cycle the floor strike is the open price, so the book starts near even money. As spot moves vs that strike, one side becomes the penny longshot. A strategy that **gets filled at $0.01 on that longshot side** (and does **not** also hold the other side) wins when settlement is that side after a possible extreme-then-reverse — paying ~$0.99 per contract after a $0.01 outlay. Empirical win rates are ~1.8–2.6% depending on model and span — far above the naïve “1¢ fair” story if fills were random — so **edge is in selection + fill realism**, not in buying near $1.00. Preferred live shape (current recommendation): **rest maker bids on both sides at $0.01 at cycle open**, join **behind** opening book depth, cancel the unfilled side on first fill, hold to settlement (zero maker fees on these rests). Cap size by **liquidity** (cum tape / book depth), not by TTC filters that cut winners.
@@ -199,7 +217,7 @@ Docs: `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, `docs/MASTER_DB_SCHEMA_REFERENCE.
 
 Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` → `KXBTC15M_public_trades_YYYY-MM-DD_et.csv`; month Drive bundle `package_month_public_trades_to_drive.py`. Flush per-ticker `.cache_*` after successful day CSV (rule `09-no-duplicate-historical-artifacts`).
 
-**Prod hourly Drive archive (background only):** supervisord program `public_trades_drive_sync` (`backend/public_trades_drive_sync.py`). Serial low-load wake: refresh today’s tape + current-month market results for BTC/ETH/SOL/XRP/GOLD/SILVER/WTI, rebuild that month’s `{SERIES}_public_trades_{YYYY-MM}_et.tar.xz`, upload to Drive `DATA/HISTORICAL_DATA/BACKTESTING_DATA`. Same wake upserts exact-cent LT/UT cycle rows into `historical_data.*_tail_backtest_cycles` (migration `20261107_1600_tail_backtest_cycles`; scorer `backend/core/tail_backtest_cycles.py`) and refreshes **7/30/90 trading-day** LT/UT win-rate + participation snapshots in `historical_data.tail_backtest_rolling_rates` (migration `20261107_2115_tail_backtest_rolling_rates`; `backend/core/tail_backtest_rolling_rates.py`). No Redis/monitors/trading path; not a parallel worker farm. Disable with `PUBLIC_TRADES_DRIVE_SYNC=0` or `features.public_trades_drive_sync: false`; skip PG scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`. One-time full-history seed uses a separate parallel local packaging/upload job (not the hourly wake). Full PG history (cycles + rolling rates) is seeded with `scripts/backtest/backfill_tail_backtest_tables.py` from day CSVs; hourly wakes then only maintain new/recent rows.
+**Prod hourly Drive archive (background only):** supervisord program `public_trades_drive_sync` (`backend/public_trades_drive_sync.py`). Serial low-load wake: refresh **yesterday + today** tapes (lookback default `2`; force-repull truncated sealed days), current-month market results for BTC/ETH/SOL/XRP/GOLD/SILVER/WTI, rebuild that month’s `{SERIES}_public_trades_{YYYY-MM}_et.tar.xz`, upload to Drive `DATA/HISTORICAL_DATA/BACKTESTING_DATA`. Same wake **(1)** upserts exact-cent LT/UT rows into canonical `historical_data.*_tail_backtest_cycles` (`backend/core/tail_backtest_cycles.py`), then **(2)** recomputes derived `historical_data.tail_backtest_rolling_rates` from those cycle rows only (`backend/core/tail_backtest_rolling_rates.py`). Direction of truth is always cycles → rolling, never the reverse. No Redis/monitors/trading path; not a parallel worker farm. Disable with `PUBLIC_TRADES_DRIVE_SYNC=0` or `features.public_trades_drive_sync: false`; skip PG scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`. Full cycle history is seeded once with `scripts/backtest/backfill_tail_backtest_tables.py` (skips days already present unless `--force`); hourly wakes only re-score the lookback window and refresh rolling snapshots for those as-of days. See §0.1.
 
 ---
 
@@ -347,3 +365,4 @@ YTD cum2500 (done):
 | 2026-10-19 | Live place path: open_time arm + prefetch/rewarm + parallel dual post; log fire/send/ack lags. |
 | 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout symbols. |
 | 2026-10-29 | Membership = all tracked 15m feeds (`lower_tail_symbols()`, same as Upper Tail) — includes SOL/XRP/DOGE when `live_data_level` is full/market. |
+| 2026-11-14 | §0.1: canonical SoT = `*_tail_backtest_cycles`; rolling rates derived only; research CSVs / AES backtests are not parallel LT/UT truth. |

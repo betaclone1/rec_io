@@ -36,6 +36,31 @@ def test_first_exact_touch_prefers_earliest():
     assert hit.fill_ts == datetime(2026, 11, 6, 7, 0, 0)  # ET from 12:00Z
 
 
+def test_parse_created_time_accepts_kalshi_5digit_fraction():
+    """Kalshi often emits 5-digit fractional seconds; must not drop those prints."""
+    ts = tbc._parse_created_time_et_naive("2026-11-10T17:13:09.59756Z")
+    assert ts == datetime(2026, 11, 10, 12, 13, 9)
+    rows = [
+        {
+            "created_time": "2026-11-10T17:13:09.59756Z",
+            "trade_id": "early_no",
+            "yes_price_dollars": "0.99",
+            "no_price_dollars": "0.01",
+        },
+        {
+            "created_time": "2026-11-10T17:14:58.385501Z",
+            "trade_id": "later_yes",
+            "yes_price_dollars": "0.004",
+            "no_price_dollars": "0.996",
+        },
+    ]
+    hit = tbc.first_exact_touch(rows, 0.01)
+    assert hit is not None
+    assert hit.side == "no"
+    assert hit.price == 0.01
+    assert hit.fill_ts == datetime(2026, 11, 10, 12, 13, 9)
+
+
 def test_first_exact_touch_ut_on_no():
     rows = [
         {
