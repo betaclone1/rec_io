@@ -20,15 +20,15 @@ This changelog is used when pushing updates to production. Each entry is timesta
 - **Reversibility:** Snapshot **`rec-io-prod-pre-update-2026-11-14`**. Code: `git revert` + restart `public_trades_drive_sync`. Migrations: `down` each id if intentionally rolling back schema.
 
 **Production checklist**
-- [ ] Confirm codebase changes (pull latest on production):
+- [x] Confirm codebase changes (pull latest on production):
   `cd /opt/rec_io_server && git fetch && git checkout main && git pull --ff-only origin main`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0606_btc_lt_week_results`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0628_eth_lt_week_results`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0635_lt_week_results_multi`
-- [ ] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_1439_symbols_list_tail_scores`
-- [ ] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart public_trades_drive_sync`
-- [ ] Verify: migrations in `run_migration.py list`; `symbols_list` has score columns; `public_trades_drive_sync` RUNNING; health 3000/8001
-- [ ] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.32`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0606_btc_lt_week_results`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0628_eth_lt_week_results`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_0635_lt_week_results_multi`
+- [x] Apply migration: `PYTHONPATH=$(pwd) venv/bin/python scripts/db/run_migration.py up 20261114_1439_symbols_list_tail_scores`
+- [x] Restart: `./venv/bin/supervisorctl -c backend/supervisord.conf restart public_trades_drive_sync`
+- [x] Verify: migrations in `run_migration.py list`; `symbols_list` has score columns; `public_trades_drive_sync` RUNNING; health 3000/8001
+- [x] Record release in DB: `PYTHONPATH=$(pwd) venv/bin/python scripts/ops/record_system_version.py --version 3.12.32`
 
 ---
 
