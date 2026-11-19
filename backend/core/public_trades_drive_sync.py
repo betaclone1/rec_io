@@ -429,6 +429,11 @@ def package_all_local_months(series: Sequence[str]) -> list[Path]:
     return archives
 
 
+def score_cycles_enabled() -> bool:
+    raw = _env_first("PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE", default="").lower()
+    return raw not in ("1", "true", "yes", "on")
+
+
 def run_once(
     *,
     series: Optional[Sequence[str]] = None,
@@ -439,25 +444,21 @@ def run_once(
     skip_results: bool = False,
     skip_package: bool = False,
     skip_upload: bool = False,
-    skip_score: bool = True,
+    skip_score: bool = False,
     backfill_local_months: bool = False,
 ) -> int:
     ser = series_list(series)
     lb = lookback if lookback is not None else lookback_days()
     wk = workers if workers is not None else pull_workers()
-    # Cycle/rolling/score maintenance lives in ``tail_backtest_score_sync`` —
-    # this archive wake must not own that path (CPU + lifecycle coupling).
-    if not skip_score:
-        log.warning(
-            "skip_score=False ignored; use supervisor program tail_backtest_score_sync"
-        )
+    do_score = (not skip_score) and score_cycles_enabled()
     log.info(
         "wake start series=%s lookback=%s workers=%s backfill_local=%s "
-        "trades_dir=%s package_root=%s (archive only; scoring decoupled)",
+        "score=%s trades_dir=%s package_root=%s",
         ser,
         lb,
         wk,
         backfill_local_months,
+        do_score,
         TRADES_DIR,
         package_root(),
     )
@@ -479,14 +480,44 @@ def run_once(
             skip_results=skip_results,
             skip_package=skip_package,
         )
+    scored = 0
+    rolling = 0
+    if do_score:
+        from backend.core.tail_backtest_cycles import score_lookback_for_sync
+        from backend.core.tail_backtest_rolling_rates import (
+            refresh_rolling_rates_after_score,
+        )
+
+        try:
+            scored, score_failed = score_lookback_for_sync(
+                ser, lookback_days=lb, root=TRADES_DIR
+            )
+            failed.extend(score_failed)
+            log.info("tail_backtest_cycles upserted=%s", scored)
+        except Exception as e:
+            log.exception("tail_backtest_cycles scoring failed")
+            failed.append(f"score:fatal:{e}")
+        try:
+            # Keep current as_of (+ lookback days) 7/30/90 snapshots current.
+            # Windows look back through whatever cycle history is already in PG.
+            rolling, roll_failed = refresh_rolling_rates_after_score(
+                ser, lookback_days=max(lb, 1)
+            )
+            failed.extend(roll_failed)
+            log.info("tail_backtest_rolling_rates upserted=%s", rolling)
+        except Exception as e:
+            log.exception("tail_backtest_rolling_rates refresh failed")
+            failed.append(f"rolling:fatal:{e}")
     ok = True
     if not skip_upload:
         ok = upload_archives(archives, dry_run=dry_run_upload)
     if failed:
         log.warning("failures=%s", failed)
     log.info(
-        "wake done archives=%s upload_ok=%s failures=%s",
+        "wake done archives=%s scored=%s rolling=%s upload_ok=%s failures=%s",
         len(archives),
+        scored,
+        rolling,
         ok,
         len(failed),
     )

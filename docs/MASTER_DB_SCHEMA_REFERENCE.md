@@ -8255,7 +8255,7 @@ The switchboard maps `(schema, table)` to a **stream name** via `backend/core/st
 
 **Creation:** Migration `20261107_1600_tail_backtest_cycles`.
 
-**Population:** `backend/core/tail_backtest_cycles.py`. Full-history seed: `scripts/backtest/backfill_tail_backtest_tables.py` over day CSVs (earliest → today). Ongoing: `tail_backtest_score_sync` re-scores a short lookback (default **2** calendar days: yesterday + today; truncated sealed days are force-repulled). Drive archive (`public_trades_drive_sync`) is a separate dark-by-default job and does not write these rows.
+**Population:** `backend/core/tail_backtest_cycles.py`. Full-history seed: `scripts/backtest/backfill_tail_backtest_tables.py` over day CSVs (earliest → today). Ongoing: hourly `public_trades_drive_sync` after public-trades catchup re-scores a short lookback (default **2** calendar days: yesterday + today; truncated sealed days are force-repulled). Bypass scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`.
 
 | Column | Type | Nullable | Description |
 |--------|------|----------|-------------|
@@ -8324,7 +8324,7 @@ Same columns as `historical_data.btc_lt_week_results`.
 
 ### Table: `historical_data.tail_backtest_rolling_rates`
 
-**Purpose:** **Derived** snapshot of **7 / 30 / 90 trading-day** exact-cent Lower Tail and Upper Tail win rate + participation per series. **Canonical source is always** `*_tail_backtest_cycles` — this table is recomputed from those rows only (never a parallel tape path). Refreshed on each `tail_backtest_score_sync` wake after cycle upserts. Win rate ignores NULL `*_win_loss` (no fill / unsettled); participation is fills / cycles. See `docs/LOWER_TAIL_STRATEGY.md` §0.1.
+**Purpose:** **Derived** snapshot of **7 / 30 / 90 trading-day** exact-cent Lower Tail and Upper Tail win rate + participation per series. **Canonical source is always** `*_tail_backtest_cycles` — this table is recomputed from those rows only (never a parallel tape path). Refreshed on each `public_trades_drive_sync` wake after cycle upserts. Win rate ignores NULL `*_win_loss` (no fill / unsettled); participation is fills / cycles. See `docs/LOWER_TAIL_STRATEGY.md` §0.1.
 
 **Creation:** Migration `20261107_2115_tail_backtest_rolling_rates`.
 

@@ -32,36 +32,13 @@ Do not design or interpret Lower Tail / backtests without this frame.
 | Layer | Role |
 |-------|------|
 | **Day public-trades CSVs** (+ month archives) | Raw tape input only. Not the operator-facing result store. |
-| **`*_tail_backtest_cycles`** | **Canonical** scored history. Seed with `scripts/backtest/backfill_tail_backtest_tables.py`; keep current via `tail_backtest_score_sync` → `score_lookback_for_sync` (not Drive archive). |
+| **`*_tail_backtest_cycles`** | **Canonical** scored history. Seed with `scripts/backtest/backfill_tail_backtest_tables.py`; keep current via hourly `public_trades_drive_sync` → `score_lookback_for_sync`. |
 | **`tail_backtest_rolling_rates`** | **Derived only** — 7/30/90 trading-day WR/participation recomputed from the cycle tables (`tail_backtest_rolling_rates.py`). UI (`/api/tail_strat_win_rate`, win-rate charts) reads this. Never invent a second rolling pipeline from CSVs or ad-hoc scripts. |
 | **`live_data.symbols_list.lower_tail_score` / `upper_tail_score`** | Same badge scores the tails UI shows (30d WR vs 1% / 99% baselines). Written by the rolling-rates upsert path (`sync_symbols_list_tail_scores`) — not a separate scorer. |
 | **Week-slice tables** (`btc_lt_week_results`, `eth_lt_week_results`, `lt_week_results`) | Temporary accuracy-check slices **reloaded from** cycle tables — not a parallel truth. |
 | **Research CSVs / one-off sweep scripts** | Exploration only. Do not wire UI, monitors, or “official” WR to them. |
 
 **Agent rule:** Prefer cycle rows (or rolling rates derived from them) for live-vs-BT, charts, and ops comparisons. Do not add a second exact-cent result store or a second moving-average writer. AES/monitor auto-trade backtests in `docs/BACKTESTING.md` are a **different product** (entry-gate replay); do not conflate them with this LT/UT tape path.
-
----
-
-## 0.2 Intended ops model — score-driven Tail capital (design target)
-
-**Status:** recorded intent / hypothetical control plane. **Not implemented** as autonomous LIVE promotion yet. Scores and the hourly pipeline are live; the monitor actuator loop is not.
-
-**Idea:** `symbols_list` scores are the **control plane**. Per tracked asset, a purposeful bankroll is allocated to a **pair** of Tail monitors (one Lower Tail, one Upper Tail). By practical design **at most one of the pair is LIVE** at a time (the other paper or off) — they do not both spend the pot simultaneously.
-
-| Step | What happens |
-|------|----------------|
-| 1 | `tail_backtest_score_sync` (default ~15m): lookback tape → `*_tail_backtest_cycles` → `tail_backtest_rolling_rates` → `lower_tail_score` / `upper_tail_score` on `live_data.symbols_list`. Drive archive is a separate, dark-by-default job. |
-| 2 | Same wake (or immediately after): policy reads those scores and maps each to a **tier** → LIVE vs PAPER + **position multiplier** on that asset’s shared Tail bankroll. |
-| 3 | Actuator (likely `monitor_manager` or a dedicated Tail policy helper) updates the LT/UT monitor pair for that asset. Placement agents must honor `paper_trade` and the sized contracts. |
-
-**Closed loop (plain language):** tape → cycle truth → 30d scores on the symbol table → hourly autonomous posture: put the asset’s Tail bankroll on the side with edge (or park both), scale by tier. No tick-level loop required — hourly archive cadence is enough.
-
-**Design constraints to preserve when implementing:**
-- One bankroll pot **per asset** for the LT/UT pair; multiplier applies to that pot, not two independent full allocations.
-- Tail monitors must not fight the generic regime LIVE↔PAPER path (exclude them from regime, or let Tail policy own `paper_trade` exclusively).
-- NULL / missing scores (e.g. DOGE `none`) → explicit safe default (PAPER / multiplier 0), never leave a stale LIVE state.
-- Mid-cycle policy change: prefer **next cycle** apply (or cancel/replace rules) so open rests are not silently resized.
-- Autonomous LIVE is real-money risk — hard caps and kill switch remain mandatory.
 
 ---
 
@@ -240,9 +217,7 @@ Docs: `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, `docs/MASTER_DB_SCHEMA_REFERENCE.
 
 Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` → `KXBTC15M_public_trades_YYYY-MM-DD_et.csv`; month Drive bundle `package_month_public_trades_to_drive.py`. Flush per-ticker `.cache_*` after successful day CSV (rule `09-no-duplicate-historical-artifacts`).
 
-**Prod LT/UT score maintenance (background only):** supervisord program `tail_backtest_score_sync` (`backend/tail_backtest_score_sync.py`). Light lookback wake (default interval **900s**, lookback **2** days, workers **1**): refresh yesterday+today day CSVs + market-result cache, upsert exact-cent rows into `historical_data.*_tail_backtest_cycles`, recompute `tail_backtest_rolling_rates`, sync `live_data.symbols_list.lower_tail_score` / `upper_tail_score`. No month package / Drive upload. Disable with `TAIL_BACKTEST_SCORE_SYNC=0` or `features.tail_backtest_score_sync: false`.
-
-**Prod Drive archive (separate, dark by default):** supervisord program `public_trades_drive_sync` — catchup → month tar.xz → Drive only. Opt in with `features.public_trades_drive_sync: true`. Does **not** own cycle/rolling/score writes. Full cycle history is seeded once with `scripts/backtest/backfill_tail_backtest_tables.py`. See §0.1.
+**Prod hourly Drive archive (background only):** supervisord program `public_trades_drive_sync` (`backend/public_trades_drive_sync.py`). Serial low-load wake: refresh **yesterday + today** tapes (lookback default `2`; force-repull truncated sealed days), current-month market results for BTC/ETH/SOL/XRP/GOLD/SILVER/WTI, rebuild that month’s `{SERIES}_public_trades_{YYYY-MM}_et.tar.xz`, upload to Drive `DATA/HISTORICAL_DATA/BACKTESTING_DATA`. Same wake **(1)** upserts exact-cent LT/UT rows into canonical `historical_data.*_tail_backtest_cycles` (`backend/core/tail_backtest_cycles.py`), then **(2)** recomputes derived `historical_data.tail_backtest_rolling_rates` from those cycle rows only (`backend/core/tail_backtest_rolling_rates.py`). Direction of truth is always cycles → rolling, never the reverse. No Redis/monitors/trading path; not a parallel worker farm. Disable with `PUBLIC_TRADES_DRIVE_SYNC=0` or `features.public_trades_drive_sync: false`; skip PG scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`. Full cycle history is seeded once with `scripts/backtest/backfill_tail_backtest_tables.py` (skips days already present unless `--force`); hourly wakes only re-score the lookback window and refresh rolling snapshots for those as-of days. See §0.1.
 
 ---
 
@@ -290,8 +265,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 | Lifecycle | `docs/TRADE_LIFECYCLE_AND_AUTO_STOP_CURRENT.md` |
 | Cycle packages | `backend/core/cycle_packager.py`, `cycle_package_members.py`, `cycle_package.py` |
 | Drive | `backend/core/cycle_gdrive_upload.py` |
-| Tail cycle/rolling/score sync (bg) | `backend/tail_backtest_score_sync.py`, `backend/core/tail_backtest_score_sync.py`, `backend/core/tail_backtest_cycles.py`, `backend/core/tail_backtest_rolling_rates.py` |
-| Public trades → Drive archive (bg, dark by default) | `backend/public_trades_drive_sync.py`, `backend/core/public_trades_drive_sync.py` |
+| Public trades → Drive + tail cycle/rolling PG (hourly bg) | `backend/public_trades_drive_sync.py`, `backend/core/public_trades_drive_sync.py`, `backend/core/tail_backtest_cycles.py`, `backend/core/tail_backtest_rolling_rates.py` |
 
 ---
 
@@ -303,8 +277,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 |--------|------|
 | `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` | Day tape pull |
 | `scripts/backtest/package_month_public_trades_to_drive.py` | Month tape archive → Drive (manual) |
-| `backend/tail_backtest_score_sync.py` | Lookback score → rolling rates → symbols_list LT/UT scores (prod bg) |
-| `backend/public_trades_drive_sync.py` | Catchup → month tar.xz → Drive (prod bg; dark by default) |
+| `backend/public_trades_drive_sync.py` | Hourly catchup → month tar.xz → Drive (prod bg) |
 | `scripts/backtest/catchup_public_trades_and_market_results.py` | Multi-day catchup (missing days) |
 | `scripts/backtest/run_kxbtc15m_longshot_month.py` | First-≤$0.02 month (legacy) |
 | `scripts/backtest/run_kxbtc15m_longshot_limit_sweep.py` | Multi-limit ≤ sweep |
@@ -393,4 +366,3 @@ YTD cum2500 (done):
 | 2026-10-20 | Multi-symbol: ETH + GOLD/SILVER/WTI commodities; co-opening place; cutout symbols. |
 | 2026-10-29 | Membership = all tracked 15m feeds (`lower_tail_symbols()`, same as Upper Tail) — includes SOL/XRP/DOGE when `live_data_level` is full/market. |
 | 2026-11-14 | §0.1: canonical SoT = `*_tail_backtest_cycles`; rolling rates derived only; research CSVs / AES backtests are not parallel LT/UT truth. |
-| 2026-11-14 | §0.2: intended score-driven Tail capital model (per-asset LT/UT pair, shared bankroll, hourly autonomous LIVE/PAPER + tier multiplier). Design target only. |
