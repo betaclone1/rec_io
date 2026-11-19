@@ -46,7 +46,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument(
         "--skip-score",
         action="store_true",
-        help="Skip upsert into historical_data.*_tail_backtest_cycles",
+        help="Deprecated no-op; cycle/rolling scores are owned by tail_backtest_score_sync",
     )
     ap.add_argument("--lookback-days", type=int, default=None)
     ap.add_argument("--workers", type=int, default=None)

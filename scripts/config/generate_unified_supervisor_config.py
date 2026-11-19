@@ -639,8 +639,10 @@ class SupervisorConfigGenerator:
         )
         # Background-only: public trades day CSV catchup → month tar.xz → Drive.
         # Isolated from live ingest / trading (no Redis, no monitors).
+        # Dark by default (CPU); opt in with features.public_trades_drive_sync=true.
+        # Cycle/rolling/LT-UT scores are NOT owned here — see tail_backtest_score_sync.
         public_trades_drive_sync_enabled = (
-            self.config.get("features.public_trades_drive_sync") is not False
+            self.config.get("features.public_trades_drive_sync") is True
         )
         services.append(
             {
@@ -649,6 +651,20 @@ class SupervisorConfigGenerator:
                 "port": 0,
                 "environment": self._cycle_packager_environment(env_global),
                 "autostart": public_trades_drive_sync_enabled,
+            }
+        )
+        # Exact-cent LT/UT cycles → rolling rates → symbols_list scores.
+        # Light lookback tape/results refresh only; no month package / Drive upload.
+        tail_backtest_score_sync_enabled = (
+            self.config.get("features.tail_backtest_score_sync") is not False
+        )
+        services.append(
+            {
+                "name": "tail_backtest_score_sync",
+                "script": "tail_backtest_score_sync.py",
+                "port": 0,
+                "environment": env_global,
+                "autostart": tail_backtest_score_sync_enabled,
             }
         )
         # PRE always on (HWS Scalp LVWAP decisions; ATS remains sole closer).
@@ -899,6 +915,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
         }
         # Public-trades Drive sync wakes can run long (multi-series day pulls).
         PROGRAM_EXTRA_DIRECTIVES["public_trades_drive_sync"] = ["stopwaitsecs=600"]
+        PROGRAM_EXTRA_DIRECTIVES["tail_backtest_score_sync"] = ["stopwaitsecs=600"]
         # Critical assets get higher log retention (see docs/CRITICAL_ASSET_LOGGING.md)
         CRITICAL_LOG_SERVICES = {"system_monitor", "cascading_failure_detector"}
         CRITICAL_STDOUT_MAX, CRITICAL_STDOUT_BACKUPS = "20MB", 10

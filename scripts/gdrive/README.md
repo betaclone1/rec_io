@@ -57,7 +57,7 @@ Same Drive root (``BACKTESTING_DATA``). Layout:
 
 Members: day ``*_public_trades_*_et.csv``, month ``*_market_results_*_et.csv``, manifest JSON.
 
-Supervisor program ``public_trades_drive_sync`` (background only — not on the live trading path) wakes hourly on a **serial low-load** path: refresh today’s day CSV per series, refresh current-month market results, rebuild the current-month archive, upload, then upsert exact-cent LT/UT rows into ``historical_data.*_tail_backtest_cycles``. Defaults stay light (``LOOKBACK_DAYS=1``, ``WORKERS=2``) — not a multi-process farm. Env: ``PUBLIC_TRADES_DRIVE_SYNC`` (auto-on when OAuth present), ``PUBLIC_TRADES_DRIVE_SYNC_INTERVAL_SEC`` (default 3600), ``PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`` to skip PG scoring. Bulk historical seed (many months) is a separate local parallel job, not the hourly prod wake.
+Supervisor program ``public_trades_drive_sync`` (background only — not on the live trading path) is **dark by default** (`features.public_trades_drive_sync` must be true). When enabled it catches up day CSVs, market results, month tar.xz, and Drive upload — **archive only**. Exact-cent LT/UT cycles, rolling rates, and ``symbols_list`` scores are owned by ``tail_backtest_score_sync`` (separate supervisor program). Env: ``PUBLIC_TRADES_DRIVE_SYNC``, ``PUBLIC_TRADES_DRIVE_SYNC_INTERVAL_SEC`` (default 3600). Bulk historical seed (many months) is a separate local parallel job.
 
 ```bash
 # One wake (dry-run upload)
