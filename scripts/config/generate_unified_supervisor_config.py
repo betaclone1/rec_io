@@ -644,13 +644,22 @@ class SupervisorConfigGenerator:
         public_trades_drive_sync_enabled = (
             self.config.get("features.public_trades_drive_sync") is True
         )
+        drive_env = self._cycle_packager_environment(env_global)
+        if not public_trades_drive_sync_enabled:
+            # Stay dark even if something starts the program by mistake.
+            drive_env = (
+                f'{drive_env},PUBLIC_TRADES_DRIVE_SYNC="0"'
+                if drive_env
+                else 'PUBLIC_TRADES_DRIVE_SYNC="0"'
+            )
         services.append(
             {
                 "name": "public_trades_drive_sync",
                 "script": "public_trades_drive_sync.py",
                 "port": 0,
-                "environment": self._cycle_packager_environment(env_global),
+                "environment": drive_env,
                 "autostart": public_trades_drive_sync_enabled,
+                "autorestart": public_trades_drive_sync_enabled,
             }
         )
         # Exact-cent LT/UT cycles → rolling rates → symbols_list scores.
@@ -930,6 +939,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
             port = service["port"]
             env_vars = service["environment"]
             autostart_s = "true" if service.get("autostart", True) else "false"
+            autorestart_s = "true" if service.get("autorestart", True) else "false"
 
             stdout_log = os.path.join(log_dir, f"{service_name}.out.log")
             stderr_log = os.path.join(log_dir, f"{service_name}.err.log")
@@ -948,7 +958,7 @@ supervisor.rpcinterface_factory = supervisor.rpcinterface:make_main_rpcinterface
 command={run_cmd}
 directory={project_root}
 autostart={autostart_s}
-autorestart=true
+autorestart={autorestart_s}
 startretries=3
 stopasgroup=true
 killasgroup=true
