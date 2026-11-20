@@ -2,15 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import pytest
 
 from scripts.backtest.helpers.kalshi_ticker_construct import (
     kalshi_15m_market_tickers_for_eastern_date,
     kalshi_15m_market_tickers_for_eastern_date_range,
+    kalshi_15m_market_tickers_for_hours_back,
+    kalshi_15m_settlement_end_est_from_ticker,
     validate_kalshi_series_for_15m_synth,
 )
+
+EST = ZoneInfo("America/New_York")
 
 
 def test_validate_series_requires_15m() -> None:
@@ -43,3 +48,21 @@ def test_cross_midnight_not_wrapped_to_prior_month_label() -> None:
     tickers = kalshi_15m_market_tickers_for_eastern_date("KXBTC15M", date(2026, 3, 31))
     assert all("26APR01" not in t for t in tickers)
     assert tickers[-1].endswith("2345-45")
+
+
+def test_settlement_parse_matches_constructed_ticker() -> None:
+    t = "KXBTC15M-26NOV191530-30"
+    end = kalshi_15m_settlement_end_est_from_ticker(t)
+    assert end == datetime(2026, 11, 19, 15, 30, tzinfo=EST)
+
+
+def test_hours_back_returns_recent_settlements_only() -> None:
+    now = datetime(2026, 11, 19, 15, 30, tzinfo=EST)
+    by_day = kalshi_15m_market_tickers_for_hours_back(
+        "KXBTC15M", hours_back=2.0, now=now
+    )
+    assert list(by_day.keys()) == [date(2026, 11, 19)]
+    # [13:30, 15:45] inclusive at 15m steps → 10 tickers
+    assert len(by_day[date(2026, 11, 19)]) == 10
+    assert by_day[date(2026, 11, 19)][0].endswith("1330-30")
+    assert by_day[date(2026, 11, 19)][-1].endswith("1545-45")

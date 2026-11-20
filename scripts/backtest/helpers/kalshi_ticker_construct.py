@@ -105,3 +105,42 @@ def kalshi_15m_market_tickers_for_eastern_date_range(
         out.extend(kalshi_15m_market_tickers_for_eastern_date(series_ticker, d))
         d += one
     return out
+
+
+def kalshi_15m_settlement_end_est_from_ticker(ticker: str) -> datetime | None:
+    """Parse ``{SERIES}-{YY}{MMM}{DD}{HHMM}-{MM}`` settlement end as Eastern-aware datetime."""
+    from backend.core.kalshi_contract_settlement import kalshi_contract_settlement_end_est
+
+    return kalshi_contract_settlement_end_est(str(ticker or "").strip())
+
+
+def kalshi_15m_market_tickers_for_hours_back(
+    series_ticker: str,
+    *,
+    hours_back: float = 2.0,
+    now: datetime | None = None,
+) -> dict[date, list[str]]:
+    """
+    Recent 15m tickers for incremental hourly refresh.
+
+    Returns ``{eastern_day: [tickers...]}`` for settlement ends in
+    ``[now - hours_back, now + 15m]`` (includes the in-progress / next cycle).
+    """
+    st = validate_kalshi_series_for_15m_synth(series_ticker)
+    now_et = now.astimezone(EST) if now is not None else datetime.now(EST)
+    if now_et.tzinfo is None:
+        now_et = now_et.replace(tzinfo=EST)
+    start = now_et - timedelta(hours=max(0.25, float(hours_back)))
+    end = now_et + timedelta(minutes=15)
+    out: dict[date, list[str]] = {}
+    d = start.date()
+    last = end.date()
+    while d <= last:
+        for t in kalshi_15m_market_tickers_for_eastern_date(st, d):
+            sett = kalshi_15m_settlement_end_est_from_ticker(t)
+            if sett is None:
+                continue
+            if start <= sett <= end:
+                out.setdefault(d, []).append(t)
+        d += timedelta(days=1)
+    return out

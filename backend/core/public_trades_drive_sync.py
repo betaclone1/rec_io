@@ -1,6 +1,9 @@
-"""Hourly public-trades + market-results archive → Google Drive.
+"""Public-trades tape refresh + tail cycle/rolling score (hourly).
 
-Background-only: Kalshi public REST + local CSV / tar.xz + Drive upload.
+Default wake is **incremental**: last ``hours_back`` of tickers merged into day
+CSVs, bulk market-result refresh, PG score/rolling. Archive mode (opt-in) does
+full-day catchup + month ``tar.xz`` + Drive upload.
+
 Does not touch Redis, monitors, tenant DML, or the live ingest path.
 """
 
@@ -64,10 +67,9 @@ def interval_sec() -> float:
 
 
 def lookback_days() -> int:
-    """Calendar days to refresh + re-score.
+    """Archive-mode calendar days to force-refresh (full day CSVs).
 
-    Default **2** so yesterday is force-refreshed after midnight. Lookback=1 sealed
-    incomplete day CSVs forever and left live fills missing from backtest cycles.
+    Default **2**. Hourly incremental mode does **not** use this — see ``hours_back``.
     """
     try:
         return max(1, int(_env_first("PUBLIC_TRADES_DRIVE_SYNC_LOOKBACK_DAYS", default="2")))
@@ -75,12 +77,34 @@ def lookback_days() -> int:
         return 2
 
 
-def pull_workers() -> int:
-    """Per-day Kalshi pull concurrency. Keep low on prod."""
+def hours_back() -> float:
+    """Incremental hourly window: previous hour + short safety net (default 2h)."""
     try:
-        return max(1, min(4, int(_env_first("PUBLIC_TRADES_DRIVE_SYNC_WORKERS", default="2"))))
+        return max(0.5, float(_env_first("PUBLIC_TRADES_DRIVE_SYNC_HOURS_BACK", default="2")))
     except (TypeError, ValueError):
-        return 2
+        return 2.0
+
+
+def pull_workers() -> int:
+    """Per-day Kalshi pull concurrency. Keep low on prod (default 1 for incremental)."""
+    try:
+        return max(1, min(4, int(_env_first("PUBLIC_TRADES_DRIVE_SYNC_WORKERS", default="1"))))
+    except (TypeError, ValueError):
+        return 1
+
+
+def min_idle_sec() -> float:
+    """Floor sleep after a wake so overruns cannot tight-loop (default 300s)."""
+    try:
+        return max(60.0, float(_env_first("PUBLIC_TRADES_DRIVE_SYNC_MIN_IDLE_SEC", default="300")))
+    except (TypeError, ValueError):
+        return 300.0
+
+
+def archive_mode_enabled() -> bool:
+    """Full day catchup + month package + Drive upload (opt-in; heavy)."""
+    raw = _env_first("PUBLIC_TRADES_DRIVE_SYNC_ARCHIVE", default="").lower()
+    return raw in ("1", "true", "yes", "on")
 
 
 def sync_enabled() -> bool:
@@ -197,7 +221,14 @@ def _month_days(year: int, month: int) -> list[date]:
     return [date(year, month, d) for d in range(1, last + 1)]
 
 
-def pull_day(series: str, day: date, *, force: bool, workers: int) -> int:
+def pull_day(
+    series: str,
+    day: date,
+    *,
+    force: bool,
+    workers: int,
+    hours_back: float | None = None,
+) -> int:
     argv = [
         _python(),
         "scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py",
@@ -208,12 +239,20 @@ def pull_day(series: str, day: date, *, force: bool, workers: int) -> int:
         "--workers",
         str(workers),
     ]
-    if force:
+    if hours_back is not None:
+        argv.extend(["--hours-back", str(hours_back)])
+    elif force:
         argv.append("--force-refresh")
-    return _run(argv, label=f"trades:{series}:{day.isoformat()}{'F' if force else ''}")
+    label = f"trades:{series}:{day.isoformat()}"
+    if hours_back is not None:
+        label += f":h{hours_back:g}"
+    elif force:
+        label += "F"
+    return _run(argv, label=label)
 
 
-def refresh_market_results(series: str, months: Iterable[tuple[int, int]]) -> list[str]:
+def refresh_market_results_bulk_only(series: str) -> list[str]:
+    """Update settlement cache only (no month CSV export) — hourly path."""
     failed: list[str] = []
     rc = _run(
         [
@@ -226,6 +265,11 @@ def refresh_market_results(series: str, months: Iterable[tuple[int, int]]) -> li
     )
     if rc != 0:
         failed.append(f"results_bulk:{series}:rc={rc}")
+    return failed
+
+
+def refresh_market_results(series: str, months: Iterable[tuple[int, int]]) -> list[str]:
+    failed = refresh_market_results_bulk_only(series)
     for y, m in sorted(set(months)):
         rc = _run(
             [
@@ -434,10 +478,62 @@ def score_cycles_enabled() -> bool:
     return raw not in ("1", "true", "yes", "on")
 
 
+def days_touched_by_hours_back(hb: float, *, now: Optional[datetime] = None) -> list[date]:
+    """Eastern calendar days that intersect ``[now - hb, now]``."""
+    now_et = now.astimezone(EST) if now is not None else datetime.now(EST)
+    if now_et.tzinfo is None:
+        now_et = now_et.replace(tzinfo=EST)
+    start = (now_et - timedelta(hours=max(0.25, float(hb)))).date()
+    end = now_et.date()
+    out: list[date] = []
+    d = start
+    while d <= end:
+        out.append(d)
+        d += timedelta(days=1)
+    return out
+
+
+def run_hourly_incremental(
+    series: Sequence[str],
+    *,
+    hb: float,
+    workers: int,
+    skip_trades: bool = False,
+    skip_results: bool = False,
+) -> tuple[list[str], int]:
+    """
+    Default wake: refresh only tickers in the recent hour window, bulk market
+    results, no month package / Drive upload.
+
+    Returns ``(failures, score_lookback_days)``.
+    """
+    TRADES_DIR.mkdir(parents=True, exist_ok=True)
+    days = days_touched_by_hours_back(hb)
+    failed: list[str] = []
+    log.info(
+        "incremental hours_back=%s days=%s series=%s workers=%s",
+        hb,
+        [d.isoformat() for d in days],
+        list(series),
+        workers,
+    )
+    if not skip_trades:
+        for ser in series:
+            for d in days:
+                rc = pull_day(ser, d, force=False, workers=workers, hours_back=hb)
+                if rc != 0:
+                    failed.append(f"trades:{ser}:{d.isoformat()}:h{hb:g}:rc={rc}")
+    if not skip_results:
+        for ser in series:
+            failed.extend(refresh_market_results_bulk_only(ser))
+    return failed, max(1, len(days))
+
+
 def run_once(
     *,
     series: Optional[Sequence[str]] = None,
     lookback: Optional[int] = None,
+    hours: Optional[float] = None,
     workers: Optional[int] = None,
     dry_run_upload: bool = False,
     skip_trades: bool = False,
@@ -446,15 +542,34 @@ def run_once(
     skip_upload: bool = False,
     skip_score: bool = False,
     backfill_local_months: bool = False,
+    archive: Optional[bool] = None,
 ) -> int:
+    """
+    Default = incremental hourly (recent ``hours_back`` + score/rolling).
+
+    Archive mode (``PUBLIC_TRADES_DRIVE_SYNC_ARCHIVE=1`` or ``archive=True``):
+    full-day catchup + month package + Drive upload (heavy; rare).
+    """
     ser = series_list(series)
-    lb = lookback if lookback is not None else lookback_days()
     wk = workers if workers is not None else pull_workers()
+    do_archive = archive if archive is not None else archive_mode_enabled()
     do_score = (not skip_score) and score_cycles_enabled()
+    # Incremental never packages/uploads unless caller forces archive.
+    if not do_archive and not backfill_local_months:
+        skip_package = True
+        skip_upload = True
+    hb = hours if hours is not None else hours_back()
+    lb = lookback if lookback is not None else lookback_days()
+    archives: list[Path] = []
+    failed: list[str] = []
+    score_lb = lb
+
     log.info(
-        "wake start series=%s lookback=%s workers=%s backfill_local=%s "
-        "score=%s trades_dir=%s package_root=%s",
+        "wake start mode=%s series=%s hours_back=%s lookback=%s workers=%s "
+        "backfill_local=%s score=%s trades_dir=%s package_root=%s",
+        "archive" if (do_archive or backfill_local_months) else "incremental",
         ser,
+        hb,
         lb,
         wk,
         backfill_local_months,
@@ -462,16 +577,15 @@ def run_once(
         TRADES_DIR,
         package_root(),
     )
+
     if backfill_local_months:
-        archives = [] if skip_package else package_all_local_months(ser)
-        failed: list[str] = []
         if not skip_results:
             months = {(y, m) for _, y, m in local_months_with_day_csvs(ser)}
             for s in ser:
                 failed.extend(refresh_market_results(s, months))
-            if not skip_package:
-                archives = package_all_local_months(ser)
-    else:
+        if not skip_package:
+            archives = package_all_local_months(ser)
+    elif do_archive:
         archives, failed = catchup_and_package(
             ser,
             lookback=lb,
@@ -480,6 +594,15 @@ def run_once(
             skip_results=skip_results,
             skip_package=skip_package,
         )
+    else:
+        failed, score_lb = run_hourly_incremental(
+            ser,
+            hb=hb,
+            workers=wk,
+            skip_trades=skip_trades,
+            skip_results=skip_results,
+        )
+
     scored = 0
     rolling = 0
     if do_score:
@@ -490,7 +613,7 @@ def run_once(
 
         try:
             scored, score_failed = score_lookback_for_sync(
-                ser, lookback_days=lb, root=TRADES_DIR
+                ser, lookback_days=score_lb, root=TRADES_DIR
             )
             failed.extend(score_failed)
             log.info("tail_backtest_cycles upserted=%s", scored)
@@ -501,7 +624,7 @@ def run_once(
             # Keep current as_of (+ lookback days) 7/30/90 snapshots current.
             # Windows look back through whatever cycle history is already in PG.
             rolling, roll_failed = refresh_rolling_rates_after_score(
-                ser, lookback_days=max(lb, 1)
+                ser, lookback_days=max(score_lb, 1)
             )
             failed.extend(roll_failed)
             log.info("tail_backtest_rolling_rates upserted=%s", rolling)
@@ -514,7 +637,8 @@ def run_once(
     if failed:
         log.warning("failures=%s", failed)
     log.info(
-        "wake done archives=%s scored=%s rolling=%s upload_ok=%s failures=%s",
+        "wake done mode=%s archives=%s scored=%s rolling=%s upload_ok=%s failures=%s",
+        "archive" if (do_archive or backfill_local_months) else "incremental",
         len(archives),
         scored,
         rolling,

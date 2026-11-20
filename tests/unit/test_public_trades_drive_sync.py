@@ -2,10 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import date
+from datetime import date, datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import backend.core.public_trades_drive_sync as sync
+
+EST = ZoneInfo("America/New_York")
 
 
 def test_month_archive_path_layout(tmp_path, monkeypatch):
@@ -15,6 +18,25 @@ def test_month_archive_path_layout(tmp_path, monkeypatch):
     assert p.parent.name == "2026_09_SEP"
     assert p.parent.parent.name == "2026"
     assert p.parent.parent.parent.name == "KXBTC15M"
+
+
+def test_days_touched_by_hours_back_same_day():
+    now = datetime(2026, 11, 19, 15, 30, tzinfo=EST)
+    days = sync.days_touched_by_hours_back(2.0, now=now)
+    assert days == [date(2026, 11, 19)]
+
+
+def test_days_touched_by_hours_back_crosses_midnight():
+    now = datetime(2026, 11, 19, 0, 45, tzinfo=EST)
+    days = sync.days_touched_by_hours_back(2.0, now=now)
+    assert days == [date(2026, 11, 18), date(2026, 11, 19)]
+
+
+def test_archive_mode_default_off(monkeypatch):
+    monkeypatch.delenv("PUBLIC_TRADES_DRIVE_SYNC_ARCHIVE", raising=False)
+    assert sync.archive_mode_enabled() is False
+    monkeypatch.setenv("PUBLIC_TRADES_DRIVE_SYNC_ARCHIVE", "1")
+    assert sync.archive_mode_enabled() is True
 
 
 def test_local_months_with_day_csvs(tmp_path, monkeypatch):

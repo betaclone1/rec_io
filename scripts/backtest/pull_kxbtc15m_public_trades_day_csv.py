@@ -36,6 +36,7 @@ if str(_ROOT) not in sys.path:
 from scripts.backtest.helpers.kalshi_ticker_construct import (
     EST,
     kalshi_15m_market_tickers_for_eastern_date,
+    kalshi_15m_market_tickers_for_hours_back,
 )
 
 API_BASE = "https://external-api.kalshi.com/trade-api/v2"
@@ -261,6 +262,20 @@ def column_order(rows: list[dict[str, Any]]) -> list[str]:
     return keys
 
 
+def _load_existing_day_csv(path: Path) -> dict[str, list[dict[str, Any]]]:
+    """Group an existing day CSV by ticker for incremental merge."""
+    out: dict[str, list[dict[str, Any]]] = {}
+    if not path.is_file() or path.stat().st_size <= 0:
+        return out
+    with path.open(newline="", encoding="utf-8") as f:
+        for row in csv.DictReader(f):
+            t = str(row.get("ticker") or "").strip()
+            if not t:
+                continue
+            out.setdefault(t, []).append(dict(row))
+    return out
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--date", required=True, help="Eastern calendar day YYYY-MM-DD")
@@ -281,9 +296,30 @@ def main() -> int:
         action="store_true",
         help="Keep per-ticker JSON cache after a successful day CSV write (default: delete it)",
     )
+    ap.add_argument(
+        "--hours-back",
+        type=float,
+        default=None,
+        help="Incremental: only refresh tickers settling in the last N hours (merge into day CSV)",
+    )
+    ap.add_argument(
+        "--tickers",
+        default="",
+        help="Comma-separated tickers to refresh (merge into day CSV); overrides --hours-back filter",
+    )
     args = ap.parse_args()
     day = date.fromisoformat(args.date)
-    tickers = kalshi_15m_market_tickers_for_eastern_date(args.series, day)
+    all_day_tickers = kalshi_15m_market_tickers_for_eastern_date(args.series, day)
+    refresh_set: set[str] | None = None
+    if str(args.tickers or "").strip():
+        refresh_set = {t.strip().upper() for t in str(args.tickers).split(",") if t.strip()}
+    elif args.hours_back is not None:
+        by_day = kalshi_15m_market_tickers_for_hours_back(
+            args.series, hours_back=float(args.hours_back)
+        )
+        refresh_set = set(by_day.get(day, []))
+    # Full-day mode refreshes every ticker; incremental only the recent subset.
+    tickers = all_day_tickers if refresh_set is None else [t for t in all_day_tickers if t in refresh_set]
     out = Path(args.out) if args.out else (
         _ROOT
         / "backend"
@@ -299,8 +335,15 @@ def main() -> int:
     sources = trade_sources_for_eastern_day(day, cutoff)
     source_labels = [s[0] for s in sources]
 
-    print(f"series={args.series} day_et={day} tickers={len(tickers)} workers={args.workers}", flush=True)
-    print(f"first={tickers[0]} last={tickers[-1]}", flush=True)
+    incremental = refresh_set is not None
+    print(
+        f"series={args.series} day_et={day} tickers={len(tickers)} "
+        f"day_tickers={len(all_day_tickers)} incremental={incremental} "
+        f"workers={args.workers}",
+        flush=True,
+    )
+    if tickers:
+        print(f"first={tickers[0]} last={tickers[-1]}", flush=True)
     print(f"out={out}", flush=True)
     print(f"cache={cache_dir}", flush=True)
     print(
@@ -310,15 +353,27 @@ def main() -> int:
     )
 
     by_ticker: dict[str, list[dict[str, Any]]] = {}
+    if incremental:
+        # Preserve already-pulled hours; only refetch the recent window.
+        by_ticker.update(_load_existing_day_csv(out))
+        print(f"merged_existing_tickers={len(by_ticker)}", flush=True)
+
     todo: list[str] = []
     for t in tickers:
+        if incremental:
+            # Always refetch the recent window so settlements/fills stay current.
+            todo.append(t)
+            continue
         if not args.force_refresh:
             cached = load_cached(cache_dir, t, expected_sources=source_labels)
             if cached is not None:
                 by_ticker[t] = cached
                 continue
         todo.append(t)
-    print(f"cached={len(by_ticker)} todo={len(todo)}", flush=True)
+    print(f"cached={len(by_ticker) if not incremental else 0} todo={len(todo)}", flush=True)
+    if incremental and not todo:
+        print("DONE incremental nothing_to_fetch", flush=True)
+        return 0
 
     t0 = time.time()
     done = len(by_ticker)
@@ -360,9 +415,14 @@ def main() -> int:
             still_failed.append((t, str(e)))
             print(f"RETRY_FAIL {t}: {e}", flush=True)
 
+    write_order = all_day_tickers if incremental else tickers
     all_rows: list[dict[str, Any]] = []
-    for t in tickers:
+    for t in write_order:
         all_rows.extend(by_ticker.get(t) or [])
+    # Include any unexpected tickers already on disk (should be rare).
+    for t, rows in by_ticker.items():
+        if t not in write_order:
+            all_rows.extend(rows)
     all_rows.sort(
         key=lambda r: (str(r.get("created_time") or ""), str(r.get("trade_id") or ""))
     )
@@ -386,7 +446,9 @@ def main() -> int:
         # Keep cache so a resume can refill gaps without re-pulling successes.
         return 1
     # Day CSV is the work product; drop duplicate per-ticker JSON to free disk.
-    if not args.keep_cache and cache_dir.is_dir():
+    # Incremental wakes keep cache so the next hour only hits new tickers if needed.
+    keep_cache = bool(args.keep_cache or incremental)
+    if not keep_cache and cache_dir.is_dir():
         try:
             shutil.rmtree(cache_dir)
             print(f"flushed_cache={cache_dir}", flush=True)

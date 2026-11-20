@@ -1,10 +1,12 @@
 """
-Long-running worker: catch up Kalshi public-trade day CSVs + market results,
-package by asset/month, upload to Google Drive.
+Long-running worker: keep recent public-trade day CSVs + tail cycle/rolling
+scores current (incremental hourly). Optional archive mode packages months
+and uploads to Google Drive.
 
 Supervisor program: ``public_trades_drive_sync``.
 
-Isolation: no Redis, no monitors, no tenant trading DML. Public REST + disk + Drive only.
+Isolation: no Redis, no monitors, no tenant trading DML. Public REST + disk
+(+ Drive only when archive mode is on).
 """
 
 from __future__ import annotations
@@ -31,7 +33,10 @@ log = logging.getLogger("public_trades_drive_sync")
 
 def main(argv: list[str] | None = None) -> int:
     from backend.core.public_trades_drive_sync import (
+        archive_mode_enabled,
+        hours_back,
         interval_sec,
+        min_idle_sec,
         run_once,
         sync_enabled,
     )
@@ -48,7 +53,18 @@ def main(argv: list[str] | None = None) -> int:
         action="store_true",
         help="Skip upsert into historical_data.*_tail_backtest_cycles",
     )
-    ap.add_argument("--lookback-days", type=int, default=None)
+    ap.add_argument(
+        "--hours-back",
+        type=float,
+        default=None,
+        help="Incremental window hours (default PUBLIC_TRADES_DRIVE_SYNC_HOURS_BACK / 2)",
+    )
+    ap.add_argument(
+        "--archive",
+        action="store_true",
+        help="Full-day catchup + month package + Drive upload (heavy)",
+    )
+    ap.add_argument("--lookback-days", type=int, default=None, help="Archive-mode day lookback")
     ap.add_argument("--workers", type=int, default=None)
     ap.add_argument("--series", nargs="+", default=None)
     ap.add_argument(
@@ -59,11 +75,15 @@ def main(argv: list[str] | None = None) -> int:
     args = ap.parse_args(argv)
 
     interval = interval_sec()
+    idle_floor = min_idle_sec()
+    mode = "archive" if (args.archive or archive_mode_enabled() or args.backfill_local_months) else "incremental"
     log.info(
-        "starting interval_sec=%.0f once=%s dry_run_upload=%s",
+        "starting mode=%s interval_sec=%.0f min_idle_sec=%.0f hours_back=%s once=%s",
+        mode,
         interval,
+        idle_floor,
+        args.hours_back if args.hours_back is not None else hours_back(),
         args.once,
-        args.dry_run_upload,
     )
 
     while True:
@@ -85,6 +105,7 @@ def main(argv: list[str] | None = None) -> int:
             rc = run_once(
                 series=args.series,
                 lookback=args.lookback_days,
+                hours=args.hours_back,
                 workers=args.workers,
                 dry_run_upload=args.dry_run_upload,
                 skip_trades=args.skip_trades,
@@ -93,6 +114,7 @@ def main(argv: list[str] | None = None) -> int:
                 skip_upload=args.skip_upload,
                 skip_score=args.skip_score,
                 backfill_local_months=args.backfill_local_months,
+                archive=True if args.archive else None,
             )
             log.info("wake rc=%s at %s", rc, datetime.now(timezone.utc).isoformat())
         except Exception:
@@ -101,8 +123,14 @@ def main(argv: list[str] | None = None) -> int:
         if args.once:
             return rc
         elapsed = time.monotonic() - started
-        wait = max(1.0, interval - elapsed)
-        log.info("sleeping %.0fs until next wake", wait)
+        # Floor idle so a slow wake cannot tight-loop and pin CPU.
+        wait = max(idle_floor, interval - elapsed)
+        log.info(
+            "sleeping %.0fs until next wake (elapsed=%.0fs floor=%.0fs)",
+            wait,
+            elapsed,
+            idle_floor,
+        )
         time.sleep(wait)
 
 

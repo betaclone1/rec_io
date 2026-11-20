@@ -217,7 +217,7 @@ Docs: `docs/HISTORICAL_CYCLE_DATA_PRODUCT.md`, `docs/MASTER_DB_SCHEMA_REFERENCE.
 
 Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` → `KXBTC15M_public_trades_YYYY-MM-DD_et.csv`; month Drive bundle `package_month_public_trades_to_drive.py`. Flush per-ticker `.cache_*` after successful day CSV (rule `09-no-duplicate-historical-artifacts`).
 
-**Prod hourly Drive archive (background only):** supervisord program `public_trades_drive_sync` (`backend/public_trades_drive_sync.py`). Serial low-load wake: refresh **yesterday + today** tapes (lookback default `2`; force-repull truncated sealed days), current-month market results for BTC/ETH/SOL/XRP/GOLD/SILVER/WTI, rebuild that month’s `{SERIES}_public_trades_{YYYY-MM}_et.tar.xz`, upload to Drive `DATA/HISTORICAL_DATA/BACKTESTING_DATA`. Same wake **(1)** upserts exact-cent LT/UT rows into canonical `historical_data.*_tail_backtest_cycles` (`backend/core/tail_backtest_cycles.py`), then **(2)** recomputes derived `historical_data.tail_backtest_rolling_rates` from those cycle rows only (`backend/core/tail_backtest_rolling_rates.py`). Direction of truth is always cycles → rolling, never the reverse. No Redis/monitors/trading path; not a parallel worker farm. Disable with `PUBLIC_TRADES_DRIVE_SYNC=0` or `features.public_trades_drive_sync: false`; skip PG scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`. Full cycle history is seeded once with `scripts/backtest/backfill_tail_backtest_tables.py` (skips days already present unless `--force`); hourly wakes only re-score the lookback window and refresh rolling snapshots for those as-of days. See §0.1.
+**Prod hourly tape + score (background only):** supervisord program `public_trades_drive_sync` (`backend/public_trades_drive_sync.py`). **Default wake is incremental:** refresh only tickers settling in the last `PUBLIC_TRADES_DRIVE_SYNC_HOURS_BACK` hours (default **2** — previous hour + safety net) via `pull_kxbtc15m_public_trades_day_csv.py --hours-back` (merge into day CSVs; keep cache), bulk-refresh market-result cache, then **(1)** upsert exact-cent LT/UT rows into canonical `historical_data.*_tail_backtest_cycles` and **(2)** recompute `historical_data.tail_backtest_rolling_rates`. No month `tar.xz` / Drive upload on the hourly path. Sleep floor `PUBLIC_TRADES_DRIVE_SYNC_MIN_IDLE_SEC` (default 300) prevents tight-loop CPU if a wake overruns the interval. **Archive mode** (`PUBLIC_TRADES_DRIVE_SYNC_ARCHIVE=1` or `--archive`): full-day catchup (lookback default `2`), month package, Drive upload under `DATA/HISTORICAL_DATA/BACKTESTING_DATA` — opt-in / rare. Direction of truth is always cycles → rolling. No Redis/monitors/trading path. Disable with `PUBLIC_TRADES_DRIVE_SYNC=0` or `features.public_trades_drive_sync: false`; skip PG scoring with `--skip-score` / `PUBLIC_TRADES_DRIVE_SYNC_SKIP_SCORE=1`. Full cycle history is seeded once with `scripts/backtest/backfill_tail_backtest_tables.py`. See §0.1.
 
 ---
 
@@ -265,7 +265,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 | Lifecycle | `docs/TRADE_LIFECYCLE_AND_AUTO_STOP_CURRENT.md` |
 | Cycle packages | `backend/core/cycle_packager.py`, `cycle_package_members.py`, `cycle_package.py` |
 | Drive | `backend/core/cycle_gdrive_upload.py` |
-| Public trades → Drive + tail cycle/rolling PG (hourly bg) | `backend/public_trades_drive_sync.py`, `backend/core/public_trades_drive_sync.py`, `backend/core/tail_backtest_cycles.py`, `backend/core/tail_backtest_rolling_rates.py` |
+| Public trades incremental + tail cycle/rolling PG (hourly bg; archive opt-in) | `backend/public_trades_drive_sync.py`, `backend/core/public_trades_drive_sync.py`, `backend/core/tail_backtest_cycles.py`, `backend/core/tail_backtest_rolling_rates.py` |
 
 ---
 
@@ -277,7 +277,7 @@ Offline day tapes (research): `scripts/backtest/pull_kxbtc15m_public_trades_day_
 |--------|------|
 | `scripts/backtest/pull_kxbtc15m_public_trades_day_csv.py` | Day tape pull |
 | `scripts/backtest/package_month_public_trades_to_drive.py` | Month tape archive → Drive (manual) |
-| `backend/public_trades_drive_sync.py` | Hourly catchup → month tar.xz → Drive (prod bg) |
+| `backend/public_trades_drive_sync.py` | Hourly incremental tape+score; `--archive` for month tar.xz → Drive |
 | `scripts/backtest/catchup_public_trades_and_market_results.py` | Multi-day catchup (missing days) |
 | `scripts/backtest/run_kxbtc15m_longshot_month.py` | First-≤$0.02 month (legacy) |
 | `scripts/backtest/run_kxbtc15m_longshot_limit_sweep.py` | Multi-limit ≤ sweep |
