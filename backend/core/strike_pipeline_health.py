@@ -72,6 +72,81 @@ def pipeline_health_pending_reason(reason: str | None) -> bool:
     )
 
 
+def cycle_end_orderbook_before_sec() -> float:
+    """Seconds before settlement where empty/incomplete books are expected."""
+    try:
+        return max(0.0, float(os.getenv("CYCLE_END_ORDERBOOK_BEFORE_SEC", "90")))
+    except (TypeError, ValueError):
+        return 90.0
+
+
+def cycle_end_orderbook_after_sec() -> float:
+    """Seconds after settlement where empty books on the dying ticker are expected."""
+    try:
+        return max(0.0, float(os.getenv("CYCLE_END_ORDERBOOK_AFTER_SEC", "120")))
+    except (TypeError, ValueError):
+        return 120.0
+
+
+def is_orderbook_touch_incomplete_reason(reason: str | None) -> bool:
+    """True for empty/incomplete OB touch failures (not transport/staleness/miss)."""
+    r = str(reason or "").strip().lower()
+    if not r:
+        return False
+    return (
+        "orderbook_incomplete" in r
+        or "orderbook_empty" in r
+        or ":no_ask_dollars" in r
+        or ":yes_ask_dollars" in r
+        or ":no_bid_dollars" in r
+        or ":yes_bid_dollars" in r
+    )
+
+
+def is_expected_cycle_end_orderbook_failure(
+    *,
+    fail_reason: str | None,
+    event_ticker: str | None,
+    now: datetime | None = None,
+    before_sec: float | None = None,
+    after_sec: float | None = None,
+) -> bool:
+    """
+    True when a strike-refresh failure is the normal end-of-cycle empty book, not an outage.
+
+    Near settlement (and briefly after, while the dying ticker is still cached) Kalshi books
+    routinely lose asks/bids. That must not flip monitor tiles to degraded.
+    """
+    if not is_orderbook_touch_incomplete_reason(fail_reason):
+        return False
+    ticker = str(event_ticker or "").strip()
+    if not ticker:
+        return False
+    try:
+        from backend.core.kalshi_contract_settlement import (
+            kalshi_contract_settlement_end_est,
+        )
+    except Exception:
+        return False
+    end = kalshi_contract_settlement_end_est(ticker)
+    if end is None:
+        return False
+    if now is None:
+        try:
+            from backend.core.time_eastern import now_est
+
+            now = now_est()
+        except Exception:
+            now = datetime.now(ZoneInfo("America/New_York"))
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=ZoneInfo("America/New_York"))
+    end_aware = end if end.tzinfo is not None else end.replace(tzinfo=ZoneInfo("America/New_York"))
+    delta_sec = (now - end_aware).total_seconds()
+    before = float(before_sec if before_sec is not None else cycle_end_orderbook_before_sec())
+    after = float(after_sec if after_sec is not None else cycle_end_orderbook_after_sec())
+    return -before <= delta_sec <= after
+
+
 def display_pipeline_health(ok: bool, reason: str) -> dict:
     """
     Map gate result to monitor tile light fields.
@@ -754,8 +829,10 @@ def evaluate_symbol_pipeline_gate_conn(
 # ---------------------------------------------------------------------------
 #
 # Confirmed-unhealthy already waits degrade_confirm_sec (~30s) before the
-# dashboard light goes red. Brief Kalshi floor_strike TBD blips at 15m rollover
-# usually clear before that. Emit a master event only after confirmed unhealthy
+# dashboard light goes red. End-of-cycle empty/incomplete orderbooks are
+# classified separately (``is_expected_cycle_end_orderbook_failure``) and never
+# flip the tile. Brief Kalshi floor_strike TBD blips at 15m rollover usually
+# clear before degrade_confirm. Emit a master event only after confirmed unhealthy
 # lasts STRIKE_PIPELINE_PROLONGED_OUTAGE_SEC (default 900s / 15m), plus one
 # recovery. Shorter flap cycles (common on thin symbols like DOGE) stay in
 # service logs / strike_pipeline_health only — not the admin master timeline.

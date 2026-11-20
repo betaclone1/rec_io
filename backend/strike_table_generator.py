@@ -1473,6 +1473,7 @@ class StrikeTableGenerator:
             (success, event_ticker, num_strikes) on success; (False, None, 0) on failure.
         """
         conn = None
+        self.last_refresh_detail = None
         try:
             # Get current market data
             logger.debug("Getting current market data")
@@ -1519,6 +1520,7 @@ class StrikeTableGenerator:
                         "missing floor_strike in market cache for %s; skipping refresh this cycle",
                         self.symbol.upper(),
                     )
+                    self.last_refresh_detail = "missing_floor_strike"
                     return (False, None, 0)
                 if len(available_strikes) > 1:
                     logger.warning(
@@ -1557,6 +1559,7 @@ class StrikeTableGenerator:
                         anchor,
                         current_price,
                     )
+                    self.last_refresh_detail = f"anchor_vs_spot:{anchor_reason}"
                     return (False, None, 0)
 
             ob_by_strike, ob_fail_reason = self._resolve_orderbook_touches_for_strikes(
@@ -1566,6 +1569,8 @@ class StrikeTableGenerator:
                 current_price=float(current_price),
             )
             if ob_by_strike is None:
+                # Preserve OB detail for pipeline health (cycle-end empty books vs real outage).
+                self.last_refresh_detail = str(ob_fail_reason or "orderbook_degraded")
                 return (False, market_data.get("event_ticker"), 0)
 
             # Use momentum percentile directly as bucket
@@ -2134,6 +2139,7 @@ class StrikeTableGenerator:
             row_count = len(strike_data)
             if skip_strike_table_pg_dml and ladder_strikes_out:
                 row_count = max(row_count, len(ladder_strikes_out))
+            self.last_refresh_detail = None
             return (True, event_ticker, row_count)
         except Exception as e:
             msg = str(e or "")
@@ -2149,8 +2155,10 @@ class StrikeTableGenerator:
                 )
             ):
                 logger.debug("Transient rollover gap while generating strike table: %s", msg)
+                self.last_refresh_detail = "rollover_market_gap"
             else:
                 logger.error("Error generating strike table: %s", e)
+                self.last_refresh_detail = f"exception:{type(e).__name__}"
             if conn:
                 conn.rollback()
             return (False, None, 0)
