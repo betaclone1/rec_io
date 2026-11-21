@@ -141,6 +141,26 @@
     .stat.w7.active { border-color: var(--w7); }
     .stat.w30.active { border-color: var(--w30); }
     .stat.w90.active { border-color: var(--w90); }
+    .stat-reset {
+      min-width: 28px;
+      padding: 4px 8px;
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+      line-height: 1.2;
+    }
+    .stat-reset:hover,
+    .stat-reset:active {
+      color: #fff;
+    }
+    .stat-reset:disabled {
+      opacity: 0.35;
+      cursor: default;
+      border-color: var(--border);
+      background: var(--chip);
+      color: var(--muted);
+      box-shadow: none;
+    }
     .chart-wrap {
       position: relative;
       height: 200px;
@@ -295,6 +315,9 @@
           '<button type="button" class="stat w90' + (zoom === 90 ? " active" : "") +
             '" data-zoom="90" title="Zoom chart to last 90 days">90d<strong>' +
             fmtPct(latest.w90) + "</strong></button>" +
+          '<button type="button" class="stat stat-reset" data-zoom-reset="1"' +
+            (zoom == null ? " disabled" : "") +
+            ' title="Show full history" aria-label="Show full history">×</button>' +
         "</div>" +
       "</div>" +
       '<div class="chart-wrap"><canvas></canvas></div>' +
@@ -312,6 +335,8 @@
       const d = Number(btn.getAttribute("data-zoom"));
       btn.classList.toggle("active", days != null && d === days);
     });
+    const reset = panel.querySelector(".stat-reset");
+    if (reset) reset.disabled = days == null;
   }
 
   function applyChartWindow(series, days) {
@@ -337,6 +362,13 @@
         applyChartWindow(series, next);
       });
     });
+    const reset = panel.querySelector(".stat-reset");
+    if (reset) {
+      reset.addEventListener("click", function () {
+        zoomBySeries.delete(series);
+        applyChartWindow(series, null);
+      });
+    }
   }
 
   function yAxisForSide() {
