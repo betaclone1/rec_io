@@ -113,9 +113,21 @@
       border: 1px solid var(--border);
       border-radius: 4px;
       padding: 4px 8px;
+      font: inherit;
       font-size: 11px;
       color: var(--muted);
       white-space: nowrap;
+      cursor: pointer;
+      line-height: 1.45;
+    }
+    .stat:hover {
+      border-color: #6a7a90;
+      background: #323c4e;
+    }
+    .stat.active {
+      border-color: #7a8aa0;
+      background: #2c3648;
+      box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08);
     }
     .stat strong {
       color: var(--text);
@@ -125,6 +137,9 @@
     .stat.w7 strong { color: var(--w7); }
     .stat.w30 strong { color: var(--w30); }
     .stat.w90 strong { color: var(--w90); }
+    .stat.w7.active { border-color: var(--w7); }
+    .stat.w30.active { border-color: var(--w30); }
+    .stat.w90.active { border-color: var(--w90); }
     .chart-wrap {
       position: relative;
       height: 240px;
@@ -193,7 +208,10 @@
   <script>
 (function () {
   const API = "/api/tail_strat_win_rate";
+  /** @type {Map<string, {chart: Chart, points: object[], panel: HTMLElement}>} */
   const charts = new Map();
+  /** Per-series zoom window in calendar days (7/30/90), or null for full history. */
+  const zoomBySeries = new Map();
   let side = "lt";
 
   const statusEl = document.getElementById("status");
@@ -224,22 +242,54 @@
     return '<div class="score-badge ' + cls + '">' + text + "</div>";
   }
 
+  function parseAsOf(raw) {
+    const s = String(raw || "").slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const parts = s.split("-").map(Number);
+    return new Date(parts[0], parts[1] - 1, parts[2]);
+  }
+
+  function slicePoints(points, days) {
+    if (!days || !points || !points.length) return points || [];
+    const end = parseAsOf(points[points.length - 1].as_of);
+    if (!end) return points.slice(-days);
+    const start = new Date(end);
+    start.setDate(start.getDate() - (days - 1));
+    return points.filter(function (p) {
+      const d = parseAsOf(p.as_of);
+      return d && d >= start && d <= end;
+    });
+  }
+
+  function labelForPoint(p) {
+    const s = String(p.as_of || "");
+    return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(5, 10) : s;
+  }
+
   function destroyCharts() {
-    for (const c of charts.values()) c.destroy();
+    for (const entry of charts.values()) entry.chart.destroy();
     charts.clear();
   }
 
   function makePanel(asset) {
     const panel = document.createElement("div");
     panel.className = "panel-container";
+    panel.dataset.series = asset.series;
     const latest = asset.latest || {};
+    const zoom = zoomBySeries.get(asset.series) || null;
     panel.innerHTML =
       '<div class="panel-top">' +
         '<div class="panel-title">' + asset.symbol + "</div>" +
         '<div class="stats">' +
-          '<div class="stat w7">7d<strong>' + fmtPct(latest.w7) + "</strong></div>" +
-          '<div class="stat w30">30d<strong>' + fmtPct(latest.w30) + "</strong></div>" +
-          '<div class="stat w90">90d<strong>' + fmtPct(latest.w90) + "</strong></div>" +
+          '<button type="button" class="stat w7' + (zoom === 7 ? " active" : "") +
+            '" data-zoom="7" title="Zoom chart to last 7 days">7d<strong>' +
+            fmtPct(latest.w7) + "</strong></button>" +
+          '<button type="button" class="stat w30' + (zoom === 30 ? " active" : "") +
+            '" data-zoom="30" title="Zoom chart to last 30 days">30d<strong>' +
+            fmtPct(latest.w30) + "</strong></button>" +
+          '<button type="button" class="stat w90' + (zoom === 90 ? " active" : "") +
+            '" data-zoom="90" title="Zoom chart to last 90 days">90d<strong>' +
+            fmtPct(latest.w90) + "</strong></button>" +
         "</div>" +
         scoreBadgeHtml(scoreFromLatest(latest)) +
       "</div>" +
@@ -251,6 +301,38 @@
         '<span class="l1">' + (side === "ut" ? "99%" : "1%") + "</span>" +
       "</div>";
     return panel;
+  }
+
+  function setZoomActive(panel, days) {
+    panel.querySelectorAll(".stat[data-zoom]").forEach(function (btn) {
+      const d = Number(btn.getAttribute("data-zoom"));
+      btn.classList.toggle("active", days != null && d === days);
+    });
+  }
+
+  function applyChartWindow(series, days) {
+    const entry = charts.get(series);
+    if (!entry) return;
+    const pts = slicePoints(entry.points, days);
+    entry.chart.data.labels = pts.map(labelForPoint);
+    entry.chart.data.datasets[0].data = pts.map(function (p) { return p.w7; });
+    entry.chart.data.datasets[1].data = pts.map(function (p) { return p.w30; });
+    entry.chart.data.datasets[2].data = pts.map(function (p) { return p.w90; });
+    entry.chart.update("none");
+    setZoomActive(entry.panel, days);
+  }
+
+  function wireZoomClicks(panel, series) {
+    panel.querySelectorAll(".stat[data-zoom]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
+        const days = Number(btn.getAttribute("data-zoom"));
+        const cur = zoomBySeries.get(series) || null;
+        const next = cur === days ? null : days;
+        if (next == null) zoomBySeries.delete(series);
+        else zoomBySeries.set(series, next);
+        applyChartWindow(series, next);
+      });
+    });
   }
 
   function yAxisForSide() {
@@ -288,15 +370,11 @@
     },
   };
 
-  function buildChart(canvas, asset) {
-    const labels = asset.points.map((p) => {
-      const s = String(p.as_of || "");
-      return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(5, 10) : s;
-    });
+  function buildChart(canvas, points) {
     const axis = yAxisForSide();
     const mk = (key, label, color) => ({
       label,
-      data: asset.points.map((p) => p[key]),
+      data: points.map((p) => p[key]),
       borderColor: color,
       backgroundColor: "transparent",
       borderWidth: 1.75,
@@ -308,7 +386,7 @@
     return new Chart(canvas.getContext("2d"), {
       type: "line",
       data: {
-        labels,
+        labels: points.map(labelForPoint),
         datasets: [
           mk("w7", "7d", "#4a9eff"),
           mk("w30", "30d", "#f0b429"),
@@ -371,9 +449,14 @@
     commodityGrid.innerHTML = "";
     for (const asset of payload.assets || []) {
       const panel = makePanel(asset);
-      const canvas = panel.querySelector("canvas");
-      const chart = buildChart(canvas, asset);
-      charts.set(asset.series, chart);
+      const fullPoints = asset.points || [];
+      const zoom = zoomBySeries.get(asset.series) || null;
+      const chart = buildChart(
+        panel.querySelector("canvas"),
+        slicePoints(fullPoints, zoom)
+      );
+      charts.set(asset.series, { chart: chart, points: fullPoints, panel: panel });
+      wireZoomClicks(panel, asset.series);
       if (asset.asset_class === "commodity") commodityGrid.appendChild(panel);
       else cryptoGrid.appendChild(panel);
     }
@@ -463,6 +546,7 @@
     side = "lt";
     btnLt.classList.add("active");
     btnUt.classList.remove("active");
+    zoomBySeries.clear();
     load();
   });
   btnUt.addEventListener("click", function () {
@@ -470,6 +554,7 @@
     side = "ut";
     btnUt.classList.add("active");
     btnLt.classList.remove("active");
+    zoomBySeries.clear();
     load();
   });
 
