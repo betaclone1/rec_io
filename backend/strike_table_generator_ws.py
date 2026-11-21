@@ -24,7 +24,6 @@ from backend.core.exchange_ids import normalize_exchange
 from backend.core.strike_pipeline_health import (
     MARKET_15M,
     MARKET_HOURLY,
-    is_expected_cycle_end_orderbook_failure,
     note_pipeline_health_for_system_event,
     pipeline_health_writer_dead_sec,
     strike_pipeline_health_strict_mode_enabled,
@@ -260,9 +259,6 @@ class StrikeTableGeneratorWS(StrikeTableGenerator):
         when ``STRIKE_PIPELINE_FRESHNESS_STRICT`` is set without strict mode (dashboard-only).
         """
         if not ok:
-            detail = str(getattr(self, "last_refresh_detail", None) or "").strip()
-            if detail:
-                return False, detail
             return False, "strike_refresh_failed"
         if row_count <= 0:
             return False, "strike_row_count_zero"
@@ -592,21 +588,6 @@ def _refresh_symbol(
         raw_unhealthy_since[sym] = None
         _last_dead_regen_skip_mono.pop(sym, None)
         healthy, reason = True, "ok"
-    elif is_expected_cycle_end_orderbook_failure(
-        fail_reason=reason_raw,
-        event_ticker=ev,
-    ):
-        # Empty/incomplete books near settlement are normal microstructure, not an outage.
-        # Keep the monitor tile green; still back off regen on the dying ticker.
-        raw_unhealthy_since[sym] = None
-        _last_dead_regen_skip_mono[sym] = now_mono
-        healthy, reason = True, f"ok:cycle_end_orderbook:{reason_raw}"
-        logger.debug(
-            "[%s] cycle-end orderbook gap ignored for health event=%s reason=%s",
-            sym,
-            ev,
-            reason_raw,
-        )
     else:
         dead_reason = _strike_regen_dead_backoff_reason(
             ok=ok, row_count=n, health_reason=reason_raw
@@ -625,7 +606,7 @@ def _refresh_symbol(
     gen.set_pipeline_health(healthy=healthy, reason=reason)
     if not healthy:
         logger.warning("[%s] strike refresh degraded reason=%s event=%s rows=%s", sym, reason, ev, n)
-    elif not healthy_raw and not str(reason).startswith("ok:cycle_end_orderbook"):
+    elif not healthy_raw:
         logger.debug(
             "[%s] strike refresh unhealthy masked %ss reason=%s event=%s rows=%s",
             sym,
