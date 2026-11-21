@@ -189,8 +189,8 @@
             <!-- System Page -->
             <iframe id="system-frame" class="page-frame" src=""></iframe>
 
-            <!-- Help Page -->
-            <iframe id="help-frame" class="page-frame" src=""></iframe>
+            <!-- Backtest Page (tails win rate) -->
+            <iframe id="backtest-frame" class="page-frame" src=""></iframe>
         </div>
 
         <!-- Bottom Tab Navigation -->
@@ -215,9 +215,9 @@
                 <img src="../images/icons/system_icon_HEALTHY.png" alt="System" class="tab-icon">
                 <span class="tab-label">System</span>
             </a>
-            <a href="#" class="tab-item" data-tab="help">
-                <img src="../images/icons/help.png" alt="Help" class="tab-icon">
-                <span class="tab-label">Help</span>
+            <a href="#" class="tab-item" data-tab="backtest">
+                <img src="../images/icons/backtester_icon.png" alt="Backtest" class="tab-icon">
+                <span class="tab-label">Backtest</span>
             </a>
         </div>
     </div>
@@ -247,7 +247,7 @@
                 account: `/mobile/account_manager?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 user: `/mobile/user?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
                 system: `/mobile/system?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`,
-                help: `/tabs/help.html`
+                backtest: `/mobile/tail_strat_win_rate?token=${encodeURIComponent(token)}&deviceId=${encodeURIComponent(deviceId)}`
             };
 
             // Load only the dashboard iframe on startup; other tabs load when first opened
